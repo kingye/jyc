@@ -1,0 +1,7 @@
+/target
+
+# Runtime data directory (contains credentials)
+.jyc/
+
+# Config files with credentials
+config.toml

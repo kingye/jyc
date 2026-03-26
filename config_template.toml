@@ -1,0 +1,86 @@
+# JYC Configuration
+# See DESIGN.md for full documentation.
+# Use ${ENV_VAR} syntax for secrets (e.g., passwords).
+
+[general]
+max_concurrent_threads = 3
+max_queue_size_per_thread = 10
+
+# --- Channels ---
+# Each channel represents one messaging account (e.g., an email mailbox).
+# You can configure multiple channels to monitor multiple accounts.
+
+[channels.work]
+type = "email"
+workspace = "./workspace"
+
+[channels.work.inbound]
+host = "${IMAP_HOST}"
+port = 993
+tls = true
+username = "${IMAP_USER}"
+password = "${IMAP_PASSWORD}"
+
+[channels.work.outbound]
+host = "${SMTP_HOST}"
+port = 465
+secure = true
+username = "${SMTP_USER}"
+password = "${SMTP_PASSWORD}"
+
+[channels.work.monitor]
+mode = "idle"                      # "idle" or "poll"
+poll_interval_secs = 30
+max_retries = 5
+folder = "INBOX"
+
+# Patterns define which messages to process.
+# All rules within a pattern use AND logic.
+# First matching pattern wins.
+[[channels.work.patterns]]
+name = "default"
+enabled = true
+
+[channels.work.patterns.rules.sender]
+# exact = ["user@example.com"]
+# domain = ["example.com"]
+# regex = ".*@example\\.com"
+
+[channels.work.patterns.rules.subject]
+# prefix = ["jiny"]
+# regex = "\\[TASK\\].*"
+
+# --- Agent ---
+# Controls how the AI responds to messages.
+
+[agent]
+enabled = true
+mode = "opencode"                  # "opencode" or "static"
+
+[agent.opencode]
+# model = "SiliconFlow/Pro/zai-org/GLM-4.7"
+# small_model = "SiliconFlow/Qwen/Qwen2.5-7B-Instruct"
+system_prompt = "You are an AI assistant. Respond professionally and concisely."
+include_thread_history = true
+
+[agent.progress]
+enabled = false
+initial_delay_secs = 180
+interval_secs = 180
+max_messages = 5
+
+# [agent.attachments]
+# enabled = true
+# max_file_size = "10mb"
+# allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md"]
+
+# --- Alerting (optional) ---
+
+# [alerting]
+# enabled = true
+# recipient = "ops@example.com"
+# batch_interval_minutes = 5
+#
+# [alerting.health_check]
+# enabled = true
+# interval_hours = 6

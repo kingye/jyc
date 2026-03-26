@@ -1,0 +1,64 @@
+[package]
+name = "jyc"
+version = "0.0.1"
+edition = "2024"
+description = "Channel-agnostic AI agent — Rust rewrite of jiny-m"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt", "compat"] }
+futures = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+async-trait = "0.1"
+
+# HTTP client (needed from Phase 4, but declare early for clean builds)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# IMAP (Phase 2)
+async-imap = { version = "0.11", default-features = false, features = [
+  "runtime-tokio",
+] }
+async-native-tls = "0.5"
+
+# Email parsing (Phase 2)
+mail-parser = "0.9"
+
+# SMTP (Phase 2)
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+
+# Markdown <-> HTML (Phase 2)
+comrak = "0.37"
+htmd = "0.5"
+
+# SSE (Phase 4)
+# reqwest-eventsource = "0.6"
+
+# MCP (Phase 5)
+# rmcp = { version = "0.1", features = ["server", "transport-io"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::channels::types::InboundMessage;
 use crate::mcp::context;
 use crate::core::email_parser;
-use crate::utils::constants::*;
+use crate::utils::constants::MAX_BODY_IN_PROMPT;
 
 /// Build the system prompt for OpenCode.
 ///
@@ -36,14 +36,12 @@ pub async fn build_system_prompt(
 - If a task requires files outside this directory, refuse and explain you cannot access them.
 
 ## Important: Focus on the Current Message
-You will see a "Conversation history" section and an "Incoming Message" section in the user prompt.
-The conversation history is for CONTEXT ONLY — do NOT act on previous messages.
 You MUST only respond to the CURRENT "Incoming Message". Do NOT continue work from previous messages.
 After you have replied to the current message, STOP. Do not do anything else.
 
 ## Reply Instructions
 When replying to a message, use the jiny_reply_reply_message tool:
-- `token`: Pass the opaque token from the <reply_context> block exactly as-is (do not decode or modify it)
+- `token`: Pass the value after REPLY_TOKEN= exactly as-is (do not decode or modify it)
 CRITICAL: DO NOT decode, modify, re-encode, or add any formatting (backticks, quotes, spaces, newlines) to the token.
 Any change—even a single character—will break the reply.
 - `message`: Your reply text
@@ -81,26 +79,14 @@ CRITICAL: Always use jiny_reply_reply_message tool.
 /// Build the user prompt for a single inbound message.
 ///
 /// Includes:
-/// - Conversation history from stored messages (stripped, truncated)
 /// - Incoming message body (stripped, truncated)
-/// - Reply context token (base64-encoded metadata)
+/// - Reply token (minimal base64 routing token)
 pub async fn build_prompt(
     message: &InboundMessage,
     thread_path: &Path,
     message_dir: &str,
-    include_history: bool,
 ) -> Result<String> {
     let mut prompt = String::new();
-
-    // Conversation history
-    if include_history {
-        let history = build_conversation_history(thread_path, message_dir).await;
-        if !history.is_empty() {
-            prompt.push_str("## Conversation history (most recent messages):\n");
-            prompt.push_str(&history);
-            prompt.push('\n');
-        }
-    }
 
     // Incoming message
     prompt.push_str("## Incoming Message\n");
@@ -139,83 +125,9 @@ pub async fn build_prompt(
         message_dir,
         &message.channel_uid,
     );
-    prompt.push_str(&format!("\n<reply_context>{context_token}</reply_context>\n"));
+    prompt.push_str(&format!("\nREPLY_TOKEN={context_token}\n"));
 
     Ok(prompt)
-}
-
-/// Build conversation history from stored messages in the thread.
-///
-/// Reads the last N message directories, strips quoted history,
-/// and truncates per-file to fit the context budget.
-async fn build_conversation_history(
-    thread_path: &Path,
-    current_message_dir: &str,
-) -> String {
-    let messages_dir = thread_path.join("messages");
-    if !messages_dir.exists() {
-        return String::new();
-    }
-
-    // Read and sort message directories (newest first)
-    let mut dirs: Vec<String> = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(&messages_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if let Ok(ft) = entry.file_type().await {
-                if ft.is_dir() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    // Skip current message dir (it's the one being processed)
-                    if name != current_message_dir {
-                        dirs.push(name);
-                    }
-                }
-            }
-        }
-    }
-    dirs.sort();
-    dirs.reverse(); // Newest first
-
-    // Take last N
-    let dirs: Vec<_> = dirs.into_iter().take(MAX_FILES_IN_CONTEXT).collect();
-
-    let mut history = String::new();
-    let mut total_chars = 0;
-
-    // Build history (oldest first for chronological reading)
-    for dir_name in dirs.into_iter().rev() {
-        let dir_path = messages_dir.join(&dir_name);
-
-        // Reply (AI response) — comes after received in chronological order
-        let reply_path = dir_path.join("reply.md");
-        if let Ok(content) = tokio::fs::read_to_string(&reply_path).await {
-            let reply_text = email_parser::parse_stored_reply(&content);
-            let truncated = email_parser::truncate_text(&reply_text, MAX_PER_FILE);
-            if total_chars + truncated.len() <= MAX_TOTAL_CONTEXT {
-                history.push_str(&format!("### AI Assistant ({})\n", dir_name));
-                history.push_str(&truncated);
-                history.push_str("\n\n");
-                total_chars += truncated.len();
-            }
-        }
-
-        // Received message
-        let received_path = dir_path.join("received.md");
-        if let Ok(content) = tokio::fs::read_to_string(&received_path).await {
-            let parsed = email_parser::parse_stored_message(&content);
-            let stripped = email_parser::strip_quoted_history(&parsed.body);
-            let truncated = email_parser::truncate_text(&stripped, MAX_PER_FILE);
-            if total_chars + truncated.len() <= MAX_TOTAL_CONTEXT {
-                let sender = parsed.sender.as_deref().unwrap_or("Unknown");
-                let ts = parsed.timestamp.as_deref().unwrap_or(&dir_name);
-                history.push_str(&format!("### {sender} ({ts})\n"));
-                history.push_str(&truncated);
-                history.push_str("\n\n");
-                total_chars += truncated.len();
-            }
-        }
-    }
-
-    history
 }
 
 #[cfg(test)]
@@ -278,7 +190,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let msg = test_message();
 
-        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", false)
+        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00")
             .await
             .unwrap();
 
@@ -286,22 +198,21 @@ mod tests {
         assert!(prompt.contains("John"));
         assert!(prompt.contains("john@example.com"));
         assert!(prompt.contains("Hello, help me."));
-        assert!(prompt.contains("<reply_context>"));
+        assert!(prompt.contains("REPLY_TOKEN="));
     }
 
     #[test]
-    fn test_reply_context_in_prompt() {
+    fn test_reply_token_in_prompt() {
         // Token serialization is now in mcp::context — just verify it appears in the prompt
         let rt = tokio::runtime::Runtime::new().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let msg = test_message();
 
-        let prompt = rt.block_on(build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", false)).unwrap();
-        assert!(prompt.contains("<reply_context>"));
-        assert!(prompt.contains("</reply_context>"));
+        let prompt = rt.block_on(build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00")).unwrap();
+        assert!(prompt.contains("REPLY_TOKEN="));
         // Token should be short (minimal fields)
-        let start = prompt.find("<reply_context>").unwrap() + 15;
-        let end = prompt.find("</reply_context>").unwrap();
+        let start = prompt.find("REPLY_TOKEN=").unwrap() + 12;
+        let end = prompt[start..].find('\n').map(|i| start + i).unwrap_or(prompt.len());
         let token = &prompt[start..end];
         assert!(token.len() < 200, "token too long: {} chars", token.len());
     }

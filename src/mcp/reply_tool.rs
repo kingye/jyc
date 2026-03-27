@@ -53,7 +53,7 @@ impl McpLogger {
 pub struct ReplyMessageParams {
     #[schemars(description = "The reply text to send")]
     pub message: String,
-    #[schemars(description = "The opaque context token from the <reply_context> block. Pass it exactly as-is.")]
+    #[schemars(description = "The opaque token value from the REPLY_TOKEN= line. Pass it exactly as-is.")]
     pub token: String,
     #[schemars(description = "Optional list of filenames within the thread directory to attach")]
     pub attachments: Option<Vec<String>>,

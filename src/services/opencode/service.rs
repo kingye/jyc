@@ -77,12 +77,6 @@ impl OpenCodeService {
         session::cleanup_signal_file(thread_path).await;
 
         // 5. Build prompts
-        let include_history = self.agent_config
-            .opencode
-            .as_ref()
-            .map(|o| o.include_thread_history)
-            .unwrap_or(true);
-
         let system_prompt = prompt_builder::build_system_prompt(
             thread_path,
             self.agent_config.opencode.as_ref().and_then(|o| o.system_prompt.as_deref()),
@@ -92,7 +86,6 @@ impl OpenCodeService {
             message,
             thread_path,
             message_dir,
-            include_history,
         ).await?;
 
         // 6. Mode override (plan/build)
@@ -377,7 +370,7 @@ fn extract_text_from_parts(parts: &[ResponsePart]) -> Option<String> {
 fn strip_prompt_echo(text: &str) -> String {
     let markers = [
         "## Incoming Message",
-        "<reply_context>",
+        "REPLY_TOKEN=",
         "## Conversation history",
     ];
 

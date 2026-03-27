@@ -177,7 +177,8 @@ impl OpenCodeClient {
         session_id: &str,
         directory: &Path,
         request: &PromptRequest,
-        _on_progress: Option<()>, // TODO: progress callback (Phase 6)
+        channel: &str,
+        thread_name: &str,
     ) -> Result<SseResult> {
         // 1. Subscribe to SSE events scoped to the thread directory
         let sse_url = format!(
@@ -256,6 +257,8 @@ impl OpenCodeClient {
                             let event_result = self.handle_sse_event(
                                     &sse_event,
                                     session_id,
+                                    channel,
+                                    thread_name,
                                     &mut parts,
                                     &mut result,
                                     &mut last_activity,
@@ -313,6 +316,8 @@ impl OpenCodeClient {
                             .unwrap_or("generating");
 
                         tracing::info!(
+                            channel = %channel,
+                            thread = %thread_name,
                             elapsed_secs = elapsed.as_secs(),
                             parts = parts.len(),
                             model = ?result.model_id,
@@ -346,6 +351,8 @@ impl OpenCodeClient {
         &self,
         event: &SseEvent,
         session_id: &str,
+        channel: &str,
+        thread_name: &str,
         parts: &mut HashMap<String, ResponsePart>,
         result: &mut SseResult,
         last_activity: &mut Instant,
@@ -374,6 +381,8 @@ impl OpenCodeClient {
                             if result.model_id.is_none() {
                                 if let Some(ref model) = info.model_id {
                                     tracing::info!(
+                                        channel = %channel,
+                                        thread = %thread_name,
                                         model = %model,
                                         provider = ?info.provider_id,
                                         "AI model selected"
@@ -417,6 +426,8 @@ impl OpenCodeClient {
                                     "running" => {
                                         *last_tool_name = Some(tool_name.clone());
                                         tracing::info!(
+                                            channel = %channel,
+                                            thread = %thread_name,
                                             tool = %tool_name,
                                             "Tool running"
                                         );
@@ -426,12 +437,16 @@ impl OpenCodeClient {
                                         if let Some(ref output) = state.output {
                                             if output.starts_with("Error:") {
                                                 tracing::error!(
+                                                    channel = %channel,
+                                                    thread = %thread_name,
                                                     tool = %tool_name,
                                                     output = %output,
                                                     "Tool completed with error"
                                                 );
                                             } else {
                                                 tracing::info!(
+                                                    channel = %channel,
+                                                    thread = %thread_name,
                                                     tool = %tool_name,
                                                     "Tool completed"
                                                 );
@@ -441,6 +456,8 @@ impl OpenCodeClient {
                                     "error" => {
                                         *last_tool_name = None;
                                         tracing::error!(
+                                            channel = %channel,
+                                            thread = %thread_name,
                                             tool = %tool_name,
                                             error = ?state.error,
                                             "Tool error"
@@ -455,6 +472,8 @@ impl OpenCodeClient {
                     // Log step events
                     if part.part_type == "step-start" {
                         tracing::info!(
+                            channel = %channel,
+                            thread = %thread_name,
                             model = ?result.model_id,
                             "Step started"
                         );
@@ -516,7 +535,7 @@ impl OpenCodeClient {
             "session.idle" => {
                 if let Some(sid) = event.properties.get("sessionID").and_then(|v| v.as_str()) {
                     if sid == session_id {
-                        tracing::info!("Session idle — prompt complete");
+                        tracing::info!(channel = %channel, thread = %thread_name, "Session idle — prompt complete");
                         return SseAction::Done;
                     }
                 }

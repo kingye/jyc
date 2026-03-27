@@ -6,9 +6,6 @@ use crate::core::email_parser;
 use crate::core::thread_manager::ThreadManager;
 
 /// Routes inbound messages to the appropriate thread queue.
-///
-/// Delegates pattern matching and thread name derivation to channel-specific
-/// logic, then dispatches to the ThreadManager.
 pub struct MessageRouter {
     thread_manager: Arc<ThreadManager>,
 }
@@ -19,19 +16,18 @@ impl MessageRouter {
     }
 
     /// Route a message from an email channel.
-    ///
-    /// 1. Match against patterns
-    /// 2. Derive thread name
-    /// 3. Enqueue for processing
     pub async fn route_email(
         &self,
         mut message: InboundMessage,
         patterns: &[ChannelPattern],
     ) {
+        let ch = &message.channel;
+
         // 1. Pattern matching
         let pattern_match = match inbound::match_message(&message, patterns) {
             Some(m) => {
                 tracing::info!(
+                    channel = %ch,
                     pattern = %m.pattern_name,
                     sender = %message.sender_address,
                     topic = %message.topic,
@@ -42,6 +38,7 @@ impl MessageRouter {
             }
             None => {
                 tracing::debug!(
+                    channel = %ch,
                     sender = %message.sender_address,
                     topic = %message.topic,
                     "No pattern matched, skipping"
@@ -63,9 +60,10 @@ impl MessageRouter {
             email_parser::derive_thread_name(&message.topic, &subject_prefixes);
 
         tracing::info!(
+            channel = %ch,
             thread = %thread_name,
             pattern = %pattern_match.pattern_name,
-            "Routing message to thread"
+            "Routing to thread"
         );
 
         // 3. Get attachment config from the matched pattern

@@ -52,11 +52,13 @@ impl ImapMonitor {
         let mut client = ImapClient::new(self.imap_config.clone());
         let mut reconnect_attempts = 0u32;
         let max_retries = self.monitor_config.max_retries;
+        let ch = self.channel_name.clone();
         let use_idle = self.monitor_config.mode == "idle";
         let poll_interval = self.monitor_config.poll_interval_secs;
         let folder = &self.monitor_config.folder.clone();
 
         tracing::info!(
+            channel = %ch,
             mode = if use_idle { "IDLE" } else { "poll" },
             folder = %folder,
             "Starting IMAP monitor"
@@ -128,7 +130,7 @@ impl ImapMonitor {
                 .check_for_new(&mut client, current_count, folder)
                 .await
             {
-                tracing::error!(error = %e, "Error checking for new messages");
+                tracing::error!(channel = %ch, error = %e, "Error checking for new messages");
             }
 
             // Wait for next check
@@ -161,7 +163,7 @@ impl ImapMonitor {
         // Cleanup
         client.disconnect().await.ok();
         self.state_manager.save().await.ok();
-        tracing::info!("IMAP monitor stopped");
+        tracing::info!(channel = %ch, "IMAP monitor stopped");
         Ok(())
     }
 
@@ -267,6 +269,7 @@ impl ImapMonitor {
         message.channel = self.channel_name.clone();
 
         tracing::info!(
+            channel = %self.channel_name,
             uid = email.uid,
             sender = %message.sender_address,
             topic = %message.topic,

@@ -148,6 +148,8 @@ impl ThreadManager {
                 _ = cancel.cancelled() => return,
             };
 
+            let mut channel_name: Option<String> = None;
+
             tracing::info!(thread = %thread_name, "Worker started");
 
             loop {
@@ -157,10 +159,17 @@ impl ThreadManager {
                         None => break,
                     },
                     _ = cancel.cancelled() => {
-                        tracing::info!(thread = %thread_name, "Worker cancelled");
+                        let ch = channel_name.as_deref().unwrap_or("-");
+                        tracing::info!(channel = %ch, thread = %thread_name, "Worker cancelled");
                         break;
                     }
                 };
+
+                // Capture channel name from first message
+                if channel_name.is_none() {
+                    channel_name = Some(item.message.channel.clone());
+                }
+                let ch = channel_name.as_deref().unwrap_or("-");
 
                 if let Err(e) = process_message(
                     &item,
@@ -170,6 +179,7 @@ impl ThreadManager {
                     agent.as_ref(),
                 ).await {
                     tracing::error!(
+                        channel = %ch,
                         thread = %thread_name,
                         error = %e,
                         "Failed to process message"
@@ -177,7 +187,8 @@ impl ThreadManager {
                 }
             }
 
-            tracing::info!(thread = %thread_name, "Worker finished");
+            let ch = channel_name.as_deref().unwrap_or("-");
+            tracing::info!(channel = %ch, thread = %thread_name, "Worker finished");
         })
     }
 
@@ -222,6 +233,7 @@ async fn process_message(
     agent: &dyn AgentService,
 ) -> Result<()> {
     let message = &item.message;
+    let ch = &message.channel;
 
     // ── 1. STORE ──────────────────────────────────────────────────────
     let store_result: StoreResult = storage
@@ -229,11 +241,11 @@ async fn process_message(
         .await?;
 
     tracing::info!(
+        channel = %ch,
         thread = %thread_name,
-        message_dir = %store_result.message_dir,
         sender = %message.sender_address,
         topic = %message.topic,
-        "Message stored, processing..."
+        "Message stored"
     );
 
     // ── 2. COMMAND PROCESS ────────────────────────────────────────────
@@ -266,6 +278,7 @@ async fn process_message(
     if !cmd_output.results.is_empty() {
         let summary = cmd_output.results_summary();
         tracing::info!(
+            channel = %ch,
             thread = %thread_name,
             commands = cmd_output.results.len(),
             "Sending command results"
@@ -301,8 +314,9 @@ async fn process_message(
 
     if effective_body_empty {
         tracing::info!(
+            channel = %ch,
             thread = %thread_name,
-            "No message body after processing, stopping (no AI)"
+            "No message body, stopping (no AI)"
         );
         return Ok(());
     }
@@ -320,10 +334,11 @@ async fn process_message(
         .await?;
 
     tracing::info!(
+        channel = %ch,
         thread = %thread_name,
         reply_sent = result.reply_sent,
         summary = %result.summary,
-        "Agent processing complete"
+        "Agent complete"
     );
 
     Ok(())

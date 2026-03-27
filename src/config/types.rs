@@ -189,7 +189,7 @@ pub struct ProgressConfig {
 }
 
 /// Alerting configuration — error digests and health checks.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AlertingConfig {
     pub enabled: bool,
 
@@ -220,7 +220,7 @@ pub struct AlertingConfig {
 }
 
 /// Health check report configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct HealthCheckConfig {
     pub enabled: bool,
 

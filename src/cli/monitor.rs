@@ -12,6 +12,7 @@ use crate::services::static_agent::StaticAgentService;
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::config::types::MonitorConfig;
 use crate::config::{load_config, validation};
+use crate::core::alert_service::{AppLogger, AlertService};
 use crate::core::message_router::MessageRouter;
 use crate::core::message_storage::MessageStorage;
 use crate::core::state_manager::StateManager;
@@ -59,7 +60,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // 3. Process each email channel
+    // 3. Start alert service (if configured)
+    // We need a reference outbound adapter for alerts — we'll create it from the first channel's config
+    // For now, alert service is started per-channel below (using that channel's outbound)
+    let mut alert_handle = AppLogger::noop();
+    let mut alert_task: Option<tokio::task::JoinHandle<()>> = None;
+
+    // 4. Process each email channel
     let mut tasks = Vec::new();
     let agent_config = Arc::new(config.agent.clone());
     let opencode_server = Arc::new(OpenCodeServer::new());
@@ -118,6 +125,45 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             format!("channel '{channel_name}': SMTP connection failed")
         })?;
         tracing::info!(channel = %channel_name, "SMTP connected");
+
+        // Start alert service on first channel (uses that channel's outbound for alerts)
+        if alert_task.is_none() {
+            if let Some(ref alerting_config) = config.alerting {
+                if alerting_config.enabled {
+                    let alert_service = AlertService::new(
+                        alerting_config.clone(),
+                        outbound.clone(),
+                        cancel.clone(),
+                    );
+                    let (handle, task) = alert_service.start();
+                    alert_handle = handle;
+                    alert_task = Some(task);
+                    tracing::info!("Alert service started");
+
+                    // Send startup notification
+                    let startup_msg = format!(
+                        "**JYC Monitor Started**\n\n\
+                         Version: {}\n\
+                         Time: {}\n\
+                         Channels: {}\n\
+                         Agent mode: {}",
+                        env!("CARGO_PKG_VERSION"),
+                        chrono::Utc::now().to_rfc3339(),
+                        config.channels.len(),
+                        config.agent.mode,
+                    );
+                    let prefix = alerting_config.subject_prefix.as_deref().unwrap_or("JYC");
+                    let _ = outbound
+                        .send_alert(
+                            &alerting_config.recipient,
+                            &format!("{prefix}: Monitor Started"),
+                            &startup_msg,
+                        )
+                        .await;
+                    tracing::info!("Startup notification sent");
+                }
+            }
+        }
 
         // Create agent based on configured mode
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
@@ -217,6 +263,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // Stop the OpenCode server
     opencode_server.stop().await.ok();
+
+    // Wait for alert service to flush final errors
+    if let Some(task) = alert_task {
+        task.await.ok();
+    }
 
     tracing::info!("Monitor stopped");
     Ok(())

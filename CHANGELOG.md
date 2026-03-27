@@ -2,6 +2,25 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.0.4] - 2026-03-27
+
+### Added
+
+**Phase 6: Resilience + Polish**
+- Alert service (`src/core/alert_service.rs`): background task buffers ERROR events, flushes as digest emails at configured intervals. Health check reports with per-thread stats at configured intervals. Self-protection via `eprintln` for send failures (no feedback loop).
+- `AppLogger` — unified logging + alerting handle. Components call `app_logger.info()`, `.error()`, `.message_received()`, `.reply_by_tool()` etc. Each call delegates to `tracing` for console output AND sends structured events to the alert service for stats tracking + error buffering. Replaces separate `tracing` + `AlertHandle` dependencies.
+- Progress tracker (`src/core/progress_tracker.rs`): sends periodic "still working" emails during long AI operations. Configurable initial delay (default 3 min), interval (default 3 min), max messages (default 5). Polling every 5s with `tokio::time::interval`.
+- Startup notification email: sent on monitor start with version, timestamp, channel count, agent mode
+- Graceful shutdown: alert service final flush before exit, OpenCode server stopped, all worker tasks awaited
+
+### Changed
+- `/model` with no args now shows current model (from override or config default) instead of "not yet implemented"
+- `AlertHandle` renamed to `AppLogger` to reflect its dual role as logger + alerter
+- Structured logging: `channel=` and `thread=` fields added consistently to all key log lines across IMAP monitor, message router, thread manager, and OpenCode service. Enables easy filtering by channel or thread in production logs.
+
+### Fixed
+- Error handling audit: all production `unwrap()` calls verified safe (static regex, guarded strip_prefix)
+
 ## [0.0.3] - 2026-03-27
 
 ### Added

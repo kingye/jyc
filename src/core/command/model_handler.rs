@@ -30,10 +30,21 @@ impl CommandHandler for ModelCommandHandler {
         let session_path = jyc_dir.join("opencode-session.json");
 
         if context.args.is_empty() {
-            // /model with no args — list models (not yet implemented)
+            // /model with no args — show current model
+            let override_path = jyc_dir.join("model-override");
+            let current = if override_path.exists() {
+                let model = tokio::fs::read_to_string(&override_path)
+                    .await
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                format!("{model} (override)")
+            } else {
+                "default from config".to_string()
+            };
             return Ok(CommandResult {
                 success: true,
-                message: "/model: listing models not yet implemented. Use /model <model-id> to switch.".into(),
+                message: format!("/model: current model is {current}. Use /model <model-id> to switch, /model reset to revert."),
                 error: None,
                 requires_restart: false,
             });

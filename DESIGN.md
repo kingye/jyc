@@ -316,7 +316,7 @@ Email arrives
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is, no transformation
 - **PromptBuilder** is the only place where history is stripped (for AI token budget)
-- **Reply Tool** is the only place where the full reply is assembled (AI text + quoted history)
+- **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — used by both ThreadManager fallback AND MCP reply tool
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + send
 - **ReplyContext** is an opaque base64 token carrying only metadata references, never content
 - **reply.md** = exactly what the recipient receives (minus HTML formatting)
@@ -1032,13 +1032,14 @@ JYC uses the following subset of the OpenCode server API:
 │    → if body_empty + has results → send_direct_reply(results) → done  │
 │         ↓                                                             │
 │  Dispatch to agent mode:                                              │
-│    "static" → send configured text → store reply → done               │
+│    "static" → build_full_reply_text(text) → send → store → done      │
 │    "opencode" → OpenCodeService::generate_reply(msg) ──┐              │
 │         ↓                                               │              │
 │  If !result.reply_sent_by_tool:                         │              │
 │    If result.reply_text is Some:                        │              │
-│      → outbound.send_reply(text) — fallback send        │              │
-│      → storage.store_reply(text)                        │              │
+│      → build_full_reply_text(text) — add quoted history  │              │
+│      → outbound.send_reply(full_reply) — fallback send   │              │
+│      → storage.store_reply(full_reply)                   │              │
 │         ↓                                               │              │
 │  Worker picks next message from thread queue             │              │
 └──────────────────────────────────────────────────────────┘              │
@@ -1145,14 +1146,84 @@ Thread files still provide recent conversation context
 | Scenario | What Happens |
 |----------|-------------|
 | OpenCode uses `reply_message` tool successfully | Detected via SSE; `reply_sent_by_tool: true`, skips fallback |
-| `reply_message` tool fails (e.g. invalid JSON) | SSE shows `completed` but output starts with "Error:" → stays false |
-| AI returns text without using tool | `session.idle` fires; ThreadManager sends via OutboundAdapter directly |
+| `reply_message` tool fails (e.g. MCP not implemented, invalid JSON) | AI generates text response instead; ThreadManager builds full reply with quoted history and sends via OutboundAdapter |
+| AI returns text without using tool | `session.idle` fires; ThreadManager calls `build_full_reply_text()` and sends via OutboundAdapter |
 | AI takes very long but keeps working | SSE events keep arriving → no timeout; progress logged every 10s |
 | AI goes silent for 30 minutes | Activity timeout (60 min if tool running) → checks signal file → error |
 | SSE subscription fails | Falls back to blocking prompt with 5-min timeout |
 | OpenCode server dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
 | Thread queue full | Message dropped with warning; IMAP re-fetch recovers on restart |
+
+### Reply Text Building Pipeline
+
+`build_full_reply_text()` (`src/core/email_parser.rs`) is the **single shared function** for assembling a complete reply email. It is used by:
+
+1. **ThreadManager fallback** — when AI returns text instead of using the MCP reply tool
+2. **ThreadManager static mode** — for static reply text
+3. **MCP reply tool** (Phase 5) — when the AI calls `reply_message`
+
+This ensures all reply emails have the same format regardless of the send path.
+
+**Reply format:**
+```
+<AI reply text>
+
+---
+### Sender Name (2026-03-27 10:00)
+> Subject
+>
+> Current message body (stripped of nested quotes)...
+
+---
+### AI Assistant (2026-03-27 09:55)
+> Previous AI reply text...
+
+---
+### Sender Name (2026-03-27 09:50)
+> Subject
+>
+> Earlier message body (stripped)...
+```
+
+**Building pipeline:**
+
+```
+build_full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_dir)
+    │
+    ├── prepare_body_for_quoting(thread_path, current_message, max_history, exclude_dir)
+    │       │
+    │       └── build_thread_trail(thread_path, current_message, max_entries, exclude_dir)
+    │               │
+    │               ├── Current received message (stripped of quoted history)
+    │               │
+    │               ├── For each previous message dir (newest first):
+    │               │   ├── reply.md → parse_stored_reply() → AI response text only
+    │               │   └── received.md → parse_stored_message() → strip_quoted_history()
+    │               │
+    │               └── Truncate to MAX_HISTORY_QUOTE (6) entries
+    │
+    ├── format_quoted_reply(sender, timestamp, subject, body) for each trail entry
+    │       → "---\n### Sender (timestamp)\n> Subject\n>\n> Body quoted..."
+    │
+    └── Combine: "{reply_text}\n\n{quoted_blocks}"
+```
+
+**Trail ordering:** Within each message directory, **reply comes before received** (the AI responded after receiving). Overall ordering is current message first, then previous directories newest-first:
+
+```
+current received.md (the message being replied to now)
+prev reply.md      (AI's previous response)
+prev received.md   (user's message that AI responded to)
+older reply.md     (AI's earlier response)
+older received.md  (user's earlier message)
+...
+```
+
+**Prompt echo stripping:** When the AI generates a fallback text response (because the MCP tool failed), it may echo parts of the prompt. `extract_text_from_parts()` strips these markers before building the full reply:
+- `## Incoming Message`
+- `<reply_context>`
+- `## Conversation history`
 
 ### Signal File (`.jyc/reply-sent.flag`)
 

@@ -82,18 +82,25 @@ impl OpenCodeClient {
             .await
             .context("get_session request failed")?;
 
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        let status = resp.status();
+        tracing::debug!(session_id = %session_id, status = %status, "get_session response");
+
+        if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
 
-        let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("get_session failed ({}): {}", status, body);
         }
 
-        let session: SessionInfo = resp.json().await.context("parse session response")?;
-        Ok(Some(session))
+        match resp.json::<SessionInfo>().await {
+            Ok(session) => Ok(Some(session)),
+            Err(e) => {
+                tracing::debug!(error = %e, "get_session JSON parse failed");
+                Ok(None)
+            }
+        }
     }
 
     // --- Prompt API ---

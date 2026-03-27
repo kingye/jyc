@@ -55,9 +55,16 @@ impl OpenCodeService {
             &self.workdir,
         ).await?;
 
+        tracing::debug!(config_changed = config_changed, "opencode.json check");
+
         if config_changed {
-            tracing::info!("opencode.json changed");
-            session::delete_session(thread_path).await?;
+            tracing::info!("opencode.json updated");
+            // Don't delete session — server picks up config changes automatically.
+            // Sessions are only deleted by:
+            // - /model command (model_handler.rs)
+            // - /plan, /build commands (mode_handler.rs)
+            // - ContextOverflow recovery (handle_sse_result)
+            // - Stale session detection (handle_sse_result)
         }
 
         // 3. Get or create session

@@ -8,6 +8,9 @@ use crate::channels::types::InboundMessage;
 ///
 /// The agent is channel-agnostic — it returns raw AI text.
 /// The outbound adapter handles formatting, sending, and storing.
+///
+/// Optional fields for ReplyContext integration:
+/// - `reply_context`: Optional reply context token for future use
 #[derive(Debug)]
 pub struct AgentResult {
     /// Whether the reply was already sent by the MCP tool
@@ -15,6 +18,8 @@ pub struct AgentResult {
     pub reply_sent_by_tool: bool,
     /// Raw AI response text (for outbound adapter to format + send + store)
     pub reply_text: Option<String>,
+    /// Optional reply context token (base64-encoded) for ReplyContext integration
+    pub reply_context: Option<String>,
 }
 
 /// Trait for agent services that generate AI responses.

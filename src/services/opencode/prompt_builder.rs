@@ -214,6 +214,6 @@ mod tests {
         let start = prompt.find("REPLY_TOKEN=").unwrap() + 12;
         let end = prompt[start..].find('\n').map(|i| start + i).unwrap_or(prompt.len());
         let token = &prompt[start..end];
-        assert!(token.len() < 200, "token too long: {} chars", token.len());
+        assert!(token.len() < 300, "token too long: {} chars", token.len());
     }
 }

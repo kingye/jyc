@@ -3,6 +3,7 @@ use clap::Args;
 use std::path::Path;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::services::agent::AgentService;
 use crate::services::opencode::OpenCodeServer;
@@ -220,6 +221,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let cancel_child = cancel.clone();
         let channel_name_owned = channel_name.clone();
         let tm = thread_manager.clone();
+        let channel_span = tracing::info_span!("inbound", channel = %channel_name);
 
         let task = tokio::spawn(async move {
             let mut monitor = ImapMonitor::new(
@@ -234,7 +236,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
             if let Err(e) = monitor.start().await {
                 tracing::error!(
-                    channel = %channel_name_owned,
                     error = %e,
                     "IMAP monitor error"
                 );
@@ -242,7 +243,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
             // Shutdown thread manager for this channel
             tm.shutdown().await;
-        });
+        }.instrument(channel_span));
 
         tasks.push(task);
     }

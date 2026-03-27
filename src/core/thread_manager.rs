@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::types::{AttachmentConfig, InboundMessage, PatternMatch};
@@ -138,6 +139,7 @@ impl ThreadManager {
         let storage = self.storage.clone();
         let outbound = self.outbound.clone();
         let agent = self.agent.clone();
+        let worker_span = tracing::info_span!("worker", channel = tracing::field::Empty, thread = %thread_name);
 
         tokio::spawn(async move {
             let _permit = tokio::select! {
@@ -150,7 +152,7 @@ impl ThreadManager {
 
             let mut channel_name: Option<String> = None;
 
-            tracing::info!(thread = %thread_name, "Worker started");
+            tracing::info!("Worker started");
 
             loop {
                 let item = tokio::select! {
@@ -159,8 +161,7 @@ impl ThreadManager {
                         None => break,
                     },
                     _ = cancel.cancelled() => {
-                        let ch = channel_name.as_deref().unwrap_or("-");
-                        tracing::info!(channel = %ch, thread = %thread_name, "Worker cancelled");
+                        tracing::info!("Worker cancelled");
                         break;
                     }
                 };
@@ -168,8 +169,8 @@ impl ThreadManager {
                 // Capture channel name from first message
                 if channel_name.is_none() {
                     channel_name = Some(item.message.channel.clone());
+                    tracing::Span::current().record("channel", &item.message.channel.as_str());
                 }
-                let ch = channel_name.as_deref().unwrap_or("-");
 
                 if let Err(e) = process_message(
                     &item,
@@ -179,17 +180,14 @@ impl ThreadManager {
                     agent.as_ref(),
                 ).await {
                     tracing::error!(
-                        channel = %ch,
-                        thread = %thread_name,
                         error = %e,
                         "Failed to process message"
                     );
                 }
             }
 
-            let ch = channel_name.as_deref().unwrap_or("-");
-            tracing::info!(channel = %ch, thread = %thread_name, "Worker finished");
-        })
+            tracing::info!("Worker finished");
+        }.instrument(worker_span))
     }
 
     pub async fn get_stats(&self) -> QueueStats {
@@ -233,7 +231,6 @@ async fn process_message(
     agent: &dyn AgentService,
 ) -> Result<()> {
     let message = &item.message;
-    let ch = &message.channel;
 
     // ── 1. STORE ──────────────────────────────────────────────────────
     let store_result: StoreResult = storage
@@ -241,8 +238,6 @@ async fn process_message(
         .await?;
 
     tracing::info!(
-        channel = %ch,
-        thread = %thread_name,
         sender = %message.sender_address,
         topic = %message.topic,
         "Message stored"
@@ -278,8 +273,6 @@ async fn process_message(
     if !cmd_output.results.is_empty() {
         let summary = cmd_output.results_summary();
         tracing::info!(
-            channel = %ch,
-            thread = %thread_name,
             commands = cmd_output.results.len(),
             "Sending command results"
         );
@@ -306,7 +299,6 @@ async fn process_message(
     let effective_body_empty = cleaned_body.trim().is_empty();
 
     tracing::debug!(
-        thread = %thread_name,
         body_empty = effective_body_empty,
         cleaned_len = cleaned_body.trim().len(),
         "Body check after command + quote stripping"
@@ -314,8 +306,6 @@ async fn process_message(
 
     if effective_body_empty {
         tracing::info!(
-            channel = %ch,
-            thread = %thread_name,
             "No message body, stopping (no AI)"
         );
         return Ok(());
@@ -334,8 +324,6 @@ async fn process_message(
         .await?;
 
     tracing::info!(
-        channel = %ch,
-        thread = %thread_name,
         reply_sent = result.reply_sent,
         summary = %result.summary,
         "Agent complete"

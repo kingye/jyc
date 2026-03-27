@@ -761,23 +761,27 @@ impl ThreadManager {
 │                      Alert Service                                │
 │                                                                   │
 │  ┌───────────────┐                                               │
-│  │ tracing Layer │  (custom tracing subscriber layer)             │
+│  │  AppLogger    │  (unified logging + alerting handle)           │
 │  │               │                                               │
-│  │ on_event() ───┼──> mpsc::Sender<LogEvent>                     │
+│  │ .error() ─────┼──> tracing::error!() + mpsc::Sender<Event>   │
+│  │ .info()  ─────┼──> tracing::info!()                           │
+│  │ .reply_by_tool()──> tracing + mpsc (health stats)             │
 │  └───────────────┘         │                                     │
 │                            ▼                                     │
 │              ┌─────────────────────────┐                         │
 │              │  Alert Service Task     │                         │
 │              │  (tokio::spawn)         │                         │
+│              │  span: alert            │                         │
 │              │                         │                         │
 │              │  tokio::select! {       │                         │
 │              │    event = rx.recv() => │                         │
-│              │      match level:       │                         │
-│              │        ERROR →          │                         │
+│              │      match event:       │                         │
+│              │        Error →          │                         │
 │              │          buffer_error() │                         │
-│              │        _ →              │                         │
+│              │        MessageReceived →│                         │
 │              │          track_stats()  │                         │
-│              │          update_context │                         │
+│              │        ReplyByTool →    │                         │
+│              │          track_stats()  │                         │
 │              │                         │                         │
 │              │    _ = flush_tick =>    │                         │
 │              │      flush_errors()    │                         │
@@ -793,9 +797,8 @@ impl ThreadManager {
 │              │  }                      │                         │
 │              └─────────────────────────┘                         │
 │                                                                   │
-│  Note: Uses tracing subscriber layer instead of EventEmitter.    │
-│  The layer filters for ERROR events and sends them through mpsc. │
-│  Health stats tracking pattern-matches on event messages.         │
+│  AppLogger sends structured AlertEvent variants via mpsc.        │
+│  Self-protection: send failures use eprintln (not tracing).       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1798,30 +1801,83 @@ JYC uses the `tracing` ecosystem for all logging and diagnostics:
 | Aspect | Detail |
 |--------|--------|
 | **Crate** | `tracing` 0.1.x + `tracing-subscriber` 0.3.x |
-| **Why not `log`** | `tracing` provides structured fields, async-aware spans, and custom subscriber layers — all required by JYC |
-| **Span context** | Each worker task runs inside a span with `thread` and `channel` fields — all logs inside automatically include these |
-| **Custom Layer** | AlertService uses a custom `tracing::Layer` to capture ERROR events and forward them via mpsc to the alert task |
+| **Why not `log`** | `tracing` provides structured fields, async-aware spans, and custom subscriber layers |
+| **Span architecture** | Layered spans provide automatic context (component, channel, thread, model) on every log line |
 | **Env filter** | `RUST_LOG=jyc=info,async_imap=warn` controls per-module verbosity |
 | **CLI flags** | `--debug` sets `jyc=debug`, `--verbose` sets `jyc=trace,async_imap=debug` |
 
-### Structured Logging Convention
+### Layered Span Architecture
 
-```rust
-// Good: structured fields
-tracing::info!(
-    thread = %thread_name,
-    channel = %channel,
-    message_id = %msg.id,
-    "Message processed"
-);
+Every log line automatically includes context from hierarchical `tracing` spans. Spans are layered from general to specific:
 
-// Good: span-based context (automatic for all logs inside)
-#[tracing::instrument(fields(thread = %name, channel = %ch))]
-async fn process_message(name: &str, ch: &str, /* ... */) -> Result<()> {
-    tracing::info!("Starting"); // automatically includes thread + channel
-    // ...
-}
 ```
+Layer 1: component     (always present — identifies the subsystem)
+  Layer 2: channel     (present when processing a specific channel)
+    Layer 3: thread    (present when processing a specific thread)
+      Layer 4: model/mode  (present during AI session)
+```
+
+#### Span Definitions
+
+| Span Name | Layer | Fields | Where Created | Propagation |
+|-----------|-------|--------|---------------|-------------|
+| `inbound` | L1+L2 | `channel` | `cli/monitor.rs` — per IMAP task | `tokio::spawn().instrument()` |
+| `worker` | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
+| `alert` | L1 | — | `alert_service.rs` — background task | `tokio::spawn().instrument()` |
+
+Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `opencode/service.rs` called from within a `worker` span shows:
+
+```
+INFO worker{channel=jiny283, thread=weather}: Sending prompt to OpenCode mode=build
+INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
+INFO worker{channel=jiny283, thread=weather}: Tool running tool=glob
+INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
+```
+
+#### How Spans Propagate in Async Code
+
+```
+cli/monitor.rs:
+  tokio::spawn(async { ... }.instrument(info_span!("inbound", channel = %ch)))
+    → imap/monitor.rs: start() — all logs inherit inbound{channel}
+      → message_router.rs: route_email() — inherits inbound{channel}
+        → thread_manager.rs: enqueue() — creates new worker span
+
+  tokio::spawn(async { ... }.instrument(info_span!("worker", channel, thread)))
+    → process_message() — inherits worker{channel, thread}
+      → command/registry.rs: process_commands() — inherits worker{channel, thread}
+      → agent.process() — inherits worker{channel, thread}
+        → opencode/service.rs: generate_reply() — inherits worker{channel, thread}
+          → opencode/client.rs: prompt_with_sse() — inherits worker{channel, thread}
+            → handle_sse_event() — inherits (sync, called within instrumented future)
+```
+
+#### Log Output Examples
+
+```
+INFO inbound{channel=jiny283}: Starting IMAP monitor mode="poll" folder=INBOX
+INFO inbound{channel=jiny283}: IMAP connected and authenticated host=imap.163.com
+INFO inbound{channel=jiny283}: Message received uid=123 sender=kingye@petalmail.com
+INFO inbound{channel=jiny283}: Pattern matched pattern=sap
+INFO worker{channel=jiny283, thread=weather}: Worker started
+INFO worker{channel=jiny283, thread=weather}: Message stored sender=kingye@petalmail.com
+INFO worker{channel=jiny283, thread=weather}: Sending prompt to OpenCode mode=build
+INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
+INFO worker{channel=jiny283, thread=weather}: Tool running tool=jiny_reply_reply_message
+INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
+INFO worker{channel=jiny283, thread=weather}: Reply sent by MCP tool
+INFO worker{channel=jiny283, thread=weather}: Agent complete reply_sent=true
+INFO worker{channel=jiny283, thread=weather}: Worker finished
+alert: Alert service stopped
+```
+
+#### Key Rules
+
+- **`tokio::spawn` does NOT inherit parent spans** — each spawned task must be explicitly instrumented with `.instrument(span)`
+- **`.instrument(span)` works across `.await` points** — unlike `span.enter()` which only works in sync code
+- **Sync methods called within instrumented async blocks** inherit the parent span automatically (e.g., `handle_sse_event()`)
+- **MCP reply tool** runs as a separate process — no span inheritance. Uses its own file-based logger.
+- **Individual log calls** only include per-event fields (e.g., `tool`, `uid`, `error`). Context fields (channel, thread) come from the span.
 
 ### Log Levels
 
@@ -1829,32 +1885,18 @@ async fn process_message(name: &str, ch: &str, /* ... */) -> Result<()> {
 |-------|-------|
 | ERROR | Unrecoverable failures, processing errors, MCP tool errors |
 | WARN | Recoverable issues: queue full, stale session, timeout, reconnection |
-| INFO | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start |
-| DEBUG | SSE events, session status changes, step finish with costs, config details |
-| TRACE | Raw SSE data, IMAP protocol, detailed parsing steps |
+| INFO | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start, tool calls |
+| DEBUG | SSE events, session status changes, step finish with costs, AI response text, config details |
+| TRACE | IMAP polling, mailbox select, heartbeat events |
 
 ### Alert Service Integration
 
-The AlertService registers a custom `tracing::Layer` that:
-1. Captures all events at ERROR level (plus INFO/WARN for health stats)
-2. Sends them through `mpsc::Sender<LogEvent>` to the alert task
-3. The alert task buffers errors and periodically flushes them as digest emails
-4. Self-protection: events with `alert_internal = true` field are skipped
+The `AppLogger` provides a unified logging + alerting interface:
 
-```rust
-struct AlertLayer {
-    sender: mpsc::Sender<LogEvent>,
-}
-
-impl<S: Subscriber> Layer<S> for AlertLayer {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Extract level, message, fields
-        // Skip if alert_internal field is present
-        // Send to alert service task via mpsc
-        let _ = self.sender.try_send(log_event);
-    }
-}
-```
+1. **Logging methods** (`info()`, `error()`, etc.) delegate to `tracing` for console output
+2. **Structured event methods** (`message_received()`, `reply_by_tool()`, etc.) additionally send events to the alert service via `mpsc` channel
+3. The alert service buffers errors and periodically flushes them as digest emails
+4. Self-protection: alert send failures use `eprintln` (not tracing) to avoid feedback loops
 
 ## Email Command System
 

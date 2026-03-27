@@ -135,6 +135,7 @@ async fn handle_reply(
 ) -> Result<String> {
     // 1. Decode and validate context
     let ctx = deserialize_context(token)?;
+
     logger.log("INFO", &format!(
         "Context: channel={}, thread={}, messageDir={}",
         ctx.channel, ctx.thread_name, ctx.incoming_message_dir

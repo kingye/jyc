@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::config::types::AlertingConfig;
@@ -173,7 +174,7 @@ impl AlertService {
     pub fn start(self) -> (AppLogger, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel::<AlertEvent>(1000);
         let handle = AppLogger { sender: tx };
-        let task = tokio::spawn(self.run(rx));
+        let task = tokio::spawn(self.run(rx).instrument(tracing::info_span!("alert")));
         (handle, task)
     }
 

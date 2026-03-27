@@ -65,7 +65,7 @@ impl OpenCodeService {
         ).await?;
 
         if config_changed {
-            tracing::info!(channel = %ch, thread = %thread_name, "opencode.json changed");
+            tracing::info!("opencode.json changed");
             // Config changed — delete old session so a new one picks up the new config
             session::delete_session(thread_path).await?;
         }
@@ -106,15 +106,13 @@ impl OpenCodeService {
 
         // 7. Send prompt via SSE streaming
         tracing::info!(
-            channel = %ch,
-            thread = %thread_name,
             session_id = %session_id,
             mode = %mode_label,
             "Sending prompt to OpenCode"
         );
 
         let sse_result = client
-            .prompt_with_sse(&session_id, thread_path, &request, ch, thread_name)
+            .prompt_with_sse(&session_id, thread_path, &request)
             .await;
 
         // 8. Handle result
@@ -127,8 +125,6 @@ impl OpenCodeService {
             }
             Err(e) => {
                 tracing::error!(
-                    channel = %ch,
-                    thread = %thread_name,
                     error = %e,
                     "SSE streaming failed, trying blocking fallback"
                 );
@@ -161,7 +157,7 @@ impl OpenCodeService {
         // ContextOverflow recovery
         if let Some(ref error) = result.error {
             if error.contains("ContextOverflow") {
-                tracing::warn!(channel = %channel, thread = %thread_name, "ContextOverflow — new session + retry");
+                tracing::warn!("ContextOverflow — new session + retry");
                 session::delete_session(thread_path).await?;
                 let new_id = session::create_new_session(client, thread_path).await?;
                 let retry = client.prompt_blocking(&new_id, thread_path, request).await?;
@@ -176,7 +172,7 @@ impl OpenCodeService {
             || session::check_signal_file(thread_path).await;
 
         if reply_sent {
-            tracing::info!(channel = %channel, thread = %thread_name, model = ?result.model_id, "Reply sent by MCP tool");
+            tracing::info!(model = ?result.model_id, "Reply sent by MCP tool");
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: true,
                 reply_text: None,
@@ -193,11 +189,11 @@ impl OpenCodeService {
         });
 
         if tool_reported && !session::check_signal_file(thread_path).await {
-            tracing::warn!(channel = %channel, thread = %thread_name, "Stale session — retry");
+            tracing::warn!("Stale session — retry");
             session::delete_session(thread_path).await?;
             let new_id = session::create_new_session(client, thread_path).await?;
             session::cleanup_signal_file(thread_path).await;
-            let retry = client.prompt_with_sse(&new_id, thread_path, request, channel, thread_name).await?;
+            let retry = client.prompt_with_sse(&new_id, thread_path, request).await?;
             let sent = retry.reply_sent_by_tool || session::check_signal_file(thread_path).await;
             if sent {
                 return Ok(GenerateReplyResult {
@@ -220,7 +216,7 @@ impl OpenCodeService {
                     model_id: result.model_id, provider_id: result.provider_id,
                 });
             }
-            tracing::error!(channel = %channel, thread = %thread_name, "Timed out with no reply");
+            tracing::error!("Timed out with no reply");
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: false, reply_text: None,
                 model_id: result.model_id, provider_id: result.provider_id,
@@ -240,8 +236,8 @@ impl OpenCodeService {
     async fn handle_blocking_result(
         &self,
         result: PromptResponse,
-        channel: &str,
-        thread_name: &str,
+        _channel: &str,
+        _thread_name: &str,
         thread_path: &Path,
         _client: &OpenCodeClient,
         _session_id: &str,
@@ -250,7 +246,7 @@ impl OpenCodeService {
         if let Some(ref data) = result.data {
             if let Some(ref info) = data.info {
                 if let Some(ref error) = info.error {
-                    tracing::error!(channel = %channel, thread = %thread_name, error = %error.name, "Blocking prompt error");
+                    tracing::error!(error = %error.name, "Blocking prompt error");
                 }
             }
         }
@@ -281,7 +277,6 @@ impl AgentService for OpenCodeService {
         message_dir: &str,
     ) -> Result<AgentResult> {
         let result = self.generate_reply(message, thread_name, thread_path, message_dir).await?;
-        let ch = &message.channel;
 
         if result.reply_sent_by_tool {
             return Ok(AgentResult {
@@ -293,8 +288,6 @@ impl AgentService for OpenCodeService {
         // Fallback: build full reply with quoted history and send
         if let Some(ref text) = result.reply_text {
             tracing::info!(
-                channel = %ch,
-                thread = %thread_name,
                 text_len = text.len(),
                 "Fallback: sending reply with quoted history"
             );
@@ -322,14 +315,14 @@ impl AgentService for OpenCodeService {
                 .store_reply(thread_path, &full_reply, message_dir)
                 .await?;
 
-            tracing::info!(channel = %ch, thread = %thread_name, "Fallback reply sent");
+            tracing::info!("Fallback reply sent");
 
             Ok(AgentResult {
                 reply_sent: true,
                 summary: "Fallback reply sent".to_string(),
             })
         } else {
-            tracing::warn!(channel = %ch, thread = %thread_name, "No reply text from AI");
+            tracing::warn!("No reply text from AI");
             Ok(AgentResult {
                 reply_sent: false,
                 summary: "No reply text from AI".to_string(),

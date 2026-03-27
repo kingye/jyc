@@ -121,7 +121,7 @@ impl ImapClient {
             .map_err(|e| anyhow::anyhow!("IMAP SELECT '{}' failed: {}", mailbox, e))?;
 
         let count = mbox.exists;
-        tracing::debug!(mailbox = %mailbox, count = count, "Mailbox selected");
+        tracing::trace!(mailbox = %mailbox, count = count, "Mailbox selected");
         Ok(count)
     }
 

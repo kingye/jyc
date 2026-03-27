@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::channels::types::{InboundMessage, OutboundAttachment, SendResult};
 use crate::config::types::SmtpConfig;
-use crate::services::smtp::client::SmtpClient;
+use crate::services::smtp::client::{EmailAttachment, SmtpClient};
 
 /// Email outbound adapter — sends replies, alerts, and progress updates via SMTP.
 ///
@@ -49,7 +49,7 @@ impl EmailOutboundAdapter {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        _attachments: Option<&[OutboundAttachment]>,
+        attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
 
@@ -61,6 +61,22 @@ impl EmailOutboundAdapter {
         if let Some(ref ext_id) = original.external_id {
             refs.push(ext_id.clone());
         }
+
+        // Load attachment files into EmailAttachment structs
+        let email_attachments = if let Some(atts) = attachments {
+            let mut loaded = Vec::new();
+            for att in atts {
+                let data = tokio::fs::read(&att.path).await?;
+                loaded.push(EmailAttachment {
+                    filename: att.filename.clone(),
+                    content_type: att.content_type.clone(),
+                    data,
+                });
+            }
+            Some(loaded)
+        } else {
+            None
+        };
 
         let message_id = smtp
             .send_reply(
@@ -75,6 +91,7 @@ impl EmailOutboundAdapter {
                 } else {
                     Some(&refs)
                 },
+                email_attachments.as_deref(),
             )
             .await?;
 
@@ -138,6 +155,7 @@ impl EmailOutboundAdapter {
                 } else {
                     Some(&refs)
                 },
+                None, // No attachments for progress updates
             )
             .await?;
 

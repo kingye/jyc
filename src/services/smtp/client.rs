@@ -1,10 +1,18 @@
 use anyhow::{Context, Result};
 use lettre::message::header::{ContentType, InReplyTo, References};
-use lettre::message::{Mailbox, MessageBuilder, MultiPart, SinglePart};
+use lettre::message::{Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
 use crate::config::types::SmtpConfig;
+
+/// An outbound file attachment.
+#[derive(Debug, Clone)]
+pub struct EmailAttachment {
+    pub filename: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
 
 /// Markdown to HTML conversion using comrak (GFM mode).
 pub fn markdown_to_html(markdown: &str) -> String {
@@ -22,8 +30,49 @@ pub fn markdown_to_html(markdown: &str) -> String {
 }
 
 /// HTML to Markdown conversion using htmd.
+///
+/// Strips email HTML boilerplate (style tags, CSS, meta tags, comments)
+/// before converting visible content to markdown.
 pub fn html_to_markdown(html: &str) -> String {
-    htmd::convert(html).unwrap_or_else(|_| html.to_string())
+    use regex::Regex;
+
+    let mut cleaned = html.to_string();
+
+    // Remove <style>...</style> blocks (including content)
+    let style_re = Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap();
+    cleaned = style_re.replace_all(&cleaned, "").to_string();
+
+    // Remove <script>...</script> blocks
+    let script_re = Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap();
+    cleaned = script_re.replace_all(&cleaned, "").to_string();
+
+    // Remove <head>...</head> blocks
+    let head_re = Regex::new(r"(?si)<head[^>]*>.*?</head>").unwrap();
+    cleaned = head_re.replace_all(&cleaned, "").to_string();
+
+    // Remove HTML comments
+    let comment_re = Regex::new(r"(?s)<!--.*?-->").unwrap();
+    cleaned = comment_re.replace_all(&cleaned, "").to_string();
+
+    // Remove <meta> tags
+    let meta_re = Regex::new(r"(?i)<meta[^>]*>").unwrap();
+    cleaned = meta_re.replace_all(&cleaned, "").to_string();
+
+    // Remove <link> tags (CSS includes)
+    let link_re = Regex::new(r"(?i)<link[^>]*>").unwrap();
+    cleaned = link_re.replace_all(&cleaned, "").to_string();
+
+    // Remove @import and @media CSS rules that leak into text
+    let css_rule_re = Regex::new(r"@(?:import|media)[^{]*\{[^}]*\}").unwrap();
+    cleaned = css_rule_re.replace_all(&cleaned, "").to_string();
+    let css_import_re = Regex::new(r"@import\s+url\([^)]*\)\s*;?").unwrap();
+    cleaned = css_import_re.replace_all(&cleaned, "").to_string();
+
+    htmd::convert(&cleaned).unwrap_or_else(|_| {
+        // If htmd fails, do basic tag stripping
+        let tag_re = Regex::new(r"<[^>]+>").unwrap();
+        tag_re.replace_all(&cleaned, "").to_string()
+    })
 }
 
 /// SMTP client wrapper around lettre.
@@ -86,11 +135,12 @@ impl SmtpClient {
         tracing::debug!("SMTP disconnected");
     }
 
-    /// Send a reply email with threading headers.
+    /// Send a reply email with threading headers and optional attachments.
     ///
     /// - Adds `Re:` prefix to subject (if not already present)
     /// - Sets `In-Reply-To` and `References` headers for threading
     /// - Converts markdown body to HTML for multipart email
+    /// - Attaches files if provided
     pub async fn send_reply(
         &mut self,
         from: &str,
@@ -100,6 +150,7 @@ impl SmtpClient {
         markdown_body: &str,
         in_reply_to: Option<&str>,
         references: Option<&[String]>,
+        attachments: Option<&[EmailAttachment]>,
     ) -> Result<String> {
         let html_body = markdown_to_html(markdown_body);
 
@@ -137,21 +188,44 @@ impl SmtpClient {
             builder = builder.header(References::from(refs_str));
         }
 
-        let email = builder
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_PLAIN)
-                            .body(markdown_body.to_string()),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_HTML)
-                            .body(html_body),
-                    ),
+        // Build the body part (text + HTML alternative)
+        let body_part = MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(markdown_body.to_string()),
             )
-            .context("failed to build email message")?;
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html_body),
+            );
+
+        // Build the email: if attachments, wrap in mixed multipart
+        let email = if let Some(atts) = attachments {
+            if atts.is_empty() {
+                builder
+                    .multipart(body_part)
+                    .context("failed to build email message")?
+            } else {
+                let mut mixed = MultiPart::mixed().multipart(body_part);
+                for att in atts {
+                    let ct: ContentType = att.content_type.parse().unwrap_or(ContentType::parse(
+                        "application/octet-stream",
+                    ).unwrap());
+                    let attachment = Attachment::new(att.filename.clone())
+                        .body(att.data.clone(), ct);
+                    mixed = mixed.singlepart(attachment);
+                }
+                builder
+                    .multipart(mixed)
+                    .context("failed to build email with attachments")?
+            }
+        } else {
+            builder
+                .multipart(body_part)
+                .context("failed to build email message")?
+        };
 
         let message_id = email
             .headers()

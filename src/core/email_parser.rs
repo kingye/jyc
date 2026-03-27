@@ -9,8 +9,9 @@ static REPLY_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(\s*(re|fwd?|回复|转发)\s*[:：]\s*)+").unwrap());
 
 /// Regex for detecting quoted reply headers (e.g., "On ... wrote:", "发件人:", "From:")
+/// Matches at start of trimmed line, so leading whitespace is handled.
 static QUOTED_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(on\s+.+\s+wrote\s*:|发件人\s*[:：]|from\s*[:：]|sent\s*[:：]|date\s*[:：]|to\s*[:：]|subject\s*[:：]|收件人\s*[:：]|日期\s*[:：]|主题\s*[:：])").unwrap()
+    Regex::new(r"(?i)^(on\s+.+\s+wrote\s*:|发件人\s*[:：]|from\s*[:：]|sent\s*[:：]|date\s*[:：]|to\s*[:：]|subject\s*[:：]|收件人\s*[:：]|日期\s*[:：]|主题\s*[:：]|发件时间\s*[:：])").unwrap()
 });
 
 /// Regex for detecting divider lines (e.g., "---", "___", "===")

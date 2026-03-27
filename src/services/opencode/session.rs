@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::client::OpenCodeClient;
 use crate::config::types::AgentConfig;
 
-/// Per-thread session state, persisted in `.jyc/session.json`.
+/// Per-thread session state, persisted in `.jyc/opencode-session.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     #[serde(rename = "sessionId")]
@@ -14,20 +14,18 @@ pub struct SessionState {
     pub created_at: String,
     #[serde(rename = "lastUsedAt")]
     pub last_used_at: String,
-    #[serde(rename = "emailCount", default)]
-    pub email_count: u32,
 }
 
 /// Get or create a session for a thread.
 ///
-/// 1. Read `.jyc/session.json`
+/// 1. Read `.jyc/opencode-session.json`
 /// 2. Verify session still exists via API
 /// 3. If missing → create new session
 pub async fn get_or_create_session(
     client: &OpenCodeClient,
     thread_path: &Path,
 ) -> Result<String> {
-    let state_path = thread_path.join(".jyc").join("session.json");
+    let state_path = thread_path.join(".jyc").join("opencode-session.json");
 
     // Try loading existing session
     if state_path.exists() {
@@ -83,7 +81,6 @@ pub async fn create_new_session(
         session_id: session.id.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         last_used_at: chrono::Utc::now().to_rfc3339(),
-        email_count: 0,
     };
 
     save_session_state(thread_path, &state).await?;
@@ -94,7 +91,7 @@ pub async fn create_new_session(
 
 /// Delete the session state file (for stale session recovery).
 pub async fn delete_session(thread_path: &Path) -> Result<()> {
-    let state_path = thread_path.join(".jyc").join("session.json");
+    let state_path = thread_path.join(".jyc").join("opencode-session.json");
     if state_path.exists() {
         tokio::fs::remove_file(&state_path).await.ok();
         tracing::debug!("Session state deleted");
@@ -104,7 +101,7 @@ pub async fn delete_session(thread_path: &Path) -> Result<()> {
 
 /// Update the lastUsedAt timestamp.
 pub async fn update_session_timestamp(thread_path: &Path) -> Result<()> {
-    let state_path = thread_path.join(".jyc").join("session.json");
+    let state_path = thread_path.join(".jyc").join("opencode-session.json");
     if let Ok(content) = tokio::fs::read_to_string(&state_path).await {
         if let Ok(mut state) = serde_json::from_str::<SessionState>(&content) {
             state.last_used_at = chrono::Utc::now().to_rfc3339();
@@ -114,12 +111,12 @@ pub async fn update_session_timestamp(thread_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Save session state to `.jyc/session.json`.
+/// Save session state to `.jyc/opencode-session.json`.
 async fn save_session_state(thread_path: &Path, state: &SessionState) -> Result<()> {
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await?;
 
-    let state_path = jyc_dir.join("session.json");
+    let state_path = jyc_dir.join("opencode-session.json");
     let content = serde_json::to_string_pretty(state)?;
     tokio::fs::write(&state_path, content).await?;
     Ok(())
@@ -288,12 +285,11 @@ mod tests {
             session_id: "sess_123".to_string(),
             created_at: "2026-03-27T10:00:00Z".to_string(),
             last_used_at: "2026-03-27T10:00:00Z".to_string(),
-            email_count: 0,
         };
 
         save_session_state(&thread_path, &state).await.unwrap();
 
-        let state_path = thread_path.join(".jyc").join("session.json");
+        let state_path = thread_path.join(".jyc").join("opencode-session.json");
         assert!(state_path.exists());
 
         let content = tokio::fs::read_to_string(&state_path).await.unwrap();

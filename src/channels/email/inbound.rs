@@ -59,20 +59,26 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
         }
     };
 
-    // Extract body — prefer text, fall back to HTML→markdown
+    // Extract body — prefer HTML→markdown (preserves line breaks from <br>/<p>/<div>),
+    // fall back to raw plain text only when no HTML is available.
+    // Mobile email clients often generate poor plain text (no line breaks between
+    // user content and quoted replies), while the HTML part has proper structure.
     let text_body = parsed.body_text(0).map(|s| s.to_string());
     let html_body = parsed.body_html(0).map(|s| s.to_string());
 
-    let markdown_body = if text_body.is_none() {
-        html_body
-            .as_deref()
-            .map(crate::services::smtp::client::html_to_markdown)
+    let best_text = if let Some(ref html) = html_body {
+        // HTML→markdown preserves line breaks from tags
+        let md = crate::services::smtp::client::html_to_markdown(html);
+        let cleaned = email_parser::clean_email_body(&md);
+        if cleaned.trim().is_empty() {
+            // HTML conversion produced nothing useful, fall back to plain text
+            text_body.map(|t| email_parser::clean_email_body(&t))
+        } else {
+            Some(cleaned)
+        }
     } else {
-        None
+        text_body.map(|t| email_parser::clean_email_body(&t))
     };
-
-    // Clean the text body at the boundary
-    let cleaned_text = text_body.map(|t| email_parser::clean_email_body(&t));
 
     // Clean the subject at the boundary
     let cleaned_subject = email_parser::strip_reply_prefix(&subject);
@@ -134,9 +140,9 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
         recipients: to,
         topic: cleaned_subject,
         content: MessageContent {
-            text: cleaned_text,
+            text: best_text,
             html: html_body,
-            markdown: markdown_body,
+            markdown: None,
         },
         timestamp,
         thread_refs: references,

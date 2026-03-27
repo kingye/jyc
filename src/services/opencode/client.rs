@@ -380,8 +380,13 @@ impl OpenCodeClient {
                                     );
                                 }
                             }
-                            result.model_id = info.model_id.clone();
-                            result.provider_id = info.provider_id.clone();
+                            // Only update if new value is Some (don't overwrite with None)
+                            if info.model_id.is_some() {
+                                result.model_id = info.model_id.clone();
+                            }
+                            if info.provider_id.is_some() {
+                                result.provider_id = info.provider_id.clone();
+                            }
                         }
                     }
                 }
@@ -462,6 +467,24 @@ impl OpenCodeClient {
                         );
                     }
 
+                    // Log AI text content at debug level (skip empty)
+                    if part.part_type == "text" {
+                        if let Some(ref text) = part.text {
+                            if !text.is_empty() {
+                            let preview = if text.len() > 200 {
+                                format!("{}...", &text[..text.floor_char_boundary(200)])
+                            } else {
+                                text.clone()
+                            };
+                            tracing::debug!(
+                                len = text.len(),
+                                text = %preview,
+                                "AI response text"
+                            );
+                            }
+                        }
+                    }
+
                     // Accumulate / replace part by ID (deduplication)
                     if let Some(ref id) = part.id {
                         parts.insert(id.clone(), part);
@@ -511,6 +534,26 @@ impl OpenCodeClient {
                             "Session error"
                         );
                         return SseAction::Error(error_name.clone());
+                    }
+                } else {
+                    // Fallback: try to extract error name from raw properties
+                    let error_name = event.properties
+                        .get("error")
+                        .and_then(|e| e.get("name"))
+                        .and_then(|n| n.as_str())
+                        .or_else(|| event.properties.get("error").and_then(|e| e.as_str()))
+                        .unwrap_or("UnknownError");
+                    let sid = event.properties
+                        .get("sessionID")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    if sid == session_id || sid.is_empty() {
+                        tracing::error!(
+                            error = %error_name,
+                            raw = %event.properties,
+                            "Session error (raw)"
+                        );
+                        return SseAction::Error(error_name.to_string());
                     }
                 }
                 SseAction::Continue

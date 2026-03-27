@@ -84,7 +84,7 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 4.2 | OpenCode HTTP client | `src/services/opencode/client.rs` | `reqwest`-based client: `create_session()`, `prompt_async()`, `prompt_blocking()`, `get_session()`. JSON request/response types matching OpenCode API | Unit test with mock HTTP server |
 | 4.3 | SSE streaming | `src/services/opencode/client.rs` | `subscribe_events(directory)` → `reqwest-eventsource` stream. Event parsing: `server.connected`, `message.updated`, `message.part.updated`, `session.status`, `session.idle`, `session.error`. Part accumulation with dedup by ID | Unit test: parse sample SSE events |
 | 4.4 | Activity-based timeout | `src/services/opencode/client.rs` | `tokio::select!` with `tokio::time::interval(5s)`. Check `last_activity` vs now. 30min default, 60min when tool running. Progress logging every 10s | Unit test: timeout triggers correctly |
-| 4.5 | Session management | `src/services/opencode/session.rs` | Per-thread session persistence (`session.json`). `get_or_create_session()`, `delete_session()`. Thread OpenCode config (`opencode.json`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
+| 4.5 | Session management | `src/services/opencode/session.rs` | Per-thread session persistence (`opencode-session.json`). `get_or_create_session()`, `delete_session()`. Thread OpenCode config (`opencode.json`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
 | 4.6 | Prompt builder | `src/services/opencode/prompt_builder.rs` | `build_system_prompt(thread_path)` — base prompt + optional `system.md`. `build_prompt(msg, thread_path, message_dir)` — context from thread files + stripped body + base64 reply_context. Respects token budget constants | Unit test: prompt construction with various inputs |
 | 4.7 | Stale session detection | `src/services/opencode/client.rs` | If SSE reports tool success but signal file missing → delete session → retry once with fresh session. Signal file cleanup before each prompt | Unit test: detection logic |
 | 4.8 | ContextOverflow recovery | `src/services/opencode/client.rs` | On `session.error` with ContextOverflow → create new session → retry with blocking prompt | Unit test: recovery flow |
@@ -107,11 +107,21 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 5.3 | Hidden subcommand | `src/cli/mcp_reply.rs` | `jyc mcp-reply-tool` starts the rmcp stdio server. Reads `JYC_ROOT` env var | Manual: `echo '...' \| jyc mcp-reply-tool` |
 | 5.4 | Reply tool command resolution | `src/services/opencode/session.rs` | `get_reply_tool_command()`: find `jyc` binary path → `["/path/to/jyc", "mcp-reply-tool"]`. Write into `opencode.json` MCP config | Unit test: path resolution |
 | 5.5 | Unified command processing | `src/core/command/registry.rs`, `src/core/command/handler.rs` | `CommandRegistry::process_commands(body, ctx)`: single-pass parse, execute, and strip commands from body. Returns `CommandOutput { results, cleaned_body, body_empty }`. Defines `CommandHandler` trait, `CommandContext`, `CommandResult`, `CommandOutput` types. Unlike jiny-m's split design (parseCommands + separate stripping in thread-manager), all command logic lives here | Unit test: parse various formats, body stripping, empty body detection |
-| 5.6 | /model command | `src/core/command/model_handler.rs` | Write `.jyc/model-override`, delete `session.json`, return result. `/model reset` removes override | Unit test: file operations |
+| 5.6 | /model command | `src/core/command/model_handler.rs` | Write `.jyc/model-override`, delete `opencode-session.json`, return result. `/model reset` removes override | Unit test: file operations |
 | 5.7 | /plan and /build commands | `src/core/command/mode_handler.rs` | Write/remove `.jyc/mode-override`. Pass `agent: "plan"` to OpenCode prompt when active | Unit test: mode switching |
 | 5.8 | Wire commands into workers | `src/core/thread_manager.rs` | After store, before prompt: call `command_registry.process_commands()`. Check `body_empty` + results → direct reply or continue with `cleaned_body`. ThreadManager has no knowledge of command syntax | Manual: send email with /model command |
 
 **Deliverable:** Full MCP reply tool pipeline. Email commands change AI model and mode per-thread.
+
+**Additional changes implemented during Phase 5:**
+- `AgentService` trait (`src/services/agent.rs`) — ThreadManager dispatches via `Arc<dyn AgentService>` instead of `match` on mode
+- `StaticAgentService` (`src/services/static_agent.rs`) — implements `AgentService` for static reply mode
+- `OpenCodeService` implements `AgentService` — owns full reply lifecycle (building, sending, storing)
+- File attachment support in SMTP client (`MultiPart::mixed` + `Attachment` parts)
+- `message.channel` set to config channel **name** (e.g., "jiny283"), not type ("email")
+- HTML→Markdown body extraction (prefers HTML over raw plain text for proper line breaks)
+- HTML cleaning: strips `<style>`, `<script>`, `<head>`, CSS rules before htmd conversion
+- MCP server name fixed to `"jiny_reply"` + `#[tool_handler]` for tool discovery
 
 ---
 

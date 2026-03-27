@@ -1,35 +1,27 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::client::{OpenCodeClient, SseResult};
 use super::types::*;
 use super::{session, prompt_builder, OpenCodeServer};
+use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::types::InboundMessage;
 use crate::config::types::AgentConfig;
-
-/// Result of AI reply generation.
-///
-/// The caller (ThreadManager) uses this to decide whether to send a fallback reply.
-#[derive(Debug)]
-pub struct GenerateReplyResult {
-    /// Whether the reply was already sent by the MCP tool
-    pub reply_sent_by_tool: bool,
-    /// Accumulated text from the AI (for fallback direct send if tool wasn't used)
-    pub reply_text: Option<String>,
-    /// Model used for generation
-    pub model_id: Option<String>,
-    /// Provider used
-    pub provider_id: Option<String>,
-}
+use crate::core::email_parser;
+use crate::core::message_storage::MessageStorage;
+use crate::services::agent::{AgentResult, AgentService};
 
 /// Encapsulates all OpenCode AI interaction logic.
 ///
-/// Owns: server lifecycle, sessions, prompts, SSE streaming, error recovery.
-/// Does NOT own: message storage, outbound sending — those stay in the thread manager.
+/// Owns: server lifecycle, sessions, prompts, SSE streaming, error recovery,
+/// reply building (with quoted history), sending (via tool or fallback), and storage.
 pub struct OpenCodeService {
     server: Arc<OpenCodeServer>,
     agent_config: Arc<AgentConfig>,
+    storage: Arc<MessageStorage>,
+    outbound: Arc<EmailOutboundAdapter>,
     workdir: PathBuf,
 }
 
@@ -37,25 +29,22 @@ impl OpenCodeService {
     pub fn new(
         server: Arc<OpenCodeServer>,
         agent_config: Arc<AgentConfig>,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<EmailOutboundAdapter>,
         workdir: PathBuf,
     ) -> Self {
         Self {
             server,
             agent_config,
+            storage,
+            outbound,
             workdir,
         }
     }
 
-    /// Generate a reply for an inbound message.
-    ///
-    /// Handles the full lifecycle:
-    /// 1. Ensure OpenCode server is running
-    /// 2. Setup per-thread opencode.json
-    /// 3. Get or create session
-    /// 4. Build prompts (system + user + reply_context)
-    /// 5. Send via SSE streaming (with timeout, tool detection, error recovery)
-    /// 6. Return result for the caller to handle sending
-    pub async fn generate_reply(
+    /// Internal: generate AI reply via OpenCode SSE streaming.
+    /// Returns the raw result (reply_sent_by_tool, reply_text).
+    async fn generate_reply(
         &self,
         message: &InboundMessage,
         thread_name: &str,
@@ -66,7 +55,7 @@ impl OpenCodeService {
         let base_url = self.server.base_url().await?;
         let client = OpenCodeClient::new(&base_url);
 
-        // 2. Ensure thread has opencode.json (and detect config changes)
+        // 2. Ensure thread has opencode.json
         let config_changed = session::ensure_thread_opencode_setup(
             thread_path,
             &self.agent_config,
@@ -75,13 +64,12 @@ impl OpenCodeService {
 
         if config_changed {
             tracing::info!(thread = %thread_name, "opencode.json changed");
+            // Config changed — delete old session so a new one picks up the new config
+            session::delete_session(thread_path).await?;
         }
 
-        // 3. Get or create session
-        // Always create a fresh session to avoid stale session issues
-        // across server restarts. The session ID is cheap to create.
-        session::delete_session(thread_path).await?;
-        let session_id = session::create_new_session(&client, thread_path).await?;
+        // 3. Get or create session (reuse existing if still valid on server)
+        let session_id = session::get_or_create_session(&client, thread_path).await?;
 
         // 4. Clean up stale signal file
         session::cleanup_signal_file(thread_path).await;
@@ -105,7 +93,7 @@ impl OpenCodeService {
             include_history,
         ).await?;
 
-        // 6. Check for mode override (plan/build)
+        // 6. Mode override (plan/build)
         let mode_override = session::read_mode_override(thread_path).await;
         let agent_mode = if mode_override.as_deref() == Some("plan") {
             Some("plan".to_string())
@@ -137,12 +125,8 @@ impl OpenCodeService {
         let result = match sse_result {
             Ok(result) => {
                 self.handle_sse_result(
-                    result,
-                    thread_name,
-                    thread_path,
-                    &client,
-                    &session_id,
-                    &request,
+                    result, thread_name, thread_path,
+                    &client, &session_id, &request,
                 ).await?
             }
             Err(e) => {
@@ -151,29 +135,22 @@ impl OpenCodeService {
                     error = %e,
                     "SSE streaming failed, trying blocking fallback"
                 );
-
                 let blocking_result = client
                     .prompt_blocking(&session_id, thread_path, &request)
                     .await?;
-
                 self.handle_blocking_result(
-                    blocking_result,
-                    thread_name,
-                    thread_path,
-                    &client,
-                    &session_id,
-                    &request,
+                    blocking_result, thread_name, thread_path,
+                    &client, &session_id, &request,
                 ).await?
             }
         };
 
-        // 9. Update session timestamp
         session::update_session_timestamp(thread_path).await.ok();
 
         Ok(result)
     }
 
-    /// Handle the result from SSE streaming.
+    /// Handle SSE streaming result.
     async fn handle_sse_result(
         &self,
         result: SseResult,
@@ -183,37 +160,25 @@ impl OpenCodeService {
         session_id: &str,
         request: &PromptRequest,
     ) -> Result<GenerateReplyResult> {
-        // Check for ContextOverflow error
+        // ContextOverflow recovery
         if let Some(ref error) = result.error {
             if error.contains("ContextOverflow") {
-                tracing::warn!(
-                    thread = %thread_name,
-                    "ContextOverflow — creating new session and retrying"
-                );
+                tracing::warn!(thread = %thread_name, "ContextOverflow — new session + retry");
                 session::delete_session(thread_path).await?;
-                let new_session_id = session::create_new_session(client, thread_path).await?;
-
-                let retry_result = client
-                    .prompt_blocking(&new_session_id, thread_path, request)
-                    .await?;
-
+                let new_id = session::create_new_session(client, thread_path).await?;
+                let retry = client.prompt_blocking(&new_id, thread_path, request).await?;
                 return self.handle_blocking_result(
-                    retry_result, thread_name, thread_path,
-                    client, &new_session_id, request,
+                    retry, thread_name, thread_path, client, &new_id, request,
                 ).await;
             }
         }
 
-        // Check if reply was sent by tool
-        let reply_sent_by_tool = result.reply_sent_by_tool
+        // Tool detection
+        let reply_sent = result.reply_sent_by_tool
             || session::check_signal_file(thread_path).await;
 
-        if reply_sent_by_tool {
-            tracing::info!(
-                thread = %thread_name,
-                model = ?result.model_id,
-                "Reply sent by MCP tool"
-            );
+        if reply_sent {
+            tracing::info!(thread = %thread_name, model = ?result.model_id, "Reply sent by MCP tool");
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: true,
                 reply_text: None,
@@ -223,67 +188,48 @@ impl OpenCodeService {
         }
 
         // Stale session detection
-        let tool_reported_in_sse = result.parts.iter().any(|p| {
+        let tool_reported = result.parts.iter().any(|p| {
             p.part_type == "tool"
                 && p.tool.as_deref().map(|t| t.contains("reply_message")).unwrap_or(false)
                 && p.state.as_ref().is_some_and(|s| s.status == "completed")
         });
 
-        if tool_reported_in_sse && !session::check_signal_file(thread_path).await {
-            tracing::warn!(
-                thread = %thread_name,
-                "Stale session detected — tool reported success but signal file missing"
-            );
+        if tool_reported && !session::check_signal_file(thread_path).await {
+            tracing::warn!(thread = %thread_name, "Stale session — retry");
             session::delete_session(thread_path).await?;
-            let new_session_id = session::create_new_session(client, thread_path).await?;
+            let new_id = session::create_new_session(client, thread_path).await?;
             session::cleanup_signal_file(thread_path).await;
-
-            let retry_result = client
-                .prompt_with_sse(&new_session_id, thread_path, request, None)
-                .await?;
-
-            let retry_sent = retry_result.reply_sent_by_tool
-                || session::check_signal_file(thread_path).await;
-
-            if retry_sent {
-                tracing::info!(thread = %thread_name, "Reply sent after stale session retry");
+            let retry = client.prompt_with_sse(&new_id, thread_path, request, None).await?;
+            let sent = retry.reply_sent_by_tool || session::check_signal_file(thread_path).await;
+            if sent {
                 return Ok(GenerateReplyResult {
-                    reply_sent_by_tool: true,
-                    reply_text: None,
-                    model_id: retry_result.model_id,
-                    provider_id: retry_result.provider_id,
+                    reply_sent_by_tool: true, reply_text: None,
+                    model_id: retry.model_id, provider_id: retry.provider_id,
                 });
             }
-
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: false,
-                reply_text: extract_text_from_parts(&retry_result.parts),
-                model_id: retry_result.model_id,
-                provider_id: retry_result.provider_id,
+                reply_text: extract_text_from_parts(&retry.parts),
+                model_id: retry.model_id, provider_id: retry.provider_id,
             });
         }
 
-        // Timeout check
+        // Timeout
         if result.timed_out {
             if session::check_signal_file(thread_path).await {
-                tracing::info!(thread = %thread_name, "Reply sent (detected via signal file after timeout)");
                 return Ok(GenerateReplyResult {
-                    reply_sent_by_tool: true,
-                    reply_text: None,
-                    model_id: result.model_id,
-                    provider_id: result.provider_id,
+                    reply_sent_by_tool: true, reply_text: None,
+                    model_id: result.model_id, provider_id: result.provider_id,
                 });
             }
             tracing::error!(thread = %thread_name, "Timed out with no reply");
             return Ok(GenerateReplyResult {
-                reply_sent_by_tool: false,
-                reply_text: None,
-                model_id: result.model_id,
-                provider_id: result.provider_id,
+                reply_sent_by_tool: false, reply_text: None,
+                model_id: result.model_id, provider_id: result.provider_id,
             });
         }
 
-        // Fallback: extract text from AI response
+        // Fallback: extract text
         Ok(GenerateReplyResult {
             reply_sent_by_tool: false,
             reply_text: extract_text_from_parts(&result.parts),
@@ -292,7 +238,7 @@ impl OpenCodeService {
         })
     }
 
-    /// Handle the result from a blocking prompt.
+    /// Handle blocking prompt result.
     async fn handle_blocking_result(
         &self,
         result: PromptResponse,
@@ -302,43 +248,102 @@ impl OpenCodeService {
         _session_id: &str,
         _request: &PromptRequest,
     ) -> Result<GenerateReplyResult> {
-        // Check for error
         if let Some(ref data) = result.data {
             if let Some(ref info) = data.info {
                 if let Some(ref error) = info.error {
-                    tracing::error!(
-                        thread = %thread_name,
-                        error = %error.name,
-                        "Blocking prompt error"
-                    );
+                    tracing::error!(thread = %thread_name, error = %error.name, "Blocking prompt error");
                 }
             }
         }
 
-        // Check signal file
         if session::check_signal_file(thread_path).await {
-            tracing::info!(thread = %thread_name, "Reply sent by tool (blocking mode)");
             return Ok(GenerateReplyResult {
-                reply_sent_by_tool: true,
-                reply_text: None,
-                model_id: None,
-                provider_id: None,
+                reply_sent_by_tool: true, reply_text: None,
+                model_id: None, provider_id: None,
             });
         }
 
-        // Extract text parts for fallback
-        let parts = result
-            .data
-            .map(|d| d.parts)
-            .unwrap_or_default();
-
+        let parts = result.data.map(|d| d.parts).unwrap_or_default();
         Ok(GenerateReplyResult {
             reply_sent_by_tool: false,
             reply_text: extract_text_from_parts(&parts),
-            model_id: None,
-            provider_id: None,
+            model_id: None, provider_id: None,
         })
     }
+}
+
+#[async_trait]
+impl AgentService for OpenCodeService {
+    async fn process(
+        &self,
+        message: &InboundMessage,
+        thread_name: &str,
+        thread_path: &Path,
+        message_dir: &str,
+    ) -> Result<AgentResult> {
+        let result = self.generate_reply(message, thread_name, thread_path, message_dir).await?;
+
+        if result.reply_sent_by_tool {
+            return Ok(AgentResult {
+                reply_sent: true,
+                summary: format!("Reply sent by MCP tool (model: {:?})", result.model_id),
+            });
+        }
+
+        // Fallback: build full reply with quoted history and send
+        if let Some(ref text) = result.reply_text {
+            tracing::info!(
+                thread = %thread_name,
+                text_len = text.len(),
+                "Fallback: building full reply with quoted history"
+            );
+
+            let body_text = message
+                .content
+                .text
+                .as_deref()
+                .or(message.content.markdown.as_deref())
+                .unwrap_or("");
+
+            let full_reply = email_parser::build_full_reply_text(
+                text,
+                thread_path,
+                &message.sender,
+                &message.timestamp.to_rfc3339(),
+                &message.topic,
+                body_text,
+                message_dir,
+            )
+            .await;
+
+            self.outbound.send_reply(message, &full_reply, None).await?;
+            self.storage
+                .store_reply(thread_path, &full_reply, message_dir)
+                .await?;
+
+            tracing::info!(thread = %thread_name, "Fallback reply sent");
+
+            Ok(AgentResult {
+                reply_sent: true,
+                summary: "Fallback reply sent".to_string(),
+            })
+        } else {
+            tracing::warn!(thread = %thread_name, "No reply text from AI");
+            Ok(AgentResult {
+                reply_sent: false,
+                summary: "No reply text from AI".to_string(),
+            })
+        }
+    }
+}
+
+/// Internal result from generate_reply (before AgentService wrapping).
+#[derive(Debug)]
+struct GenerateReplyResult {
+    reply_sent_by_tool: bool,
+    reply_text: Option<String>,
+    model_id: Option<String>,
+    provider_id: Option<String>,
 }
 
 /// Extract text content from accumulated response parts.
@@ -361,13 +366,6 @@ fn extract_text_from_parts(parts: &[ResponsePart]) -> Option<String> {
 }
 
 /// Strip prompt artifacts that the AI may echo back when the reply tool fails.
-///
-/// The AI sometimes copies the prompt structure into its text output:
-/// - `## Incoming Message` section
-/// - `<reply_context>...</reply_context>` block
-/// - `## Conversation history` section
-///
-/// We cut at the first occurrence of any of these markers.
 fn strip_prompt_echo(text: &str) -> String {
     let markers = [
         "## Incoming Message",

@@ -2,6 +2,50 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.0.3] - 2026-03-27
+
+### Added
+
+**Phase 5: MCP Reply Tool + Commands**
+- MCP reply tool (`src/mcp/reply_tool.rs`): `rmcp` stdio server with `reply_message` tool. Decodes context token → loads config → reads received.md → builds full reply with quoted history → sends via SMTP with file attachments → stores reply.md → writes signal file
+- `jyc mcp-reply-tool` hidden subcommand wired to rmcp server
+- Reply context deserialization (`src/mcp/context.rs`): base64 → JSON → validation with tamper detection
+- `/model <id>`, `/model reset` command handler — writes `.jyc/model-override`, forces new session
+- `/plan`, `/build` command handlers — writes/removes `.jyc/mode-override`
+- Commands wired into thread_manager: parse → execute → reply results → strip → check body → dispatch to agent
+
+**Architecture: AgentService trait**
+- `AgentService` trait (`src/services/agent.rs`): `process(message, thread_name, thread_path, message_dir) → AgentResult`
+- `StaticAgentService` (`src/services/static_agent.rs`): fixed text reply with quoted history
+- `OpenCodeService` implements `AgentService`: owns full reply lifecycle (AI interaction + fallback send + storage)
+- ThreadManager dispatches via `Arc<dyn AgentService>` — zero mode-specific code
+- Adding new agent modes requires only: implement trait + match arm in `cli/monitor.rs`
+
+**File attachment support**
+- SMTP client: `MultiPart::mixed` with `Attachment` parts, MIME type detection by extension
+- Email outbound adapter: reads files from disk, builds `EmailAttachment` structs
+- MCP reply tool: validates attachment paths, builds `OutboundAttachment`, passes to outbound
+
+**Email body extraction fix**
+- Prefers HTML→Markdown conversion (via `htmd`) over raw plain text — mobile email clients generate poor plain text with no line breaks
+- HTML cleaning before conversion: strips `<style>`, `<script>`, `<head>`, `<meta>`, `<link>`, CSS `@import`/`@media` rules, HTML comments
+
+### Changed
+- `message.channel` now contains config channel **name** (e.g., "jiny283"), not type ("email") — fixes MCP reply tool config lookup
+- Session reuse restored: `get_or_create_session()` reuses existing session if valid on server, only creates new on config change or server restart — AI maintains conversation memory across messages
+- Session state file renamed: `session.json` → `opencode-session.json` — avoids future naming conflicts with other service sessions
+- Removed unused `emailCount` field from `SessionState`
+- MCP server name: `"rmcp"` → `"jiny_reply"` with `#[tool_handler]` macro — fixes tool discovery (was `toolCount=0`)
+- Noisy IMAP polling logs moved from DEBUG to TRACE level
+- Empty AI text parts no longer logged at DEBUG level
+- Session error logging: fallback to raw property extraction when struct deserialization fails
+- SSE model_id/provider_id: no longer overwritten with None by subsequent events
+
+### Fixed
+- MCP tool not discovered by OpenCode: missing `#[tool_handler]` attribute on `ServerHandler` impl
+- Channel lookup in reply tool: `config.channels.get("email")` → `config.channels.get("jiny283")`
+- `strip_quoted_history`: added `发件时间` to Chinese reply header detection
+
 ## [0.0.2] - 2026-03-27
 
 ### Added

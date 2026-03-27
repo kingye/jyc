@@ -106,7 +106,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                                                                          │
 │  1. Ensure OpenCode server is running (auto-start)                       │
 │  2. Setup per-thread opencode.json (model, MCP tools, permissions)       │
-│  3. Get or create session (verify via API, persist .jyc/session.json)    │
+│  3. Get or create session (verify via API, persist .jyc/opencode-session.json)    │
 │  4. Clean up stale signal file                                           │
 │  5. Build system prompt (config + directory rules + system.md)            │
 │  6. Build user prompt (history + body + reply_context token)              │
@@ -333,7 +333,8 @@ pub type ChannelType = String; // "email", "feishu", "slack", etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
     pub id: String,                           // Internal UUID
-    pub channel: ChannelType,                 // "email" | "feishu" | ...
+    /// Channel name from config (e.g., "jiny283", "work")
+    pub channel: ChannelType,
     pub channel_uid: String,                  // Channel-specific ID (IMAP UID, feishu msg ID)
     pub sender: String,                       // Display name
     pub sender_address: String,               // Canonical address
@@ -872,51 +873,60 @@ root_cancel (top-level)
 
 ## Worker (OpenCode Service)
 
-### Responsibility Separation: ThreadManager vs OpenCodeService
+### Responsibility Separation: ThreadManager vs AgentService
 
-The processing pipeline is split into two layers with distinct responsibilities:
+The processing pipeline is split into two layers with distinct responsibilities, connected via the `AgentService` trait.
+
+**`AgentService` trait** (`src/services/agent.rs`):
+```rust
+#[async_trait]
+pub trait AgentService: Send + Sync {
+    async fn process(
+        &self, message: &InboundMessage, thread_name: &str,
+        thread_path: &Path, message_dir: &str,
+    ) -> Result<AgentResult>;
+}
+```
+Each agent mode implements this trait. Adding a new agent requires only implementing `AgentService` + a match arm in `cli/monitor.rs`.
 
 **ThreadManager** (`src/core/thread_manager.rs`):
 - Queue management: per-thread mpsc channels, semaphore-bounded concurrency
 - Message storage: store `received.md`, save attachments
-- Command processing: parse/execute/strip email commands (Phase 5)
-- Agent dispatch: routes to the configured agent mode ("static" or "opencode")
-- Fallback send: if agent returns text instead of sending via MCP tool, sends via OutboundAdapter
-- Does NOT know about: sessions, prompts, SSE, signal files, ContextOverflow
+- Command processing: parse/execute/strip email commands
+- Agent dispatch: calls `agent.process()` via `Arc<dyn AgentService>` — no `match` on mode
+- Does NOT know about: sessions, prompts, SSE, signal files, ContextOverflow, reply building
 
-**OpenCodeService** (`src/services/opencode/service.rs`):
+**OpenCodeService** (`src/services/opencode/service.rs`) implements `AgentService`:
 - Server lifecycle: ensure OpenCode server is running, health check, auto-restart
 - Thread setup: write per-thread `opencode.json` with model, MCP tools, permissions
-- Session management: get/create/delete sessions, staleness detection
+- Session management: create fresh sessions per prompt, staleness detection
 - Prompt building: system prompt + user prompt + reply_context token
 - SSE streaming: activity timeout, tool detection, progress logging
 - Error recovery: ContextOverflow → new session, stale session → retry
-- Returns `GenerateReplyResult` — does NOT send emails or store replies
+- Fallback: if MCP tool not used → build full reply with quoted history → send + store
+- Owns the entire reply lifecycle (sending + storage) — ThreadManager just checks `AgentResult`
+
+**StaticAgentService** (`src/services/static_agent.rs`) implements `AgentService`:
+- Builds full reply with quoted history from configured static text
+- Sends via OutboundAdapter + stores reply.md
 
 ```rust
-// ThreadManager dispatches to OpenCodeService:
-let result = opencode_service.generate_reply(
-    message, thread_name, thread_path, message_dir,
-).await?;
+// ThreadManager dispatches to the agent — no mode-specific code:
+let result = agent.process(&message, thread_name, thread_path, message_dir).await?;
 
-// ThreadManager handles the result:
-if !result.reply_sent_by_tool {
-    if let Some(text) = result.reply_text {
-        outbound.send_reply(message, &text, None).await?;
-        storage.store_reply(thread_path, &text, message_dir).await?;
-    }
-}
+// ThreadManager just logs the result:
+tracing::info!(reply_sent = result.reply_sent, summary = %result.summary, "Agent complete");
 ```
 
 This separation:
 - Keeps agent-specific logic isolated from queue/concurrency infrastructure
 - Makes it easy to add alternative agent backends (e.g., direct LLM API without OpenCode)
 - Makes ThreadManager testable without a running OpenCode server
-- Keeps the "who sends the reply" decision in one place (ThreadManager)
+- Each agent owns the full reply lifecycle (building, sending, storing)
 
 ### Session-Based Thread Management
 
-Each thread has a dedicated OpenCode session persisted in `session.json`. This enables:
+Each thread has a dedicated OpenCode session persisted in `opencode-session.json`. This enables:
 - **Memory** — AI remembers previous replies in the conversation
 - **Coherence** — Consistent responses across the thread
 - **Context** — Full conversation history available
@@ -1004,9 +1014,9 @@ JYC uses the following subset of the OpenCode server API:
 │  ┌─────────────────────────────────────┐                    │
 │  │ Sessions (per-thread directory)     │                    │
 │  │                                     │                    │
-│  │ Thread A → session.json + .opencode/│                    │
-│  │ Thread B → session.json + .opencode/│                    │
-│  │ Thread C → session.json + .opencode/│                    │
+│  │ Thread A → opencode-session.json + .opencode/│                    │
+│  │ Thread B → opencode-session.json + .opencode/│                    │
+│  │ Thread C → opencode-session.json + .opencode/│                    │
 │  └─────────────────────────────────────┘                    │
 │                                                             │
 │  Server lives until CLI exits                               │
@@ -1019,39 +1029,74 @@ JYC uses the following subset of the OpenCode server API:
 ┌─ ThreadManager (src/core/thread_manager.rs) ─────────────────────────┐
 │                                                                       │
 │  Worker picks message from thread queue                               │
-│         ↓                                                             │
-│  MessageStorage::store(msg, thread_name)                              │
-│    → creates messages/<timestamp>/ directory                          │
-│    → saves allowlisted inbound attachments                            │
-│    → writes received.md                                               │
-│    → returns { message_dir, thread_path }                             │
-│         ↓                                                             │
-│  CommandRegistry::process_commands(body, ctx)                         │
-│    → single pass: parse /commands, execute, strip from body           │
-│    → returns CommandOutput { results, cleaned_body, body_empty }      │
-│    → if body_empty + has results → send_direct_reply(results) → done  │
-│         ↓                                                             │
-│  Dispatch to agent mode:                                              │
-│    "static" → build_full_reply_text(text) → send → store → done      │
-│    "opencode" → OpenCodeService::generate_reply(msg) ──┐              │
-│         ↓                                               │              │
-│  If !result.reply_sent_by_tool:                         │              │
-│    If result.reply_text is Some:                        │              │
-│      → build_full_reply_text(text) — add quoted history  │              │
-│      → outbound.send_reply(full_reply) — fallback send   │              │
-│      → storage.store_reply(full_reply)                   │              │
-│         ↓                                               │              │
-│  Worker picks next message from thread queue             │              │
-└──────────────────────────────────────────────────────────┘              │
-                                                                         │
-┌─ OpenCodeService (src/services/opencode/service.rs) ──────────────────┘
+│         │                                                             │
+│         ▼                                                             │
+│  ┌──────────────────────────────────────────┐                         │
+│  │ 1. STORE                                 │                         │
+│  │    MessageStorage::store(msg, thread)     │                         │
+│  │    → messages/<ts>/received.md            │                         │
+│  │    → save attachments (allowlisted)       │                         │
+│  └──────────────┬───────────────────────────┘                         │
+│                 │                                                     │
+│                 ▼                                                     │
+│  ┌──────────────────────────────────────────┐                         │
+│  │ 2. COMMAND PROCESS                       │                         │
+│  │    CommandRegistry::process_commands()    │                         │
+│  │    → parse /model, /plan, /build          │                         │
+│  │    → execute each command                 │                         │
+│  │    → strip command lines from body        │                         │
+│  │    → strip quoted history from cleaned    │                         │
+│  └──────────────┬───────────────────────────┘                         │
+│                 │                                                     │
+│          commands found?                                              │
+│           ╱          ╲                                                │
+│         YES          NO                                               │
+│          │            │                                               │
+│          ▼            │                                               │
+│  ┌──────────────────┐ │                                               │
+│  │ 3. REPLY RESULTS │ │                                               │
+│  │    Direct reply   │ │                                               │
+│  │    with command   │ │                                               │
+│  │    results        │ │                                               │
+│  │    (always sent)  │ │                                               │
+│  └────────┬─────────┘ │                                               │
+│           │            │                                               │
+│           ▼            ▼                                               │
+│  ┌──────────────────────────────────────────┐                         │
+│  │ 4. CHECK BODY                            │                         │
+│  │    cleaned_body (after commands +         │                         │
+│  │    quoted history stripped) empty?         │                         │
+│  └──────────────┬───────────────────────────┘                         │
+│           ╱          ╲                                                │
+│        EMPTY      HAS CONTENT                                         │
+│          │            │                                               │
+│          ▼            ▼                                               │
+│  ┌──────────┐  ┌──────────────────────────────────────────┐          │
+│  │ STOP     │  │ 5. DISPATCH TO AGENT MODE                │          │
+│  │ (no AI)  │  │                                          │          │
+│  │ return   │  │  "static" →                              │          │
+│  └──────────┘  │    build_full_reply_text(text) → send    │          │
+│                │                                          │          │
+│                │  "opencode" →                             │          │
+│                │    OpenCodeService::generate_reply() ─────┼──┐      │
+│                │         │                                │  │      │
+│                │    If !reply_sent_by_tool:               │  │      │
+│                │      build_full_reply_text(reply_text)   │  │      │
+│                │      → send fallback reply               │  │      │
+│                │      → store reply.md                    │  │      │
+│                └──────────────────────────────────────────┘  │      │
+│                                                              │      │
+│  Worker picks next message from thread queue                  │      │
+└───────────────────────────────────────────────────────────────┘      │
+                                                                       │
+┌─ OpenCodeService (src/services/opencode/service.rs) ─────────────────┘
 │
 │  1. Ensure OpenCode server is running (auto-start, health check)
 │  2. ensure_thread_opencode_setup(thread_path)
 │     → reads .jyc/model-override (if exists, takes priority over config)
 │     → writes opencode.json with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
-│  3. Get or create session (.jyc/session.json)
+│  3. Get or create session (.jyc/opencode-session.json)
 │  4. Clean up stale signal file
 │  5. Build system prompt (config + directory boundaries + system.md)
 │  6. Build user prompt (conversation history + body + reply_context)
@@ -1093,8 +1138,15 @@ JYC uses the following subset of the OpenCode server API:
 └─ Returns GenerateReplyResult to ThreadManager ──────────────────────────
 ```
 
+**Key flow rules:**
+1. **Commands are always processed first** — before any AI interaction
+2. **Command results are always sent** as a direct reply (if commands were found)
+3. **Body emptiness is checked AFTER both command stripping AND quoted history stripping** — leftover quoted history from inline reply formats does not count as real content
+4. **Empty body → stop** — no OpenCode server started, no AI processing, no wasted API calls
+5. **Non-empty body → dispatch to agent mode** — static text or OpenCode AI
+
 **Session lifecycle:**
-- Sessions are created on first use per thread and persisted in `.jyc/session.json`
+- Sessions are created on first use per thread and persisted in `.jyc/opencode-session.json`
 - On shutdown (SIGINT/SIGTERM): all session files are deleted to prevent stale sessions on restart
 - On stale session detection: session file is deleted and a new session is created for retry
 
@@ -1654,7 +1706,7 @@ Each channel manages its own state independently. For email, state tracks IMAP s
 │       │   │       ├── received.md
 │       │   │       └── reply.md
 │       │   ├── .jyc/
-│       │   │   ├── session.json         # AI session state
+│       │   │   ├── opencode-session.json         # AI session state
 │       │   │   ├── reply-tool.log       # MCP tool log
 │       │   │   ├── reply-sent.flag      # Signal file (transient)
 │       │   │   ├── model-override       # /model command override
@@ -1714,9 +1766,11 @@ jyc/
 │   │       └── mode_handler.rs         # /plan, /build commands
 │   ├── services/
 │   │   ├── mod.rs
+│   │   ├── agent.rs                   # AgentService trait (process → AgentResult)
+│   │   ├── static_agent.rs            # StaticAgentService (fixed text reply)
 │   │   ├── opencode/
 │   │   │   ├── mod.rs                 # OpenCode server manager (start/stop, port, health)
-│   │   │   ├── service.rs            # OpenCodeService (generate_reply, error recovery)
+│   │   │   ├── service.rs            # OpenCodeService implements AgentService
 │   │   │   ├── client.rs             # OpenCode HTTP + SSE client
 │   │   │   ├── session.rs            # Session + opencode.json + signal file management
 │   │   │   ├── prompt_builder.rs     # Prompt construction + reply_context
@@ -1727,11 +1781,11 @@ jyc/
 │   │   │   └── monitor.rs            # IDLE + poll + recovery
 │   │   └── smtp/
 │   │       ├── mod.rs
-│   │       └── client.rs             # lettre SMTP, MD→HTML
+│   │       └── client.rs             # lettre SMTP, MD→HTML, file attachments
 │   ├── mcp/
 │   │   ├── mod.rs
-│   │   ├── reply_tool.rs             # rmcp stdio MCP server
-│   │   └── context.rs                # ReplyContext serialization
+│   │   ├── reply_tool.rs             # rmcp stdio MCP server (reply_message tool)
+│   │   └── context.rs                # ReplyContext serialization + validation
 │   ├── security/
 │   │   ├── mod.rs
 │   │   └── path_validator.rs         # File path/extension/size checks

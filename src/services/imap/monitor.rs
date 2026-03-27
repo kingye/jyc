@@ -17,6 +17,7 @@ use crate::services::imap::client::ImapClient;
 ///
 /// Includes recovery mode for message deletions and suspicious jumps.
 pub struct ImapMonitor {
+    channel_name: String,
     imap_config: ImapConfig,
     monitor_config: MonitorConfig,
     patterns: Vec<ChannelPattern>,
@@ -27,6 +28,7 @@ pub struct ImapMonitor {
 
 impl ImapMonitor {
     pub fn new(
+        channel_name: String,
         imap_config: ImapConfig,
         monitor_config: MonitorConfig,
         patterns: Vec<ChannelPattern>,
@@ -35,6 +37,7 @@ impl ImapMonitor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            channel_name,
             imap_config,
             monitor_config,
             patterns,
@@ -145,7 +148,7 @@ impl ImapMonitor {
                     _ = self.cancel.cancelled() => break,
                 }
             } else {
-                tracing::debug!(interval = poll_interval, "Polling, sleeping...");
+                tracing::trace!(interval = poll_interval, "Polling, sleeping...");
                 tokio::select! {
                     _ = tokio::time::sleep(
                         std::time::Duration::from_secs(poll_interval)
@@ -177,7 +180,7 @@ impl ImapMonitor {
         }
 
         if current_count == last_seq {
-            tracing::debug!(count = current_count, "No new messages");
+            tracing::trace!(count = current_count, "No new messages");
             return Ok(());
         }
 
@@ -258,7 +261,10 @@ impl ImapMonitor {
         &self,
         email: &crate::services::imap::client::FetchedEmail,
     ) -> Result<()> {
-        let message = inbound::parse_raw_email(&email.body, email.uid)?;
+        let mut message = inbound::parse_raw_email(&email.body, email.uid)?;
+
+        // Set channel to the config channel name (e.g., "jiny283"), not the type ("email")
+        message.channel = self.channel_name.clone();
 
         tracing::info!(
             uid = email.uid,

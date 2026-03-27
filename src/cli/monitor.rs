@@ -4,8 +4,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::services::agent::AgentService;
 use crate::services::opencode::OpenCodeServer;
 use crate::services::opencode::service::OpenCodeService;
+use crate::services::static_agent::StaticAgentService;
 
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::config::types::MonitorConfig;
@@ -117,19 +119,35 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         })?;
         tracing::info!(channel = %channel_name, "SMTP connected");
 
-        let opencode_service = Arc::new(OpenCodeService::new(
-            opencode_server.clone(),
-            agent_config.clone(),
-            workdir.to_path_buf(),
-        ));
+        // Create agent based on configured mode
+        let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
+            "opencode" => {
+                Arc::new(OpenCodeService::new(
+                    opencode_server.clone(),
+                    agent_config.clone(),
+                    storage.clone(),
+                    outbound.clone(),
+                    workdir.to_path_buf(),
+                ))
+            }
+            "static" => {
+                let text = agent_config
+                    .text
+                    .as_deref()
+                    .unwrap_or("Thank you for your message.");
+                Arc::new(StaticAgentService::new(text, storage.clone(), outbound.clone()))
+            }
+            other => {
+                anyhow::bail!("unsupported agent mode: '{other}'");
+            }
+        };
 
         let thread_manager = Arc::new(ThreadManager::new(
             config.general.max_concurrent_threads,
             config.general.max_queue_size_per_thread,
             storage.clone(),
             outbound.clone(),
-            agent_config.clone(),
-            opencode_service,
+            agent,
             cancel.clone(),
         ));
 
@@ -146,6 +164,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
         tracing::info!(
             channel = %channel_name,
+            mode = %agent_config.mode,
             last_seq = state_manager.last_sequence_number(),
             processed_uids = state_manager.processed_uid_count(),
             "State loaded"
@@ -158,6 +177,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
         let task = tokio::spawn(async move {
             let mut monitor = ImapMonitor::new(
+                channel_name_owned.clone(),
                 inbound_config,
                 monitor_config,
                 patterns,

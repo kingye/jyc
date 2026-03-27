@@ -442,4 +442,40 @@ mod tests {
 
         assert!(match_message(&msg, &patterns).is_some());
     }
+
+    #[test]
+    fn test_match_subject_regex() {
+        let msg = make_message("user@example.com", "task #123: Fix bug");
+        let patterns = vec![make_pattern(
+            "test",
+            None,
+            Some(SubjectRule {
+                regex: Some(r"task #\d+".to_string()),
+                ..Default::default()
+            }),
+        )];
+
+        assert!(match_message(&msg, &patterns).is_some());
+    }
+
+    #[test]
+    fn test_match_no_match_returns_none() {
+        let msg = make_message("user@example.com", "Hello");
+        let patterns = vec![make_pattern(
+            "test",
+            Some(SenderRule {
+                exact: Some(vec!["other@example.com".to_string()]),
+                ..Default::default()
+            }),
+            None,
+        )];
+
+        assert!(match_message(&msg, &patterns).is_none());
+    }
+
+    #[test]
+    fn test_match_empty_patterns_returns_none() {
+        let msg = make_message("user@example.com", "Hello");
+        assert!(match_message(&msg, &[]).is_none());
+    }
 }

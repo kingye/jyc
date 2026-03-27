@@ -832,4 +832,83 @@ Hello, I need help with X.
         assert!(result.contains("### John (2026-03-22 14:30)"));
         assert!(!result.contains("<john@example.com>"));
     }
+
+    // --- Additional edge case tests ---
+
+    #[test]
+    fn test_parse_stored_message_empty_content() {
+        let content = "";
+        let parsed = parse_stored_message(content);
+        assert!(parsed.channel.is_none());
+        assert!(parsed.topic.is_none());
+        assert!(parsed.body.is_empty());
+    }
+
+    #[test]
+    fn test_parse_stored_message_malformed_thread_refs() {
+        let content = r#"---
+thread_refs: invalid
+---
+## John (10:15 AM)
+Body
+---
+"#;
+        let parsed = parse_stored_message(content);
+        assert_eq!(parsed.thread_refs, Some(vec!["invalid".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_stored_message_optional_fields() {
+        let content = r#"---
+channel: email
+uid: "12345"
+sender_address: "user@example.com"
+timestamp: "2026-03-27T10:00:00Z"
+topic: "Test"
+external_id: "msg-123"
+reply_to_id: "msg-122"
+thread_refs: ["ref1", "ref2"]
+matched_pattern: "test-pattern"
+---
+## John (10:15 AM)
+Body here
+---
+"#;
+        let parsed = parse_stored_message(content);
+        assert_eq!(parsed.channel.as_deref(), Some("email"));
+        assert_eq!(parsed.sender_address.as_deref(), Some("user@example.com"));
+        assert_eq!(parsed.topic.as_deref(), Some("Test"));
+        assert_eq!(parsed.external_id.as_deref(), Some("msg-123"));
+        assert_eq!(parsed.reply_to_id.as_deref(), Some("msg-122"));
+        assert_eq!(parsed.thread_refs, Some(vec!["ref1".to_string(), "ref2".to_string()]));
+        assert_eq!(parsed.matched_pattern.as_deref(), Some("test-pattern"));
+        assert_eq!(parsed.body.trim(), "Body here");
+        assert_eq!(parsed.timestamp.as_deref(), Some("10:15 AM"));
+    }
+
+    #[test]
+    fn test_strip_quoted_history_multiple_depth2_blocks() {
+        let body = "Reply\n\nMy continuation";
+        assert_eq!(strip_quoted_history(body), "Reply\n\nMy continuation");
+    }
+
+    #[test]
+    fn test_strip_quoted_history_mixed_divider_positions() {
+        let body = "Start\n\n---\n\nThis should stay\n\n---\n\nThis goes";
+        assert_eq!(strip_quoted_history(body), "Start");
+    }
+
+    #[test]
+    fn test_strip_quoted_history_header_with_colon_variations() {
+        let body = "Response\n\nFrom : user\nDate: today";
+        assert_eq!(strip_quoted_history(body), "Response");
+    }
+
+    #[test]
+    fn test_format_datetime_iso() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2026-03-27T15:30:45Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(format_datetime_iso(&dt), "2026-03-27 15:30");
+    }
 }

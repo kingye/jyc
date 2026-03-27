@@ -43,6 +43,8 @@ This takes ~30 seconds. The toolchain persists until the container is rebuilt.
 2. Reply to confirm deployment is starting
 3. cp $CARGO_TARGET_DIR/release/jyc /usr/local/bin/jyc
 4. s6-svc -r /run/service/jyc
+**CRITICAL: Only run the copy and restart commands after receiving a confirmation. This is a safety check to prevent accidental restarts. The confirmation message should include the version being deployed and a statement that you are ready to proceed with deployment.**
+**CRITICAL: Always send a comfirmation message before copying the binary and restarting the service. This is a safety check to prevent accidental restarts. The confirmation message should include the version being deployed and a statement that you are ready to proceed with deployment.**
 Note: JYC will restart. A startup health check email confirms readiness.
 
 ## Build and Deploy (when instructed)

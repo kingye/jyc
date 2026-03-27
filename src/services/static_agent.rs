@@ -35,7 +35,6 @@ impl AgentService for StaticAgentService {
         Ok(AgentResult {
             reply_sent_by_tool: false,
             reply_text: Some(self.reply_text.clone()),
-            reply_context: None,
         })
     }
 }

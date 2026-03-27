@@ -9,7 +9,6 @@ use super::types::*;
 use super::{session, prompt_builder, OpenCodeServer};
 use crate::channels::types::InboundMessage;
 use crate::config::types::AgentConfig;
-use crate::mcp::context;
 use crate::services::agent::{AgentResult, AgentService};
 
 /// Encapsulates all OpenCode AI interaction logic.
@@ -268,18 +267,9 @@ impl AgentService for OpenCodeService {
     ) -> Result<AgentResult> {
         let result = self.generate_reply(message, thread_name, thread_path, message_dir).await?;
 
-        // Generate reply context token for future use
-        let reply_context = Some(context::serialize_context(
-            &message.channel,
-            thread_name,
-            message_dir,
-            &message.channel_uid,
-        ));
-
         Ok(AgentResult {
             reply_sent_by_tool: result.reply_sent_by_tool,
             reply_text: result.reply_text,
-            reply_context,
         })
     }
 }

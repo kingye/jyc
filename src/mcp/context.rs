@@ -14,12 +14,8 @@ use serde::{Deserialize, Serialize};
 /// - `incomingMessageDir`: message subdirectory name (to find received.md)
 /// - `uid`: channel-specific message ID
 /// - `_nonce`: integrity nonce
-///
-/// New optional fields (for future AgentResponse integration):
-/// - `agentResponseText`: AI-generated response text (optional)
-/// - `finalReplyText`: final reply text after processing (optional)
-/// - `messageDir`: full message directory path (optional)
-/// - `threadPath`: full thread directory path (optional)
+/// - `model`: OpenCode model ID (optional)
+/// - `mode`: OpenCode mode (optional)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyContext {
     /// Config channel name (e.g., "jiny283") — routing key
@@ -35,18 +31,10 @@ pub struct ReplyContext {
     /// Integrity nonce
     #[serde(rename = "_nonce")]
     pub nonce: Option<String>,
-    /// AI-generated response text (optional)
-    #[serde(rename = "agentResponseText")]
-    pub agent_response_text: Option<String>,
-    /// Final reply text after processing (optional)
-    #[serde(rename = "finalReplyText")]
-    pub final_reply_text: Option<String>,
-    /// Full message directory path (optional)
-    #[serde(rename = "messageDir")]
-    pub message_dir: Option<String>,
-    /// Full thread directory path (optional)
-    #[serde(rename = "threadPath")]
-    pub thread_path: Option<String>,
+    /// OpenCode model ID (optional)
+    pub model: Option<String>,
+    /// OpenCode mode (optional)
+    pub mode: Option<String>,
 }
 
 /// Serialize a reply context token (struct → JSON → base64).
@@ -57,6 +45,18 @@ pub fn serialize_context(
     thread_name: &str,
     incoming_message_dir: &str,
     uid: &str,
+) -> String {
+    serialize_context_with_options(channel, thread_name, incoming_message_dir, uid, None, None)
+}
+
+/// Serialize a reply context token with optional model and mode.
+pub fn serialize_context_with_options(
+    channel: &str,
+    thread_name: &str,
+    incoming_message_dir: &str,
+    uid: &str,
+    model: Option<&str>,
+    mode: Option<&str>,
 ) -> String {
     let nonce = format!(
         "{}-{}",
@@ -70,10 +70,8 @@ pub fn serialize_context(
         incoming_message_dir: incoming_message_dir.to_string(),
         uid: uid.to_string(),
         nonce: Some(nonce),
-        agent_response_text: None,
-        final_reply_text: None,
-        message_dir: None,
-        thread_path: None,
+        model: model.map(|m| m.to_string()),
+        mode: mode.map(|m| m.to_string()),
     };
 
     let json = serde_json::to_string(&context).unwrap_or_default();
@@ -125,10 +123,8 @@ mod tests {
         assert_eq!(ctx.incoming_message_dir, "2026-03-27_10-00-00");
         assert_eq!(ctx.uid, "42");
         assert!(ctx.nonce.is_some());
-        assert!(ctx.agent_response_text.is_none());
-        assert!(ctx.final_reply_text.is_none());
-        assert!(ctx.message_dir.is_none());
-        assert!(ctx.thread_path.is_none());
+        assert!(ctx.model.is_none());
+        assert!(ctx.mode.is_none());
     }
 
     #[test]
@@ -160,8 +156,23 @@ mod tests {
     #[test]
     fn test_minimal_token_is_short() {
         let token = serialize_context("jiny283", "weather", "2026-03-27_10-00-00", "42");
-        // Minimal token should be well under 300 chars (includes new optional fields)
+        // Minimal token should be well under 300 chars
         assert!(token.len() < 300, "token too long: {} chars", token.len());
+    }
+
+    #[test]
+    fn test_serialize_with_model_and_mode() {
+        let token = serialize_context_with_options(
+            "jiny283",
+            "weather",
+            "2026-03-27_10-00-00",
+            "42",
+            Some("claude-3-5-sonnet"),
+            Some("plan"),
+        );
+        let ctx = deserialize_context(&token).unwrap();
+        assert_eq!(ctx.model, Some("claude-3-5-sonnet".to_string()));
+        assert_eq!(ctx.mode, Some("plan".to_string()));
     }
 
     #[test]
@@ -175,23 +186,19 @@ mod tests {
         assert_eq!(ctx.incoming_message_dir, "2026-03-27_10-00-00");
         assert_eq!(ctx.uid, "42");
         // New fields should be None when not present
-        assert!(ctx.agent_response_text.is_none());
-        assert!(ctx.final_reply_text.is_none());
-        assert!(ctx.message_dir.is_none());
-        assert!(ctx.thread_path.is_none());
+        assert!(ctx.model.is_none());
+        assert!(ctx.mode.is_none());
     }
 
     #[test]
-    fn test_deserialize_with_new_fields() {
-        // Token with new fields
-        let json = r#"{"channel":"jiny283","threadName":"weather","incomingMessageDir":"2026-03-27_10-00-00","uid":"42","_nonce":"123456789-abc12345","agentResponseText":"Hello","finalReplyText":"Hello world","messageDir":"/path/to/messages/2026-03-27_10-00-00","threadPath":"/path/to/weather"}"#;
+    fn test_deserialize_with_model_and_mode() {
+        // Token with model and mode fields
+        let json = r#"{"channel":"jiny283","threadName":"weather","incomingMessageDir":"2026-03-27_10-00-00","uid":"42","_nonce":"123456789-abc12345","model":"claude-3-5-sonnet","mode":"plan"}"#;
         let token = base64::engine::general_purpose::STANDARD.encode(json);
         let ctx = deserialize_context(&token).unwrap();
         assert_eq!(ctx.channel, "jiny283");
         assert_eq!(ctx.thread_name, "weather");
-        assert_eq!(ctx.agent_response_text, Some("Hello".to_string()));
-        assert_eq!(ctx.final_reply_text, Some("Hello world".to_string()));
-        assert_eq!(ctx.message_dir, Some("/path/to/messages/2026-03-27_10-00-00".to_string()));
-        assert_eq!(ctx.thread_path, Some("/path/to/weather".to_string()));
+        assert_eq!(ctx.model, Some("claude-3-5-sonnet".to_string()));
+        assert_eq!(ctx.mode, Some("plan".to_string()));
     }
 }

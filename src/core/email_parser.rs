@@ -544,6 +544,18 @@ pub async fn prepare_body_for_quoting(
     quoted_blocks.join("\n\n")
 }
 
+/// Build a footer with model and mode information.
+///
+/// Returns empty string if both model and mode are None.
+/// Format: `---\n\nModel: <model> | Mode: <mode>`
+pub fn build_footer(model: Option<&str>, mode: Option<&str>) -> String {
+    match (model, mode) {
+        (Some(m), Some(md)) => format!("---\n\nModel: {} | Mode: {}", m, md),
+        (Some(m), None) => format!("---\n\nModel: {}", m),
+        (None, Some(md)) => format!("---\n\nMode: {}", md),
+        (None, None) => String::new(),
+    }
+}
 
 /// Build of full reply text with quoted history.
 ///
@@ -576,6 +588,8 @@ pub async fn build_full_reply_text(
     topic: &str,
     body_text: &str,
     message_dir: &str,
+    model: Option<&str>,
+    mode: Option<&str>,
 ) -> String {
     let current_message = TrailCurrentMessage {
         sender: sender.to_string(),
@@ -592,10 +606,16 @@ pub async fn build_full_reply_text(
     )
     .await;
 
-    if quoted_history.is_empty() {
+    let footer = build_footer(model, mode);
+
+    if quoted_history.is_empty() && footer.is_empty() {
         reply_text.to_string()
+    } else if quoted_history.is_empty() {
+        format!("{}\n\n{}", reply_text, footer)
+    } else if footer.is_empty() {
+        format!("{}\n\n{}", reply_text, quoted_history)
     } else {
-        format!("{reply_text}\n\n{quoted_history}")
+        format!("{}\n\n{}\n\n{}", reply_text, footer, quoted_history)
     }
 }
 

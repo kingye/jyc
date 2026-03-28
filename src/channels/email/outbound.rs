@@ -67,7 +67,12 @@ impl EmailOutboundAdapter {
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        // 1. Build full reply with email-specific quoted history
+        // 1. Read model/mode from reply context file (if available)
+        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
+        let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
+        let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
+
+        // 2. Build full reply with email-specific quoted history + model/mode footer
         let body_text = original
             .content
             .text
@@ -83,6 +88,8 @@ impl EmailOutboundAdapter {
             &original.topic,
             body_text,
             message_dir,
+            model,
+            mode,
         )
         .await;
 

@@ -32,14 +32,24 @@ Environment variable GH_TOKEN should be set if you need to push branches or crea
 5. Report: version, binary size, test results
 
 ## Deploy (when instructed)
+CRITICAL: Deploy causes JYC to restart. Your session will be interrupted. Follow these steps EXACTLY:
 1. Verify $CARGO_TARGET_DIR/release/jyc exists
-2. Reply to confirm deployment is starting
-3. cp $CARGO_TARGET_DIR/release/jyc /usr/local/bin/jyc
-4. s6-svc -r /run/service/jyc
-Note: JYC will restart. A startup health check email confirms readiness.
+2. Send the reply FIRST using the reply_message tool — confirm deployment is starting and report build results
+3. AFTER the reply is sent, run the deploy commands:
+   ```
+   cp $CARGO_TARGET_DIR/release/jyc /usr/local/bin/jyc && s6-svc -r /run/service/jyc
+   ```
+4. STOP immediately after running the deploy command. Do NOT run any more commands.
+   The process will be killed by s6 and restarted automatically.
+   A startup notification email confirms the new version is running.
+
+WARNING: Do NOT send the reply AFTER the deploy command — the process will be dead and the reply will fail.
+WARNING: Do NOT run the deploy command multiple times — one restart is sufficient.
+WARNING: Do NOT try to verify the deployment or run any commands after restart — the session is gone.
 
 ## Build and Deploy (when instructed)
-Run Build steps, then Deploy steps in sequence.
+1. Run Build steps (test + compile)
+2. Run Deploy steps (reply first, then cp + restart, then STOP)
 
 ## References
 - See jyc/DESIGN.md for architecture and component responsibilities

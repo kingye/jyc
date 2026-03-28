@@ -99,6 +99,8 @@ impl OpenCodeService {
             message,
             thread_path,
             message_dir,
+            model.as_deref(),
+            mode_override.as_deref(),
         ).await?;
 
         // Model and mode are passed per-prompt — no session restart needed for switches

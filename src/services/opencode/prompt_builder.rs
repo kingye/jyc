@@ -81,6 +81,8 @@ pub async fn build_prompt(
     message: &InboundMessage,
     thread_path: &Path,
     message_dir: &str,
+    model: Option<&str>,
+    mode: Option<&str>,
 ) -> Result<String> {
     let mut prompt = String::new();
 
@@ -116,8 +118,8 @@ pub async fn build_prompt(
         &thread_name,
         message_dir,
         &message.channel_uid,
-        None,
-        None,
+        model,
+        mode,
     );
     prompt.push_str(&format!("\nREPLY_TOKEN={context_token}\n"));
 
@@ -180,7 +182,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let msg = test_message();
 
-        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00")
+        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", None, None)
             .await
             .unwrap();
 

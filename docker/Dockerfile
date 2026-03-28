@@ -65,12 +65,16 @@ FROM base AS production
 
 COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc
 
-# ── Stage 3b: Dev image (with Rust for self-bootstrapping, ~2GB) ──────
+# ── Stage 3b: Dev image (with Rust for self-bootstrapping, ~1.4GB) ────
 # Build: podman build --target dev -t jyc:dev -f docker/Dockerfile ..
 FROM base AS dev
 
-# Install Rust toolchain (pre-installed — no timeout during self-bootstrapping)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Copy Rust toolchain from the builder stage (already downloaded — no separate install)
+COPY --from=builder /usr/local/rustup /usr/local/rustup
+COPY --from=builder /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME="/usr/local/rustup"
+ENV CARGO_HOME="/usr/local/cargo"
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+ENV CARGO_TARGET_DIR="/tmp/jyc-target"
 
 COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc

@@ -6,7 +6,7 @@ Run JYC as a containerized service with process supervision via s6-overlay.
 
 | Variant | Target | Size | Rust | Use Case |
 |---------|--------|------|------|----------|
-| `jyc:dev` | `dev` | ~2GB | Pre-installed | Self-bootstrapping — AI can rebuild jyc from source |
+| `jyc:dev` | `dev` | ~1.4GB | Copied from builder | Self-bootstrapping — AI can rebuild jyc from source |
 | `jyc:latest` | `production` | ~740MB | Not included | Production — just runs the pre-compiled binary |
 
 ```bash
@@ -35,7 +35,7 @@ Both variants share the same `base` stage (tools, s6, OpenCode, gh CLI) — buil
 | ripgrep, jq | Code search, JSON processing | both |
 | curl | HTTP requests | both |
 | build-essential | C compiler for native deps | both |
-| Rust toolchain | Rebuild jyc from source | dev only |
+| Rust toolchain | Rebuild jyc from source (copied from builder, not installed separately) | dev only |
 
 ## Prerequisites
 

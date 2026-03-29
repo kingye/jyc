@@ -212,6 +212,7 @@ impl OpenCodeClient {
         let start_time = Instant::now();
         let mut done = false;
         let mut logged_tools: HashSet<(String, String)> = HashSet::new();
+        let mut model_updated = false;
 
         let mut check_interval = tokio::time::interval(ACTIVITY_CHECK_INTERVAL);
 
@@ -282,6 +283,16 @@ impl OpenCodeClient {
                                         result.error = Some(err);
                                         done = true;
                                     }
+                                }
+
+                                // Update reply-context.json when model is first discovered
+                                // (needed by both MCP reply tool and fallback for footer display)
+                                if result.model_id.is_some() && !model_updated {
+                                    if let Ok(mut ctx) = crate::mcp::context::load_reply_context(directory).await {
+                                        ctx.model = result.model_id.clone();
+                                        crate::mcp::context::save_reply_context(directory, &ctx).await.ok();
+                                    }
+                                    model_updated = true;
                                 }
                         }
                         Some(Err(e)) => {

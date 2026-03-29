@@ -76,6 +76,17 @@ See `system.md.example` for detailed bootstrap instructions.
 - **Binary location**: `/home/jiny/projects/jyc/jyc` (gitignored)
 - **Backup**: `/home/jiny/projects/jyc/jyc.bak` (gitignored)
 
+## Service Configuration
+
+The s6 service configuration is fully documented in [s6-rc.d/README.md](s6-rc.d/README.md).
+
+Key files:
+- `s6-rc.d/jyc/type` - Defines jyc as a "longrun" service
+- `s6-rc.d/jyc/run` - Executable script that starts jyc monitor
+- `s6-rc.d/user/contents.d/jyc` - Registers jyc in the user bundle
+
+See [s6-rc.d/README.md](s6-rc.d/README.md) for complete service configuration details.
+
 ## Directory Structure
 
 ```

@@ -4,17 +4,19 @@ This allows jyc to run with process supervision outside of Docker, enabling self
 
 ## Setup
 
-### 1. Install s6-overlay (one-time setup)
+### 1. Install s6-overlay (one-time setup, requires sudo)
 
-s6-overlay is installed to `~/.local/share/jyc-s6/`:
+s6-overlay is installed to system root (/). This matches how Docker uses it:
 
 ```bash
-mkdir -p ~/.local/share/jyc-s6
-cd ~/.local/share/jyc-s6
-curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v3.1.6.2/s6-overlay-noarch.tar.xz" -o /tmp/s6-overlay-noarch.tar.xz
-tar -C . -Jxpf /tmp/s6-overlay-noarch.tar.xz && rm /tmp/s6-overlay-noarch.tar.xz
-curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v3.1.6.2/s6-overlay-x86_64.tar.xz" -o /tmp/s6-overlay-x86_64.tar.xz
-tar -C . -Jxpf /tmp/s6-overlay-x86_64.tar.xz && rm /tmp/s6-overlay-x86_64.tar.xz
+sudo bash -c '
+cd /tmp
+curl -fsSL " "https://github.com/just-containers/s6-overlay/releases/download/v3.1.6.2/s6-overlay-noarch.tar.xz" -o s6-overlay-noarch.tar.xz
+tar -C / -Jxpf s6-overlay-noarch.tar.xz
+curl -fsSL "https://github.com/just-containers/s6-overlay/releases/download/v3.1.6.2/s6-overlay-x86_64.tar.xz" -o s6-overlay-x86_64.tar.xz
+tar -C / -Jxpf s6-overlay-x86_64.tar.xz
+rm *.tar.xz
+'
 ```
 
 ### 2. Build jyc binary
@@ -60,9 +62,9 @@ The AI can rebuild and deploy jyc from inside the running process:
 1. Build: `cargo build --release`
 2. Deploy:
    ```bash
-   cp. target/release/jyc jyc.bak
+   cp target/release/jyc jyc.bak
    cp target/release/jyc jyc
-   $HOME/.local/share/jyc-s6/command/s6-svc -r $HOME/.local/share/jyc-s6/service/jyc
+   /usr/bin/s6-svc -r /run/service/jyc
    ```
 3. s6 automatically restarts jyc with the new binary
 
@@ -70,9 +72,9 @@ See `system.md.example` for detailed bootstrap instructions.
 
 ## Architecture
 
-- **s6-overlay v3.1.6.2**: Process supervisor installed to `~/.local/share/jyc-s6/`
-- **Service configs**: Versioned in `s6-rc.d/` directory
-- **Runtime state**: Managed by s6 in `~/.local/share/jyc-s6/service/`
+- **s6-overlay v3.1.6.2**: Process supervisor installed to system (/)
+- **Service configs**: Versioned in `s6-rc.d/` directory, copied to `/etc/s6-rc/s6-rc.d/` at runtime
+- **Runtime state**: Managed by s6 in `/run/service/jyc/`
 - **Binary location**: `/home/jiny/projects/jyc/jyc` (gitignored)
 - **Backup**: `/home/jiny/projects/jyc/jyc.bak` (gitignored)
 
@@ -90,24 +92,25 @@ See [s6-rc.d/README.md](s6-rc.d/README.md) for complete service configuration de
 ## Directory Structure
 
 ```
-~/.local/share/jyc-s6/
-├── command/              # s6 binaries (s6-rc, s6-rc-init, s6-svc, etc.)
-├── etc/
-├── init
-├── package/
-└── service/              # runtime state directory (created by start-jyc.sh)
+/                              # system root (s6-overlay installed here)
+- /usr/bin/s6-rc              # s6 binaries
+- /usr/bin/s6-rc-init
+- /usr/bin/s6-svc
+- /usr/bin/s6-svstat
+- /etc/s6-rc/s6-rc.d/        # service configs (copied from project at runtime)
+- /run/service/jyc/            # runtime state directory (created by s6)
 
 /home/jiny/projects/jyc/
-├── s6-rc.d/             # versioned service configs
+├── s6-rc.d/                  # versioned service configs
 │   ├── jyc/
-│   │   ├── type         # "longrun"
-│   │   └── run          # bash script to start jyc
+│   │   ├── type               # "longrun"
+│   │   └── run                # bash script to start jyc
 │   └── user/contents.d/jyc
-├── jyc                  # binary (gitignored)
-├── jyc.bak              # backup (gitignored)
-├── start-jyc.sh         # startup script
-├── jyc-ctl.sh           # control script
-└── system.md.example    # bootstrap instructions
+├── jyc                       # binary (gitignored)
+├── jyc.bak                   # backup (gitignored)
+├── start-jyc.sh              # startup script
+├── jyc-ctl.sh                # control script
+└── system.md.example         # bootstrap instructions
 ```
 
 ## Troubleshooting
@@ -127,7 +130,7 @@ Check s6 logs and status:
 
 ```bash
 ./jyc-ctl.sh status
-ls -la ~/.local/share/jyc-s6/service/jyc/
+ls -la /run/service/jyc/
 ```
 
 ### Missing OpenSSL dev packages
@@ -147,5 +150,5 @@ sudo apt-get install pkg-config libssl-dev
 | Automatic restarts | Yes | Yes |
 | Runtime environment | Isolated | Native host |
 | Build isolation | Containerized | Direct access |
-| Setup complexity | Docker required | One-time s6 install |
+| Setup complexity | Docker required | One-time s6 install (system-wide) |
 | Resource overhead | Container overhead | Minimal |

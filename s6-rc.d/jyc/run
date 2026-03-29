@@ -9,4 +9,4 @@ fi
 
 git config --global credential.helper netrc
 
-exec /home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc-data --debug
+exec /home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc --debug

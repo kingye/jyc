@@ -1,18 +1,18 @@
 #!/usr/bin/bash
-S6_HOME="$HOME/.local/share/jyc-s6"
+S6_SERVICE_DIR="/run/service"
 
 case "$1" in
   status)
-    "$S6_HOME/command/s6-svstat" "$S6_HOME/service/jyc"
+    /usr/bin/s6-svstat "$S6_SERVICE_DIR/jyc"
     ;;
   restart)
-    "$S6_HOME/command/s6-svc" -r "$S6_HOME/service/jyc"
+    /usr/bin/s6-svc -r "$S6_SERVICE_DIR/jyc"
     ;;
   stop)
-    "$S6_HOME/command/s6-svc" -d "$S6_HOME/service/jyc"
+    /usr/bin/s6-svc -d "$S6_SERVICE_DIR/jyc"
     ;;
   start)
-    "$S6_HOME/command/s6-svc" -u "$S6_HOME/service/jyc"
+    /usr/bin/s6-svc -u "$S6_SERVICE_DIR/jyc"
     ;;
   *)
     echo "Usage: $0 {status|restart|stop|start}"

@@ -1,6 +1,7 @@
 #!/usr/bin/bash
-S6_HOME="$HOME/.local/share/jyc-s6"
 PROJECT_HOME="/home/jiny/projects/jyc"
+S6_RC_D="/etc/s6-rc/s6-rc.d"
+S6_SERVICE_DIR="/run/service"
 
 cd "$PROJECT_HOME"
 
@@ -10,11 +11,9 @@ if [ ! -f "$PROJECT_HOME/jyc" ]; then
   exit 1
 fi
 
-mkdir -p "$S6_HOME/service"
+mkdir -p "$S6_RC_D/user/contents.d"
+cp -r "$PROJECT_HOME/s6-rc.d/jyc" "$S6_RC_D/"
+touch "$S6_RC_D/user/contents.d/jyc"
 
-mkdir -p "$S6_HOME/s6-rc.d/user/contents.d"
-cp -r "$PROJECT_HOME/s6-rc.d/jyc" "$S6_HOME/s6-rc.d/"
-touch "$S6_HOME/s6-rc.d/user/contents.d/jyc"
-
-exec "$S6_HOME/command/s6-rc-init" "$S6_HOME/service" && \
-     "$S6_HOME/command/s6-rc" -u "$S6_HOME/service"
+exec /usr/bin/s6-rc-init "$S6_SERVICE_DIR" && \
+     /usr/bin/s6-rc -u "$S6_SERVICE_DIR"

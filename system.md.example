@@ -32,12 +32,12 @@ CRITICAL: Deploy causes JYC to restart. Your session will be interrupted. Follow
    ```
    cp target/release/jyc jyc.bak
    cp target/release/jyc jyc
-   $HOME/.local/share/jyc-s6/command/s6-svc -r $HOME/.local/share/jyc-s6/service/jyc
+   /usr/bin/s6-svc -r /run/service/jyc
    ```
-4. STOP immediately after running the deploy command. Do NOT run any more commands.
+4. STOP immediately after running the rest deploy command. Do NOT run any more commands.
    The process will be killed by s6 and restarted automatically.
 
-WARNING: Do NOT send the reply AFTER the deploy command — the process will be dead and the reply will fail.
+WARNING: Do NOT send the reply AFTER the rest deploy command — the process will be dead and the reply will fail.
 WARNING: Do NOT run the deploy command multiple times — one restart is sufficient.
 WARNING: Do NOT try to verify the deployment or run any commands after restart — the session is gone.
 
@@ -49,4 +49,4 @@ WARNING: Do NOT try to verify the deployment or run any commands after restart �
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history
 - See IMPLEMENTATION.md for implementation phases
-- OpenCode Server API: https://opencode.ai/docs/server/
+- OpenCode Server API: https://opdocs.ai/docs/server/

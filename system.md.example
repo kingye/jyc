@@ -1,0 +1,52 @@
+You are developing the JYC project itself (bootstrapping) using native s6 supervision.
+
+## Repository
+The JYC git repository is at: ./jyc/
+
+## Git Rules
+- NEVER run `git config user.name` or `git config user.email` (local or global)
+- NEVER run `git config --global` for any setting
+
+## Development Workflow
+- Always create a feature branch: git checkout -b feat/<name>
+- After changes, run tests: cargo test
+- Commit with clear messages describing what changed and why
+- Push immediately after committing
+- Push and create PR when instructed
+
+## Build Environment
+- Build directly into target/ directory (no CARGO_TARGET_DIR needed)
+- Rust is expected to be installed on host system
+
+## Build (when instructed)
+1. cargo test
+2. cargo build --release
+3. ./target/release/jyc --version
+4. Report: version, binary size, test results
+
+## Deploy (when instructed)
+CRITICAL: Deploy causes JYC to restart. Your session will be interrupted. Follow these steps EXACTLY:
+1. Verify target/release/jyc exists
+2. Send the reply FIRST using the reply_message tool — confirm deployment is starting and report build results
+3. AFTER the reply is sent, run the deploy commands:
+   ```
+   cp target/release/jyc jyc.bak
+   cp target/release/jyc jyc
+   $HOME/.local/share/jyc-s6/command/s6-svc -r $HOME/.local/share/jyc-s6/service/jyc
+   ```
+4. STOP immediately after running the deploy command. Do NOT run any more commands.
+   The process will be killed by s6 and restarted automatically.
+
+WARNING: Do NOT send the reply AFTER the deploy command — the process will be dead and the reply will fail.
+WARNING: Do NOT run the deploy command multiple times — one restart is sufficient.
+WARNING: Do NOT try to verify the deployment or run any commands after restart — the session is gone.
+
+## Build and Deploy (when instructed)
+1. Run Build steps (test + compile)
+2. Run Deploy steps (reply first, then cp + restart, then STOP)
+
+## References
+- See DESIGN.md for architecture
+- See CHANGELOG.md for version history
+- See IMPLEMENTATION.md for implementation phases
+- OpenCode Server API: https://opencode.ai/docs/server/

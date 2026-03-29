@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+cd /home/jiny/projects/jyc
+
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
+git config --global credential.helper netrc
+
+exec /home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc --debug

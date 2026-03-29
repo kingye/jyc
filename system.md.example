@@ -1,4 +1,4 @@
-You are developing the JYC project itself (bootstrapping) using native s6 supervision.
+You are developing the JYC project itself (bootstrapping) using systemd for process management.
 
 ## Repository
 The JYC git repository is at: ./jyc/
@@ -15,8 +15,9 @@ The JYC git repository is at: ./jyc/
 - Push and create PR when instructed
 
 ## Build Environment
-- Build directly into target/ directory (no CARGO_TARGET_DIR needed)
+- Build directly into target/ directory
 - Rust is expected to be installed on host system
+- Process supervision: systemd user service
 
 ## Build (when instructed)
 1. cargo test
@@ -30,14 +31,13 @@ CRITICAL: Deploy causes JYC to restart. Your session will be interrupted. Follow
 2. Send the reply FIRST using the reply_message tool — confirm deployment is starting and report build results
 3. AFTER the reply is sent, run the deploy commands:
    ```
-   cp target/release/jyc jyc.bak
    cp target/release/jyc jyc
-   /usr/bin/s6-svc -r /run/service/jyc
+   systemctl --user restart jyc
    ```
-4. STOP immediately after running the rest deploy command. Do NOT run any more commands.
-   The process will be killed by s6 and restarted automatically.
+4. STOP immediately after running the deploy command. Do NOT run any more commands.
+   The process will be killed by systemd and restarted automatically.
 
-WARNING: Do NOT send the reply AFTER the rest deploy command — the process will be dead and the reply will fail.
+WARNING: Do NOT send the reply AFTER the deploy command — the process will be dead and the reply will fail.
 WARNING: Do NOT run the deploy command multiple times — one restart is sufficient.
 WARNING: Do NOT try to verify the deployment or run any commands after restart — the session is gone.
 
@@ -45,8 +45,29 @@ WARNING: Do NOT try to verify the deployment or run any commands after restart �
 1. Run Build steps (test + compile)
 2. Run Deploy steps (reply first, then cp + restart, then STOP)
 
+## Service Management
+
+You can control the jyc service with these commands:
+
+```bash
+# Check service status
+systemctl --user status jyc
+
+# View service logs
+journalctl --user -u jyc -f
+
+# Restart service (after deployment)
+systemctl --user restart jyc
+
+# Stop service
+systemctl --user stop jyc
+
+# Start service
+systemctl --user start jyc
+```
+
 ## References
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history
 - See IMPLEMENTATION.md for implementation phases
-- OpenCode Server API: https://opdocs.ai/docs/server/
+- OpenCode Server API: https://opencode.ai/docs/server/

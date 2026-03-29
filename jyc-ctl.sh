@@ -1,21 +1,30 @@
 #!/usr/bin/bash
-S6_SERVICE_DIR="/run/service"
 
 case "$1" in
   status)
-    /usr/bin/s6-svstat "$S6_SERVICE_DIR/jyc"
+    systemctl --user status jyc
+    ;;
+  logs)
+    journalctl --user -u jyc -f
     ;;
   restart)
-    /usr/bin/s6-svc -r "$S6_SERVICE_DIR/jyc"
+    systemctl --user restart jyc
     ;;
   stop)
-    /usr/bin/s6-svc -d "$S6_SERVICE_DIR/jyc"
+    systemctl --user stop jyc
     ;;
   start)
-    /usr/bin/s6-svc -u "$S6_SERVICE_DIR/jyc"
+    systemctl --user start jyc
     ;;
   *)
-    echo "Usage: $0 {status|restart|stop|start}"
+    echo "Usage: $0 {status|logs|restart|stop|start}"
+    echo ""
+    echo "Commands:"
+    echo "  status   - Show service status"
+    echo "  logs     - Follow service logs"
+    echo "  restart  - Restart service (after deployment)"
+    echo "  stop     - Stop service"
+    echo "  start    - Start service"
     exit 1
     ;;
 esac

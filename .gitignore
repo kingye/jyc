@@ -9,6 +9,7 @@ config.toml
 # Docker env (contains local paths)
 docker/.env
 
-# JYC binary and backup (for native s6 supervision)
+# JYC binary and backup (for systemd supervision)
 jyc
 jyc.bak
+run-jyc.sh

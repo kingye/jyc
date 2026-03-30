@@ -17,6 +17,7 @@ After=network.target
 
 [Service]
 Type=simple
+EnvironmentFile=/home/jiny/.zshrc.local
 Environment=PATH=/home/jiny/.opencode/bin:/home/jiny/.local/bin:/home/jiny/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc-data --debug
 WorkingDirectory=/home/jiny/projects/jyc-data
@@ -31,6 +32,31 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable jyc
+```
+
+**Environment Variables:**
+
+The service uses `run-jyc.sh` wrapper script that sources `~/.zshrc.local`.
+This means any environment variables defined in `~/.zshrc.local` will be available to jyc when running under systemd.
+
+The wrapper script (`run-jyc.sh`):
+```bash
+#!/usr/bin/bash
+cd /home/jiny/projects/jyc-data
+
+# Source environment variables from .zshrc.local
+if [ -f ~/.zshrc.local ]; then
+  set -a
+  source ~/.zshrc.local
+  set +a
+fi
+
+exec /home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc-data --debug
+```
+
+Update `~/.zshrc.local` and restart the service to apply changes:
+```bash
+systemctl --user restart jyc
 ```
 
 ### 2. Build jyc binary

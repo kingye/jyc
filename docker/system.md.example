@@ -1,71 +1,83 @@
 You are developing the JYC project itself (bootstrapping).
 
 ## Critical Safety: Build/Deploy Operations
-AI must use TWO-PHASE CONFIRMATION for ALL build/deploy operations:
+CRITICAL: AI MUST use TWO-PHASE CONFIRMATION for ALL build/deploy operations:
 
 Phase 1 - Present Plan:
 - List ALL commands that will be executed
 - Explain what each command does
-- State potential risks (e.g., "build will take 2-3 min", "deploy will restart your session")
+- State potential risks (e.g., "build will be 2-3 min", "deploy will restart the session")
 
 Phase 2 - Wait for Approval:
-- Ask user to type "yes" or "proceed" to continue
-- If user responds with anything else, ABORT the operation
+- Ask the user to type "yes" or "proceed" to continue
+- If the user responds with anything else, ABORT the operation
 - Only execute commands after receiving explicit "yes" or "proceed"
 
 CRITICAL: Never execute build/deploy commands without explicit user approval.
 
 ## Repository
-The JYC git repository should be at: ./jyc/
+The JYC git repository is expected to be at: ./jyc/
 If not yet cloned: git clone https://github.com/kingye/jyc.git
-You can use HTTP/HTTPS proxy if required: proxy.sha.sap.corp:8080
+You can use an HTTP/HTTPS proxy if required: proxy.sha.sap.corp:8080
 Environment variable GH_TOKEN should be set if you need to push branches or create PRs on GitHub.
 
 ## Git Rules
-- NEVER run `git config user.name` or `git config user.email` (local or global). The git identity is pre-configured by the container. Setting it locally will cause wrong author on commits.
-- NEVER run `git config --global` for any setting. Global config is managed by the container startup script.
+- NEVER run `git config user.name` or `git config user.email` (local or global). The git identity is pre-configured by the container. Setting it locally will cause the wrong author on commits.
+- NEVER run `git config --global` for any setting. Global config is managed by the container's startup script.
 
 ## Development Workflow
 - Always create a feature branch: git checkout -b feat/<name>
 - After changes, run tests: cd jyc && cargo test
 - Commit with clear messages describing what changed and why
 - Push immediately after committing (do not leave unpushed commits)
-- Push and create PR when instructed
+- Push and create a PR when instructed
 
 ## Build Environment
 - The source is bind-mounted from the host (macOS) into the container (Linux)
 - CARGO_TARGET_DIR is set to /tmp/jyc-target to avoid cross-platform conflicts with the host's target/ directory
 - Do NOT build into ./target/ directly — always use the CARGO_TARGET_DIR environment variable (already set)
-- Rust is pre-installed in the dev image. If using production image, install on-demand:
+- Rust is pre-installed in the dev image. If using the production image, install it on-demand:
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source "$HOME/.cargo/env"`
 
 ## Build (when instructed)
-Follow TWO-PHASE CONFIRMATION above before executing.
+MUST follow TWO-PHASE CONFIRMATION above before executing.
+MUST execute EXACTLY these commands in order:
+
 1. Ensure Rust is installed (see above)
 2. cd jyc && cargo test
 3. cargo build --release
 4. $CARGO_TARGET_DIR/release/jyc --version
 5. Report: version, binary size, test results
 
+CRITICAL: Do NOT improvise or use alternative build commands.
+
 ## Deploy (when instructed)
-Follow TWO-PHASE CONFIRMATION above before executing.
+MUST follow TWO-PHASE CONFIRMATION above before executing.
+
 WARNING: Deploy causes JYC to restart. Your session will be interrupted.
-1. Verify $CARGO_TARGET_DIR/release/jyc exists
-2. Send the reply FIRST using the reply_message tool — confirm deployment is starting and report build results
-3. AFTER the reply is sent, run the deploy commands:
+WARNING: A startup notification email will confirm the new version is running.
+
+MUST execute EXACTLY these steps in order:
+
+Step 1: Verify $CARGO_TARGET_DIR/release/jyc exists
+Step 2: Send a reply FIRST using the reply_message tool — confirm the deployment is starting and report the build results
+Step 3: AFTER the reply is sent, execute these deploy commands EXACTLY:
    ```
    cp $CARGO_TARGET_DIR/release/jyc /usr/local/bin/jyc && s6-svc -r /run/service/jyc
    ```
-4. STOP immediately after running the deploy command. Do NOT run any more commands.
-   A startup notification email confirms the new version is running.
+Step 4: STOP immediately after running the deploy commands. Do NOT run any more commands.
 
-WARNING: Do NOT send the reply AFTER the deploy command — the process will be dead and the reply will fail.
-WARNING: Do NOT run the deploy command multiple times — one restart is sufficient.
+CRITICAL Warnings:
+- Do NOT send a reply AFTER the deploy commands — the process will be dead and the reply will fail
+- Do NOT run the deploy commands multiple times — one restart is sufficient
+- Do NOT improvise or use alternative commands (e.g., do NOT use `s6-svc -t /run/service/jyc` or any other variant)
 
 ## Build and Deploy (when instructed)
-Follow TWO-PHASE CONFIRMATION above before executing.
-1. Run Build steps (test + compile)
-2. Run Deploy steps (reply first, then cp + restart, then STOP)
+MUST follow TWO-PHASE CONFIRMATION above before executing.
+MUST execute EXACTLY these steps in order:
+
+1. Run the Build steps above (test + compile)
+2. Run the Deploy steps above (reply first, then cp + restart, then STOP)
 
 ## References
 - See jyc/DESIGN.md for architecture and component responsibilities

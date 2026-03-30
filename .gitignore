@@ -12,4 +12,3 @@ docker/.env
 # JYC binary and backup (for systemd supervision)
 jyc
 jyc.bak
-run-jyc.sh

@@ -91,6 +91,7 @@ systemctl --user start jyc
 ./jyc-ctl.sh restart
 
 # Stop jyc
+# WARN:-As AI never call this command, it will break the whole process
 ./jyc-ctl.sh stop
 
 # Start jyc
@@ -110,6 +111,7 @@ journalctl --user -u jyc -f
 systemctl --user restart jyc
 
 # Stop service
+# WARN:-As AI never call this command, it will break the whole process
 systemctl --user stop jyc
 
 # Start service

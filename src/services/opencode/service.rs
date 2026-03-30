@@ -106,6 +106,7 @@ impl OpenCodeService {
         let system_prompt = prompt_builder::build_system_prompt(
             thread_path,
             self.agent_config.opencode.as_ref().and_then(|o| o.system_prompt.as_deref()),
+            agent_mode.as_deref(),
         ).await;
 
         let user_prompt = prompt_builder::build_prompt(

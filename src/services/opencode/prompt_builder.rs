@@ -10,9 +10,13 @@ use crate::utils::constants::MAX_BODY_IN_PROMPT;
 /// Includes:
 /// - Configured system prompt (from agent config)
 /// - Security: directory boundary rules
-/// - Reply instructions (use jiny_reply_reply_message tool)
+/// - Reply instructions (mode-specific: plan = text-only, build = use reply tool)
 /// - Optional thread-specific system.md
-pub async fn build_system_prompt(thread_path: &Path, config_system_prompt: Option<&str>) -> String {
+pub async fn build_system_prompt(
+    thread_path: &Path,
+    config_system_prompt: Option<&str>,
+    mode: Option<&str>,
+) -> String {
     let mut prompt = String::new();
 
     // Config-level system prompt
@@ -34,6 +38,24 @@ pub async fn build_system_prompt(thread_path: &Path, config_system_prompt: Optio
 ## Important: Focus on the Current Message
 You MUST only respond to the CURRENT "Incoming Message". Do NOT continue work from previous messages.
 After you have replied to the current message, STOP. Do not do anything else.
+"#,
+        thread_path.display()
+    ));
+
+    // Mode-specific reply instructions
+    if mode == Some("plan") {
+        prompt.push_str(
+            r#"## PLAN MODE: Read-Only
+
+## Reply Instructions
+- DO NOT use the jiny_reply_reply_message tool — it requires write permissions which are blocked.
+- Simply provide your text response as natural language output.
+- Focus on analysis, planning, and recommendations.
+"#,
+        );
+    } else {
+        prompt.push_str(
+            r#"## BUILD MODE: Full Execution
 
 ## Reply Instructions
 When replying to a message, use the jiny_reply_reply_message tool:
@@ -42,8 +64,8 @@ When replying to a message, use the jiny_reply_reply_message tool:
 After a successful reply, STOP immediately. Do NOT call any other tools or perform further actions.
 CRITICAL: Always use jiny_reply_reply_message tool.
 "#,
-        thread_path.display()
-    ));
+        );
+    }
 
     // Thread-specific system.md
     let system_md_path = thread_path.join("system.md");
@@ -139,11 +161,12 @@ mod tests {
     #[tokio::test]
     async fn test_build_system_prompt() {
         let tmp = tempfile::tempdir().unwrap();
-        let prompt = build_system_prompt(tmp.path(), Some("Be helpful.")).await;
+        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("build")).await;
 
         assert!(prompt.contains("Be helpful."));
         assert!(prompt.contains("jiny_reply_reply_message"));
         assert!(prompt.contains("Directory Boundaries"));
+        assert!(prompt.contains("BUILD MODE"));
     }
 
     #[tokio::test]
@@ -153,8 +176,20 @@ mod tests {
             .await
             .unwrap();
 
-        let prompt = build_system_prompt(tmp.path(), None).await;
+        let prompt = build_system_prompt(tmp.path(), None, None).await;
         assert!(prompt.contains("You are a code reviewer."));
+        assert!(prompt.contains("BUILD MODE"));
+    }
+
+    #[tokio::test]
+    async fn test_build_system_prompt_plan_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("plan")).await;
+
+        assert!(prompt.contains("Be helpful."));
+        assert!(prompt.contains("PLAN MODE"));
+        assert!(prompt.contains("DO NOT use the jiny_reply_reply_message tool"));
+        assert!(!prompt.contains("Always use jiny_reply_reply_message tool"));
     }
 
     #[tokio::test]

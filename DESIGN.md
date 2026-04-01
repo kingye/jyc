@@ -78,7 +78,8 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  └─────────────┘  └─────────────┘  └─────────────┘                     │
 │                                                                          │
 │  New thread arrives → tokio::spawn → acquire semaphore permit            │
-│  Worker loop: recv from thread's mpsc → process → recv next              │
+│  Worker loop: recv from mpsc → process (rx passed to agent for           │
+│    live injection) → recv next                                           │
 │  Thread queue empty + no pending → release permit, task exits            │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │
@@ -642,7 +643,7 @@ impl ThreadManager {
 
 **Key properties:**
 - **Bounded concurrency**: `Semaphore(3)` — at most 3 threads process messages simultaneously
-- **Per-thread ordering**: Each thread's `mpsc::Receiver` ensures FIFO order within a conversation
+- **Per-thread ordering**: Each thread's `mpsc::Receiver` ensures FIFO order. Messages arriving during AI processing are injected live into the session (not queued).
 - **Back-pressure**: `mpsc::channel(10)` — `try_send` fails when queue is full (message dropped)
 - **Graceful shutdown**: `CancellationToken` propagates to all workers and monitors
 - **Automatic cleanup**: Worker tasks exit when their mpsc channel closes (all senders dropped) or on cancellation. Semaphore permits are released on `_permit` drop.
@@ -719,7 +720,8 @@ impl ThreadManager {
 │  │    event = sse.next() => {                               │       │
 │  │      match event.type:                                   │       │
 │  │        "server.connected"    → log, confirm alive        │       │
-│  │        "message.updated"     → capture model info        │       │
+│  │        "message.updated"     → capture model info,       │       │
+│  │                                update reply-context.json  │       │
 │  │        "message.part.updated"→ accumulate parts,         │       │
 │  │                                detect tool calls,        │       │
 │  │                                update last_activity      │       │
@@ -729,13 +731,22 @@ impl ThreadManager {
 │  │                                ContextOverflow → retry   │       │
 │  │    }                                                     │       │
 │  │                                                          │       │
+│  │    new_msg = pending_rx.recv() => {                      │       │
+│  │      // Live message injection                           │       │
+│  │      1. Store new message → received.md (new dir)        │       │
+│  │      2. Strip quoted history from body                   │       │
+│  │      3. Update reply-context.json (new messageDir)       │       │
+│  │      4. Send body via prompt_async (follow-up prompt)    │       │
+│  │      → AI receives it in same conversation context       │       │
+│  │    }                                                     │       │
+│  │                                                          │       │
 │  │    _ = activity_timeout_check => {                       │       │
 │  │      // tokio::time::interval(5s)                        │       │
 │  │      if now - last_activity > 30min (60min if tool) {    │       │
 │  │        → timeout, break loop                             │       │
 │  │      }                                                   │       │
 │  │      if now - last_progress_log > 10s {                  │       │
-│  │        → log progress, call on_progress callback         │       │
+│  │        → log progress                                    │       │
 │  │      }                                                   │       │
 │  │    }                                                     │       │
 │  │                                                          │       │
@@ -911,6 +922,7 @@ pub trait AgentService: Send + Sync {
     async fn process(
         &self, message: &InboundMessage, thread_name: &str,
         thread_path: &Path, message_dir: &str,
+        pending_rx: &mut mpsc::Receiver<QueueItem>,
     ) -> Result<AgentResult>;
 }
 
@@ -949,7 +961,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 
 ```rust
 // ThreadManager dispatches to agent, then outbound:
-let result = agent.process(&message, thread_name, thread_path, message_dir).await?;
+let result = agent.process(&message, thread_name, thread_path, message_dir, &mut rx).await?;
 
 if !result.reply_sent_by_tool {
     if let Some(ref text) = result.reply_text {
@@ -1115,7 +1127,7 @@ JYC uses the following subset of the OpenCode server API:
 │          ▼            ▼                                               │
 │  ┌──────────┐  ┌──────────────────────────────────────────┐          │
 │  │ STOP     │  │ 5. DISPATCH TO AGENT                     │          │
-│  │ (no AI)  │  │    agent.process() → AgentResult         │          │
+│  │ (no AI)  │  │    agent.process(pending_rx) → AgentResult  │          │
 │  │ return   │  │                                          │          │
 │  └──────────┘  │ 6. HANDLE RESULT                         │          │
 │                │    If reply_sent_by_tool → done           │          │

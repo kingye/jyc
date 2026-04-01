@@ -396,7 +396,11 @@ impl OpenCodeClient {
                             // Inject the body into the AI session (if non-empty)
                             if !cleaned_body.trim().is_empty() {
                                 let injection_prompt = format!(
-                                    "## Follow-up Message\n\n{}",
+                                    "## Follow-up from User\n\n\
+                                     The user has sent an additional message while you are still working.\n\
+                                     Incorporate this into your current task — do NOT start over.\n\
+                                     Continue your work and address both the original request and this follow-up in a single reply.\n\n\
+                                     {}",
                                     cleaned_body.trim()
                                 );
 

@@ -353,4 +353,5 @@ fn is_prompt_echo(text: &str) -> bool {
     trimmed.starts_with("## Incoming Message")
         || trimmed.starts_with("## Conversation history")
         || trimmed.starts_with("<system-reminder>")
+        || trimmed.starts_with("## Follow-up from User")
 }

@@ -7,6 +7,9 @@ use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompat
 
 use crate::config::types::ImapConfig;
 
+/// Timeout for IMAP commands (select, fetch, etc.) to detect dead TCP connections.
+const IMAP_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The stream type: TLS over tokio TCP (via compat layers).
 /// async-native-tls gives us a futures-io TlsStream.
 /// async-imap with runtime-tokio wants tokio::io::AsyncRead/Write.
@@ -43,9 +46,13 @@ impl ImapClient {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         tracing::debug!(addr = %addr, "Connecting to IMAP server");
 
-        let tcp = TcpStream::connect(&addr)
-            .await
-            .with_context(|| format!("failed to connect to {addr}"))?;
+        let tcp = tokio::time::timeout(
+            IMAP_CMD_TIMEOUT,
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("TCP connect to {addr} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
+        .with_context(|| format!("failed to connect to {addr}"))?;
 
         // tokio TcpStream → futures-io compat (for async-native-tls)
         let tcp_compat = tcp.compat();
@@ -115,9 +122,9 @@ impl ImapClient {
     pub async fn select(&mut self, mailbox: &str) -> Result<u32> {
         let session = self.session_mut()?;
 
-        let mbox = session
-            .select(mailbox)
+        let mbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(mailbox))
             .await
+            .map_err(|_| anyhow::anyhow!("IMAP SELECT '{}' timed out ({}s)", mailbox, IMAP_CMD_TIMEOUT.as_secs()))?
             .map_err(|e| anyhow::anyhow!("IMAP SELECT '{}' failed: {}", mailbox, e))?;
 
         let count = mbox.exists;
@@ -131,10 +138,13 @@ impl ImapClient {
         let session = self.session_mut()?;
 
         let range = format!("{from}:{to}");
-        let mut messages = session
-            .fetch(&range, "(UID BODY.PEEK[] FLAGS)")
-            .await
-            .with_context(|| format!("failed to fetch range {range}"))?;
+        let mut messages = tokio::time::timeout(
+            IMAP_CMD_TIMEOUT,
+            session.fetch(&range, "(UID BODY.PEEK[] FLAGS)"),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("IMAP FETCH {range} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
+        .with_context(|| format!("failed to fetch range {range}"))?;
 
         let mut results = Vec::new();
         while let Some(msg) = messages.next().await {
@@ -157,10 +167,13 @@ impl ImapClient {
         let session = self.session_mut()?;
 
         let uid_str = uid.to_string();
-        let mut messages = session
-            .uid_fetch(&uid_str, "(UID BODY.PEEK[] FLAGS)")
-            .await
-            .with_context(|| format!("failed to fetch UID {uid}"))?;
+        let mut messages = tokio::time::timeout(
+            IMAP_CMD_TIMEOUT,
+            session.uid_fetch(&uid_str, "(UID BODY.PEEK[] FLAGS)"),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("IMAP UID FETCH {uid} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
+        .with_context(|| format!("failed to fetch UID {uid}"))?;
 
         while let Some(msg) = messages.next().await {
             let msg = msg.context("error reading fetch stream")?;

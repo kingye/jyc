@@ -152,9 +152,9 @@ impl ImapMonitor {
                 tracing::debug!("Entering IDLE mode");
                 // Wrap IDLE in a hard timeout to guard against half-open TCP connections.
                 // The IMAP-level timeout (29 min) may not fire if the TCP socket is dead.
-                // Use 5 min to detect dead connections quickly while allowing normal IDLE
+                // Use 2 min to detect dead connections quickly while allowing normal IDLE
                 // to return on new mail. The monitor re-enters IDLE on the next loop iteration.
-                let idle_timeout = std::time::Duration::from_secs(5 * 60); // 5 min hard limit
+                let idle_timeout = std::time::Duration::from_secs(2 * 60); // 2 min hard limit
                 tokio::select! {
                     result = tokio::time::timeout(idle_timeout, client.idle()) => {
                         match result {
@@ -164,7 +164,7 @@ impl ImapMonitor {
                                 client.disconnect().await.ok();
                             }
                             Err(_) => {
-                                tracing::warn!("IDLE hard timeout (5 min), connection likely dead, reconnecting");
+                                tracing::warn!("IDLE hard timeout (2 min), connection likely dead, reconnecting");
                                 client.disconnect().await.ok();
                             }
                         }

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::Path;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -45,6 +44,7 @@ impl CommandHandler for ResetCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::Arc;
 
     fn test_context(thread_path: &Path) -> CommandContext {

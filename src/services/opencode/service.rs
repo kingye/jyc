@@ -48,7 +48,7 @@ impl OpenCodeService {
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
     ) -> Result<GenerateReplyResult> {
-        let ch = &message.channel;
+        let _ch = &message.channel;
 
         // 1. Ensure OpenCode server is running
         let base_url = self.server.base_url().await?;
@@ -180,7 +180,7 @@ impl OpenCodeService {
         thread_name: &str,
         thread_path: &Path,
         client: &OpenCodeClient,
-        session_id: &str,
+        _session_id: &str,
         request: &PromptRequest,
         mode_label: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
@@ -282,7 +282,7 @@ impl OpenCodeService {
     async fn handle_blocking_result(
         &self,
         result: PromptResponse,
-        thread_name: &str,
+        _thread_name: &str,
         thread_path: &Path,
         _client: &OpenCodeClient,
         _session_id: &str,
@@ -340,7 +340,9 @@ impl AgentService for OpenCodeService {
 struct GenerateReplyResult {
     reply_sent_by_tool: bool,
     reply_text: Option<String>,
+    #[allow(dead_code)]
     model_id: Option<String>,
+    #[allow(dead_code)]
     provider_id: Option<String>,
 }
 

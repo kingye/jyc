@@ -84,6 +84,7 @@ pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext> {
 ///
 /// Note: Not called during normal operation; context persists to
 /// support multiple replies in the same thread.
+#[allow(dead_code)]
 pub async fn cleanup_reply_context(thread_path: &Path) {
     let path = thread_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
     if path.exists() {

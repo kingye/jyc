@@ -20,12 +20,14 @@ use crate::services::agent::AgentService;
 /// An item in a thread's message queue.
 pub struct QueueItem {
     pub message: InboundMessage,
+    #[allow(dead_code)]
     pub pattern_match: PatternMatch,
     pub attachment_config: Option<AttachmentConfig>,
 }
 
 /// Per-thread queue stats.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct QueueStats {
     pub active_workers: usize,
     pub total_threads: usize,
@@ -197,6 +199,7 @@ impl ThreadManager {
         }.instrument(tm_span))
     }
 
+    #[allow(dead_code)]
     pub async fn get_stats(&self) -> QueueStats {
         let queues = self.thread_queues.lock().await;
         let total_threads = queues.len();

@@ -468,7 +468,7 @@ impl OpenCodeClient {
         &self,
         event: &SseEvent,
         session_id: &str,
-        mode_label: &str,
+        _mode_label: &str,
         parts: &mut HashMap<String, ResponsePart>,
         result: &mut SseResult,
         last_activity: &mut Instant,

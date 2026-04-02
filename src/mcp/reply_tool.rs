@@ -78,7 +78,7 @@ impl ReplyToolHandler {
     async fn reply_message(
         &self,
         Parameters(params): Parameters<ReplyMessageParams>,
-    ) -> Result<CallToolResult, rmcp::Error> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let cwd = std::env::current_dir().unwrap_or_default();
         let logger = McpLogger::new(&cwd);
 
@@ -173,7 +173,7 @@ async fn handle_reply(
     let sender_address = parsed.sender_address
         .ok_or_else(|| anyhow::anyhow!("sender_address not found in received.md frontmatter"))?;
     let topic = parsed.topic.unwrap_or_default();
-    let timestamp = parsed.timestamp.unwrap_or_default();
+    let _timestamp = parsed.timestamp.unwrap_or_default();
     let external_id = parsed.external_id;
     let thread_refs = parsed.thread_refs;
 

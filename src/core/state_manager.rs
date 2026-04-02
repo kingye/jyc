@@ -206,16 +206,19 @@ impl StateManager {
     }
 
     /// Get the UID validity value.
+    #[allow(dead_code)]
     pub fn uid_validity(&self) -> Option<u32> {
         self.state.uid_validity
     }
 
     /// Update the UID validity.
+    #[allow(dead_code)]
     pub fn update_uid_validity(&mut self, validity: u32) {
         self.state.uid_validity = Some(validity);
     }
 
     /// Get the current state (for display).
+    #[allow(dead_code)]
     pub fn state(&self) -> &MonitorState {
         &self.state
     }

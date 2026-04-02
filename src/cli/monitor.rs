@@ -64,7 +64,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // 3. Start alert service (if configured)
     // We need a reference outbound adapter for alerts — we'll create it from the first channel's config
     // For now, alert service is started per-channel below (using that channel's outbound)
-    let mut alert_handle = AppLogger::noop();
+    let mut _alert_handle = AppLogger::noop();
     let mut alert_task: Option<tokio::task::JoinHandle<()>> = None;
 
     // 4. Process each email channel
@@ -137,7 +137,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         cancel.clone(),
                     );
                     let (handle, task) = alert_service.start();
-                    alert_handle = handle;
+                    _alert_handle = handle;
                     alert_task = Some(task);
                     tracing::info!("Alert service started");
 

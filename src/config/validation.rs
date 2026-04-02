@@ -228,6 +228,7 @@ fn validate_attachment_config(
 }
 
 /// Convenience: validate and return a Result.
+#[allow(dead_code)]
 pub fn validate_config_strict(config: &AppConfig) -> Result<()> {
     let errors = validate_config(config);
     if errors.is_empty() {

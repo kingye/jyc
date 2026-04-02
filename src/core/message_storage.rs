@@ -13,6 +13,7 @@ pub struct StoreResult {
     /// Name of the message directory (e.g., "2026-03-19_23-02-20")
     pub message_dir: String,
     /// Full path to the message directory
+    #[allow(dead_code)]
     pub message_path: PathBuf,
 }
 

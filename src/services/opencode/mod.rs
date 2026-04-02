@@ -2,6 +2,7 @@ pub mod client;
 pub mod prompt_builder;
 pub mod service;
 pub mod session;
+#[allow(dead_code)]
 pub mod types;
 
 use anyhow::{Context, Result};
@@ -74,7 +75,7 @@ impl OpenCodeServer {
 
     /// Wait for the server stdout to print "opencode server listening on <url>".
     /// This is how the SDK detects readiness.
-    async fn wait_for_listening(&self, child: &mut Child, port: u16) -> Result<String> {
+    async fn wait_for_listening(&self, child: &mut Child, _port: u16) -> Result<String> {
         let stdout = child
             .stdout
             .take()
@@ -143,6 +144,7 @@ impl OpenCodeServer {
     }
 
     /// Get the current port (if running).
+    #[allow(dead_code)]
     pub async fn port(&self) -> Option<u16> {
         *self.port.lock().await
     }

@@ -5,7 +5,6 @@ use std::path::Path;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::services::opencode::client::OpenCodeClient;
-use crate::services::opencode::types::ProvidersResponse;
 
 /// Clean pattern by removing unnecessary escapes that might come from email systems.
 /// If pattern is "ark\*" (likely from email escaping), convert to "ark*".

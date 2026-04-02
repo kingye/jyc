@@ -31,11 +31,13 @@ impl CommandRegistry {
     }
 
     /// Get a handler by name.
+    #[allow(dead_code)]
     pub fn get(&self, name: &str) -> Option<&dyn CommandHandler> {
         self.handlers.get(name).map(|h| h.as_ref())
     }
 
     /// List all registered handlers.
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<&dyn CommandHandler> {
         self.handlers.values().map(|h| h.as_ref()).collect()
     }

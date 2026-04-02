@@ -42,6 +42,7 @@ pub struct CommandResult {
     /// Error message (if !success)
     pub error: Option<String>,
     /// Whether the OpenCode server needs to be restarted
+    #[allow(dead_code)]
     pub requires_restart: bool,
 }
 
@@ -53,6 +54,7 @@ pub struct CommandOutput {
     /// Message body with command lines stripped
     pub cleaned_body: String,
     /// Whether the body was empty after stripping (command-only message)
+    #[allow(dead_code)]
     pub body_empty: bool,
 }
 
@@ -76,6 +78,7 @@ impl CommandOutput {
     }
 
     /// Whether any command requires an OpenCode server restart.
+    #[allow(dead_code)]
     pub fn requires_restart(&self) -> bool {
         self.results.iter().any(|r| r.requires_restart)
     }
@@ -90,6 +93,7 @@ pub trait CommandHandler: Send + Sync {
     fn name(&self) -> &str;
 
     /// Short description of the command
+    #[allow(dead_code)]
     fn description(&self) -> &str;
 
     /// Execute the command with the given context.

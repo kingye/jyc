@@ -1,9 +1,11 @@
+#[allow(dead_code)]
 pub mod constants;
 pub mod helpers;
 
 use thiserror::Error;
 
 /// Top-level application errors
+#[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum JycError {
     #[error("Configuration error: {0}")]

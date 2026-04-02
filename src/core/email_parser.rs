@@ -163,11 +163,15 @@ pub struct ParsedStoredMessage {
     pub timestamp: Option<String>,
     pub topic: Option<String>,
     pub body: String,
+    #[allow(dead_code)]
     pub channel: Option<String>,
+    #[allow(dead_code)]
     pub uid: Option<String>,
     pub external_id: Option<String>,
+    #[allow(dead_code)]
     pub reply_to_id: Option<String>,
     pub thread_refs: Option<Vec<String>>,
+    #[allow(dead_code)]
     pub matched_pattern: Option<String>,
 }
 
@@ -329,6 +333,7 @@ pub fn parse_stored_reply(content: &str) -> String {
 
 /// Format a date-time for display in quoted history headers.
 /// Output format: "YYYY-MM-DD HH:MM"
+#[allow(dead_code)]
 pub fn format_datetime_iso(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
@@ -400,6 +405,7 @@ pub struct TrailEntry {
     pub topic: String,
     pub body_text: String,
     /// "received" or "reply"
+    #[allow(dead_code)]
     pub entry_type: String,
 }
 

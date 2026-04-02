@@ -79,8 +79,8 @@ CRITICAL: Always use jiny_reply_reply_message tool.
 /// Note: Reply context is saved to disk (.jyc/reply-context.json), NOT embedded in prompt.
 pub async fn build_prompt(
     message: &InboundMessage,
-    thread_path: &Path,
-    message_dir: &str,
+    _thread_path: &Path,
+    _message_dir: &str,
 ) -> Result<String> {
     let mut prompt = String::new();
 

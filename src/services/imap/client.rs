@@ -163,6 +163,7 @@ impl ImapClient {
     }
 
     /// Fetch a single email by UID.
+    #[allow(dead_code)]
     pub async fn fetch_uid(&mut self, uid: u32) -> Result<Option<FetchedEmail>> {
         let session = self.session_mut()?;
 

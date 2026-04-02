@@ -69,11 +69,17 @@ fn init_tracing(debug: bool, verbose: bool) {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(filter));
 
-    tracing_subscriber::fmt()
+    let base = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
-        .with_thread_ids(false)
-        .init();
+        .with_thread_ids(false);
+
+    // Skip tracing's timestamp when running under systemd (journal adds its own)
+    if std::env::var("JOURNAL_STREAM").is_ok() {
+        base.without_time().init();
+    } else {
+        base.init();
+    }
 }
 
 fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {

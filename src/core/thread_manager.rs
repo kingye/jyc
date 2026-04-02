@@ -88,6 +88,10 @@ impl ThreadManager {
     ) {
         let mut queues = self.thread_queues.lock().await;
 
+        // Periodic cleanup: remove closed senders to prevent unbounded HashMap growth.
+        // This is cheap (O(n) scan) and only retains senders that are still open.
+        queues.retain(|_name, sender| !sender.is_closed());
+
         let item = QueueItem {
             message,
             pattern_match,
@@ -126,7 +130,17 @@ impl ThreadManager {
         queues.insert(thread_name.clone(), tx);
 
         let handle = self.spawn_worker(thread_name, rx);
-        self.worker_handles.lock().await.push(handle);
+
+        // Drain completed worker handles to prevent unbounded Vec growth.
+        let mut handles = self.worker_handles.lock().await;
+        let mut pending = Vec::with_capacity(handles.len() + 1);
+        for h in handles.drain(..) {
+            if !h.is_finished() {
+                pending.push(h);
+            }
+        }
+        pending.push(handle);
+        *handles = pending;
     }
 
     fn spawn_worker(

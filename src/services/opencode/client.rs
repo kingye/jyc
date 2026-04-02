@@ -27,6 +27,14 @@ impl OpenCodeClient {
         }
     }
 
+    /// Create a client reusing an existing reqwest::Client (shares connection pool).
+    pub fn with_http_client(base_url: &str, http: reqwest::Client) -> Self {
+        Self {
+            http,
+            base_url: base_url.to_string(),
+        }
+    }
+
     /// Build a request with the x-opencode-directory header.
     fn directory_header(directory: &Path) -> (&'static str, String) {
         (

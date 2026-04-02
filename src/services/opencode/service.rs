@@ -21,6 +21,8 @@ pub struct OpenCodeService {
     server: Arc<OpenCodeServer>,
     agent_config: Arc<AgentConfig>,
     workdir: PathBuf,
+    /// Shared HTTP client — reused across all requests to share connection pool.
+    http_client: reqwest::Client,
 }
 
 impl OpenCodeService {
@@ -33,6 +35,7 @@ impl OpenCodeService {
             server,
             agent_config,
             workdir,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -49,7 +52,7 @@ impl OpenCodeService {
 
         // 1. Ensure OpenCode server is running
         let base_url = self.server.base_url().await?;
-        let client = OpenCodeClient::new(&base_url);
+        let client = OpenCodeClient::with_http_client(&base_url, self.http_client.clone());
 
         // 2. Ensure thread has opencode.json
         let config_changed = session::ensure_thread_opencode_setup(

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::config::types::AppConfig;
 
 /// Context passed to a command handler during execution.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CommandContext {
     /// Command arguments (everything after the command name)
     pub args: Vec<String>,
@@ -16,6 +16,20 @@ pub struct CommandContext {
     pub config: Arc<AppConfig>,
     /// Channel name
     pub channel: String,
+    /// Agent service (optional, for commands that need to query server)
+    pub agent: Option<Arc<dyn crate::services::agent::AgentService>>,
+}
+
+impl std::fmt::Debug for CommandContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandContext")
+            .field("args", &self.args)
+            .field("thread_path", &self.thread_path)
+            .field("config", &self.config)
+            .field("channel", &self.channel)
+            .field("agent", &self.agent.is_some())
+            .finish()
+    }
 }
 
 /// Result of executing a command.

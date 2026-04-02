@@ -26,6 +26,10 @@ impl StaticAgentService {
 
 #[async_trait]
 impl AgentService for StaticAgentService {
+    async fn base_url(&self) -> Result<String> {
+        anyhow::bail!("Static agent mode does not use OpenCode server")
+    }
+
     async fn process(
         &self,
         _message: &InboundMessage,

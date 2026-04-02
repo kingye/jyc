@@ -34,6 +34,10 @@ pub struct AgentResult {
 /// - Storing replies — that's the outbound adapter
 #[async_trait]
 pub trait AgentService: Send + Sync {
+    /// Get the OpenCode server base URL.
+    /// Returns error if this agent mode doesn't use OpenCode.
+    async fn base_url(&self) -> Result<String>;
+
     /// Generate a response for a message.
     ///
     /// `pending_rx` allows the agent to monitor for new messages arriving

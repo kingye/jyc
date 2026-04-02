@@ -3,13 +3,15 @@ use async_trait::async_trait;
 use std::path::Path;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use crate::services::opencode::client::OpenCodeClient;
+use crate::services::opencode::types::{Model, ProvidersResponse};
 
 /// /model command — switch AI model for this thread.
 ///
 /// Usage:
 ///   /model <model-id>    Switch to a specific model
 ///   /model reset          Reset to default model from config
-///   /model                List available (not yet implemented)
+///   /model                Show current model and list available models
 pub struct ModelCommandHandler;
 
 #[async_trait]
@@ -29,7 +31,7 @@ impl CommandHandler for ModelCommandHandler {
         let override_path = jyc_dir.join("model-override");
 
         if context.args.is_empty() {
-            // /model with no args — show current model
+            // /model with no args — show current model and list available
             let current = if override_path.exists() {
                 let model = tokio::fs::read_to_string(&override_path)
                     .await
@@ -40,9 +42,47 @@ impl CommandHandler for ModelCommandHandler {
             } else {
                 "default from config".to_string()
             };
+
+            let models_list = if let Some(agent) = context.agent {
+                match agent.base_url().await {
+                    Ok(base_url) => {
+                        let client = OpenCodeClient::new(&base_url);
+                        match client.get_providers(&context.thread_path).await {
+                            Ok(providers) => {
+                                let mut all_models: Vec<String> = Vec::new();
+                                for provider in &providers.all {
+                                    for (_model_id, model) in &provider.models {
+                                        all_models.push(format!("  - {}/{}", provider.id, model.id));
+                                    }
+                                }
+                                all_models.sort();
+                                if all_models.is_empty() {
+                                    "\nNo models available from OpenCode server.".to_string()
+                                } else {
+                                    format!("\nAvailable models:\n{}", all_models.join("\n"))
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to fetch providers");
+                                "\nFailed to fetch available models from OpenCode server.".to_string()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to get OpenCode server URL");
+                        "\nFailed to connect to OpenCode server.".to_string()
+                    }
+                }
+            } else {
+                "\nNo agent service available to list models.".to_string()
+            };
+
             return Ok(CommandResult {
                 success: true,
-                message: format!("/model: current model is {current}. Use /model <model-id> to switch, /model reset to revert."),
+                message: format!(
+                    "/model: current model is {current}.{}\n\nUse /model <model-id> to switch, /model reset to revert.",
+                    models_list
+                ),
                 error: None,
                 requires_restart: false,
             });
@@ -114,6 +154,7 @@ mode = "opencode"
                 .unwrap(),
             ),
             channel: "test".into(),
+            agent: None,
         }
     }
 
@@ -151,5 +192,17 @@ mode = "opencode"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!jyc_dir.join("model-override").exists());
+    }
+
+    #[tokio::test]
+    async fn test_model_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ModelCommandHandler;
+        let ctx = test_context(tmp.path());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("current model is"));
+        assert!(result.message.contains("No agent service available"));
     }
 }

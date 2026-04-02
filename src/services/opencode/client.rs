@@ -113,6 +113,30 @@ impl OpenCodeClient {
         }
     }
 
+    /// Get all available providers and their models.
+    pub async fn get_providers(&self, directory: &Path) -> Result<ProvidersResponse> {
+        let url = format!("{}/provider", self.base_url);
+        let (hdr_name, hdr_val) = Self::directory_header(directory);
+
+        let resp = self
+            .http
+            .get(&url)
+            .header(hdr_name, &hdr_val)
+            .timeout(OPENCODE_HEALTH_CHECK_TIMEOUT)
+            .send()
+            .await
+            .context("get_providers request failed")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("get_providers failed ({}): {}", status, body);
+        }
+
+        let providers: ProvidersResponse = resp.json().await.context("parse providers response")?;
+        Ok(providers)
+    }
+
     // --- Prompt API ---
 
     /// Send an async prompt (returns immediately, results via SSE).

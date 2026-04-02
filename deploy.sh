@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Ignore hangup signal — this script may outlive its parent process
+# (e.g., when jyc deploys itself via OpenCode).
+trap '' HUP
+
 echo "=== JYC Deployment Script ==="
 
 # Set directories (can be overridden via environment)

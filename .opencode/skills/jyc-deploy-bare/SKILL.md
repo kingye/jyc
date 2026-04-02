@@ -45,7 +45,7 @@ Step 1: Verify jyc/target/release/jyc exists
 Step 2: Send reply FIRST using reply_message tool — confirm deployment is starting and report build results
 Step 3: AFTER reply is sent, execute these deploy commands EXACTLY:
    ```
-   cd jyc && nohup ./deploy.sh &
+   cd jyc && nohup ./deploy.sh > /tmp/jyc-deploy.log 2>&1 & disown
    ```
 Step 4: STOP immediately after running the deploy commands. Do NOT run any more commands.
 

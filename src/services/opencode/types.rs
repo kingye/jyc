@@ -9,12 +9,37 @@ pub struct CreateSessionRequest {
     pub title: String,
 }
 
+/// Model reference for prompt requests (provider + model ID).
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRef {
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(rename = "modelID")]
+    pub model_id: String,
+}
+
+impl ModelRef {
+    /// Parse a combined model string like "provider/model-id" into a ModelRef.
+    ///
+    /// Returns None if the string doesn't contain a "/" separator.
+    pub fn from_combined(combined: &str) -> Option<Self> {
+        let (provider, model) = combined.split_once('/')?;
+        if provider.is_empty() || model.is_empty() {
+            return None;
+        }
+        Some(Self {
+            provider_id: provider.to_string(),
+            model_id: model.to_string(),
+        })
+    }
+}
+
 /// Body for prompt requests (both async and blocking).
 #[derive(Debug, Serialize)]
 pub struct PromptRequest {
     pub system: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub model: Option<ModelRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     pub parts: Vec<PromptPart>,

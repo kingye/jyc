@@ -174,3 +174,32 @@ pub struct GenerateReplyResult {
     /// Mode used for generation
     pub mode: Option<String>,
 }
+
+/// Model information.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Model {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Provider information.
+#[derive(Debug, Deserialize)]
+pub struct Provider {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub models: HashMap<String, Model>,
+}
+
+/// Response from /provider endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ProvidersResponse {
+    #[serde(default)]
+    pub all: Vec<Provider>,
+    #[serde(default)]
+    pub default: HashMap<String, String>,
+    #[serde(default)]
+    pub connected: Vec<String>,
+}

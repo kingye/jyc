@@ -169,7 +169,7 @@ impl ThreadManager {
                     &thread_name,
                     &storage,
                     &outbound,
-                    agent.as_ref(),
+                    agent.clone(),
                     &mut rx,
                 ).await {
                     tracing::error!(
@@ -221,7 +221,7 @@ async fn process_message(
     thread_name: &str,
     storage: &MessageStorage,
     outbound: &EmailOutboundAdapter,
-    agent: &dyn AgentService,
+    agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
 ) -> Result<()> {
     let message = &item.message;
@@ -258,6 +258,7 @@ async fn process_message(
             "[general]\n[agent]\nenabled = true\nmode = \"opencode\""
         ).unwrap()),
         channel: message.channel.clone(),
+        agent: Some(agent.clone()),
     };
 
     let cmd_output = command_registry

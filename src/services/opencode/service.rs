@@ -306,6 +306,10 @@ impl OpenCodeService {
 
 #[async_trait]
 impl AgentService for OpenCodeService {
+    async fn base_url(&self) -> Result<String> {
+        self.server.base_url().await
+    }
+
     async fn process(
         &self,
         message: &InboundMessage,

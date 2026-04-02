@@ -75,6 +75,7 @@ mode = "opencode"
                 .unwrap(),
             ),
             channel: "test".into(),
+            agent: None,
         }
     }
 

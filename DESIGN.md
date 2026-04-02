@@ -1389,7 +1389,7 @@ pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Resul
 /// Load from .jyc/reply-context.json (called by MCP reply tool from cwd)
 pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext>
 
-/// Delete after successful send (cleanup)
+/// Delete reply context file (used for tests and manual cleanup)
 pub async fn cleanup_reply_context(thread_path: &Path)
 ```
 
@@ -1397,8 +1397,9 @@ pub async fn cleanup_reply_context(thread_path: &Path)
 1. `OpenCodeService` saves `.jyc/reply-context.json` before sending the prompt
 2. AI calls `reply_message(message, attachments)` — no token parameter
 3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= thread directory)
-4. After successful send, reply tool deletes the context file (cleanup)
-5. If AI doesn't use the tool (fallback path), the file stays on disk (overwritten by next message)
+4. After successful send, context file persists (not deleted) to allow multiple replies in same thread
+5. Context file is overwritten on each new incoming message
+6. `cleanup_reply_context()` is only used for tests and manual cleanup operations
 
 **Why disk-based?** Zero corruption risk — the context never passes through the AI. The AI only receives the prompt text (incoming message body). All routing and metadata is on disk.
 
@@ -1416,8 +1417,9 @@ MCP Server (rmcp, stdio transport, cwd = thread dir):
   6. Instantiate OutboundAdapter for channel → send reply with attachments
   7. MessageStorage::store_reply() → reply.md
   8. Write .jyc/reply-sent.flag (signal file)
-  9. Delete .jyc/reply-context.json (cleanup)
-  9. Return success message
+   9. Write .jyc/reply-sent.flag (signal file)
+   9. Return success message
+   (Context file persists for multiple replies in same thread)
 ```
 
 ### Historical Message Quoting (Thread Trail)

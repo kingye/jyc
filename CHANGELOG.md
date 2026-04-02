@@ -2,6 +2,37 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.0.12] - 2026-04-02
+
+### Fixed
+
+**Multiple reply support**
+- Reply context file (`.jyc/reply-context.json`) now persists between replies instead of being deleted after each send
+- Allows AI models to send multiple replies in the same thread without file-not-found errors
+- Context file is overwritten on each new incoming message; cleanup only for tests and manual operations
+- Updated documentation in `DESIGN.md` to reflect new lifecycle
+
+### Added
+
+**Live message injection**
+- Follow-up messages sent during AI processing are injected into the ongoing session via `prompt_async`
+- Queue receiver (`rx`) flows through: ThreadManager → AgentService → OpenCodeService → SSE Client
+- New `tokio::select!` arm in SSE loop monitors `pending_rx.recv()` for incoming messages
+- Injected messages: stored as `received.md`, reply-context.json updated, body sent as raw prompt (same as OpenCode TUI)
+- OpenCode API `POST /session/:id/prompt_async` supports sending to busy sessions
+- AgentService trait: added `pending_rx: &mut mpsc::Receiver<QueueItem>` parameter
+- QueueItem made public for cross-module access
+
+**Logging improvements**
+- `<system-reminder>` filtered from `is_prompt_echo()` — prevents OpenCode plan mode reminders from appearing in fallback replies
+- `<system-reminder>` filtered from AI response text DEBUG log
+- Session retry logs include `message` field for better debugging
+- `logged_tools` HashSet cleared on retry — retried tool calls are now visible in logs
+
+### Changed
+- Injection prompt: raw body only (no framing instructions) — matches OpenCode TUI behavior
+- Dev build profile: reduced debug info (debug=1, no debug for deps) for faster builds
+
 ## [0.0.11] - 2026-04-01
 
 ### Added

@@ -8,7 +8,8 @@ const REPLY_CONTEXT_FILENAME: &str = "reply-context.json";
 ///
 /// Written by OpenCodeService before sending the prompt.
 /// Read by reply_tool from cwd (= thread directory).
-/// Deleted by reply_tool after successful send.
+/// Overwritten on each new incoming message; persists between replies
+/// to allow multiple replies in the same thread.
 ///
 /// This replaces the old REPLY_TOKEN approach where context was passed
 /// through the AI as a base64 token (prone to corruption by AI models).
@@ -79,9 +80,10 @@ pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext> {
     Ok(ctx)
 }
 
-/// Delete the reply context file after successful send (cleanup).
+/// Delete the reply context file (used for tests and manual cleanup).
 ///
-/// Called by the MCP reply tool after the reply is sent.
+/// Note: Not called during normal operation; context persists to
+/// support multiple replies in the same thread.
 pub async fn cleanup_reply_context(thread_path: &Path) {
     let path = thread_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
     if path.exists() {

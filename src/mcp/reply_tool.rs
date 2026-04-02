@@ -7,7 +7,7 @@ use rmcp::{
 };
 use std::path::{Path, PathBuf};
 
-use super::context::{load_reply_context, cleanup_reply_context};
+use super::context::load_reply_context;
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::types::OutboundAttachment;
 use crate::config;
@@ -290,11 +290,7 @@ async fn handle_reply(
     .ok();
     logger.log("INFO", "Signal file written");
 
-    // 11. Cleanup reply context file (no longer needed after send)
-    cleanup_reply_context(thread_path).await;
-    logger.log("INFO", "Reply context cleaned up");
-
-    // 11. Return success
+    // Return success
     let mut result = format!(
         "Reply sent successfully via {} to {}",
         ctx.channel, sender_address

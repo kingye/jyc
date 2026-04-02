@@ -43,11 +43,13 @@ MUST execute EXACTLY these steps in order:
 
 Step 1: Verify jyc/target/release/jyc exists
 Step 2: Send reply FIRST using reply_message tool — confirm deployment is starting and report build results
-Step 3: AFTER reply is sent, execute these deploy commands EXACTLY:
+Step 3: AFTER reply is sent, execute this deploy command EXACTLY:
    ```
-   cd jyc && nohup ./deploy.sh > /tmp/jyc-deploy.log 2>&1 & disown
+   systemd-run --user --unit=jyc-deploy --working-directory=$(pwd)/jyc bash ./deploy.sh
    ```
-Step 4: STOP immediately after running the deploy commands. Do NOT run any more commands.
+   This runs deploy.sh as a separate systemd transient unit, outside the jyc service cgroup,
+   so it survives the jyc service stop/restart cycle.
+Step 4: STOP immediately after running the deploy command. Do NOT run any more commands.
 
 CRITICAL Warnings:
 - Do NOT send reply AFTER the deploy command — process will be dead and reply will fail

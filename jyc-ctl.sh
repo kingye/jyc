@@ -5,7 +5,7 @@ case "$1" in
     systemctl --user status jyc
     ;;
   logs)
-    journalctl --user -u jyc -f
+    journalctl --user -u jyc -n 100 -f
     ;;
   restart)
     systemctl --user restart jyc

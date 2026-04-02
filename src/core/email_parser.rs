@@ -110,6 +110,10 @@ pub fn strip_quoted_history(text: &str) -> String {
     result_lines.join("\n")
 }
 
+/// Regex for collapsing excessive blank lines (4+ newlines → 3).
+static BLANK_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n{4,}").unwrap());
+
 /// Clean an email body at the inbound boundary.
 ///
 /// - Normalize whitespace
@@ -124,8 +128,7 @@ pub fn clean_email_body(text: &str) -> String {
     result = result.replace('\0', "");
 
     // Collapse more than 3 consecutive blank lines into 2
-    let blank_line_re = Regex::new(r"\n{4,}").unwrap();
-    result = blank_line_re.replace_all(&result, "\n\n\n").to_string();
+    result = BLANK_LINE_RE.replace_all(&result, "\n\n\n").to_string();
 
     result.trim().to_string()
 }

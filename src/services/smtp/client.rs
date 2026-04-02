@@ -3,6 +3,8 @@ use lettre::message::header::{ContentType, InReplyTo, References};
 use lettre::message::{Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::config::types::SmtpConfig;
 
@@ -29,49 +31,58 @@ pub fn markdown_to_html(markdown: &str) -> String {
     comrak::markdown_to_html(markdown, &options)
 }
 
+// --- Static regexes for html_to_markdown (compiled once) ---
+static STYLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap());
+static SCRIPT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap());
+static HEAD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?si)<head[^>]*>.*?</head>").unwrap());
+static COMMENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
+static META_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<meta[^>]*>").unwrap());
+static LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<link[^>]*>").unwrap());
+static CSS_RULE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@(?:import|media)[^{]*\{[^}]*\}").unwrap());
+static CSS_IMPORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@import\s+url\([^)]*\)\s*;?").unwrap());
+static TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+
 /// HTML to Markdown conversion using htmd.
 ///
 /// Strips email HTML boilerplate (style tags, CSS, meta tags, comments)
 /// before converting visible content to markdown.
 pub fn html_to_markdown(html: &str) -> String {
-    use regex::Regex;
-
     let mut cleaned = html.to_string();
 
     // Remove <style>...</style> blocks (including content)
-    let style_re = Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap();
-    cleaned = style_re.replace_all(&cleaned, "").to_string();
+    cleaned = STYLE_RE.replace_all(&cleaned, "").to_string();
 
     // Remove <script>...</script> blocks
-    let script_re = Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap();
-    cleaned = script_re.replace_all(&cleaned, "").to_string();
+    cleaned = SCRIPT_RE.replace_all(&cleaned, "").to_string();
 
     // Remove <head>...</head> blocks
-    let head_re = Regex::new(r"(?si)<head[^>]*>.*?</head>").unwrap();
-    cleaned = head_re.replace_all(&cleaned, "").to_string();
+    cleaned = HEAD_RE.replace_all(&cleaned, "").to_string();
 
     // Remove HTML comments
-    let comment_re = Regex::new(r"(?s)<!--.*?-->").unwrap();
-    cleaned = comment_re.replace_all(&cleaned, "").to_string();
+    cleaned = COMMENT_RE.replace_all(&cleaned, "").to_string();
 
     // Remove <meta> tags
-    let meta_re = Regex::new(r"(?i)<meta[^>]*>").unwrap();
-    cleaned = meta_re.replace_all(&cleaned, "").to_string();
+    cleaned = META_RE.replace_all(&cleaned, "").to_string();
 
     // Remove <link> tags (CSS includes)
-    let link_re = Regex::new(r"(?i)<link[^>]*>").unwrap();
-    cleaned = link_re.replace_all(&cleaned, "").to_string();
+    cleaned = LINK_RE.replace_all(&cleaned, "").to_string();
 
     // Remove @import and @media CSS rules that leak into text
-    let css_rule_re = Regex::new(r"@(?:import|media)[^{]*\{[^}]*\}").unwrap();
-    cleaned = css_rule_re.replace_all(&cleaned, "").to_string();
-    let css_import_re = Regex::new(r"@import\s+url\([^)]*\)\s*;?").unwrap();
-    cleaned = css_import_re.replace_all(&cleaned, "").to_string();
+    cleaned = CSS_RULE_RE.replace_all(&cleaned, "").to_string();
+    cleaned = CSS_IMPORT_RE.replace_all(&cleaned, "").to_string();
 
     htmd::convert(&cleaned).unwrap_or_else(|_| {
         // If htmd fails, do basic tag stripping
-        let tag_re = Regex::new(r"<[^>]+>").unwrap();
-        tag_re.replace_all(&cleaned, "").to_string()
+        TAG_RE.replace_all(&cleaned, "").to_string()
     })
 }
 

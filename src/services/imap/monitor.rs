@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -76,9 +76,15 @@ impl ImapMonitor {
                     Err(e) => {
                         reconnect_attempts += 1;
                         if reconnect_attempts as usize > max_retries {
-                            return Err(e).context(format!(
-                                "IMAP connect failed after {max_retries} retries"
-                            ));
+                            // Don't give up — cap the counter and keep retrying at max backoff.
+                            // The monitor must survive extended outages (server maintenance,
+                            // network partitions) and recover automatically.
+                            tracing::error!(
+                                error = %e,
+                                attempts = reconnect_attempts,
+                                "IMAP connect failed after {max_retries} retries, will keep retrying at max backoff"
+                            );
+                            reconnect_attempts = max_retries as u32;
                         }
                         let delay = backoff_delay(reconnect_attempts);
                         tracing::warn!(
@@ -107,9 +113,11 @@ impl ImapMonitor {
                     );
                     client.disconnect().await.ok();
                     if reconnect_attempts as usize > max_retries {
-                        return Err(e).context(format!(
-                            "IMAP select failed after {max_retries} retries"
-                        ));
+                        // Don't give up — cap the counter and keep retrying at max backoff.
+                        tracing::error!(
+                            "IMAP select failed after {max_retries} retries, will keep retrying at max backoff"
+                        );
+                        reconnect_attempts = max_retries as u32;
                     }
                     let delay = backoff_delay(reconnect_attempts);
                     tracing::warn!(
@@ -128,7 +136,11 @@ impl ImapMonitor {
                 .check_for_new(&mut client, current_count, folder)
                 .await
             {
-                tracing::error!(error = %e, "Error checking for new messages");
+                tracing::error!(error = %e, "Error checking for new messages, forcing disconnect");
+                // Force disconnect so the next iteration reconnects cleanly
+                // instead of entering IDLE on a potentially dead connection.
+                client.disconnect().await.ok();
+                continue;
             }
 
             // Wait for next check

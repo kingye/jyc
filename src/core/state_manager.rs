@@ -37,6 +37,11 @@ pub struct StateManager {
 }
 
 impl StateManager {
+    /// Compact when the processed UIDs set exceeds this many entries.
+    const COMPACTION_THRESHOLD: usize = 5000;
+    /// Keep UIDs within this many sequence numbers below `last_sequence_number`.
+    const COMPACTION_KEEP_BUFFER: u32 = 1000;
+
     /// Create a StateManager for a specific channel.
     ///
     /// State files live in `<workdir>/<channel_name>/.imap/`.
@@ -126,6 +131,56 @@ impl StateManager {
             .await
             .with_context(|| format!("failed to open {}", uids_file.display()))?;
         file.write_all(format!("{uid}\n").as_bytes()).await?;
+
+        // Auto-compact when the set grows beyond a reasonable threshold.
+        // This prevents unbounded memory growth over months of operation.
+        if self.processed_uids.len() > Self::COMPACTION_THRESHOLD {
+            self.compact().await.ok();
+        }
+
+        Ok(())
+    }
+
+    /// Compact the processed UIDs set by removing UIDs below a safe floor.
+    ///
+    /// Keeps only UIDs >= (last_sequence_number - COMPACTION_KEEP_BUFFER) to
+    /// prevent unbounded growth while still protecting against reprocessing
+    /// of recent messages.
+    async fn compact(&mut self) -> Result<()> {
+        let floor = self
+            .state
+            .last_sequence_number
+            .saturating_sub(Self::COMPACTION_KEEP_BUFFER);
+
+        if floor == 0 {
+            return Ok(());
+        }
+
+        let before = self.processed_uids.len();
+        self.processed_uids.retain(|&uid| uid >= floor);
+        let after = self.processed_uids.len();
+
+        if before == after {
+            return Ok(());
+        }
+
+        // Rewrite the file with the compacted set
+        let uids_file = self.state_dir.join(".processed-uids.txt");
+        let content: String = self
+            .processed_uids
+            .iter()
+            .map(|uid| format!("{uid}\n"))
+            .collect();
+        tokio::fs::write(&uids_file, content)
+            .await
+            .with_context(|| format!("failed to write compacted {}", uids_file.display()))?;
+
+        tracing::info!(
+            before = before,
+            after = after,
+            floor = floor,
+            "Compacted processed UIDs"
+        );
 
         Ok(())
     }

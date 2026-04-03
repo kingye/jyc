@@ -182,6 +182,7 @@ pub async fn ensure_thread_opencode_setup(
             "plan": {
                 "permission": {
                     "edit": "deny",
+                    "write": "deny",
                     "bash": {
                         "*": "deny",
                         "ls *": "allow",

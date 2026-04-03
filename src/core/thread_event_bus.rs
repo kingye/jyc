@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
-use super::thread_event::ThreadEvent;
+use crate::core::thread_event::ThreadEvent;
 
 /// Thread-isolated event bus trait.
 /// 
@@ -25,10 +25,11 @@ pub trait ThreadEventBus: Send + Sync {
 
 /// Simple implementation of a thread-isolated event bus.
 /// 
-/// Uses a single-producer, multi-consumer channel with bounded capacity
-/// to prevent unbounded memory growth.
+/// Uses a broadcast channel to support multiple subscribers.
+/// Events are sent to all active subscribers.
 pub struct SimpleThreadEventBus {
     tx: mpsc::Sender<ThreadEvent>,
+    subscribers: Mutex<Vec<mpsc::Sender<ThreadEvent>>>,
 }
 
 impl SimpleThreadEventBus {
@@ -38,32 +39,55 @@ impl SimpleThreadEventBus {
     /// `publish` starts blocking or returning errors.
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = mpsc::channel(capacity);
-        Self { tx }
+        Self {
+            tx,
+            subscribers: Mutex::new(Vec::new()),
+        }
+    }
+    
+    /// Internal method to forward events to all subscribers.
+    async fn forward_to_subscribers(&self, event: ThreadEvent) {
+        let mut subscribers = self.subscribers.lock().await;
+        
+        // Remove closed subscribers
+        subscribers.retain(|subscriber| !subscriber.is_closed());
+        
+        // Forward event to all active subscribers
+        for subscriber in subscribers.iter() {
+            // Clone the event for each subscriber
+            let event_clone = event.clone();
+            let subscriber_clone = subscriber.clone();
+            
+            // Spawn a task to send without blocking
+            tokio::spawn(async move {
+                let _ = subscriber_clone.send(event_clone).await;
+            });
+        }
     }
 }
 
 #[async_trait]
 impl ThreadEventBus for SimpleThreadEventBus {
     async fn publish(&self, event: ThreadEvent) -> Result<()> {
+        // Send to the main channel
         self.tx
-            .send(event)
+            .send(event.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to publish event: {}", e))
+            .context("Failed to publish event to main channel")?;
+        
+        // Forward to all subscribers
+        self.forward_to_subscribers(event).await;
+        
+        Ok(())
     }
     
     async fn subscribe(&self) -> Result<mpsc::Receiver<ThreadEvent>> {
-        // For SimpleThreadEventBus, we need to create a new channel
-        // and forward events from the main channel to each subscriber.
-        // This is a simplified implementation - in practice we might
-        // want to use a broadcast channel or similar.
         let (tx, rx) = mpsc::channel(10);
         
-        // Clone the sender for the forwarding task
-        let main_tx = self.tx.clone();
+        // Add to subscribers list
+        let mut subscribers = self.subscribers.lock().await;
+        subscribers.push(tx);
         
-        // In a real implementation, we'd set up forwarding here.
-        // For now, we'll return a receiver that will never receive anything
-        // (placeholder implementation).
         Ok(rx)
     }
 }

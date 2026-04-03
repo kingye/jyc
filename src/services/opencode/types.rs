@@ -151,6 +151,9 @@ pub struct MessageInfo {
     pub provider_id: Option<String>,
     #[serde(default, rename = "modelID")]
     pub model_id: Option<String>,
+    /// The agent mode OpenCode actually used (e.g., "build", "plan").
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// Session status from `session.status` events.

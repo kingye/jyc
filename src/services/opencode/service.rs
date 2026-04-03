@@ -95,6 +95,13 @@ impl OpenCodeService {
 
         let mode_label = agent_mode.as_deref().unwrap_or("build").to_string();
 
+        tracing::info!(
+            mode = %mode_label,
+            mode_override = ?mode_override,
+            agent = ?agent_mode,
+            "Agent mode resolved"
+        );
+
         // 6. Save reply context to disk for the MCP reply tool
         // The reply tool reads from .jyc/reply-context.json instead of a token in the prompt
         let thread_name_str = thread_name.to_string();

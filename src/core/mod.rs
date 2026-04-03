@@ -8,3 +8,5 @@ pub mod thread_manager;
 pub mod alert_service;
 #[allow(dead_code)]
 pub mod progress_tracker;
+pub mod thread_event;
+pub mod thread_event_bus;

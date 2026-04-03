@@ -394,21 +394,6 @@ impl OpenCodeClient {
                             "Progress"
                         );
 
-                        let preview: String = parts.values()
-                            .filter_map(|p| p.text.as_ref())
-                            .map(|t| t.as_str())
-                            .collect::<Vec<_>>()
-                            .join("");
-                        if !preview.is_empty() {
-                            let truncated = if preview.chars().count() > 200 {
-                                let s: String = preview.chars().take(200).collect();
-                                format!("{}...", s)
-                            } else {
-                                preview
-                            };
-                            tracing::debug!(output = %truncated, "Current output preview");
-                        }
-
                         last_progress_log = Instant::now();
                     }
                 }

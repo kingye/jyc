@@ -217,4 +217,53 @@ impl EmailOutboundAdapter {
 
         Ok(SendResult { message_id })
     }
+
+    /// Send a heartbeat/progress update with more detailed information.
+    /// This is similar to send_progress_update but includes additional context.
+    pub async fn send_heartbeat(
+        &self,
+        original: &InboundMessage,
+        elapsed_secs: u64,
+        activity: &str,
+        progress: &str,
+    ) -> Result<SendResult> {
+        let _elapsed_ms = elapsed_secs * 1000;
+        let elapsed_secs_total = elapsed_secs;
+        let minutes = elapsed_secs_total / 60;
+        let seconds = elapsed_secs_total % 60;
+
+        let subject = format!("[Processing Update] {}", original.topic);
+        let body = format!(
+            "Your message is still being processed.\n\n\
+             **Time elapsed:** {}m {}s\n\
+             **Current activity:** {}\n\
+             **Progress:** {}\n\n\
+             You will receive the full reply when processing is complete.",
+            minutes, seconds, activity, progress
+        );
+
+        let mut smtp = self.smtp.lock().await;
+        let mut refs: Vec<String> = original
+            .thread_refs
+            .clone()
+            .unwrap_or_default();
+        if let Some(ref ext_id) = original.external_id {
+            refs.push(ext_id.clone());
+        }
+
+        let message_id = smtp
+            .send_reply(
+                &self.from_address,
+                self.from_name.as_deref(),
+                &original.sender_address,
+                &subject,
+                &body,
+                original.external_id.as_deref(),
+                if refs.is_empty() { None } else { Some(&refs) },
+                None,
+            )
+            .await?;
+
+        Ok(SendResult { message_id })
+    }
 }

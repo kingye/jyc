@@ -228,12 +228,10 @@ impl ThreadManager {
 
             tracing::info!("Worker started");
 
-            // Set thread event bus for agent service
-            let _ = agent.set_thread_event_bus(&thread_name, event_bus.clone()).await;
-
             // Create a channel to pass the current message to the event listener
-            let (current_message_tx, current_message_rx) = tokio::sync::watch::channel(None);
-
+            // This is created regardless of whether we have an event bus, for consistency
+            let (current_message_tx, mut current_message_rx) = tokio::sync::watch::channel(None);
+            
             // Start event listener if event bus is provided
             let event_listener_handle = if let Some(event_bus) = event_bus {
                 let outbound_clone = outbound.clone();
@@ -242,7 +240,7 @@ impl ThreadManager {
                 
                 Some(tokio::spawn(async move {
                     // Start event listener with heartbeat timing control
-                    Self::event_listener_with_heartbeat(
+                    event_listener_with_heartbeat(
                         event_bus,
                         thread_name_clone,
                         outbound_clone,
@@ -305,154 +303,133 @@ impl ThreadManager {
             active_workers: total_threads.saturating_sub(active_workers),
             total_threads,
             pending_messages: 0,
-        }
     }
-    
-    /// Event listener that controls heartbeat timing based on HEARTBEAT_INTERVAL.
-    /// Each thread has its own isolated event listener.
-    async fn event_listener_with_heartbeat(
-        event_bus: crate::core::thread_event_bus::ThreadEventBusRef,
-        thread_name: String,
-        outbound: Arc<crate::channels::email::outbound::EmailOutboundAdapter>,
-        current_message_rx: tokio::sync::watch::Receiver<Option<crate::channels::types::InboundMessage>>,
-    ) {
+}
+
+/// Event listener that also controls heartbeat timing based on HEARTBEAT_INTERVAL.
+async fn event_listener_with_heartbeat(
+    event_bus: crate::core::thread_event_bus::ThreadEventBusRef,
+    thread_name: String,
+    outbound: crate::channels::email::outbound::EmailOutboundAdapter,
+    mut current_message_rx: tokio::sync::watch::Receiver<Option<crate::channels::types::InboundMessage>>,
+) {
     use std::time::{Instant, Duration};
     use crate::utils::constants::{HEARTBEAT_INTERVAL, MIN_HEARTBEAT_ELAPSED};
     
-    // Subscribe to this thread's event bus
+    // Subscribe to event bus
     let mut receiver = match event_bus.subscribe().await {
         Ok(receiver) => receiver,
         Err(e) => {
-            tracing::warn!(thread = %thread_name, error = %e, "Failed to subscribe to event bus");
+            tracing::warn!(error = %e, "Failed to subscribe to event bus");
             return;
         }
     };
     
-    // State for this thread's heartbeat control
-    let mut last_heartbeat_sent: Option<Instant> = None;
-    let mut last_processing_state: Option<(u64, String, String)> = None; // (elapsed_secs, activity, progress)
+    // State tracking for heartbeat control
+    struct ListenerState {
+        last_heartbeat_sent: Option<Instant>,
+        last_processing_progress: Option<(u64, String, String, Instant)>, // (elapsed_secs, activity, progress, timestamp)
+    }
     
-    // Heartbeat timer for this thread
-    let mut heartbeat_timer = tokio::time::interval(HEARTBEAT_INTERVAL);
-    heartbeat_timer.tick().await; // Skip immediate tick
+    let mut state = ListenerState {
+        last_heartbeat_sent: None,
+        last_processing_progress: None,
+    };
+    
+    // Create a heartbeat interval
+    let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat_interval.tick().await; // Initial tick
     
     loop {
         tokio::select! {
-            // Receive events from this thread's event bus
+            // Handle incoming events
             event = receiver.recv() => {
                 if let Some(event) = event {
-                    // Clone event for logging (since we might partially move it)
-                    let event_clone = event.clone();
-                    
-                    // Update processing state based on ProcessingProgress events
+                    // Update state based on ProcessingProgress events
                     if let crate::core::thread_event::ThreadEvent::ProcessingProgress {
-                        thread_name: event_thread_name,
                         elapsed_secs,
                         activity,
                         progress,
-                        parts_count: _,
-                        output_length: _,
-                        timestamp: _,
-                    } = &event {
-                        // Verify this event is for our thread (should always be true due to isolation)
-                        if event_thread_name == &thread_name {
-                            let progress_str = progress.clone().unwrap_or_else(|| "Processing...".to_string());
-                            last_processing_state = Some((*elapsed_secs, activity.clone(), progress_str));
-                            tracing::debug!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                activity = %activity,
-                                "Updated processing state"
-                            );
-                        }
+                        timestamp,
+                        ..
+                    } = event {
+                        let progress_str = progress.unwrap_or_else(|| "No progress details".to_string());
+                        state.last_processing_progress = Some((elapsed_secs, activity.clone(), progress_str, Instant::now()));
                     }
                     
-                    // Log other events for debugging
-                    tracing::trace!(
+                    // Log the event for debugging
+                    tracing::debug!(
                         thread = %thread_name,
-                        event = ?event_clone,
+                        event = ?event,
                         "Received thread event"
                     );
                 } else {
-                    tracing::debug!(thread = %thread_name, "Event bus channel closed");
+                    // Channel closed
+                    tracing::debug!("Event bus channel closed");
                     break;
                 }
             }
             
-            // Heartbeat timer tick - check if we should send a heartbeat
-            _ = heartbeat_timer.tick() => {
-                // Get current message for this thread
+            // Check if it's time to send a heartbeat
+            _ = heartbeat_interval.tick() => {
+                // Check if we have a current message
                 let current_message = current_message_rx.borrow().clone();
                 
                 if let Some(message) = current_message {
-                    // Check if we have processing state and should send heartbeat
-                    if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
-                        // Check minimum elapsed time
-                        let processing_elapsed = Duration::from_secs(*elapsed_secs);
-                        if processing_elapsed < MIN_HEARTBEAT_ELAPSED {
-                            tracing::trace!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                "Processing just started, skipping heartbeat"
-                            );
-                            continue;
-                        }
-                        
-                        // Check heartbeat interval
-                        let should_send = match last_heartbeat_sent {
-                            Some(last_sent) => last_sent.elapsed() >= HEARTBEAT_INTERVAL,
-                            None => true, // First heartbeat
-                        };
-                        
-                        if should_send {
-                            tracing::info!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                activity = %activity,
-                                progress = %progress,
-                                "Sending heartbeat (Thread Manager controlled)"
-                            );
+                    // Check if enough time has passed for a heartbeat
+                    let should_send = match (state.last_heartbeat_sent, state.last_processing_progress.as_ref()) {
+                        (Some(last_sent), Some((elapsed_secs, activity, progress, _))) => {
+                            // Check interval and minimum elapsed time
+                            let since_last_heartbeat = last_sent.elapsed();
+                            let processing_elapsed = Duration::from_secs(*elapsed_secs);
                             
-                            match outbound.send_heartbeat(&message, *elapsed_secs, activity, progress).await {
-                                Ok(result) => {
-                                    tracing::debug!(
-                                        thread = %thread_name,
-                                        message_id = %result.message_id,
-                                        "Heartbeat sent successfully"
-                                    );
-                                    last_heartbeat_sent = Some(Instant::now());
+                            if since_last_heartbeat >= HEARTBEAT_INTERVAL && processing_elapsed >= MIN_HEARTBEAT_ELAPSED {
+                                // Send heartbeat using the latest progress information
+                                tracing::info!(
+                                    thread = %thread_name,
+                                    elapsed_secs = elapsed_secs,
+                                    activity = %activity,
+                                    progress = %progress,
+                                    "Sending heartbeat (controlled by Thread Manager)"
+                                );
+                                
+                                match outbound.send_heartbeat(&message, *elapsed_secs, activity, progress).await {
+                                    Ok(result) => {
+                                        tracing::debug!(
+                                            message_id = %result.message_id,
+                                            "Heartbeat sent successfully"
+                                        );
+                                        state.last_heartbeat_sent = Some(Instant::now());
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "Failed to send heartbeat"
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        thread = %thread_name,
-                                        error = %e,
-                                        "Failed to send heartbeat"
-                                    );
-                                }
+                            } else {
+                                tracing::trace!(
+                                    thread = %thread_name,
+                                    since_last_heartbeat = ?since_last_heartbeat,
+                                    processing_elapsed = ?processing_elapsed,
+                                    "Heartbeat interval not yet reached"
+                                );
                             }
-                        } else {
-                            tracing::trace!(
-                                thread = %thread_name,
-                                "Heartbeat interval not yet reached"
-                            );
                         }
-                    } else {
-                        tracing::trace!(
-                            thread = %thread_name,
-                            "No processing state yet, skipping heartbeat"
-                        );
-                    }
+                        _ => {
+                            // Not enough state information yet
+                            tracing::trace!("Insufficient state for heartbeat");
+                        }
+                    };
                 } else {
-                    tracing::trace!(
-                        thread = %thread_name,
-                        "No current message, skipping heartbeat"
-                    );
+                    tracing::trace!("No current message, skipping heartbeat");
                 }
             }
         }
     }
     
-    tracing::debug!(thread = %thread_name, "Event listener with heartbeat finished");
+    tracing::debug!("Event listener with heartbeat finished");
 }
     /// Get the event bus for a specific thread.
     /// 
@@ -632,4 +609,124 @@ async fn process_message(
     }
 
     Ok(())
+}
+
+// Old handle_thread_event function removed - replaced by event_listener_with_heartbeat
+// which properly controls heartbeat timing based on HEARTBEAT_INTERVAL
+        // Heartbeat events from OpenCode Client are ignored - Thread Manager controls timing
+        crate::core::thread_event::ThreadEvent::Heartbeat { 
+            thread_name: event_thread_name,
+            elapsed_secs: _,
+            activity: _,
+            progress: _,
+            timestamp: _ 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            tracing::trace!("Ignoring Heartbeat event from OpenCode Client (Thread Manager controls timing)");
+        }
+        
+        // Handle ProcessingStarted event
+        crate::core::thread_event::ThreadEvent::ProcessingStarted { 
+            thread_name: event_thread_name,
+            message_id,
+            timestamp 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            
+            tracing::info!(
+                thread = %thread_name,
+                message_id = %message_id,
+                "Processing started for message"
+            );
+        }
+        
+        // Handle ProcessingProgress event
+        crate::core::thread_event::ThreadEvent::ProcessingProgress { 
+            thread_name: event_thread_name,
+            elapsed_secs,
+            activity,
+            progress,
+            parts_count,
+            output_length,
+            timestamp 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            
+            tracing::debug!(
+                thread = %thread_name,
+                elapsed_secs = elapsed_secs,
+                activity = %activity,
+                parts_count = parts_count,
+                output_length = output_length,
+                "Processing progress update"
+            );
+        }
+        
+        // Handle ProcessingCompleted event
+        crate::core::thread_event::ThreadEvent::ProcessingCompleted { 
+            thread_name: event_thread_name,
+            message_id,
+            success,
+            duration_secs,
+            timestamp 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            
+            tracing::info!(
+                thread = %thread_name,
+                message_id = %message_id,
+                success = success,
+                duration_secs = duration_secs,
+                "Processing completed"
+            );
+        }
+        
+        // Handle ToolStarted event
+        crate::core::thread_event::ThreadEvent::ToolStarted { 
+            thread_name: event_thread_name,
+            tool_name,
+            timestamp 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            
+            tracing::debug!(
+                thread = %thread_name,
+                tool = %tool_name,
+                "Tool started"
+            );
+        }
+        
+        // Handle ToolCompleted event
+        crate::core::thread_event::ThreadEvent::ToolCompleted { 
+            thread_name: event_thread_name,
+            tool_name,
+            success,
+            duration_secs,
+            timestamp 
+        } => {
+            if event_thread_name != thread_name {
+                return;
+            }
+            
+            tracing::debug!(
+                thread = %thread_name,
+                tool = %tool_name,
+                success = success,
+                duration_secs = duration_secs,
+                "Tool completed"
+            );
+        }
+        
+
+    }
 }

@@ -32,6 +32,8 @@ pub struct OpenCodeService {
     /// Thread-isolated event bus for publishing events (optional).
     /// Wrapped in Mutex to allow runtime configuration.
     event_bus: Mutex<Option<ThreadEventBusRef>>,
+    /// Per-thread event bus mapping for thread isolation.
+    event_bus_map: Mutex<std::collections::HashMap<String, ThreadEventBusRef>>,
 }
 
 impl OpenCodeService {
@@ -41,7 +43,14 @@ impl OpenCodeService {
         agent_config: Arc<AgentConfig>,
         workdir: PathBuf,
     ) -> Self {
-        Self::new_with_event_bus(server, agent_config, workdir, None)
+        Self {
+            server,
+            agent_config,
+            workdir,
+            http_client: reqwest::Client::new(),
+            event_bus: Mutex::new(None),
+            event_bus_map: Mutex::new(std::collections::HashMap::new()),
+        }
     }
     
     /// Create a new OpenCodeService with optional event bus.
@@ -57,6 +66,7 @@ impl OpenCodeService {
             workdir,
             http_client: reqwest::Client::new(),
             event_bus: Mutex::new(event_bus),
+            event_bus_map: Mutex::new(std::collections::HashMap::new()),
         }
     }
     
@@ -162,6 +172,16 @@ impl OpenCodeService {
         *event_bus_lock = event_bus;
     }
 
+    async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
+        // Store event bus in per-thread map
+        let mut event_bus_map = self.event_bus_map.lock().await;
+        if let Some(bus) = event_bus {
+            event_bus_map.insert(thread_name.to_string(), bus);
+        } else {
+            event_bus_map.remove(thread_name);
+        }
+    }
+
     /// Internal: generate AI reply via OpenCode SSE streaming.
     async fn generate_reply(
         &self,
@@ -179,10 +199,10 @@ impl OpenCodeService {
         // 1. Ensure OpenCode server is running
         let base_url = self.server.base_url().await?;
         
-        // Get event bus for OpenCodeClient
-        let event_bus_lock = self.event_bus.lock().await;
-        let event_bus = event_bus_lock.clone();
-        drop(event_bus_lock); // Release lock immediately
+        // Get thread-specific event bus for OpenCodeClient
+        let event_bus_map = self.event_bus_map.lock().await;
+        let event_bus = event_bus_map.get(thread_name).cloned();
+        drop(event_bus_map); // Release lock immediately
         
         let client = OpenCodeClient::with_http_client_and_event_bus(
             &base_url,

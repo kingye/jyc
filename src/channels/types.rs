@@ -186,6 +186,16 @@ pub trait OutboundAdapter: Send + Sync {
         elapsed_ms: u64,
         activity: &str,
     ) -> Result<SendResult>;
+
+    /// Send a heartbeat/progress update with more detailed information.
+    /// This is similar to send_progress_update but includes additional context.
+    async fn send_heartbeat(
+        &self,
+        original: &InboundMessage,
+        elapsed_secs: u64,
+        activity: &str,
+        progress: &str,
+    ) -> Result<SendResult>;
 }
 
 // --- Pattern Types ---

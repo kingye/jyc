@@ -187,13 +187,14 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             }
         };
 
-        let thread_manager = Arc::new(ThreadManager::new(
+        let thread_manager = Arc::new(ThreadManager::new_with_options(
             config.general.max_concurrent_threads,
             config.general.max_queue_size_per_thread,
             storage.clone(),
             outbound.clone(),
             agent,
             cancel.clone(),
+            true, // enable_events: true for Thread Event system
         ));
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone()));

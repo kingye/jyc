@@ -4,6 +4,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 
 use crate::channels::types::InboundMessage;
+use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 
 /// Result of agent processing.
@@ -54,4 +55,8 @@ pub trait AgentService: Send + Sync {
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
     ) -> Result<AgentResult>;
+
+    /// Set thread event bus for this thread.
+    /// This is optional - some agent implementations may not use event buses.
+    async fn set_thread_event_bus(&self, _thread_name: &str, _event_bus: Option<ThreadEventBusRef>) {}
 }

@@ -4,7 +4,7 @@ use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -73,6 +73,38 @@ impl OpenCodeClient {
                 Ok(_) => tracing::debug!("Event published successfully"),
                 Err(e) => tracing::warn!("Failed to publish event: {}", e),
             }
+        }
+    }
+    
+    /// Helper method to publish an event asynchronously without blocking.
+    /// Spawns a task to publish the event in the background.
+    fn publish_event_async(&self, event: ThreadEvent) {
+        if let Some(event_bus) = self.event_bus.clone() {
+            // Log event details for debugging
+            let event_type = match &event {
+                ThreadEvent::Heartbeat { .. } => "Heartbeat",
+                ThreadEvent::ProcessingStarted { .. } => "ProcessingStarted",
+                ThreadEvent::ProcessingProgress { .. } => "ProcessingProgress",
+                ThreadEvent::ProcessingCompleted { .. } => "ProcessingCompleted",
+                ThreadEvent::ToolStarted { .. } => "ToolStarted",
+                ThreadEvent::ToolCompleted { .. } => "ToolCompleted",
+            };
+            let thread_name = event.thread_name();
+            
+            tracing::debug!(
+                event_type = %event_type,
+                thread_name = %thread_name,
+                "Spawning async task to publish thread event"
+            );
+            
+            tokio::spawn(async move {
+                match event_bus.publish(event).await {
+                    Ok(_) => tracing::trace!("Event published asynchronously"),
+                    Err(e) => tracing::debug!("Failed to publish event asynchronously: {}", e),
+                }
+            });
+        } else {
+            tracing::trace!("No event bus available, skipping event publication");
         }
     }
 
@@ -285,11 +317,11 @@ impl OpenCodeClient {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         
-        self.publish_event(ThreadEvent::ProcessingStarted {
+        self.publish_event_async(ThreadEvent::ProcessingStarted {
             thread_name: thread_name.clone(),
             message_id: session_id.to_string(), // Use session_id as proxy for message_id
             timestamp: Utc::now(),
-        }).await;
+        });
 
         // 3. Process SSE events
         let mut result = SseResult::default();
@@ -302,6 +334,7 @@ impl OpenCodeClient {
         let mut done = false;
         let mut logged_tools: HashSet<(String, String)> = HashSet::new();
         let mut model_updated = false;
+        let mut tool_start_times: HashMap<String, Instant> = HashMap::new();
 
         let mut check_interval = tokio::time::interval(ACTIVITY_CHECK_INTERVAL);
 
@@ -348,14 +381,22 @@ impl OpenCodeClient {
                                 continue;
                             };
 
-                            let sse_event = SseEvent {
+                             let sse_event = SseEvent {
                                 event_type: event_type.clone(),
                                 properties,
                             };
 
-                            let event_result = self.handle_sse_event(
+                            // Handle server.heartbeat events - these are just connection keep-alive,
+                            // not meaningful progress events. Thread Manager will control actual heartbeat timing.
+                            if event_type == "server.heartbeat" {
+                                tracing::trace!("SSE: server.heartbeat (connection keep-alive)");
+                                continue;
+                            }
+
+                                let event_result = self.handle_sse_event(
                                     &sse_event,
                                     session_id,
+                                    &thread_name,
                                     mode_label,
                                     &mut parts,
                                     &mut result,
@@ -363,7 +404,9 @@ impl OpenCodeClient {
                                     &mut last_tool_name,
                                     &mut last_status_type,
                                     &mut logged_tools,
-                                );
+                                    &start_time,
+                                    &mut tool_start_times,
+                                ).await;
 
                                 match event_result {
                                     SseAction::Continue => {}
@@ -450,7 +493,7 @@ impl OpenCodeClient {
 
                         // Publish ProcessingProgress event if event bus is available
                         let progress_summary = format!("{} parts, {} chars", parts.len(), output_len);
-                        self.publish_event(ThreadEvent::ProcessingProgress {
+                        self.publish_event_async(ThreadEvent::ProcessingProgress {
                             thread_name: thread_name.clone(),
                             elapsed_secs: elapsed.as_secs(),
                             activity: activity.to_string(),
@@ -458,7 +501,7 @@ impl OpenCodeClient {
                             parts_count: parts.len(),
                             output_length: output_len,
                             timestamp: Utc::now(),
-                        }).await;
+                        });
 
                         last_progress_log = Instant::now();
                     }
@@ -536,22 +579,23 @@ impl OpenCodeClient {
 
         // Publish ProcessingCompleted event if event bus is available
         let duration = start_time.elapsed();
-        self.publish_event(ThreadEvent::ProcessingCompleted {
+        self.publish_event_async(ThreadEvent::ProcessingCompleted {
             thread_name,
             message_id: session_id.to_string(), // Use session_id as proxy for message_id
             success: true, // We only get here if no error occurred
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
-        }).await;
+        });
 
         Ok(result)
     }
 
     /// Handle a single SSE event. Returns action to take.
-    fn handle_sse_event(
+    async fn handle_sse_event(
         &self,
         event: &SseEvent,
         session_id: &str,
+        thread_name: &str,
         _mode_label: &str,
         parts: &mut HashMap<String, ResponsePart>,
         result: &mut SseResult,
@@ -559,6 +603,8 @@ impl OpenCodeClient {
         last_tool_name: &mut Option<String>,
         last_status_type: &mut Option<String>,
         logged_tools: &mut HashSet<(String, String)>,
+        _start_time: &Instant,
+        tool_start_times: &mut HashMap<String, Instant>,
     ) -> SseAction {
         match event.event_type.as_str() {
             "server.connected" => {
@@ -567,7 +613,8 @@ impl OpenCodeClient {
             }
 
             "server.heartbeat" => {
-                // Heartbeat keeps the connection alive but is not session activity
+                // SSE heartbeat events are just connection keep-alive, not meaningful progress events.
+                // They are handled in the prompt_with_sse loop and not converted to ThreadEvent.
                 tracing::trace!("SSE: server.heartbeat");
                 SseAction::Continue
             }
@@ -645,6 +692,16 @@ impl OpenCodeClient {
                                                 input = %input_preview,
                                                 "Tool running"
                                             );
+                                            
+                                            // Record tool start time
+                                            tool_start_times.insert(tool_name.clone(), Instant::now());
+                                            
+                                            // Publish ToolStarted event asynchronously
+                                            self.publish_event_async(ThreadEvent::ToolStarted {
+                                                thread_name: thread_name.to_string(),
+                                                tool_name: tool_name.clone(),
+                                                timestamp: Utc::now(),
+                                            });
                                         }
                                     }
                                     "completed" => {
@@ -669,6 +726,21 @@ impl OpenCodeClient {
                                                     "Tool completed"
                                                 );
                                             }
+                                            
+                                            // Calculate tool duration
+                                            let duration_secs = tool_start_times
+                                                .remove(tool_name)
+                                                .map(|start_time| start_time.elapsed().as_secs())
+                                                .unwrap_or(0);
+                                            
+                                            // Publish ToolCompleted event asynchronously
+                                            self.publish_event_async(ThreadEvent::ToolCompleted {
+                                                thread_name: thread_name.to_string(),
+                                                tool_name: tool_name.clone(),
+                                                success: true,
+                                                duration_secs,
+                                                timestamp: Utc::now(),
+                                            });
                                         }
                                     }
                                     "error" => {
@@ -678,6 +750,21 @@ impl OpenCodeClient {
                                             error = ?state.error,
                                             "Tool error"
                                         );
+                                        
+                                        // Calculate tool duration even on error
+                                        let duration_secs = tool_start_times
+                                            .remove(tool_name)
+                                            .map(|start_time| start_time.elapsed().as_secs())
+                                            .unwrap_or(0);
+                                        
+                                        // Publish ToolCompleted event asynchronously with success=false
+                                        self.publish_event_async(ThreadEvent::ToolCompleted {
+                                            thread_name: thread_name.to_string(),
+                                            tool_name: tool_name.clone(),
+                                            success: false,
+                                            duration_secs,
+                                            timestamp: Utc::now(),
+                                        });
                                     }
                                     _ => {}
                                 }

@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 use super::agent::{AgentResult, AgentService};
 use crate::channels::types::InboundMessage;
+use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 
 /// Static agent — replies with a fixed text (no AI).
@@ -44,5 +45,9 @@ impl AgentService for StaticAgentService {
             reply_sent_by_tool: false,
             reply_text: Some(self.reply_text.clone()),
         })
+    }
+
+    async fn set_thread_event_bus(&self, _thread_name: &str, _event_bus: Option<ThreadEventBusRef>) {
+        // Static agent doesn't use event bus
     }
 }

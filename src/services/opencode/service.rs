@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::Utc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -68,6 +69,26 @@ impl OpenCodeService {
         }
     }
     
+    /// Helper method to publish ProcessingCompleted event.
+    async fn publish_processing_completed(
+        &self,
+        thread_name: &str,
+        message_id: String,
+        start_time: chrono::DateTime<Utc>,
+        success: bool,
+    ) {
+        let duration = Utc::now().signed_duration_since(start_time);
+        let duration_secs = duration.num_seconds() as u64;
+        
+        self.publish_event(ThreadEvent::ProcessingCompleted {
+            thread_name: thread_name.to_string(),
+            message_id,
+            success,
+            duration_secs,
+            timestamp: Utc::now(),
+        }).await;
+    }
+    
     /// Set the event bus for this agent.
     /// This allows the event bus to be set after the agent is created.
     pub async fn set_event_bus(&self, event_bus: Option<ThreadEventBusRef>) {
@@ -85,6 +106,14 @@ impl OpenCodeService {
         pending_rx: &mut mpsc::Receiver<QueueItem>,
     ) -> Result<GenerateReplyResult> {
         let _ch = &message.channel;
+
+        // 0. Publish ProcessingStarted event if event bus is available
+        let start_time = Utc::now();
+        self.publish_event(ThreadEvent::ProcessingStarted {
+            thread_name: thread_name.to_string(),
+            message_id: message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            timestamp: start_time,
+        }).await;
 
         // 1. Ensure OpenCode server is running
         let base_url = self.server.base_url().await?;
@@ -198,7 +227,7 @@ impl OpenCodeService {
                 self.handle_sse_result(
                     result, thread_name, thread_path,
                     &client, &session_id, &request, &mode_label, pending_rx,
-                ).await?
+                ).await
             }
             Err(e) => {
                 tracing::error!(error = %e, "SSE streaming failed, trying blocking fallback");
@@ -208,13 +237,36 @@ impl OpenCodeService {
                 self.handle_blocking_result(
                     blocking_result, thread_name, thread_path,
                     &client, &session_id, &request,
-                ).await?
+                ).await
             }
         };
 
         session::update_session_timestamp(thread_path).await.ok();
 
-        Ok(result)
+        // Handle the result and publish ProcessingCompleted event
+        match &result {
+            Ok(_) => {
+                // Publish ProcessingCompleted event for success
+                self.publish_processing_completed(
+                    thread_name,
+                    message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    start_time,
+                    true, // success
+                ).await;
+            }
+            Err(e) => {
+                // Publish ProcessingCompleted event for failure
+                self.publish_processing_completed(
+                    thread_name,
+                    message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    start_time,
+                    false, // failure
+                ).await;
+                tracing::warn!(error = %e, "generate_reply failed");
+            }
+        }
+
+        result
     }
 
     /// Handle SSE streaming result.

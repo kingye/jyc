@@ -69,6 +69,14 @@ initial_delay_secs = 180
 interval_secs = 180
 max_messages = 5
 
+# Session summary configuration
+# Automatically generates summaries for long-running sessions
+[agent.summary]
+enabled = true                    # Enable session summary feature
+timeout_hours = 2.0              # Generate summary after 2 hours of inactivity
+max_summaries = 50               # Maximum number of summary files to keep
+storage_dir = ".jyc/session-summaries"  # Directory to store summary files
+
 # [agent.attachments]
 # enabled = true
 # max_file_size = "10mb"

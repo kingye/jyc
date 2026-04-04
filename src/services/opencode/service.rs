@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use super::client::{OpenCodeClient, SseResult};
@@ -9,6 +10,7 @@ use super::types::*;
 use super::{session, prompt_builder, OpenCodeServer};
 use crate::channels::types::InboundMessage;
 use crate::config::types::AgentConfig;
+use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 use crate::services::agent::{AgentResult, AgentService};
@@ -25,7 +27,8 @@ pub struct OpenCodeService {
     /// Shared HTTP client — reused across all requests to share connection pool.
     http_client: reqwest::Client,
     /// Thread-isolated event bus for publishing events (optional).
-    event_bus: Option<ThreadEventBusRef>,
+    /// Wrapped in Mutex to allow runtime configuration.
+    event_bus: Mutex<Option<ThreadEventBusRef>>,
 }
 
 impl OpenCodeService {
@@ -50,8 +53,26 @@ impl OpenCodeService {
             agent_config,
             workdir,
             http_client: reqwest::Client::new(),
-            event_bus,
+            event_bus: Mutex::new(event_bus),
         }
+    }
+    
+    /// Helper method to publish an event if event bus is available.
+    async fn publish_event(&self, event: ThreadEvent) {
+        let event_bus_lock = self.event_bus.lock().await;
+        if let Some(event_bus) = &*event_bus_lock {
+            match event_bus.publish(event).await {
+                Ok(_) => tracing::debug!("Event published successfully"),
+                Err(e) => tracing::warn!("Failed to publish event: {}", e),
+            }
+        }
+    }
+    
+    /// Set the event bus for this agent.
+    /// This allows the event bus to be set after the agent is created.
+    pub async fn set_event_bus(&self, event_bus: Option<ThreadEventBusRef>) {
+        let mut event_bus_lock = self.event_bus.lock().await;
+        *event_bus_lock = event_bus;
     }
 
     /// Internal: generate AI reply via OpenCode SSE streaming.

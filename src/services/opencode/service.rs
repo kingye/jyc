@@ -134,6 +134,27 @@ impl OpenCodeService {
         last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL
     }
     
+    /// Helper method to publish ProcessingProgress event.
+    async fn publish_processing_progress(
+        &self,
+        thread_name: &str,
+        elapsed_secs: u64,
+        activity: &str,
+        progress: Option<&str>,
+        parts_count: usize,
+        output_length: usize,
+    ) {
+        self.publish_event(ThreadEvent::ProcessingProgress {
+            thread_name: thread_name.to_string(),
+            elapsed_secs,
+            activity: activity.to_string(),
+            progress: progress.map(|s| s.to_string()),
+            parts_count,
+            output_length,
+            timestamp: Utc::now(),
+        }).await;
+    }
+    
     /// Set the event bus for this agent.
     /// This allows the event bus to be set after the agent is created.
     pub async fn set_event_bus(&self, event_bus: Option<ThreadEventBusRef>) {
@@ -152,17 +173,22 @@ impl OpenCodeService {
     ) -> Result<GenerateReplyResult> {
         let _ch = &message.channel;
 
-        // 0. Publish ProcessingStarted event if event bus is available
+        // 0. Record start time (events will be published by OpenCodeClient if event bus is available)
         let start_time = Utc::now();
-        self.publish_event(ThreadEvent::ProcessingStarted {
-            thread_name: thread_name.to_string(),
-            message_id: message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
-            timestamp: start_time,
-        }).await;
 
         // 1. Ensure OpenCode server is running
         let base_url = self.server.base_url().await?;
-        let client = OpenCodeClient::with_http_client(&base_url, self.http_client.clone());
+        
+        // Get event bus for OpenCodeClient
+        let event_bus_lock = self.event_bus.lock().await;
+        let event_bus = event_bus_lock.clone();
+        drop(event_bus_lock); // Release lock immediately
+        
+        let client = OpenCodeClient::with_http_client_and_event_bus(
+            &base_url,
+            self.http_client.clone(),
+            event_bus,
+        );
 
         // 2. Ensure thread has opencode.json
         let config_changed = session::ensure_thread_opencode_setup(
@@ -297,27 +323,19 @@ impl OpenCodeService {
 
         session::update_session_timestamp(thread_path).await.ok();
 
-        // Handle the result and publish ProcessingCompleted event
-        match &result {
-            Ok(_) => {
-                // Publish ProcessingCompleted event for success
-                self.publish_processing_completed(
-                    thread_name,
-                    message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                    start_time,
-                    true, // success
-                ).await;
-            }
-            Err(e) => {
-                // Publish ProcessingCompleted event for failure
-                self.publish_processing_completed(
-                    thread_name,
-                    message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                    start_time,
-                    false, // failure
-                ).await;
-                tracing::warn!(error = %e, "generate_reply failed");
-            }
+        // Handle the result
+        // Note: OpenCodeClient will publish ProcessingCompleted event for successful cases
+        // We only need to handle errors that occur before OpenCodeClient is called
+        if let Err(e) = &result {
+            // Publish ProcessingCompleted event for failure
+            // (errors that occur before OpenCodeClient can publish events)
+            self.publish_processing_completed(
+                thread_name,
+                message.external_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                start_time,
+                false, // failure
+            ).await;
+            tracing::warn!(error = %e, "generate_reply failed");
         }
 
         result

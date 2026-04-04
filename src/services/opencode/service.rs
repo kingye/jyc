@@ -75,7 +75,7 @@ impl OpenCodeService {
         let event_bus_lock = self.event_bus.lock().await;
         if let Some(event_bus) = &*event_bus_lock {
             match event_bus.publish(event).await {
-                Ok(_) => tracing::debug!("Event published successfully"),
+                Ok(_) => tracing::trace!("Event published successfully"),
                 Err(e) => tracing::warn!("Failed to publish event: {}", e),
             }
         }
@@ -173,12 +173,26 @@ impl OpenCodeService {
     }
 
     async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
+        tracing::debug!(
+            thread_name = %thread_name,
+            has_event_bus = event_bus.is_some(),
+            "Setting thread event bus for agent service"
+        );
+        
         // Store event bus in per-thread map
         let mut event_bus_map = self.event_bus_map.lock().await;
         if let Some(bus) = event_bus {
             event_bus_map.insert(thread_name.to_string(), bus);
+            tracing::debug!(
+                thread_name = %thread_name,
+                "Event bus stored in per-thread map"
+            );
         } else {
             event_bus_map.remove(thread_name);
+            tracing::debug!(
+                thread_name = %thread_name,
+                "Event bus removed from per-thread map"
+            );
         }
     }
 
@@ -200,9 +214,21 @@ impl OpenCodeService {
         let base_url = self.server.base_url().await?;
         
         // Get thread-specific event bus for OpenCodeClient
+        tracing::debug!(
+            thread_name = %thread_name,
+            "Getting event bus from map for OpenCodeClient"
+        );
+        
         let event_bus_map = self.event_bus_map.lock().await;
         let event_bus = event_bus_map.get(thread_name).cloned();
+        let has_event_bus = event_bus.is_some();
         drop(event_bus_map); // Release lock immediately
+        
+        tracing::debug!(
+            thread_name = %thread_name,
+            has_event_bus = has_event_bus,
+            "Event bus retrieved for thread"
+        );
         
         let client = OpenCodeClient::with_http_client_and_event_bus(
             &base_url,
@@ -526,6 +552,30 @@ impl AgentService for OpenCodeService {
             reply_sent_by_tool: result.reply_sent_by_tool,
             reply_text: result.reply_text,
         })
+    }
+
+    async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
+        tracing::debug!(
+            thread_name = %thread_name,
+            has_event_bus = event_bus.is_some(),
+            "Setting thread event bus for agent service (AgentService trait implementation)"
+        );
+        
+        // Store event bus in per-thread map
+        let mut event_bus_map = self.event_bus_map.lock().await;
+        if let Some(bus) = event_bus {
+            event_bus_map.insert(thread_name.to_string(), bus);
+            tracing::debug!(
+                thread_name = %thread_name,
+                "Event bus stored in per-thread map (AgentService trait)"
+            );
+        } else {
+            event_bus_map.remove(thread_name);
+            tracing::debug!(
+                thread_name = %thread_name,
+                "Event bus removed from per-thread map (AgentService trait)"
+            );
+        }
     }
 }
 

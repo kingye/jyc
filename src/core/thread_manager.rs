@@ -236,7 +236,7 @@ impl ThreadManager {
 
             // Start event listener if event bus is provided
             let event_listener_handle = if let Some(event_bus) = event_bus {
-                tracing::debug!(thread = %thread_name, "Creating event listener with heartbeat control");
+                tracing::trace!(thread = %thread_name, "Creating event listener with heartbeat control");
                 let outbound_clone = outbound.clone();
                 let thread_name_clone = thread_name.clone();
                 let current_message_rx_clone = current_message_rx.clone();
@@ -244,7 +244,7 @@ impl ThreadManager {
                 {
                     let thread_name_for_finish = thread_name_clone.clone();
                     Some(tokio::spawn(async move {
-                        tracing::debug!(thread = %thread_name_clone, "Event listener started");
+                        tracing::trace!(thread = %thread_name_clone, "Event listener started");
                         // Start event listener with heartbeat timing control
                         Self::event_listener_with_heartbeat(
                             event_bus,
@@ -252,11 +252,11 @@ impl ThreadManager {
                             outbound_clone,
                             current_message_rx_clone,
                         ).await;
-                        tracing::debug!(thread = %thread_name_for_finish, "Event listener finished");
+                         tracing::trace!(thread = %thread_name_for_finish, "Event listener finished");
                     }))
                 }
             } else {
-                tracing::debug!(thread = %thread_name, "No event bus provided, event listener disabled");
+                tracing::trace!(thread = %thread_name, "No event bus provided, event listener disabled");
                 None
             };
 
@@ -381,7 +381,7 @@ impl ThreadManager {
                         "Received thread event"
                     );
                 } else {
-                    tracing::debug!(thread = %thread_name, "Event bus channel closed");
+                    tracing::trace!(thread = %thread_name, "Event bus channel closed");
                     break;
                 }
             }
@@ -392,7 +392,7 @@ impl ThreadManager {
                 let current_message = current_message_rx.borrow().clone();
                 
                 if let Some(message) = current_message {
-                    tracing::debug!(thread = %thread_name, "Current message available for heartbeat check");
+                    tracing::trace!(thread = %thread_name, "Current message available for heartbeat check");
                     // Check if we have processing state and should send heartbeat
                     if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
                         tracing::debug!(

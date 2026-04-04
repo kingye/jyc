@@ -28,7 +28,6 @@ pub trait ThreadEventBus: Send + Sync {
 /// Uses a broadcast channel to support multiple subscribers.
 /// Events are sent to all active subscribers.
 pub struct SimpleThreadEventBus {
-    tx: mpsc::Sender<ThreadEvent>,
     subscribers: Mutex<Vec<mpsc::Sender<ThreadEvent>>>,
 }
 
@@ -37,10 +36,8 @@ impl SimpleThreadEventBus {
     /// 
     /// The capacity determines how many events can be queued before
     /// `publish` starts blocking or returning errors.
-    pub fn new(capacity: usize) -> Self {
-        let (tx, _) = mpsc::channel(capacity);
+    pub fn new(_capacity: usize) -> Self {
         Self {
-            tx,
             subscribers: Mutex::new(Vec::new()),
         }
     }
@@ -69,13 +66,9 @@ impl SimpleThreadEventBus {
 #[async_trait]
 impl ThreadEventBus for SimpleThreadEventBus {
     async fn publish(&self, event: ThreadEvent) -> Result<()> {
-        // Send to the main channel
-        self.tx
-            .send(event.clone())
-            .await
-            .context("Failed to publish event to main channel")?;
+        tracing::trace!("Publishing event to thread event bus");
         
-        // Forward to all subscribers
+        // Forward to all subscribers (no main channel needed)
         self.forward_to_subscribers(event).await;
         
         Ok(())

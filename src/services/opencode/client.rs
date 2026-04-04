@@ -70,7 +70,7 @@ impl OpenCodeClient {
     async fn publish_event(&self, event: ThreadEvent) {
         if let Some(event_bus) = &self.event_bus {
             match event_bus.publish(event).await {
-                Ok(_) => tracing::debug!("Event published successfully"),
+                Ok(_) => tracing::trace!("Event published successfully"),
                 Err(e) => tracing::warn!("Failed to publish event: {}", e),
             }
         }
@@ -100,7 +100,7 @@ impl OpenCodeClient {
             tokio::spawn(async move {
                 match event_bus.publish(event).await {
                     Ok(_) => tracing::trace!("Event published asynchronously"),
-                    Err(e) => tracing::debug!("Failed to publish event asynchronously: {}", e),
+                     Err(e) => tracing::trace!("Failed to publish event asynchronously: {}", e),
                 }
             });
         } else {

@@ -9,6 +9,7 @@ use super::types::*;
 use super::{session, prompt_builder, OpenCodeServer};
 use crate::channels::types::InboundMessage;
 use crate::config::types::AgentConfig;
+use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 use crate::services::agent::{AgentResult, AgentService};
 use tokio::sync::mpsc;
@@ -23,19 +24,33 @@ pub struct OpenCodeService {
     workdir: PathBuf,
     /// Shared HTTP client — reused across all requests to share connection pool.
     http_client: reqwest::Client,
+    /// Thread-isolated event bus for publishing events (optional).
+    event_bus: Option<ThreadEventBusRef>,
 }
 
 impl OpenCodeService {
+    /// Create a new OpenCodeService without event support (backward compatible).
     pub fn new(
         server: Arc<OpenCodeServer>,
         agent_config: Arc<AgentConfig>,
         workdir: PathBuf,
+    ) -> Self {
+        Self::new_with_event_bus(server, agent_config, workdir, None)
+    }
+    
+    /// Create a new OpenCodeService with optional event bus.
+    pub fn new_with_event_bus(
+        server: Arc<OpenCodeServer>,
+        agent_config: Arc<AgentConfig>,
+        workdir: PathBuf,
+        event_bus: Option<ThreadEventBusRef>,
     ) -> Self {
         Self {
             server,
             agent_config,
             workdir,
             http_client: reqwest::Client::new(),
+            event_bus,
         }
     }
 

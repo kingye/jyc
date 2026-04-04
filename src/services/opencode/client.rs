@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
 use super::types::*;
+use crate::core::thread_event::ThreadEvent;
+use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 use crate::utils::constants::*;
 
@@ -17,6 +21,9 @@ use crate::utils::constants::*;
 pub struct OpenCodeClient {
     http: reqwest::Client,
     base_url: String,
+    /// Optional event bus for publishing thread events.
+    /// If provided, the client will publish appropriate events.
+    event_bus: Option<ThreadEventBusRef>,
 }
 
 impl OpenCodeClient {
@@ -24,6 +31,16 @@ impl OpenCodeClient {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.to_string(),
+            event_bus: None,
+        }
+    }
+    
+    /// Create a new client with an event bus for publishing thread events.
+    pub fn with_event_bus(base_url: &str, event_bus: Option<ThreadEventBusRef>) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: base_url.to_string(),
+            event_bus,
         }
     }
 
@@ -32,6 +49,30 @@ impl OpenCodeClient {
         Self {
             http,
             base_url: base_url.to_string(),
+            event_bus: None,
+        }
+    }
+    
+    /// Create a client with both HTTP client and event bus.
+    pub fn with_http_client_and_event_bus(
+        base_url: &str,
+        http: reqwest::Client,
+        event_bus: Option<ThreadEventBusRef>,
+    ) -> Self {
+        Self {
+            http,
+            base_url: base_url.to_string(),
+            event_bus,
+        }
+    }
+    
+    /// Helper method to publish an event if event bus is available.
+    async fn publish_event(&self, event: ThreadEvent) {
+        if let Some(event_bus) = &self.event_bus {
+            match event_bus.publish(event).await {
+                Ok(_) => tracing::debug!("Event published successfully"),
+                Err(e) => tracing::warn!("Failed to publish event: {}", e),
+            }
         }
     }
 
@@ -237,6 +278,19 @@ impl OpenCodeClient {
         // 2. Fire async prompt
         self.prompt_async(session_id, directory, request).await?;
 
+        // 2.5. Publish ProcessingStarted event if event bus is available
+        // Note: we don't have message_id here, so we use session_id as a proxy
+        let thread_name = directory
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        self.publish_event(ThreadEvent::ProcessingStarted {
+            thread_name: thread_name.clone(),
+            message_id: session_id.to_string(), // Use session_id as proxy for message_id
+            timestamp: Utc::now(),
+        }).await;
+
         // 3. Process SSE events
         let mut result = SseResult::default();
         let mut parts: HashMap<String, ResponsePart> = HashMap::new();
@@ -394,6 +448,18 @@ impl OpenCodeClient {
                             "Progress"
                         );
 
+                        // Publish ProcessingProgress event if event bus is available
+                        let progress_summary = format!("{} parts, {} chars", parts.len(), output_len);
+                        self.publish_event(ThreadEvent::ProcessingProgress {
+                            thread_name: thread_name.clone(),
+                            elapsed_secs: elapsed.as_secs(),
+                            activity: activity.to_string(),
+                            progress: Some(progress_summary),
+                            parts_count: parts.len(),
+                            output_length: output_len,
+                            timestamp: Utc::now(),
+                        }).await;
+
                         last_progress_log = Instant::now();
                     }
                 }
@@ -467,6 +533,16 @@ impl OpenCodeClient {
 
         // Check if reply_message tool was used
         result.reply_sent_by_tool = check_tool_used(&result.parts);
+
+        // Publish ProcessingCompleted event if event bus is available
+        let duration = start_time.elapsed();
+        self.publish_event(ThreadEvent::ProcessingCompleted {
+            thread_name,
+            message_id: session_id.to_string(), // Use session_id as proxy for message_id
+            success: true, // We only get here if no error occurred
+            duration_secs: duration.as_secs(),
+            timestamp: Utc::now(),
+        }).await;
 
         Ok(result)
     }

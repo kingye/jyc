@@ -39,6 +39,14 @@ pub const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(10);
 /// Blocking prompt fallback timeout
 pub const BLOCKING_PROMPT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+// --- Heartbeat ---
+/// Default interval for heartbeat events (5 minutes)
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Minimum elapsed time before sending first heartbeat (1 minute)
+pub const MIN_HEARTBEAT_ELAPSED: Duration = Duration::from_secs(60);
+/// Minimum interval between heartbeats (30 seconds) to avoid flooding
+pub const MIN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
 // --- Context Limits ---
 pub const MAX_FILES_IN_CONTEXT: usize = 10;
 pub const MAX_BODY_IN_PROMPT: usize = 2000;

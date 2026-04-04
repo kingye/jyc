@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::core::thread_event_bus::{ThreadEventBus, ThreadEventBusRef};
+use crate::core::thread_event_bus::{ThreadEventBus, ThreadEventBusRef, SimpleThreadEventBus};
 
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::types::{AttachmentConfig, InboundMessage, PatternMatch};
@@ -239,6 +239,40 @@ impl ThreadManager {
             total_threads,
             pending_messages: 0,
         }
+    }
+    
+    /// Get the event bus for a specific thread.
+    /// 
+    /// Returns None if event support is disabled or the thread doesn't have an event bus.
+    pub async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
+        if !self.enable_events {
+            return None;
+        }
+        
+        let event_buses = self.event_buses.lock().await;
+        event_buses.get(thread_name).cloned()
+    }
+    
+    /// Create a new event bus for a thread if one doesn't exist.
+    /// 
+    /// Returns the event bus for the thread, or None if event support is disabled.
+    async fn get_or_create_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
+        if !self.enable_events {
+            return None;
+        }
+        
+        let mut event_buses = self.event_buses.lock().await;
+        
+        // Check if event bus already exists
+        if let Some(event_bus) = event_buses.get(thread_name) {
+            return Some(event_bus.clone());
+        }
+        
+        // Create new event bus
+        let event_bus = Arc::new(SimpleThreadEventBus::new(10)); // Capacity of 10 events
+        
+        event_buses.insert(thread_name.to_string(), event_bus.clone());
+        Some(event_bus)
     }
 
     pub async fn shutdown(&self) {

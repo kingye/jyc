@@ -15,6 +15,7 @@ use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_event_bus::ThreadEventBusRef;
 use crate::core::thread_manager::QueueItem;
 use crate::services::agent::{AgentResult, AgentService};
+use crate::utils::constants::{HEARTBEAT_INTERVAL, MIN_HEARTBEAT_ELAPSED};
 use tokio::sync::mpsc;
 
 /// Encapsulates all OpenCode AI interaction logic.
@@ -85,6 +86,26 @@ impl OpenCodeService {
             message_id,
             success,
             duration_secs,
+            timestamp: Utc::now(),
+        }).await;
+    }
+    
+    /// Helper method to publish a heartbeat event.
+    /// 
+    /// Heartbeat events are sent at regular intervals during long-running
+    /// processing to indicate the agent is still working.
+    async fn publish_heartbeat(
+        &self,
+        thread_name: &str,
+        elapsed_secs: u64,
+        activity: &str,
+        progress: &str,
+    ) {
+        self.publish_event(ThreadEvent::Heartbeat {
+            thread_name: thread_name.to_string(),
+            elapsed_secs,
+            activity: activity.to_string(),
+            progress: progress.to_string(),
             timestamp: Utc::now(),
         }).await;
     }

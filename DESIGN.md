@@ -75,7 +75,19 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │ (permit 1)  │  │ (permit 2)  │  │ (permit 3)  │                     │
 │  │ processing  │  │ processing  │  │ idle        │                     │
 │  │ thread-A/m1 │  │ thread-B/m4 │  │             │                     │
+│  │   ┌─────┐   │  │   ┌─────┐   │  │             │                     │
+│  │   │Event│   │  │   │Event│   │  │             │                     │
+│  │   │Bus A│   │  │   │Bus B│   │  │             │                     │
+│  │   └─────┘   │  │   └─────┘   │  │             │                     │
 │  └─────────────┘  └─────────────┘  └─────────────┘                     │
+│                                                                          │
+│  Thread Event System (per thread):                                       │
+│  ┌─────────────────────────────────────────────────────┐                │
+│  │  • Thread-isolated event bus                        │                │
+│  │  • SSE → ThreadEvent conversion (OpenCode Client)   │                │
+│  │  • Heartbeat timer (5min interval)                  │                │
+│  │  • Processing state tracking                        │                │
+│  └─────────────────────────────────────────────────────┘                │
 │                                                                          │
 │  New thread arrives → tokio::spawn → acquire semaphore permit            │
 │  Worker loop: recv from mpsc → process (rx passed to agent for           │
@@ -87,7 +99,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Worker (per message) — ThreadManager                   │
 │                                                                          │
-│  0. If agent.progress enabled: ProgressTracker::start()                  │
+│  0. If event support enabled: create thread event bus and start listener │
 │  1. MessageStorage::store(msg) → messages/<ts>/received.md               │
 │  2. Save inbound attachments (allowlisted)                               │
 │  3. CommandRegistry::process_commands(body, ctx)                         │
@@ -97,7 +109,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │     - "static" → send configured text via OutboundAdapter                │
 │     - "opencode" → OpenCodeService::generate_reply(msg)                  │
 │  6. If agent returns fallback text → send via OutboundAdapter            │
-│  7. ProgressTracker::stop()                                              │
+│  7. Event listener monitors progress and sends heartbeats (5min interval)│
 │  8. Worker picks next message from thread queue                          │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │
@@ -154,10 +166,11 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, etc.)
 3. **Channel Registry** — Lookup adapters by channel type (uses `Arc<dyn>` trait objects)
 4. **Message Router** — Delegates matching/naming to adapters, dispatches to thread queues
-5. **Thread Manager** — Per-thread mpsc queues with semaphore-bounded concurrency. Dispatches to agent services. Handles fallback send if agent returns text instead of sending via tool.
-6. **OpenCode Service** — AI agent: server lifecycle, session management, prompt building, SSE streaming, error recovery. Returns `GenerateReplyResult` to the caller — does NOT send emails.
-7. **Progress Tracker** — Periodic progress update emails during long AI operations
-8. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
+ 5. **Thread Manager** — Per-thread mpsc queues with semaphore-bounded concurrency. Dispatches to agent services. Handles fallback send if agent returns text instead of sending via tool. Includes Thread Event system for heartbeat control.
+ 6. **OpenCode Service** — AI agent: server lifecycle, session management, prompt building, SSE streaming, error recovery. Returns `GenerateReplyResult` to the caller — does NOT send emails.
+ 7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
+ 8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (every 5 minutes) via `send_heartbeat()`.
+ 9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
 9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, routes replies through OutboundAdapter
 10. **Message Storage** — Persist messages and replies as markdown files per thread
 11. **State Manager** — Track processed UIDs per channel, handle migrations
@@ -204,13 +217,20 @@ Each component has a single, clear responsibility. Data flows through the system
 - **Auto-reconnect**: wraps send with one-retry on connection errors containing "connect", "timeout", etc.
 - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, MCP reply tool (creates its own instance), and AlertService
 
-**ProgressTracker**
-- Manages timing and thresholds for progress notifications
-- Starts background `tokio::time::interval` checking every 5 seconds
-- Sends progress updates at configured intervals (default: 180s, 360s, 540s, 720s, 900s)
-- Includes time elapsed, current activity, and estimated completion in email body
-- Stops and cleans up when processing completes
-- Uses channel-specific outbound adapter to send progress emails via `send_progress_update()`
+**Thread Event System**
+- **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
+- **Heartbeat Control** - Sends periodic progress updates (every 5 minutes) during long AI operations
+- **Thread Isolation** - Each thread has independent event bus and heartbeat state
+- **Event Types**:
+  - `ProcessingStarted`, `ProcessingProgress`, `ProcessingCompleted`
+  - `ToolStarted`, `ToolCompleted`
+  - `Heartbeat` - Generated by Thread Manager based on processing progress
+- **Heartbeat Conditions**:
+  1. ✅ Current message being processed
+  2. ✅ Processing state available (from `ProcessingProgress` events)
+  3. ✅ Processing elapsed ≥ `MIN_HEARTBEAT_ELAPSED` (1 minute)
+  4. ✅ Time since last heartbeat ≥ `HEARTBEAT_INTERVAL` (5 minutes)
+- **Event Flow**: SSE events → OpenCode Client conversion → Thread Event Bus → Thread Manager monitoring → Heartbeat email via `send_heartbeat()`
 
 **Reply context** saved to `.jyc/reply-context.json` — the AI never sees it
 - Only 5 fields: `channel`, `threadName`, `incomingMessageDir`, `uid`, `_nonce`
@@ -417,11 +437,12 @@ pub trait OutboundAdapter: Send + Sync {
         body: &str,
     ) -> Result<SendResult>;
 
-    async fn send_progress_update(
+    async fn send_heartbeat(
         &self,
         original: &InboundMessage,
-        elapsed_ms: u64,
+        elapsed_secs: u64,
         activity: &str,
+        progress: &str,
     ) -> Result<SendResult>;
 }
 
@@ -550,6 +571,10 @@ pub struct ThreadManager {
     command_registry: Arc<CommandRegistry>,
     channel_registry: Arc<ChannelRegistry>,
 
+    /// Thread-isolated event buses (Thread Event system)
+    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    enable_events: bool,
+
     /// Graceful shutdown
     cancel: CancellationToken,
 
@@ -614,6 +639,27 @@ impl ThreadManager {
 
             tracing::info!(thread = %thread_name, "Worker started");
 
+            // Thread Event system setup
+            let (current_message_tx, current_message_rx) = tokio::sync::watch::channel(None);
+            let event_listener_handle = if enable_events {
+                // Create thread-isolated event bus
+                let event_bus = Arc::new(SimpleThreadEventBus::new(10));
+                // Set event bus for agent service
+                let _ = agent.set_thread_event_bus(&thread_name, Some(event_bus.clone())).await;
+                
+                // Start event listener with heartbeat control
+                Some(tokio::spawn(async move {
+                    Self::event_listener_with_heartbeat(
+                        event_bus,
+                        thread_name.clone(),
+                        outbound.clone(),
+                        current_message_rx,
+                    ).await;
+                }))
+            } else {
+                None
+            };
+
             loop {
                 let item = tokio::select! {
                     item = rx.recv() => match item {
@@ -623,6 +669,9 @@ impl ThreadManager {
                     _ = cancel.cancelled() => break,
                 };
 
+                // Update current message for event listeners
+                let _ = current_message_tx.send(Some(item.message.clone()));
+                
                 if let Err(e) = process_message(
                     &item, &thread_name, &opencode, &storage, /* ... */
                 ).await {
@@ -632,6 +681,9 @@ impl ThreadManager {
                         "Failed to process message"
                     );
                 }
+                
+                // Clear current message after processing
+                let _ = current_message_tx.send(None);
             }
 
             tracing::info!(thread = %thread_name, "Worker finished");
@@ -647,6 +699,57 @@ impl ThreadManager {
 - **Back-pressure**: `mpsc::channel(10)` — `try_send` fails when queue is full (message dropped)
 - **Graceful shutdown**: `CancellationToken` propagates to all workers and monitors
 - **Automatic cleanup**: Worker tasks exit when their mpsc channel closes (all senders dropped) or on cancellation. Semaphore permits are released on `_permit` drop.
+- **Thread Event System**: Each thread has isolated event bus and heartbeat control (5-minute intervals)
+
+**Thread Event System Integration:**
+- **Event Listener with Heartbeat Control**:
+  ```rust
+  async fn event_listener_with_heartbeat(
+      event_bus: ThreadEventBusRef,
+      thread_name: String,
+      outbound: Arc<EmailOutboundAdapter>,
+      current_message_rx: watch::Receiver<Option<InboundMessage>>,
+  ) {
+      let mut receiver = event_bus.subscribe().await;
+      let mut heartbeat_timer = tokio::time::interval(HEARTBEAT_INTERVAL);
+      let mut last_heartbeat_sent: Option<Instant> = None;
+      let mut last_processing_state: Option<(u64, String, String)> = None;
+      
+      loop {
+          tokio::select! {
+              event = receiver.recv() => {
+                  // Update processing state from ProcessingProgress events
+                  if let ThreadEvent::ProcessingProgress { elapsed_secs, activity, progress, .. } = event {
+                      last_processing_state = Some((elapsed_secs, activity, progress));
+                  }
+              }
+              _ = heartbeat_timer.tick() => {
+                  // Check heartbeat conditions and send if met
+                  if let Some(message) = current_message_rx.borrow().clone() {
+                      if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
+                          if Duration::from_secs(*elapsed_secs) >= MIN_HEARTBEAT_ELAPSED {
+                              let should_send = match last_heartbeat_sent {
+                                  Some(last_sent) => last_sent.elapsed() >= HEARTBEAT_INTERVAL,
+                                  None => true,
+                              };
+                              if should_send {
+                                  outbound.send_heartbeat(&message, *elapsed_secs, activity, progress).await;
+                                  last_heartbeat_sent = Some(Instant::now());
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+  ```
+- **Heartbeat Conditions**:
+  1. ✅ Current message being processed
+  2. ✅ Processing state available (from `ProcessingProgress` events)
+  3. ✅ Processing elapsed ≥ `MIN_HEARTBEAT_ELAPSED` (1 minute)
+  4. ✅ Time since last heartbeat ≥ `HEARTBEAT_INTERVAL` (5 minutes)
+- **Thread Isolation**: Each thread maintains independent event bus and heartbeat state
 
 ### IMAP Monitor: State Machine
 
@@ -764,6 +867,18 @@ impl ThreadManager {
 │  └──────────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+**Thread Event Integration with SSE:**
+- **SSE Event Conversion**: OpenCode Client converts SSE events to ThreadEvents
+- **Event Types Converted**:
+  - `ProcessingStarted` → `ThreadEvent::ProcessingStarted`
+  - `ProcessingProgress` → `ThreadEvent::ProcessingProgress`
+  - `ProcessingCompleted` → `ThreadEvent::ProcessingCompleted`
+  - `ToolStarted` → `ThreadEvent::ToolStarted`
+  - `ToolCompleted` → `ThreadEvent::ToolCompleted`
+  - `server.heartbeat` → ignored (connection keep-alive only)
+- **Event Publishing**: Events are published to thread-isolated event bus
+- **Thread Manager Monitoring**: Listens for events and controls heartbeat rhythm
 
 ### Alert Service: Event-Driven Architecture
 
@@ -2179,6 +2294,198 @@ Configurable per pattern via `attachments` in the pattern config.
 | `uuid` | 1.x (features: v4) | Internal message IDs |
 | `tokio-util` | 0.7.x | CancellationToken |
 | `async-trait` | 0.1.x | Async trait support |
+
+## Thread Event System
+
+The Thread Event System is a core component for handling inter-thread event communication in JYC. It implements SSE event to ThreadEvent conversion with thread isolation and controlled heartbeat rhythm.
+
+### Architecture
+
+#### Core Components
+1. **OpenCode Client** - SSE event conversion layer
+2. **Thread Event Bus** - Thread-isolated event bus (publish/subscribe)
+3. **Thread Manager** - Event listening and heartbeat control layer
+4. **Outbound Adapter** - Heartbeat message sending layer (`send_heartbeat()`)
+
+#### Data Flow
+```
+SSE Events (OpenCode Server)
+    ↓
+OpenCode Client Conversion
+    ├── ProcessingStarted → ThreadEvent::ProcessingStarted
+    ├── ProcessingProgress → ThreadEvent::ProcessingProgress
+    ├── ToolStarted/Completed → ThreadEvent::ToolStarted/Completed
+    └── server.heartbeat → ignored (connection keep-alive only)
+    ↓
+Publish to Thread's Event Bus
+    ↓
+Thread Manager Event Listener
+    ├── Receive events and update processing state
+    ├── Check heartbeat conditions based on HEARTBEAT_INTERVAL (5min)
+    ├── Send heartbeat email when conditions met
+    └── Use send_heartbeat() with detailed progress information
+    ↓
+User receives heartbeat email
+```
+
+### Thread Isolation Design
+
+#### Key Features
+1. **Per-thread isolated event bus** - Each thread uses a `SimpleThreadEventBus` instance
+2. **No cross-thread event propagation** - Complete isolation
+3. **Independent heartbeat state** - Each thread maintains its own heartbeat timer and state
+
+#### Implementation
+```rust
+// ThreadManager creates isolated event bus for each thread
+let event_bus = Arc::new(SimpleThreadEventBus::new(10));
+
+// Event listener subscribes only to its thread's event bus
+let mut receiver = event_bus.subscribe().await;
+```
+
+### Heartbeat Rhythm Control
+
+#### Control Logic
+Heartbeat rhythm is controlled by Thread Manager based on:
+1. **HEARTBEAT_INTERVAL** (5 minutes) - Minimum interval between heartbeats
+2. **MIN_HEARTBEAT_ELAPSED** (1 minute) - Minimum processing time before first heartbeat
+
+#### Heartbeat Conditions
+Send heartbeat when ALL conditions are met:
+1. ✅ Current message being processed
+2. ✅ Processing state available (from `ProcessingProgress` events)
+3. ✅ Processing elapsed ≥ `MIN_HEARTBEAT_ELAPSED` (1 minute)
+4. ✅ Time since last heartbeat ≥ `HEARTBEAT_INTERVAL` (5 minutes)
+
+#### Implementation
+```rust
+// In event_listener_with_heartbeat function
+let mut heartbeat_timer = tokio::time::interval(HEARTBEAT_INTERVAL);
+
+// Timer tick - check if we should send heartbeat
+_ = heartbeat_timer.tick() => {
+    if let Some(message) = current_message {
+        if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
+            let processing_elapsed = Duration::from_secs(*elapsed_secs);
+            if processing_elapsed >= MIN_HEARTBEAT_ELAPSED {
+                // Check heartbeat interval
+                let should_send = match last_heartbeat_sent {
+                    Some(last_sent) => last_sent.elapsed() >= HEARTBEAT_INTERVAL,
+                    None => true, // First heartbeat
+                };
+                
+                if should_send {
+                    outbound.send_heartbeat(&message, *elapsed_secs, activity, progress).await;
+                }
+            }
+        }
+    }
+}
+```
+
+### ThreadEvent Types
+
+#### Event Enumeration
+```rust
+pub enum ThreadEvent {
+    // Heartbeat event (controlled by Thread Manager)
+    Heartbeat {
+        thread_name: String,
+        elapsed_secs: u64,
+        activity: String,
+        progress: String,
+        timestamp: DateTime<Utc>,
+    },
+    
+    // Processing state events (published by OpenCode Client)
+    ProcessingStarted { ... },
+    ProcessingProgress { ... },
+    ProcessingCompleted { ... },
+    
+    // Tool execution events
+    ToolStarted { ... },
+    ToolCompleted { ... },
+}
+```
+
+#### Event Sources
+| Event Type | Publisher | Purpose |
+|------------|-----------|---------|
+| ProcessingStarted | OpenCode Client | Published when processing starts |
+| ProcessingProgress | OpenCode Client | Periodic progress updates |
+| ProcessingCompleted | OpenCode Client | Published when processing completes |
+| ToolStarted/Completed | OpenCode Client | Tool start/complete events |
+| Heartbeat | Thread Manager | Periodic heartbeat, user notification |
+
+### Configuration Constants
+
+#### Heartbeat-related constants (`src/utils/constants.rs`)
+```rust
+// Heartbeat interval (5 minutes)
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+// Minimum elapsed time before sending first heartbeat (1 minute)
+pub const MIN_HEARTBEAT_ELAPSED: Duration = Duration::from_secs(60);
+
+// Minimum interval between heartbeats to avoid flooding (30 seconds)
+pub const MIN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+```
+
+#### Thread Manager Configuration
+```rust
+// Enable Thread Event system by default
+let thread_manager = ThreadManager::new_with_options(
+    max_concurrent,
+    max_queue_size,
+    storage,
+    outbound,
+    agent,
+    cancel,
+    true, // enable_events: true (Thread Event system)
+);
+```
+
+### Error Handling
+
+#### Event Publishing Errors
+- Event publishing failures do not block the main process
+- Asynchronous non-blocking event publishing
+- Appropriate logging for failures
+
+#### Heartbeat Sending Errors
+- Heartbeat sending failures log warning
+- No retry for failed heartbeats
+- Next heartbeat cycle will continue trying
+
+### Performance Considerations
+1. **Asynchronous non-blocking** - All event publishing is asynchronous
+2. **Thread-local state** - Each thread maintains independent heartbeat state
+3. **Lightweight events** - Event structures remain simple
+4. **Limited queues** - Event buses use limited capacity queues
+
+### Testing Strategy
+
+#### Unit Tests
+- Event type serialization/deserialization
+- Event bus basic functionality
+- Heartbeat condition judgment logic
+
+#### Integration Tests
+- SSE event to ThreadEvent conversion
+- Inter-thread event isolation
+- Heartbeat rhythm control
+
+#### End-to-End Tests
+- Complete event flow: SSE → ThreadEvent → Heartbeat email
+- Multi-thread concurrent processing
+- Error scenario handling
+
+### Deployment Notes
+1. **Configuration adjustment** - Adjust heartbeat interval based on actual needs
+2. **Monitoring** - Monitor event publishing and heartbeat sending frequency
+3. **Log levels** - Adjust event log levels appropriately in production
+4. **Resource limits** - Pay attention to memory usage of event queues
 
 ## References
 

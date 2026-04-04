@@ -6,6 +6,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::core::thread_event_bus::{ThreadEventBus, ThreadEventBusRef};
+
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::types::{AttachmentConfig, InboundMessage, PatternMatch};
 use crate::core::command::handler::CommandContext;
@@ -55,11 +57,16 @@ pub struct ThreadManager {
     outbound: Arc<EmailOutboundAdapter>,
     agent: Arc<dyn AgentService>,
 
+    // Thread-isolated event buses (optional feature)
+    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    enable_events: bool,
+
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl ThreadManager {
+    /// Create a new ThreadManager with event support disabled (backward compatible).
     pub fn new(
         max_concurrent: usize,
         max_queue_size: usize,
@@ -68,6 +75,27 @@ impl ThreadManager {
         agent: Arc<dyn AgentService>,
         cancel: CancellationToken,
     ) -> Self {
+        Self::new_with_options(
+            max_concurrent,
+            max_queue_size,
+            storage,
+            outbound,
+            agent,
+            cancel,
+            false, // enable_events: false for backward compatibility
+        )
+    }
+    
+    /// Create a new ThreadManager with configurable event support.
+    pub fn new_with_options(
+        max_concurrent: usize,
+        max_queue_size: usize,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<EmailOutboundAdapter>,
+        agent: Arc<dyn AgentService>,
+        cancel: CancellationToken,
+        enable_events: bool,
+    ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -75,6 +103,8 @@ impl ThreadManager {
             storage,
             outbound,
             agent,
+            event_buses: Mutex::new(HashMap::new()),
+            enable_events,
             cancel,
             worker_handles: Mutex::new(Vec::new()),
         }

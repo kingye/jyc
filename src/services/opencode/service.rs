@@ -225,6 +225,15 @@ impl OpenCodeService {
             created_at: chrono::Utc::now().to_rfc3339(),
         }).await?;
 
+        // Check if event bus is available for heartbeat events
+        let event_bus_lock = self.event_bus.lock().await;
+        let has_event_bus = event_bus_lock.is_some();
+        drop(event_bus_lock); // Release lock immediately
+        
+        if has_event_bus {
+            tracing::debug!("Event bus available, heartbeat events will be sent if processing takes longer than {} seconds", MIN_HEARTBEAT_ELAPSED.as_secs());
+        }
+
         // 7. Build prompts
         let system_prompt = prompt_builder::build_system_prompt(
             thread_path,

@@ -236,20 +236,27 @@ impl ThreadManager {
 
             // Start event listener if event bus is provided
             let event_listener_handle = if let Some(event_bus) = event_bus {
+                tracing::debug!(thread = %thread_name, "Creating event listener with heartbeat control");
                 let outbound_clone = outbound.clone();
                 let thread_name_clone = thread_name.clone();
                 let current_message_rx_clone = current_message_rx.clone();
                 
-                Some(tokio::spawn(async move {
-                    // Start event listener with heartbeat timing control
-                    Self::event_listener_with_heartbeat(
-                        event_bus,
-                        thread_name_clone,
-                        outbound_clone,
-                        current_message_rx_clone,
-                    ).await;
-                }))
+                {
+                    let thread_name_for_finish = thread_name_clone.clone();
+                    Some(tokio::spawn(async move {
+                        tracing::debug!(thread = %thread_name_clone, "Event listener started");
+                        // Start event listener with heartbeat timing control
+                        Self::event_listener_with_heartbeat(
+                            event_bus,
+                            thread_name_clone,
+                            outbound_clone,
+                            current_message_rx_clone,
+                        ).await;
+                        tracing::debug!(thread = %thread_name_for_finish, "Event listener finished");
+                    }))
+                }
             } else {
+                tracing::debug!(thread = %thread_name, "No event bus provided, event listener disabled");
                 None
             };
 
@@ -385,15 +392,23 @@ impl ThreadManager {
                 let current_message = current_message_rx.borrow().clone();
                 
                 if let Some(message) = current_message {
+                    tracing::debug!(thread = %thread_name, "Current message available for heartbeat check");
                     // Check if we have processing state and should send heartbeat
                     if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
+                        tracing::debug!(
+                            thread = %thread_name,
+                            elapsed_secs = elapsed_secs,
+                            activity = %activity,
+                            progress = %progress,
+                            "Processing state available"
+                        );
                         // Check minimum elapsed time
                         let processing_elapsed = Duration::from_secs(*elapsed_secs);
                         if processing_elapsed < MIN_HEARTBEAT_ELAPSED {
-                            tracing::trace!(
+                            tracing::debug!(
                                 thread = %thread_name,
                                 elapsed_secs = elapsed_secs,
-                                "Processing just started, skipping heartbeat"
+                                "Processing just started, skipping heartbeat (elapsed < MIN_HEARTBEAT_ELAPSED)"
                             );
                             continue;
                         }
@@ -415,7 +430,7 @@ impl ThreadManager {
                             
                             match outbound.send_heartbeat(&message, *elapsed_secs, activity, progress).await {
                                 Ok(result) => {
-                                    tracing::debug!(
+                                    tracing::info!(
                                         thread = %thread_name,
                                         message_id = %result.message_id,
                                         "Heartbeat sent successfully"
@@ -431,19 +446,19 @@ impl ThreadManager {
                                 }
                             }
                         } else {
-                            tracing::trace!(
+                            tracing::debug!(
                                 thread = %thread_name,
                                 "Heartbeat interval not yet reached"
                             );
                         }
                     } else {
-                        tracing::trace!(
+                        tracing::debug!(
                             thread = %thread_name,
-                            "No processing state yet, skipping heartbeat"
+                            "No processing state yet, skipping heartbeat (need ProcessingProgress event)"
                         );
                     }
                 } else {
-                    tracing::trace!(
+                    tracing::debug!(
                         thread = %thread_name,
                         "No current message, skipping heartbeat"
                     );

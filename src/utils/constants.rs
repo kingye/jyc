@@ -40,8 +40,8 @@ pub const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(10);
 pub const BLOCKING_PROMPT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 // --- Heartbeat ---
-/// Default interval for heartbeat events (5 minutes)
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Default interval for heartbeat events (10 minutes)
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Minimum elapsed time before sending first heartbeat (1 minute)
 pub const MIN_HEARTBEAT_ELAPSED: Duration = Duration::from_secs(60);
 /// Minimum interval between heartbeats (30 seconds) to avoid flooding

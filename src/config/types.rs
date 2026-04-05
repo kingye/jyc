@@ -178,7 +178,7 @@ pub struct SessionSummaryConfig {
     pub enabled: bool,
 
     /// Session timeout threshold in hours (legacy - maximum active time)
-    #[serde(default = "default_2_0")]
+    #[serde(default = "default_1_0")]
     pub timeout_hours: f64,
 
     /// Maximum idle time in hours before summary (when active time is low)
@@ -280,8 +280,8 @@ fn default_opencode() -> String {
     "opencode".to_string()
 }
 
-fn default_2_0() -> f64 {
-    2.0
+fn default_1_0() -> f64 {
+    1.0
 }
 
 fn default_120_0() -> f64 {
@@ -296,7 +296,7 @@ impl Default for SessionSummaryConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
-            timeout_hours: default_2_0(),
+            timeout_hours: default_1_0(),
             max_idle_hours: default_120_0(),
             max_summaries: default_50(),
             storage_dir: default_session_summaries_dir(),

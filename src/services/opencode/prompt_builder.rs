@@ -18,6 +18,7 @@ pub fn build_system_prompt(
     thread_path: &Path,
     config_system_prompt: Option<&str>,
     mode: Option<&str>,
+    has_session_summary: bool,
 ) -> String {
     let mut prompt = String::new();
 
@@ -48,6 +49,12 @@ After you have replied to the current message, STOP. Do not do anything else.
     if mode == Some("plan") {
         prompt.push_str(
             r#"## PLAN MODE: Read-Only
+You are in PLAN mode. Provide a detailed plan only — do NOT execute commands, edit files, or use tools.
+Your reply should contain:
+1. A brief summary of the request
+2. Step-by-step plan for completing the task
+3. Any considerations or risks
+Do NOT include code, command snippets, or tool usage in your reply.
 
 ## Reply Instructions
 - DO NOT use the jiny_reply_reply_message tool — it requires write permissions which are blocked.
@@ -56,8 +63,10 @@ After you have replied to the current message, STOP. Do not do anything else.
 "#,
         );
     } else {
+        // BUILD mode (default)
         prompt.push_str(
             r#"## BUILD MODE: Full Execution
+You are in BUILD mode. Use tools and edit files to complete tasks.
 
 ## Reply Instructions
 When replying to a message, use the jiny_reply_reply_message tool:
@@ -65,6 +74,19 @@ When replying to a message, use the jiny_reply_reply_message tool:
 - `attachments`: Optional filenames to attach from the working directory
 After a successful reply, STOP immediately. Do NOT call any other tools or perform further actions.
 CRITICAL: Always use jiny_reply_reply_message tool.
+"#,
+        );
+    }
+
+    // Session summary notification
+    if has_session_summary {
+        prompt.push_str(
+            r#"
+## Previous Session Summary
+The previous session was automatically summarized due to timeout (2 hours of inactivity).
+You can find session summaries in `.jyc/session-summaries/` directory.
+The most recent summary contains key topics discussed in the previous session.
+You may refer to it for context if relevant to the current request.
 "#,
         );
     }
@@ -142,12 +164,13 @@ mod tests {
     #[tokio::test]
     async fn test_build_system_prompt() {
         let tmp = tempfile::tempdir().unwrap();
-        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("build"));
+        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("build"), false);
 
         assert!(prompt.contains("Be helpful."));
         assert!(prompt.contains("jiny_reply_reply_message"));
         assert!(prompt.contains("Directory Boundaries"));
         assert!(prompt.contains("BUILD MODE"));
+        assert!(!prompt.contains("Previous Session Summary"));
     }
 
     #[test]
@@ -157,7 +180,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("system.md"), "You are a code reviewer.").unwrap();
 
-        let prompt = build_system_prompt(tmp.path(), None, None);
+        let prompt = build_system_prompt(tmp.path(), None, None, false);
         // system.md content should NOT appear in the system prompt
         assert!(!prompt.contains("You are a code reviewer."));
         assert!(prompt.contains("BUILD MODE"));
@@ -166,7 +189,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_plan_mode() {
         let tmp = tempfile::tempdir().unwrap();
-        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("plan"));
+        let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("plan"), false);
 
         assert!(prompt.contains("Be helpful."));
         assert!(prompt.contains("PLAN MODE"));

@@ -177,9 +177,13 @@ pub struct SessionSummaryConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Session timeout threshold in hours
+    /// Session timeout threshold in hours (legacy - maximum active time)
     #[serde(default = "default_2_0")]
     pub timeout_hours: f64,
+
+    /// Maximum idle time in hours before summary (when active time is low)
+    #[serde(default = "default_120_0")]
+    pub max_idle_hours: f64,
 
     /// Maximum number of summary files to keep
     #[serde(default = "default_50")]
@@ -280,6 +284,10 @@ fn default_2_0() -> f64 {
     2.0
 }
 
+fn default_120_0() -> f64 {
+    120.0
+}
+
 fn default_session_summaries_dir() -> String {
     ".jyc/session-summaries".to_string()
 }
@@ -289,6 +297,7 @@ impl Default for SessionSummaryConfig {
         Self {
             enabled: default_true(),
             timeout_hours: default_2_0(),
+            max_idle_hours: default_120_0(),
             max_summaries: default_50(),
             storage_dir: default_session_summaries_dir(),
         }

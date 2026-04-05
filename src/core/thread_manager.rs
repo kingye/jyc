@@ -405,11 +405,11 @@ impl ThreadManager {
                         // Check minimum elapsed time
                         let processing_elapsed = Duration::from_secs(*elapsed_secs);
                         if processing_elapsed < MIN_HEARTBEAT_ELAPSED {
-                            tracing::debug!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                "Processing just started, skipping heartbeat (elapsed < MIN_HEARTBEAT_ELAPSED)"
-                            );
+                        tracing::trace!(
+                            thread = %thread_name,
+                            elapsed_secs = elapsed_secs,
+                            "Processing just started, skipping heartbeat (elapsed < MIN_HEARTBEAT_ELAPSED)"
+                        );
                             continue;
                         }
                         
@@ -452,13 +452,13 @@ impl ThreadManager {
                             );
                         }
                     } else {
-                        tracing::debug!(
+                        tracing::trace!(
                             thread = %thread_name,
                             "No processing state yet, skipping heartbeat (need ProcessingProgress event)"
                         );
                     }
                 } else {
-                    tracing::debug!(
+                    tracing::trace!(
                         thread = %thread_name,
                         "No current message, skipping heartbeat"
                     );

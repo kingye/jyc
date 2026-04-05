@@ -253,7 +253,12 @@ impl OpenCodeService {
         // Sessions are only deleted for error recovery:
         // - ContextOverflow (handle_sse_result)
         // - Stale session detection (handle_sse_result)
-        let session_id = session::get_or_create_session(&client, thread_path).await?;
+        // - Session timeout (with summary generation)
+        let session_id = session::get_or_create_session(
+            &client, 
+            thread_path,
+            Some(&self.agent_config.summary),
+        ).await?;
 
         // 4. Clean up stale signal file
         session::cleanup_signal_file(thread_path).await;
@@ -306,11 +311,15 @@ impl OpenCodeService {
             tracing::debug!("Event bus available, heartbeat events will be sent if processing takes longer than {} seconds", MIN_HEARTBEAT_ELAPSED.as_secs());
         }
 
-        // 7. Build prompts
+        // 7. Check for session summaries
+        let has_session_summary = session::has_session_summaries(thread_path).await;
+        
+        // 8. Build prompts
         let system_prompt = prompt_builder::build_system_prompt(
             thread_path,
             self.agent_config.opencode.as_ref().and_then(|o| o.system_prompt.as_deref()),
             agent_mode.as_deref(),
+            has_session_summary,
         );
 
         let user_prompt = prompt_builder::build_prompt(
@@ -342,6 +351,9 @@ impl OpenCodeService {
             "Sending prompt to OpenCode"
         );
 
+        // Start tracking active time for this session
+        session::start_active_time_tracking(thread_path).await.ok();
+
         let sse_result = client
             .prompt_with_sse(&session_id, thread_path, &request, &mode_label, pending_rx)
             .instrument(ai_span.clone())
@@ -357,6 +369,8 @@ impl OpenCodeService {
             }
             Err(e) => {
                 tracing::error!(error = %e, "SSE streaming failed, trying blocking fallback");
+                // Ensure active time tracking is started for blocking fallback
+                session::start_active_time_tracking(thread_path).await.ok();
                 let blocking_result = client
                     .prompt_blocking(&session_id, thread_path, &request)
                     .await?;
@@ -367,7 +381,9 @@ impl OpenCodeService {
             }
         };
 
+        // Update session timestamp and stop active time tracking
         session::update_session_timestamp(thread_path).await.ok();
+        session::stop_active_time_tracking(thread_path).await.ok();
 
         // Handle the result
         // Note: OpenCodeClient will publish ProcessingCompleted event for successful cases

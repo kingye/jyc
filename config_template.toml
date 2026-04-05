@@ -73,7 +73,8 @@ max_messages = 5
 # Automatically generates summaries for long-running sessions
 [agent.summary]
 enabled = true                    # Enable session summary feature
-timeout_hours = 2.0              # Generate summary after 2 hours of inactivity
+timeout_hours = 2.0              # Maximum accumulated active time before summary (hours)
+max_idle_hours = 120.0           # Maximum idle time before summary when active time is low (hours)
 max_summaries = 50               # Maximum number of summary files to keep
 storage_dir = ".jyc/session-summaries"  # Directory to store summary files
 

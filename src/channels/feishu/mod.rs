@@ -7,3 +7,5 @@ pub mod inbound;
 pub mod outbound;
 pub mod config;
 pub mod types;
+pub mod client;
+pub mod validator;

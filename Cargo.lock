@@ -1661,6 +1661,7 @@ dependencies = [
  "chrono",
  "openlark-auth",
  "openlark-client",
+ "openlark-communication",
  "openlark-core",
  "serde",
  "serde_json",
@@ -1699,6 +1700,7 @@ checksum = "08ccb83d3ce877c8c1a505f415ff755e5029f5f291ebcf203570a866e089d461"
 dependencies = [
  "chrono",
  "openlark-auth",
+ "openlark-communication",
  "openlark-core",
  "serde",
  "serde_json",
@@ -1706,6 +1708,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "openlark-communication"
+version = "0.15.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4dc90d7df526fca7490734bd5b6a6f107dbfb2f9eb1f6ad7a9aa55fd6eef42f"
+dependencies = [
+ "openlark-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

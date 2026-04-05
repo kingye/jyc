@@ -61,7 +61,7 @@ reqwest-eventsource = "0.6"
 rmcp = { version = "1.3", features = ["server", "transport-io", "schemars"] }
 
 # Feishu/Lark SDK (Phase 6)
-openlark = { version = "0.15.0-rc.2", default-features = false, features = ["auth"] }
+openlark = { version = "0.15.0-rc.2", default-features = false, features = ["auth", "communication"] }
 
 [dev-dependencies]
 tempfile = "3"

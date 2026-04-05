@@ -112,6 +112,49 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     });
                 }
             }
+        } else if channel.channel_type == "feishu" {
+            // Validate Feishu channel specifics
+            if let Some(ref feishu_config) = channel.feishu {
+                if feishu_config.app_id.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.app_id"),
+                        message: "Feishu app_id is required".into(),
+                    });
+                }
+                if feishu_config.app_secret.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.app_secret"),
+                        message: "Feishu app_secret is required (use ${ENV_VAR} syntax)".into(),
+                    });
+                }
+                if !feishu_config.base_url.starts_with("https://") {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.base_url"),
+                        message: "Feishu base_url must start with https://".into(),
+                    });
+                }
+
+                // Validate WebSocket configuration
+                if feishu_config.websocket.enabled {
+                    if feishu_config.websocket.reconnect_delay_secs == 0 {
+                        errors.push(ValidationError {
+                            path: format!("{prefix}.feishu.websocket.reconnect_delay_secs"),
+                            message: "must be greater than 0".into(),
+                        });
+                    }
+                    if feishu_config.websocket.heartbeat_interval_secs < 10 {
+                        errors.push(ValidationError {
+                            path: format!("{prefix}.feishu.websocket.heartbeat_interval_secs"),
+                            message: "must be at least 10".into(),
+                        });
+                    }
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.feishu"),
+                    message: "Feishu configuration is required for feishu channel type".into(),
+                });
+            }
         }
 
         // Validate patterns

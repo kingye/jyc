@@ -374,7 +374,7 @@ pub async fn ensure_thread_opencode_setup(
                     "JYC_ROOT": jyc_root.to_string_lossy()
                 },
                 "enabled": true,
-                "timeout": 60000
+                "timeout": 180000
             }
         }),
     };

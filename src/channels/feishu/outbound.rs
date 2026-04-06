@@ -36,8 +36,22 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
     }
 
     async fn connect(&self) -> Result<()> {
-        // Client initialization is lazy and will happen on first use
-        tracing::info!("Feishu outbound adapter connected");
+        // Pre-warm: initialize the openlark client and acquire access token.
+        // This moves the slow HTTP calls (DNS + TLS + token acquisition) to startup
+        // rather than deferring them to the first send_reply(), which runs inside
+        // the time-critical MCP reply tool subprocess with a limited timeout.
+        self.client.initialize().await
+            .context("Failed to initialize Feishu client during connect")?;
+
+        // Pre-acquire access token — this makes the first send_reply() faster
+        // because the token is already cached by the openlark SDK.
+        match self.client.get_token().await {
+            Ok(_) => tracing::info!("Feishu outbound adapter connected (client + token ready)"),
+            Err(e) => {
+                // Token pre-fetch failure is non-fatal — the SDK will retry on first API call
+                tracing::warn!(error = %e, "Feishu token pre-fetch failed, will retry on first send");
+            }
+        }
         Ok(())
     }
 

@@ -378,6 +378,16 @@ pub fn format_quoted_reply(
         from_name
     };
 
+    // Truncate body to avoid excessively long quoted history in email replies
+    let max_chars = crate::utils::constants::MAX_QUOTED_BODY_CHARS;
+    let truncated_body = if body_text.len() > max_chars {
+        // Find a safe char boundary to avoid splitting a multi-byte character
+        let boundary = body_text.floor_char_boundary(max_chars);
+        format!("{}...\n[truncated]", &body_text[..boundary])
+    } else {
+        body_text.to_string()
+    };
+
     let mut lines = Vec::new();
     lines.push("---".to_string());
     lines.push(format!("### {from_name} ({timestamp})"));
@@ -388,7 +398,7 @@ pub fn format_quoted_reply(
 
     lines.push(String::new());
 
-    for line in body_text.lines() {
+    for line in truncated_body.lines() {
         lines.push(format!("> {line}"));
     }
 

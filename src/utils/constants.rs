@@ -62,6 +62,8 @@ pub const MAX_PER_FILE: usize = 400;
 pub const MAX_TOTAL_CONTEXT: usize = 2000;
 pub const MAX_TOTAL_PROMPT: usize = 6000;
 pub const MAX_HISTORY_QUOTE: usize = 6;
+/// Max characters per quoted history entry in email replies (truncated with "[truncated]")
+pub const MAX_QUOTED_BODY_CHARS: usize = 1024;
 
 // --- Alerting ---
 pub const DEFAULT_BATCH_INTERVAL_MINUTES: u64 = 5;

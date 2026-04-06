@@ -111,7 +111,7 @@ impl ThreadManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
             heartbeat_config,
-            cancel,
+            cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
         }
     }

@@ -651,24 +651,108 @@ async fn process_message(
         .await?;
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
-    // "Reply sent by MCP tool" is already logged in service.rs inside ai span
-    if !result.reply_sent_by_tool {
-        if let Some(ref text) = result.reply_text {
-            tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");
-            outbound
-                .send_reply(
-                    &message,
-                    text,
-                    &store_result.thread_path,
-                    &store_result.message_dir,
-                    None,
-                )
-                .await?;
-            tracing::info!("Fallback reply sent");
-        } else {
-            tracing::warn!("No reply text from AI");
+    // The MCP reply tool stores reply.md and writes a signal file, but does NOT
+    // send the message. The monitor process (this code) handles actual delivery
+    // using its pre-warmed outbound adapter with cached connections/tokens.
+    if result.reply_sent_by_tool {
+        // MCP tool stored the reply — read it from disk and deliver
+        let reply_path = store_result.thread_path
+            .join("messages")
+            .join(&store_result.message_dir)
+            .join("reply.md");
+
+        match tokio::fs::read_to_string(&reply_path).await {
+            Ok(reply_text) if !reply_text.trim().is_empty() => {
+                tracing::info!(
+                    text_len = reply_text.len(),
+                    "Delivering reply stored by MCP tool"
+                );
+
+                // Read signal file for attachment info
+                let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
+                let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
+
+                outbound
+                    .send_reply(
+                        &message,
+                        &reply_text,
+                        &store_result.thread_path,
+                        &store_result.message_dir,
+                        attachments.as_deref(),
+                    )
+                    .await?;
+                tracing::info!("Reply delivered via outbound adapter");
+            }
+            Ok(_) => {
+                tracing::warn!("reply.md is empty, skipping delivery");
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    path = %reply_path.display(),
+                    "Failed to read reply.md for delivery"
+                );
+            }
         }
+    } else if let Some(ref text) = result.reply_text {
+        tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");
+        outbound
+            .send_reply(
+                &message,
+                text,
+                &store_result.thread_path,
+                &store_result.message_dir,
+                None,
+            )
+            .await?;
+        tracing::info!("Fallback reply sent");
+    } else {
+        tracing::warn!("No reply text from AI");
     }
 
     Ok(())
+}
+
+/// Read attachment filenames from the reply-sent.flag signal file.
+/// Returns OutboundAttachment list, or None if no attachments.
+async fn read_signal_attachments(
+    signal_path: &std::path::Path,
+    thread_path: &std::path::Path,
+) -> Option<Vec<crate::channels::types::OutboundAttachment>> {
+    let content = tokio::fs::read_to_string(signal_path).await.ok()?;
+    let signal: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let filenames = signal.get("attachments")?.as_array()?;
+    if filenames.is_empty() {
+        return None;
+    }
+
+    let attachments: Vec<crate::channels::types::OutboundAttachment> = filenames
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|filename| {
+            let path = thread_path.join(filename);
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let content_type = match ext.as_str() {
+                "pdf" => "application/pdf",
+                "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "txt" | "md" => "text/plain",
+                _ => "application/octet-stream",
+            };
+            crate::channels::types::OutboundAttachment {
+                filename: filename.to_string(),
+                path,
+                content_type: content_type.to_string(),
+            }
+        })
+        .collect();
+
+    Some(attachments)
 }

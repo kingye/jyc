@@ -337,6 +337,7 @@ mod tests {
                 subject,
                 mentions: None,
                 keywords: None,
+                chat_name: None,
             },
             attachments: None,
         }

@@ -242,7 +242,7 @@ pub struct ChannelPattern {
 /// All present rules must match (AND logic).
 /// Each channel's ChannelMatcher implementation only checks the fields relevant to it:
 /// - Email checks: `sender`, `subject`
-/// - Feishu checks: `mentions`, `keywords`, `sender`
+/// - Feishu checks: `mentions`, `keywords`, `sender`, `chat_name`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PatternRules {
     // --- Shared rules ---
@@ -254,10 +254,13 @@ pub struct PatternRules {
     pub subject: Option<SubjectRule>,
 
     // --- Feishu rules ---
-    /// Feishu @mention user/bot IDs to match (OR logic within this rule)
+    /// Feishu @mention user/bot IDs or names to match (OR logic within this rule)
     pub mentions: Option<Vec<String>>,
     /// Keywords to match in message body (OR logic, case-insensitive)
     pub keywords: Option<Vec<String>>,
+    /// Feishu group chat names to match (OR logic, case-insensitive)
+    /// Matches against the chat name from the Feishu API (metadata["chat_name"])
+    pub chat_name: Option<Vec<String>>,
 }
 
 /// Rules for matching the sender of a message.

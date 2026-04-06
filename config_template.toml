@@ -79,6 +79,15 @@ mode = "opencode"                  # "opencode" or "static"
 # 
 # # Feishu patterns — match messages by @mentions, keywords, or sender.
 # # All rules within a pattern use AND logic. First matching pattern wins.
+# # Pattern 1: Reply to all messages in a specific group (no @mention needed)
+# [[channels.feishu_bot.patterns]]
+# name = "private_group"
+# enabled = true
+# 
+# [channels.feishu_bot.patterns.rules]
+# chat_name = ["self-hosting-jyc"]    # Match by group chat name (case-insensitive)
+# 
+# # Pattern 2: Require @mention in all other groups
 # [[channels.feishu_bot.patterns]]
 # name = "mention_bot"
 # enabled = true

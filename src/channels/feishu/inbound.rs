@@ -189,6 +189,32 @@ pub fn feishu_match_message(
             }
         }
 
+        // --- Chat name rule ---
+        // Check if the message's group chat name matches any configured name (case-insensitive)
+        if matches {
+            if let Some(ref chat_names) = pattern.rules.chat_name {
+                let msg_chat_name = message
+                    .metadata
+                    .get("chat_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                let chat_name_matches = chat_names
+                    .iter()
+                    .any(|cn| cn.to_lowercase() == msg_chat_name);
+
+                if !chat_name_matches {
+                    matches = false;
+                } else {
+                    match_details.insert(
+                        "chat_name".to_string(),
+                        msg_chat_name,
+                    );
+                }
+            }
+        }
+
         // --- Sender rule (shared) ---
         // Feishu uses sender_address as the user's open_id
         if matches {
@@ -394,6 +420,7 @@ mod tests {
                 subject: None,
                 mentions,
                 keywords,
+                chat_name: None,
             },
             attachments: None,
         }
@@ -552,6 +579,101 @@ mod tests {
         let patterns = vec![make_feishu_pattern("catch_all", None, None, None)];
 
         assert!(feishu_match_message(&msg, &patterns).is_some());
+    }
+
+    #[test]
+    fn test_match_by_chat_name() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("self-hosting-jyc".to_string()),
+        );
+        let mut pattern = make_feishu_pattern("private_group", None, None, None);
+        pattern.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+
+        let result = feishu_match_message(&msg, &[pattern]);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "private_group");
+    }
+
+    #[test]
+    fn test_match_by_chat_name_case_insensitive() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("Self-Hosting-JYC".to_string()),
+        );
+        let mut pattern = make_feishu_pattern("private_group", None, None, None);
+        pattern.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+
+        assert!(feishu_match_message(&msg, &[pattern]).is_some());
+    }
+
+    #[test]
+    fn test_no_match_wrong_chat_name() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("other-group".to_string()),
+        );
+        let mut pattern = make_feishu_pattern("private_group", None, None, None);
+        pattern.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+
+        assert!(feishu_match_message(&msg, &[pattern]).is_none());
+    }
+
+    #[test]
+    fn test_chat_name_and_mentions_and_logic() {
+        let mut msg = make_feishu_message("user1", "Hello", vec!["bot_abc"], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("self-hosting-jyc".to_string()),
+        );
+        let mut pattern = make_feishu_pattern(
+            "both",
+            Some(vec!["bot_abc".to_string()]),
+            None,
+            None,
+        );
+        pattern.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+
+        assert!(feishu_match_message(&msg, &[pattern]).is_some());
+
+        // chat_name matches but mentions don't
+        let mut msg2 = make_feishu_message("user1", "Hello", vec!["other_bot"], Some("oc_12345"));
+        msg2.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("self-hosting-jyc".to_string()),
+        );
+        let mut pattern2 = make_feishu_pattern(
+            "both",
+            Some(vec!["bot_abc".to_string()]),
+            None,
+            None,
+        );
+        pattern2.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+        assert!(feishu_match_message(&msg2, &[pattern2]).is_none());
+    }
+
+    #[test]
+    fn test_chat_name_first_pattern_wins() {
+        let mut msg = make_feishu_message("user1", "Hello", vec!["bot_abc"], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("self-hosting-jyc".to_string()),
+        );
+        let mut pattern1 = make_feishu_pattern("private_group", None, None, None);
+        pattern1.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
+
+        let pattern2 = make_feishu_pattern(
+            "group_mention",
+            Some(vec!["bot_abc".to_string()]),
+            None,
+            None,
+        );
+
+        let result = feishu_match_message(&msg, &[pattern1, pattern2]).unwrap();
+        assert_eq!(result.pattern_name, "private_group");
     }
 
     #[test]

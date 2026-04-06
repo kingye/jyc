@@ -43,12 +43,12 @@ impl ChannelMatcher for FeishuMatcher {
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
         // Prefer readable names from metadata (populated by WebSocket name lookups)
-        // Group chat: use chat name (e.g., "feishu_ProjectAlpha")
-        // P2P: use sender display name (e.g., "feishu_dm_ZhangSan")
-        // Fallback: use opaque IDs
+        // Group chat: use chat name directly (e.g., "self-hosting-jyc")
+        // P2P: use sender display name (e.g., "Zhang San")
+        // Fallback: use opaque IDs with prefix
         if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str()) {
             if !chat_name.is_empty() {
-                return sanitize_for_filesystem(&format!("feishu_{}", chat_name));
+                return sanitize_for_filesystem(chat_name);
             }
         }
 
@@ -56,12 +56,12 @@ impl ChannelMatcher for FeishuMatcher {
         if chat_type == "p2p" {
             if let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str()) {
                 if !sender_name.is_empty() {
-                    return sanitize_for_filesystem(&format!("feishu_dm_{}", sender_name));
+                    return sanitize_for_filesystem(sender_name);
                 }
             }
         }
 
-        // Fallback to opaque IDs (if name API calls failed)
+        // Fallback to opaque IDs with prefix (if name API calls failed)
         if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
             format!("feishu_chat_{}", chat_id)
         } else if let Some(user_id) = message.metadata.get("user_id").and_then(|v| v.as_str()) {
@@ -713,7 +713,7 @@ mod tests {
         );
         let matcher = FeishuMatcher;
         let name = matcher.derive_thread_name(&msg, &[], None);
-        assert_eq!(name, "feishu_Project Alpha");
+        assert_eq!(name, "Project Alpha");
     }
 
     #[test]
@@ -729,7 +729,7 @@ mod tests {
         );
         let matcher = FeishuMatcher;
         let name = matcher.derive_thread_name(&msg, &[], None);
-        assert_eq!(name, "feishu_dm_Zhang San");
+        assert_eq!(name, "Zhang San");
     }
 
     #[test]
@@ -742,6 +742,6 @@ mod tests {
         let matcher = FeishuMatcher;
         let name = matcher.derive_thread_name(&msg, &[], None);
         // sanitize_for_filesystem replaces / with _
-        assert_eq!(name, "feishu_项目_测试群");
+        assert_eq!(name, "项目_测试群");
     }
 }

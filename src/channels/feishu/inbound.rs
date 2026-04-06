@@ -6,12 +6,15 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
 };
+use crate::utils::helpers::sanitize_for_filesystem;
 
+use super::client::FeishuClient;
 use super::config::FeishuConfig;
 use super::websocket::FeishuWebSocket;
 
@@ -39,7 +42,26 @@ impl ChannelMatcher for FeishuMatcher {
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Feishu threads are derived from chat_id (group chat) or user_id (DM)
+        // Prefer readable names from metadata (populated by WebSocket name lookups)
+        // Group chat: use chat name (e.g., "feishu_ProjectAlpha")
+        // P2P: use sender display name (e.g., "feishu_dm_ZhangSan")
+        // Fallback: use opaque IDs
+        if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str()) {
+            if !chat_name.is_empty() {
+                return sanitize_for_filesystem(&format!("feishu_{}", chat_name));
+            }
+        }
+
+        let chat_type = message.metadata.get("chat_type").and_then(|v| v.as_str()).unwrap_or("");
+        if chat_type == "p2p" {
+            if let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str()) {
+                if !sender_name.is_empty() {
+                    return sanitize_for_filesystem(&format!("feishu_dm_{}", sender_name));
+                }
+            }
+        }
+
+        // Fallback to opaque IDs (if name API calls failed)
         if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
             format!("feishu_chat_{}", chat_id)
         } else if let Some(user_id) = message.metadata.get("user_id").and_then(|v| v.as_str()) {
@@ -270,7 +292,10 @@ impl crate::channels::types::InboundAdapter for FeishuInboundAdapter {
             return Ok(());
         }
 
-        let mut ws = FeishuWebSocket::new(&self.config);
+        let client = Arc::new(FeishuClient::new(self.config.clone()));
+        client.initialize().await.ok(); // Pre-warm for name lookups
+
+        let mut ws = FeishuWebSocket::new(&self.config, client);
         let channel_name = self.channel_name.clone();
 
         loop {
@@ -555,5 +580,46 @@ mod tests {
         let matcher = FeishuMatcher;
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "feishu_msg_001");
+    }
+
+    #[test]
+    fn test_derive_thread_name_chat_name() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("Project Alpha".to_string()),
+        );
+        let matcher = FeishuMatcher;
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "feishu_Project Alpha");
+    }
+
+    #[test]
+    fn test_derive_thread_name_p2p_sender_name() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], None);
+        msg.metadata.insert(
+            "chat_type".to_string(),
+            serde_json::Value::String("p2p".to_string()),
+        );
+        msg.metadata.insert(
+            "sender_name".to_string(),
+            serde_json::Value::String("Zhang San".to_string()),
+        );
+        let matcher = FeishuMatcher;
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "feishu_dm_Zhang San");
+    }
+
+    #[test]
+    fn test_derive_thread_name_chat_name_with_special_chars() {
+        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
+        msg.metadata.insert(
+            "chat_name".to_string(),
+            serde_json::Value::String("项目/测试群".to_string()),
+        );
+        let matcher = FeishuMatcher;
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        // sanitize_for_filesystem replaces / with _
+        assert_eq!(name, "feishu_项目_测试群");
     }
 }

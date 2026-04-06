@@ -14,6 +14,7 @@ use open_lark::ws_client::{EventDispatcherHandler, LarkWsClient};
 
 use crate::channels::types::{InboundMessage, MessageContent};
 
+use super::client::FeishuClient;
 use super::config::FeishuConfig;
 use super::types::{
     EventEnvelope, FileContent, ImageContent, TextContent,
@@ -27,14 +28,16 @@ use super::types::{
 /// Reconnection logic is handled by the caller (`FeishuInboundAdapter::start()`).
 pub struct FeishuWebSocket {
     config: FeishuConfig,
+    client: Arc<FeishuClient>,
     reconnect_count: usize,
 }
 
 impl FeishuWebSocket {
     /// Create a new WebSocket handler.
-    pub fn new(config: &FeishuConfig) -> Self {
+    pub fn new(config: &FeishuConfig, client: Arc<FeishuClient>) -> Self {
         Self {
             config: config.clone(),
+            client,
             reconnect_count: 0,
         }
     }
@@ -85,7 +88,7 @@ impl FeishuWebSocket {
                 payload = payload_rx.recv() => {
                     match payload {
                         Some(data) => {
-                            if let Err(e) = self.handle_payload(channel_name, &data, on_message) {
+                            if let Err(e) = self.handle_payload(channel_name, &data, on_message).await {
                                 tracing::warn!(error = %e, "Failed to process Feishu event");
                             }
                         }
@@ -123,7 +126,7 @@ impl FeishuWebSocket {
     }
 
     /// Parse a raw WebSocket payload and route it as an `InboundMessage`.
-    fn handle_payload(
+    async fn handle_payload(
         &self,
         channel_name: &str,
         data: &[u8],
@@ -141,7 +144,7 @@ impl FeishuWebSocket {
             return Ok(());
         }
 
-        let message = self.convert_to_inbound(channel_name, &envelope)
+        let message = self.convert_to_inbound(channel_name, &envelope).await
             .context("Failed to convert Feishu event to InboundMessage")?;
 
         tracing::info!(
@@ -157,7 +160,7 @@ impl FeishuWebSocket {
     }
 
     /// Convert a Feishu event envelope to a channel-agnostic `InboundMessage`.
-    fn convert_to_inbound(
+    async fn convert_to_inbound(
         &self,
         channel_name: &str,
         envelope: &EventEnvelope,
@@ -248,6 +251,35 @@ impl FeishuWebSocket {
             .as_deref()
             .unwrap_or("unknown");
 
+        // Fetch readable names (cached after first call)
+        let sender_name = if sender_id != "unknown" {
+            self.client.get_user_name(sender_id).await.ok().flatten()
+        } else {
+            None
+        };
+
+        let chat_name = if msg.chat_type == "group" && !chat_id.is_empty() {
+            self.client.get_chat_name(&chat_id).await.ok().flatten()
+        } else {
+            None
+        };
+
+        // Store names in metadata for derive_thread_name() and prompt_builder
+        if let Some(ref name) = sender_name {
+            metadata.insert(
+                "sender_name".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+        }
+        if let Some(ref name) = chat_name {
+            metadata.insert(
+                "chat_name".to_string(),
+                serde_json::Value::String(name.clone()),
+            );
+        }
+
+        let display_sender = sender_name.as_deref().unwrap_or(sender_id);
+
         let timestamp = msg
             .create_time
             .as_deref()
@@ -259,10 +291,10 @@ impl FeishuWebSocket {
             id: uuid::Uuid::new_v4().to_string(),
             channel: channel_name.to_string(),
             channel_uid: chat_id,
-            sender: sender_id.to_string(),
+            sender: display_sender.to_string(),
             sender_address: sender_id.to_string(),
             recipients: vec![],
-            topic: String::new(), // Feishu messages don't have subjects
+            topic: chat_name.unwrap_or_default(), // Use chat name as topic for better AI context
             content: MessageContent {
                 text: Some(text),
                 html: None,
@@ -332,7 +364,8 @@ mod tests {
     #[test]
     fn test_websocket_creation() {
         let config = FeishuConfig::default();
-        let ws = FeishuWebSocket::new(&config);
+        let client = Arc::new(super::super::client::FeishuClient::new(config.clone()));
+        let ws = FeishuWebSocket::new(&config, client);
         assert_eq!(ws.reconnect_count, 0);
     }
 
@@ -395,7 +428,8 @@ mod tests {
     fn test_reconnection_count() {
         let mut config = FeishuConfig::default();
         config.websocket.max_reconnect_attempts = 3;
-        let mut ws = FeishuWebSocket::new(&config);
+        let client = Arc::new(super::super::client::FeishuClient::new(config.clone()));
+        let mut ws = FeishuWebSocket::new(&config, client);
         assert_eq!(ws.reconnect_count, 0);
 
         ws.reconnect_count = 2;

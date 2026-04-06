@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use open_lark::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -42,6 +43,10 @@ pub enum FeishuError {
 pub struct FeishuClient {
     config: FeishuConfig,
     client: Arc<RwLock<Option<Client>>>,
+    /// Cache for chat names (chat_id -> name). Rarely changes, avoids repeated API calls.
+    chat_name_cache: Arc<RwLock<HashMap<String, String>>>,
+    /// Cache for user display names (open_id -> name).
+    user_name_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl FeishuClient {
@@ -50,6 +55,8 @@ impl FeishuClient {
         Self {
             config,
             client: Arc::new(RwLock::new(None)),
+            chat_name_cache: Arc::new(RwLock::new(HashMap::new())),
+            user_name_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -153,6 +160,105 @@ impl FeishuClient {
         );
 
         Ok(FeishuMessageResult { message_id })
+    }
+
+    /// Get the display name of a group chat (cached).
+    ///
+    /// Calls `GET /open-apis/im/v1/chats/:chat_id` on cache miss.
+    /// Requires scope: `im:chat:readonly`.
+    pub async fn get_chat_name(&self, chat_id: &str) -> Result<Option<String>> {
+        // Check cache first
+        {
+            let cache = self.chat_name_cache.read().await;
+            if let Some(name) = cache.get(chat_id) {
+                return Ok(Some(name.clone()));
+            }
+        }
+
+        // Cache miss — call Feishu API
+        let core_config = self.get_core_config().await?;
+
+        use open_lark::communication::im::im::v1::chat::get::GetChatRequest;
+
+        let resp = GetChatRequest::new(core_config)
+            .chat_id(chat_id)
+            .execute()
+            .await;
+
+        match resp {
+            Ok(data) => {
+                let name = data
+                    .get("data")
+                    .and_then(|d| d.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string());
+
+                if let Some(ref name) = name {
+                    let mut cache = self.chat_name_cache.write().await;
+                    cache.insert(chat_id.to_string(), name.clone());
+                    tracing::debug!(chat_id = %chat_id, name = %name, "Chat name cached");
+                }
+
+                Ok(name)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    error = %e,
+                    "Failed to get chat name, using fallback"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Get the display name of a user (cached).
+    ///
+    /// Calls `GET /open-apis/contact/v3/users/:user_id` on cache miss.
+    /// Requires scope: `contact:user.base:readonly`.
+    pub async fn get_user_name(&self, open_id: &str) -> Result<Option<String>> {
+        // Check cache first
+        {
+            let cache = self.user_name_cache.read().await;
+            if let Some(name) = cache.get(open_id) {
+                return Ok(Some(name.clone()));
+            }
+        }
+
+        // Cache miss — call Feishu API
+        let core_config = self.get_core_config().await?;
+
+        use open_lark::communication::contact::contact::v3::user::get::GetUserRequest;
+        use open_lark::communication::contact::contact::v3::user::models::UserIdType;
+
+        let resp = GetUserRequest::new(core_config)
+            .user_id(open_id)
+            .user_id_type(UserIdType::OpenId)
+            .execute()
+            .await;
+
+        match resp {
+            Ok(data) => {
+                // UserResponse has a typed `user: User` field with `name: Option<String>`
+                let name = data.user.name;
+
+                if let Some(ref name) = name {
+                    let mut cache = self.user_name_cache.write().await;
+                    cache.insert(open_id.to_string(), name.clone());
+                    tracing::debug!(open_id = %open_id, name = %name, "User name cached");
+                }
+
+                Ok(name)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    open_id = %open_id,
+                    error = %e,
+                    "Failed to get user name, using fallback"
+                );
+                Ok(None)
+            }
+        }
     }
 }
 

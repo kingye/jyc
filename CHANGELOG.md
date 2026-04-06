@@ -2,6 +2,75 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.1.0] - 2026-04-06
+
+First multi-channel release: JYC is now a truly channel-agnostic AI agent framework with full Feishu (飞书/Lark) support alongside email.
+
+### Added
+
+**Feishu Channel — Full Implementation**
+- Real-time WebSocket connection via openlark SDK (`LarkWsClient`)
+- Message receiving: text, image, file, and interactive (card) message types
+- Message sending via Feishu IM API (`CreateMessageRequest`)
+- Chat/user name lookup with in-memory caching (readable thread directories)
+- @mention placeholder stripping (replaces `@_user_1` with `@displayname`)
+- WebSocket reconnection with configurable backoff
+- `FEISHU.md` onboarding guide with required scopes, setup steps, troubleshooting
+
+**Channel-Agnostic Architecture**
+- `ChannelMatcher` trait: split from `InboundAdapter` for pure-logic pattern matching and thread name derivation
+- `EmailMatcher` and `FeishuMatcher` stateless implementations
+- `MessageRouter.route()`: channel-agnostic, delegates to `&dyn ChannelMatcher`
+- `OutboundAdapter` trait: `clean_body()` for channel-specific body cleaning, `send_reply()` with full lifecycle (format + send + store)
+- `ThreadManager`, `AlertService`, `process_message`: all use `Arc<dyn OutboundAdapter>` instead of `Arc<EmailOutboundAdapter>`
+
+**Pattern Matching**
+- `mentions`: match Feishu messages by @-mentioned bot/user names or IDs (OR logic)
+- `keywords`: match by message body content (OR, case-insensitive)
+- `chat_name`: match by Feishu group chat name (OR, case-insensitive) — enables per-group behavior (e.g., reply to all messages in private groups, require @mention in public groups)
+- All rules use AND logic within a pattern, first-match-wins across patterns
+
+**Heartbeat Configuration**
+- Configurable `[heartbeat]` section: `enabled`, `interval_secs` (default 600 = 10 minutes), `min_elapsed_secs` (default 60)
+- Per-channel `heartbeat_template` with `{elapsed}` placeholder for multilingual messages (e.g., `"正在处理中，请稍候... (已用时 {elapsed})"`)
+
+**SMTP Error Handling**
+- Structured error handling using lettre's `SmtpError` API (replaces string-based matching)
+- Permanent errors (5xx): fail immediately with SMTP code logged
+- Transient errors (4xx): retry with exponential backoff (3 attempts, 5–60s)
+- Connection/timeout errors: reconnect + retry (2 attempts)
+
+**Security**
+- `"external_directory": "deny"` in OpenCode permissions — blocks AI from accessing files outside the thread directory
+
+**Build**
+- `protobuf-compiler` added as build prerequisite (required by `lark-websocket-protobuf`)
+
+### Changed
+
+- **MCP Reply Tool**: no longer sends messages directly. Writes `reply.md` + signal file; monitor process delivers via pre-warmed outbound adapter. Eliminates cold-start timeouts for Feishu API calls.
+- **BUILD MODE Prompt**: categorizes messages — information questions (→ use `curl`), coding tasks (→ use tools), general conversation (→ reply directly). Prevents AI from exploring the filesystem for simple questions.
+- **Email Quoted History**: truncated to 1024 characters per entry (`MAX_QUOTED_BODY_CHARS`) with `...[truncated]` suffix
+- **ThreadManager**: uses `cancel.child_token()` — one channel shutting down no longer kills other channels
+- **Heartbeat Interval**: default changed from 2 minutes to 10 minutes (avoids SMTP rate limits)
+- **MCP Tool Timeout**: increased from 60s to 180s
+- **System Prompt**: updated default to instruct AI to use tools for real-time information lookup
+
+### Fixed
+
+- Model name missing in `ai` log span (`m=?:build` → `m=ark/deepseek-v3.2:build`) — restored `tracing::field::Empty` + `.record()` pattern
+- UTF-8 panic in Feishu outbound adapter (byte slicing on multi-byte Chinese/emoji characters)
+- Feishu channel causing cascade shutdown of all email channels via shared cancel token
+- Feishu reply tool timeout (>180s) due to cold-start HTTP calls in MCP subprocess
+- Chat name lookup double-unwrap (`extract_response_data` already unwraps outer envelope)
+
+### Removed
+
+- Dead `[agent.progress]` / `ProgressConfig` config and `DEFAULT_PROGRESS_*` constants
+- Dead `include_thread_history` config field
+- Dead `workspace` field on `ChannelConfig`
+- `feishu_` prefix from thread directory names (now consistent with email: just the chat/subject name)
+
 ## [0.0.13] - 2026-04-05
 
 ### Added

@@ -258,11 +258,26 @@ impl FeishuWebSocket {
             None
         };
 
-        let chat_name = if msg.chat_type == "group" && !chat_id.is_empty() {
-            self.client.get_chat_name(&chat_id).await.ok().flatten()
+        // For group chats, also look up the chat name
+        let chat_name = if msg.chat_type == "group" {
+            if !chat_id.is_empty() {
+                self.client.get_chat_name(&chat_id).await.ok().flatten()
+            } else {
+                tracing::warn!("Group message has empty chat_id, cannot look up chat name");
+                None
+            }
         } else {
             None
         };
+
+        tracing::debug!(
+            sender_id = %sender_id,
+            sender_name = ?sender_name,
+            chat_id = %chat_id,
+            chat_name = ?chat_name,
+            chat_type = %msg.chat_type,
+            "Name resolution completed"
+        );
 
         // Store names in metadata for derive_thread_name() and prompt_builder
         if let Some(ref name) = sender_name {

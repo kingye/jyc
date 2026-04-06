@@ -187,9 +187,11 @@ impl FeishuClient {
 
         match resp {
             Ok(data) => {
+                tracing::debug!(chat_id = %chat_id, response = %data, "Chat info API response");
+                // extract_response_data already unwraps the outer "data" envelope,
+                // so `data` is the inner object directly (e.g., {"name": "...", ...})
                 let name = data
-                    .get("data")
-                    .and_then(|d| d.get("name"))
+                    .get("name")
                     .and_then(|n| n.as_str())
                     .map(|s| s.to_string());
 
@@ -197,6 +199,8 @@ impl FeishuClient {
                     let mut cache = self.chat_name_cache.write().await;
                     cache.insert(chat_id.to_string(), name.clone());
                     tracing::debug!(chat_id = %chat_id, name = %name, "Chat name cached");
+                } else {
+                    tracing::warn!(chat_id = %chat_id, "Chat info returned but name field missing");
                 }
 
                 Ok(name)
@@ -254,7 +258,7 @@ impl FeishuClient {
                 tracing::warn!(
                     open_id = %open_id,
                     error = %e,
-                    "Failed to get user name, using fallback"
+                    "Failed to get user name (check contact:user.base:readonly scope)"
                 );
                 Ok(None)
             }

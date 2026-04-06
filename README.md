@@ -6,6 +6,8 @@ Channel-agnostic AI agent that operates through messaging channels. Users intera
 
 ## Prerequisites
 
+### Build Dependencies
+
 - **Rust** (stable toolchain): https://rustup.rs
 - **protobuf-compiler** (required for Feishu WebSocket support):
   ```bash
@@ -18,6 +20,27 @@ Channel-agnostic AI agent that operates through messaging channels. Users intera
   # Verify
   protoc --version
   ```
+
+### Runtime Dependencies (Optional)
+
+These tools are used by the AI agent (via OpenCode) when processing messages. Install them on the server where JYC runs:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install -y \
+  curl \            # Web requests (weather, APIs, etc.)
+  pandoc \          # HTML ↔ Markdown conversion
+  jq \              # JSON processing
+  ripgrep \         # Fast code search
+  git               # Version control operations
+```
+
+```bash
+# macOS
+brew install curl pandoc jq ripgrep git
+```
+
+Without these, the AI will still work but may fall back to less efficient methods (e.g., manually parsing HTML instead of using `pandoc`).
 
 ## Quick Start
 

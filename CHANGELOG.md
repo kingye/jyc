@@ -2,6 +2,48 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.0.13] - 2026-04-05
+
+### Added
+
+**Feishu (飞书/Lark) Channel Implementation - Phase 7**
+- Complete Feishu channel support with real-time messaging capabilities
+- **FeishuInboundAdapter**: WebSocket-based real-time message reception
+- **FeishuOutboundAdapter**: API-based message sending using openlark SDK
+- **FeishuClient**: Authentication, token management, and API integration
+- **FeishuFormatter**: Multi-format message support (markdown, text, HTML)
+- **FeishuWebSocket**: Real-time event handling with automatic reconnection
+- Comprehensive error handling with `FeishuError` enum
+- Full unit test coverage for all components
+- Configuration support for Feishu app credentials and WebSocket settings
+
+**Documentation Updates**
+- Added "Feishu Channel Implementation" chapter to DESIGN.md
+- Added Phase 7 to IMPLEMENTATION.md detailing Feishu implementation
+- Updated README.md with "Supported Channels" section
+- Configuration examples for Feishu channel setup
+
+### Changed
+
+- **OutboundAdapter trait**: Added `send_heartbeat()` method for progress updates
+- **Channel registry**: Extended to support Feishu channel type
+- **Thread naming**: Enhanced to support Feishu chat metadata
+- **Test suite**: Expanded to 115 tests with Feishu component tests
+
+### Fixed
+
+- **OutboundAdapter implementation**: Fixed missing `send_heartbeat()` method in FeishuOutboundAdapter
+- **Test failures**: Fixed config tests expecting 2.0 hours timeout (actual default is 1.0 hours)
+- **Unused code warnings**: Cleaned up unused imports and variables in Feishu modules
+
+### Technical Details
+
+- **API Integration**: Uses official openlark Rust SDK for Feishu API
+- **WebSocket Protocol**: Implements Feishu's custom WebSocket protocol
+- **Authentication**: App token management with automatic refresh
+- **Message Formatting**: Support for Feishu's rich message formats
+- **Thread Compatibility**: Seamless integration with existing thread management
+
 ## [0.0.12] - 2026-04-02
 
 ### Added

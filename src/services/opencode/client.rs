@@ -596,7 +596,7 @@ impl OpenCodeClient {
         event: &SseEvent,
         session_id: &str,
         thread_name: &str,
-        _mode_label: &str,
+        mode_label: &str,
         parts: &mut HashMap<String, ResponsePart>,
         result: &mut SseResult,
         last_activity: &mut Instant,
@@ -634,6 +634,10 @@ impl OpenCodeClient {
                                         model.clone()
                                     };
                                     tracing::info!(model = %combined_model, mode = ?info.mode, "AI model selected");
+                                    // Record model on the parent ai span so all subsequent
+                                    // log lines show the actual model name
+                                    let span_label = format!("{}:{}", combined_model, mode_label);
+                                    tracing::Span::current().record("m", &span_label);
                                 }
                             }
                             // Only update if new value is Some (don't overwrite with None)
@@ -778,11 +782,47 @@ impl OpenCodeClient {
                         tracing::info!("Step started");
                     }
                     if part.part_type == "step-finish" {
-                        tracing::debug!(
-                            reason = ?part.reason,
-                            cost = ?part.cost,
-                            "Step finished"
-                        );
+                        // Try to parse tokens if available
+                        if let Some(ref tokens_json) = part.tokens {
+                            match serde_json::from_value::<TokenInfo>(tokens_json.clone()) {
+                                Ok(token_info) => {
+                                    // Save token information to result
+                                    result.input_tokens = Some(token_info.input);
+                                    result.output_tokens = Some(token_info.output);
+                                    result.reasoning_tokens = Some(token_info.reasoning);
+                                    result.cache_read_tokens = Some(token_info.cache.read);
+                                    result.cache_write_tokens = Some(token_info.cache.write);
+                                    result.total_cost = part.cost;
+                                    
+                                    tracing::info!(
+                                        reason = ?part.reason,
+                                        cost = ?part.cost,
+                                        input_tokens = token_info.input,
+                                        output_tokens = token_info.output,
+                                        reasoning_tokens = token_info.reasoning,
+                                        cache_read_tokens = token_info.cache.read,
+                                        cache_write_tokens = token_info.cache.write,
+                                        total_tokens = token_info.input + token_info.output + token_info.reasoning,
+                                        "Step finished with token details"
+                                    );
+                                }
+                                Err(e) => {
+                                    // Fallback to showing raw tokens if parsing fails
+                                    tracing::debug!(
+                                        reason = ?part.reason,
+                                        cost = ?part.cost,
+                                        raw_tokens = ?tokens_json,
+                                        "Step finished (failed to parse tokens: {})", e
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::debug!(
+                                reason = ?part.reason,
+                                cost = ?part.cost,
+                                "Step finished (no token information)"
+                            );
+                        }
                     }
 
                     // Log AI text content at debug level (skip empty)
@@ -938,6 +978,13 @@ pub struct SseResult {
     pub error: Option<String>,
     pub error_message: Option<String>,
     pub timed_out: bool,
+    // Token usage information from step-finish events
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub total_cost: Option<f64>,
 }
 
 /// Check if the reply_message tool was used successfully in the accumulated parts.

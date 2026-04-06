@@ -20,6 +20,14 @@ pub const RECOVERY_JUMP_THRESHOLD: u32 = 50;
 
 // --- SMTP ---
 pub const DEFAULT_SMTP_PORT: u16 = 465;
+/// Max retries for transient SMTP errors (4xx: 421, 451, 452)
+pub const SMTP_MAX_TRANSIENT_RETRIES: u32 = 3;
+/// Max retries for connection/timeout/TLS SMTP errors
+pub const SMTP_MAX_CONNECTION_RETRIES: u32 = 2;
+/// Base delay for SMTP retry backoff (seconds)
+pub const SMTP_RETRY_BASE_DELAY_SECS: u64 = 5;
+/// Maximum delay for SMTP retry backoff (seconds)
+pub const SMTP_RETRY_MAX_DELAY_SECS: u64 = 60;
 
 // --- OpenCode ---
 pub const OPENCODE_PORT_RANGE_START: u16 = 49152;
@@ -54,6 +62,8 @@ pub const MAX_PER_FILE: usize = 400;
 pub const MAX_TOTAL_CONTEXT: usize = 2000;
 pub const MAX_TOTAL_PROMPT: usize = 6000;
 pub const MAX_HISTORY_QUOTE: usize = 6;
+/// Max characters per quoted history entry in email replies (truncated with "[truncated]")
+pub const MAX_QUOTED_BODY_CHARS: usize = 1024;
 
 // --- Alerting ---
 pub const DEFAULT_BATCH_INTERVAL_MINUTES: u64 = 5;
@@ -62,11 +72,6 @@ pub const DEFAULT_REPLY_TOOL_LOG_TAIL_LINES: usize = 50;
 pub const DEFAULT_HEALTH_CHECK_INTERVAL_HOURS: f64 = 24.0;
 pub const ALERT_CONTEXT_WINDOW_SIZE: usize = 100;
 pub const ALERT_CONTEXT_LINES_PER_ERROR: usize = 10;
-
-// --- Progress ---
-pub const DEFAULT_PROGRESS_INITIAL_DELAY_SECS: u64 = 180;
-pub const DEFAULT_PROGRESS_INTERVAL_SECS: u64 = 180;
-pub const DEFAULT_PROGRESS_MAX_MESSAGES: usize = 5;
 
 // --- Attachments ---
 pub const DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;

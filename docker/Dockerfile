@@ -5,6 +5,7 @@ FROM debian:bookworm-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ripgrep jq procps xz-utils inotify-tools \
     ca-certificates pkg-config libssl-dev build-essential \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 # s6-overlay for process supervision

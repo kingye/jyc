@@ -1,0 +1,167 @@
+# JYC Configuration
+# Fill in your credentials below. Use ${ENV_VAR} syntax for secrets if preferred.
+
+[general]
+max_concurrent_threads = 3
+max_queue_size_per_thread = 10
+
+# --- Channel: jiny283 ---
+
+[channels.jiny283]
+type = "email"
+
+[channels.jiny283.inbound]
+host = "imap.163.com"
+port = 993
+tls = true
+auth_timeout_ms = 30000
+username = "jiny283@163.com"
+password = "xxxxxxxxxxxx"
+
+[channels.jiny283.outbound]
+host = "smtp.163.com"
+port = 465
+secure = true
+username = "jiny283@163.com"
+password = "xxxxxxxx"
+
+[channels.jiny283.monitor]
+mode = "poll"
+poll_interval_secs = 30
+max_retries = 5
+folder = "INBOX"
+
+[[channels.jiny283.patterns]]
+name = "sap"
+enabled = true
+
+[channels.jiny283.patterns.rules.sender]
+exact = ["ye.jin@sap.com", "kingye@petalmail.com", "qing.cheng@roedl.com"]
+
+[channels.jiny283.patterns.rules.subject]
+prefix = ["283", "jiny"]
+
+[channels.jiny283.patterns.attachments]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+  ".potx",
+]
+max_file_size = "25mb"
+max_per_message = 10
+
+# --- Channel: jiny283a ---
+
+[channels.jiny283a]
+type = "email"
+
+[channels.jiny283a.inbound]
+host = "imap.163.com"
+port = 993
+tls = true
+auth_timeout_ms = 30000
+username = "jiny283a@163.com"
+password = "xxxxxxxxxx"
+
+[channels.jiny283a.outbound]
+host = "smtp.163.com"
+port = 465
+secure = true
+username = "jiny283a@163.com"
+password = "xxxxxxxxxx"
+
+[channels.jiny283a.monitor]
+mode = "poll"
+poll_interval_secs = 30
+max_retries = 5
+folder = "INBOX"
+
+[[channels.jiny283a.patterns]]
+name = "jiny-m"
+enabled = true
+
+[channels.jiny283a.patterns.rules.sender]
+exact = ["ye.jin@sap.com", "kingye@petalmail.com", "kingye283@163.com"]
+
+[channels.jiny283a.patterns.rules.subject]
+prefix = ["283a", "jiny", "bs"]
+
+[channels.jiny283a.patterns.attachments]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+  ".potx",
+]
+max_file_size = "25mb"
+max_per_message = 10
+
+# --- Feishu Channel Example ---
+# Uncomment and configure for Feishu/Lark integration
+[channels.feishu_bot]
+type = "feishu"
+workspace = "./feishu_workspace"
+#
+[channels.feishu_bot.feishu]
+app_id = "cli_xxxxxxxxx"
+app_secret = "xxxxxxxxxxxx"
+base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
+
+[channels.feishu_bot.feishu.websocket]
+enabled = true
+reconnect_delay_secs = 5
+max_reconnect_attempts = 10
+heartbeat_interval_secs = 30
+
+[[channels.feishu_bot.patterns]]
+name = "feishu_bot"
+enabled = true
+
+# Feishu-specific pattern matching (placeholder - will be implemented)
+[channels.feishu_bot.patterns.rules]
+mentions = ["jyc"]
+
+# --- Agent ---
+
+[agent]
+enabled = true
+mode = "opencode"
+# mode = "static"
+# text = "Thank you for your message."
+
+[agent.opencode]
+system_prompt = "You are an AI assistant. Respond professionally and concisely."
+include_thread_history = false
+
+
+[agent.attachments]
+enabled = true
+max_file_size = "10mb"
+allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md", ".pdf"]
+
+# --- Alerting ---
+
+[alerting]
+enabled = true
+recipient = "kingye@petalmail.com"
+batch_interval_minutes = 5
+subject_prefix = "JYC Alert"
+include_reply_tool_log = true
+reply_tool_log_tail_lines = 50
+
+[alerting.health_check]
+enabled = true
+interval_hours = 3

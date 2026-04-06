@@ -231,3 +231,78 @@ pub struct ProvidersResponse {
     #[serde(default)]
     pub connected: Vec<String>,
 }
+
+/// Token usage information from step-finish events.
+#[derive(Debug, Deserialize)]
+pub struct TokenInfo {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub reasoning: u64,
+    #[serde(default)]
+    pub cache: CacheTokenInfo,
+}
+
+/// Cache token usage information.
+#[derive(Debug, Default, Deserialize)]
+pub struct CacheTokenInfo {
+    #[serde(default)]
+    pub read: u64,
+    #[serde(default)]
+    pub write: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_token_info_parsing() {
+        // Test parsing of complete token info
+        let json_data = r#"
+        {
+            "input": 1500,
+            "output": 250,
+            "reasoning": 300,
+            "cache": {
+                "read": 100,
+                "write": 50
+            }
+        }
+        "#;
+
+        let token_info: TokenInfo = serde_json::from_str(json_data).unwrap();
+        assert_eq!(token_info.input, 1500);
+        assert_eq!(token_info.output, 250);
+        assert_eq!(token_info.reasoning, 300);
+        assert_eq!(token_info.cache.read, 100);
+        assert_eq!(token_info.cache.write, 50);
+    }
+
+    #[test]
+    fn test_token_info_with_missing_fields() {
+        // Test parsing with missing fields (should use defaults)
+        let json_data = r#"
+        {
+            "input": 1000,
+            "output": 200
+        }
+        "#;
+
+        let token_info: TokenInfo = serde_json::from_str(json_data).unwrap();
+        assert_eq!(token_info.input, 1000);
+        assert_eq!(token_info.output, 200);
+        assert_eq!(token_info.reasoning, 0); // default
+        assert_eq!(token_info.cache.read, 0); // default
+        assert_eq!(token_info.cache.write, 0); // default
+    }
+
+    #[test]
+    fn test_cache_token_info_default() {
+        let cache_info = CacheTokenInfo::default();
+        assert_eq!(cache_info.read, 0);
+        assert_eq!(cache_info.write, 0);
+    }
+}

@@ -112,6 +112,49 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     });
                 }
             }
+        } else if channel.channel_type == "feishu" {
+            // Validate Feishu channel specifics
+            if let Some(ref feishu_config) = channel.feishu {
+                if feishu_config.app_id.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.app_id"),
+                        message: "Feishu app_id is required".into(),
+                    });
+                }
+                if feishu_config.app_secret.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.app_secret"),
+                        message: "Feishu app_secret is required (use ${ENV_VAR} syntax)".into(),
+                    });
+                }
+                if !feishu_config.base_url.starts_with("https://") {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.feishu.base_url"),
+                        message: "Feishu base_url must start with https://".into(),
+                    });
+                }
+
+                // Validate WebSocket configuration
+                if feishu_config.websocket.enabled {
+                    if feishu_config.websocket.reconnect_delay_secs == 0 {
+                        errors.push(ValidationError {
+                            path: format!("{prefix}.feishu.websocket.reconnect_delay_secs"),
+                            message: "must be greater than 0".into(),
+                        });
+                    }
+                    if feishu_config.websocket.heartbeat_interval_secs < 10 {
+                        errors.push(ValidationError {
+                            path: format!("{prefix}.feishu.websocket.heartbeat_interval_secs"),
+                            message: "must be at least 10".into(),
+                        });
+                    }
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.feishu"),
+                    message: "Feishu configuration is required for feishu channel type".into(),
+                });
+            }
         }
 
         // Validate patterns
@@ -119,6 +162,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             for (i, pattern) in patterns.iter().enumerate() {
                 let pp = format!("{prefix}.patterns[{i}]");
                 validate_pattern(&pp, pattern, &mut errors);
+
+                // Feishu-specific pattern validation
+                if channel.channel_type == "feishu" && pattern.enabled {
+                    // Validate mentions list is non-empty if present
+                    if let Some(ref mentions) = pattern.rules.mentions {
+                        if mentions.is_empty() {
+                            errors.push(ValidationError {
+                                path: format!("{pp}.rules.mentions"),
+                                message: "mentions list must not be empty".into(),
+                            });
+                        }
+                    }
+                    // Validate keywords list is non-empty if present
+                    if let Some(ref keywords) = pattern.rules.keywords {
+                        if keywords.is_empty() {
+                            errors.push(ValidationError {
+                                path: format!("{pp}.rules.keywords"),
+                                message: "keywords list must not be empty".into(),
+                            });
+                        }
+                    }
+                }
             }
         }
     }
@@ -144,6 +209,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     // Validate agent attachment config
     if let Some(ref att) = config.agent.attachments {
         validate_attachment_config("agent.attachments", att, &mut errors);
+    }
+
+    // Heartbeat
+    if config.heartbeat.enabled {
+        if config.heartbeat.interval_secs == 0 {
+            errors.push(ValidationError {
+                path: "heartbeat.interval_secs".into(),
+                message: "must be at least 1 second".into(),
+            });
+        }
+        if config.heartbeat.interval_secs > 0 && config.heartbeat.interval_secs < 30 {
+            errors.push(ValidationError {
+                path: "heartbeat.interval_secs".into(),
+                message: "must be at least 30 seconds to avoid rate limits".into(),
+            });
+        }
+        if config.heartbeat.min_elapsed_secs == 0 {
+            errors.push(ValidationError {
+                path: "heartbeat.min_elapsed_secs".into(),
+                message: "must be at least 1 second".into(),
+            });
+        }
     }
 
     // Alerting

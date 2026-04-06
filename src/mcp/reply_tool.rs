@@ -8,10 +8,6 @@ use rmcp::{
 use std::path::{Path, PathBuf};
 
 use super::context::load_reply_context;
-use crate::channels::email::outbound::EmailOutboundAdapter;
-use crate::channels::types::OutboundAttachment;
-use crate::config;
-use crate::core::email_parser;
 use crate::core::message_storage::MessageStorage;
 use std::sync::Arc;
 
@@ -74,7 +70,7 @@ impl ReplyToolHandler {
 
 #[tool_router]
 impl ReplyToolHandler {
-    #[tool(description = "Send a reply message back through the originating channel. Handles quoting, threading, and reply storage.")]
+    #[tool(description = "Send a reply message back through the originating channel. The reply will be delivered by the monitor process.")]
     async fn reply_message(
         &self,
         Parameters(params): Parameters<ReplyMessageParams>,
@@ -118,11 +114,20 @@ impl ServerHandler for ReplyToolHandler {
                 "jiny_reply",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("MCP reply tool for JYC — sends replies through the originating channel")
+            .with_instructions("MCP reply tool for JYC — stores replies for delivery by the monitor process")
     }
 }
 
 /// Core reply logic.
+///
+/// This tool no longer sends messages directly. It only:
+/// 1. Validates the reply text and attachments
+/// 2. Stores reply.md via MessageStorage
+/// 3. Writes the reply-sent.flag signal file with reply metadata
+///
+/// The actual message delivery (SMTP, Feishu API, etc.) is handled by the
+/// monitor process's outbound adapter, which has pre-warmed connections and
+/// cached tokens — eliminating cold-start timeouts.
 async fn handle_reply(
     logger: &McpLogger,
     cwd: &Path,
@@ -142,145 +147,36 @@ async fn handle_reply(
         anyhow::bail!("Message cannot be empty");
     }
 
-    // 3. Load config from JYC_ROOT
-    let root_dir = std::env::var("JYC_ROOT")
-        .map_err(|_| anyhow::anyhow!("JYC_ROOT environment variable is not set"))?;
-    let config_path = Path::new(&root_dir).join("config.toml");
-    let app_config = config::load_config(&config_path)?;
-    logger.log("INFO", &format!("Config loaded: {}", config_path.display()));
-
-    // 4. Thread path = cwd
+    // 3. Thread path = cwd
     let thread_path = cwd;
 
-    // 5. Validate attachments
+    // 4. Validate attachments
     let validated_attachments = if let Some(filenames) = attachments {
         validate_attachments(thread_path, filenames, logger)?
     } else {
         vec![]
     };
 
-    // 6. Load message metadata from stored received.md (authoritative source — NOT from token)
-    let received_path = thread_path
-        .join("messages")
-        .join(&ctx.incoming_message_dir)
-        .join("received.md");
-    let received_content = tokio::fs::read_to_string(&received_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to read {}: {}", received_path.display(), e))?;
-    let parsed = email_parser::parse_stored_message(&received_content);
-
-    let sender = parsed.sender.unwrap_or_else(|| "Unknown".to_string());
-    let sender_address = parsed.sender_address
-        .ok_or_else(|| anyhow::anyhow!("sender_address not found in received.md frontmatter"))?;
-    let topic = parsed.topic.unwrap_or_default();
-    let _timestamp = parsed.timestamp.unwrap_or_default();
-    let external_id = parsed.external_id;
-    let thread_refs = parsed.thread_refs;
-
-    logger.log("INFO", &format!(
-        "Loaded from received.md: sender={}, recipient={}, topic={}, body={} chars",
-        sender, sender_address, topic, parsed.body.len()
-    ));
-
-    // 7. Create outbound adapter (with storage for reply lifecycle)
-    let channel_config = app_config
-        .channels
-        .get(&ctx.channel)
-        .ok_or_else(|| anyhow::anyhow!("channel '{}' not found in config", ctx.channel))?;
-
-    let smtp_config = channel_config
-        .outbound
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no outbound config for channel '{}'", ctx.channel))?;
-
+    // 5. Store reply.md to disk (the monitor process will read this and send)
     let storage = Arc::new(MessageStorage::new(
         thread_path.parent().unwrap_or(thread_path),
     ));
-    let outbound = EmailOutboundAdapter::new(smtp_config, storage);
-    outbound.connect().await?;
-
-    // 8. Reconstruct InboundMessage from stored metadata
-    let original = crate::channels::types::InboundMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        channel: ctx.channel.clone(),
-        channel_uid: ctx.uid.clone(),
-        sender: sender.clone(),
-        sender_address: sender_address.clone(),
-        recipients: vec![],
-        topic: topic.clone(),
-        content: crate::channels::types::MessageContent {
-            text: Some(parsed.body.clone()),
-            ..Default::default()
-        },
-        timestamp: chrono::Utc::now(),
-        thread_refs: thread_refs,
-        reply_to_id: None,
-        external_id: external_id,
-        attachments: vec![],
-        metadata: std::collections::HashMap::new(),
-        matched_pattern: None,
-    };
-
-    // Build OutboundAttachment list from validated filenames
-    let outbound_attachments: Vec<OutboundAttachment> = validated_attachments
-        .iter()
-        .map(|filename| {
-            let path = thread_path.join(filename);
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let content_type = match ext.as_str() {
-                "pdf" => "application/pdf",
-                "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "ppt" => "application/vnd.ms-powerpoint",
-                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "doc" => "application/msword",
-                "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "xls" => "application/vnd.ms-excel",
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "txt" | "md" => "text/plain",
-                "zip" => "application/zip",
-                _ => "application/octet-stream",
-            };
-            OutboundAttachment {
-                filename: filename.clone(),
-                path,
-                content_type: content_type.to_string(),
-            }
-        })
-        .collect();
-
-    logger.log("INFO", &format!(
-        "Sending reply: channel={}, recipient={}, attachments={}",
-        ctx.channel, sender_address, outbound_attachments.len()
-    ));
-
-    // 9. Send reply — outbound adapter handles: format + send + store
-    let send_result = outbound
-        .send_reply(
-            &original,
-            message,
-            thread_path,
-            &ctx.incoming_message_dir,
-            if outbound_attachments.is_empty() { None } else { Some(&outbound_attachments) },
-        )
+    storage
+        .store_reply(thread_path, message, &ctx.incoming_message_dir)
         .await?;
-    outbound.disconnect().await?;
+    logger.log("INFO", "Reply stored to reply.md");
 
-    logger.log("INFO", &format!("Reply sent: message_id={}", send_result.message_id));
-
-    // 10. Write signal file
+    // 6. Write signal file with reply metadata
+    //    The monitor process reads this to know a reply is ready for delivery.
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let signal = serde_json::json!({
         "sent_at": chrono::Utc::now().to_rfc3339(),
         "channel": ctx.channel,
-        "recipient": sender_address,
-        "message_id": send_result.message_id,
+        "message_dir": ctx.incoming_message_dir,
+        "message_len": message.len(),
         "attachment_count": validated_attachments.len(),
+        "attachments": validated_attachments,
     });
     tokio::fs::write(
         jyc_dir.join("reply-sent.flag"),
@@ -290,10 +186,11 @@ async fn handle_reply(
     .ok();
     logger.log("INFO", "Signal file written");
 
-    // Return success
+    // 7. Return success
     let mut result = format!(
-        "Reply sent successfully via {} to {}",
-        ctx.channel, sender_address
+        "Reply stored for delivery via {} ({} chars)",
+        ctx.channel,
+        message.len(),
     );
     if !validated_attachments.is_empty() {
         result.push_str(&format!(

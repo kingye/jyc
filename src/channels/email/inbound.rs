@@ -6,10 +6,46 @@ use regex::Regex;
 use uuid::Uuid;
 
 use crate::channels::types::{
-    ChannelPattern, InboundMessage, MessageAttachment, MessageContent, PatternMatch,
+    ChannelMatcher, ChannelPattern, InboundMessage, MessageAttachment, MessageContent, PatternMatch,
 };
 use crate::core::email_parser;
 use crate::utils::helpers::extract_domain;
+
+/// Email-specific pattern matching and thread name derivation.
+///
+/// Stateless struct implementing `ChannelMatcher` — can be cheaply created
+/// wherever email pattern matching is needed (e.g., ImapMonitor, tests).
+pub struct EmailMatcher;
+
+impl ChannelMatcher for EmailMatcher {
+    fn channel_type(&self) -> &str {
+        "email"
+    }
+
+    fn derive_thread_name(
+        &self,
+        message: &InboundMessage,
+        patterns: &[ChannelPattern],
+        _pattern_match: Option<&PatternMatch>,
+    ) -> String {
+        let subject_prefixes: Vec<String> = patterns
+            .iter()
+            .filter_map(|p| p.rules.subject.as_ref())
+            .filter_map(|s| s.prefix.as_ref())
+            .flatten()
+            .cloned()
+            .collect();
+        email_parser::derive_thread_name(&message.topic, &subject_prefixes)
+    }
+
+    fn match_message(
+        &self,
+        message: &InboundMessage,
+        patterns: &[ChannelPattern],
+    ) -> Option<PatternMatch> {
+        match_message(message, patterns)
+    }
+}
 
 /// Parse raw email bytes into an InboundMessage.
 ///
@@ -296,7 +332,13 @@ mod tests {
             name: name.to_string(),
             channel: "email".to_string(),
             enabled: true,
-            rules: PatternRules { sender, subject },
+            rules: PatternRules {
+                sender,
+                subject,
+                mentions: None,
+                keywords: None,
+                chat_name: None,
+            },
             attachments: None,
         }
     }

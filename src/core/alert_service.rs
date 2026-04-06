@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::channels::email::outbound::EmailOutboundAdapter;
+use crate::channels::types::OutboundAdapter;
 use crate::config::types::AlertingConfig;
 
 /// An error entry in the alert buffer.
@@ -157,14 +157,14 @@ impl AppLogger {
 /// Components report events via `AppLogger`. The service runs as a background task.
 pub struct AlertService {
     config: AlertingConfig,
-    outbound: Arc<EmailOutboundAdapter>,
+    outbound: Arc<dyn OutboundAdapter>,
     cancel: CancellationToken,
 }
 
 impl AlertService {
     pub fn new(
         config: AlertingConfig,
-        outbound: Arc<EmailOutboundAdapter>,
+        outbound: Arc<dyn OutboundAdapter>,
         cancel: CancellationToken,
     ) -> Self {
         Self { config, outbound, cancel }

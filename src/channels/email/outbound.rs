@@ -2,9 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::channels::types::{InboundMessage, OutboundAttachment, SendResult};
+use crate::channels::types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
 use crate::config::types::SmtpConfig;
 use crate::core::email_parser;
 use crate::core::message_storage::MessageStorage;
@@ -42,90 +43,6 @@ impl EmailOutboundAdapter {
         }
     }
 
-    pub async fn connect(&self) -> Result<()> {
-        let mut smtp = self.smtp.lock().await;
-        smtp.connect().await
-    }
-
-    pub async fn disconnect(&self) -> Result<()> {
-        let mut smtp = self.smtp.lock().await;
-        smtp.disconnect().await;
-        Ok(())
-    }
-
-    /// Send a reply to an inbound message.
-    ///
-    /// Owns the full reply lifecycle:
-    /// 1. Build email-formatted reply with quoted history
-    /// 2. Send via SMTP with threading headers + attachments
-    /// 3. Store reply.md
-    pub async fn send_reply(
-        &self,
-        original: &InboundMessage,
-        reply_text: &str,
-        thread_path: &Path,
-        message_dir: &str,
-        attachments: Option<&[OutboundAttachment]>,
-    ) -> Result<SendResult> {
-        // 1. Read model/mode from reply context file (if available)
-        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
-        let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
-        let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
-
-        // 2. Build full reply with email-specific quoted history + model/mode footer
-        let body_text = original
-            .content
-            .text
-            .as_deref()
-            .or(original.content.markdown.as_deref())
-            .unwrap_or("");
-
-        let full_reply = email_parser::build_full_reply_text(
-            reply_text,
-            thread_path,
-            &original.sender,
-            &original.timestamp.to_rfc3339(),
-            &original.topic,
-            body_text,
-            message_dir,
-            model,
-            mode,
-        )
-        .await;
-
-        // 2. Send via SMTP
-        let send_result = self
-            .smtp_send(original, &full_reply, attachments)
-            .await?;
-
-        // 3. Store reply.md
-        self.storage
-            .store_reply(thread_path, &full_reply, message_dir)
-            .await?;
-
-        tracing::debug!(
-            message_dir = %message_dir,
-            "Reply stored"
-        );
-
-        Ok(send_result)
-    }
-
-    /// Send a fresh alert email (not a reply, no formatting/threading/storage).
-    pub async fn send_alert(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult> {
-        let mut smtp = self.smtp.lock().await;
-        let message_id = smtp
-            .send_mail(&self.from_address, recipient, subject, body)
-            .await?;
-        Ok(SendResult { message_id })
-    }
-
-    /// Send a progress update email (threaded with the original message).
     /// Internal: send via SMTP with threading headers and attachments.
     async fn smtp_send(
         &self,
@@ -173,31 +90,111 @@ impl EmailOutboundAdapter {
 
         Ok(SendResult { message_id })
     }
+}
 
-    /// Send a heartbeat/progress update with detailed information.
-    /// This is used by the Thread Event system to send periodic updates
-    /// during long-running AI processing (e.g., every 5 minutes).
-    pub async fn send_heartbeat(
+#[async_trait]
+impl OutboundAdapter for EmailOutboundAdapter {
+    fn channel_type(&self) -> &str {
+        "email"
+    }
+
+    async fn connect(&self) -> Result<()> {
+        let mut smtp = self.smtp.lock().await;
+        smtp.connect().await
+    }
+
+    async fn disconnect(&self) -> Result<()> {
+        let mut smtp = self.smtp.lock().await;
+        smtp.disconnect().await;
+        Ok(())
+    }
+
+    fn clean_body(&self, raw_body: &str) -> String {
+        email_parser::strip_quoted_history(raw_body)
+    }
+
+    /// Send a reply to an inbound message.
+    ///
+    /// Owns the full reply lifecycle:
+    /// 1. Build email-formatted reply with quoted history
+    /// 2. Send via SMTP with threading headers + attachments
+    /// 3. Store reply.md
+    async fn send_reply(
         &self,
         original: &InboundMessage,
-        elapsed_secs: u64,
-        activity: &str,
-        progress: &str,
+        reply_text: &str,
+        thread_path: &Path,
+        message_dir: &str,
+        attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        let _elapsed_ms = elapsed_secs * 1000;
-        let elapsed_secs_total = elapsed_secs;
-        let minutes = elapsed_secs_total / 60;
-        let seconds = elapsed_secs_total % 60;
+        // 1. Read model/mode from reply context file (if available)
+        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
+        let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
+        let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
-        let subject = format!("[Processing Update] {}", original.topic);
-        let body = format!(
-            "Your message is still being processed.\n\n\
-             **Time elapsed:** {}m {}s\n\
-             **Current activity:** {}\n\
-             **Progress:** {}\n\n\
-             You will receive the full reply when processing is complete.",
-            minutes, seconds, activity, progress
+        // 2. Build full reply with email-specific quoted history + model/mode footer
+        let body_text = original
+            .content
+            .text
+            .as_deref()
+            .or(original.content.markdown.as_deref())
+            .unwrap_or("");
+
+        let full_reply = email_parser::build_full_reply_text(
+            reply_text,
+            thread_path,
+            &original.sender,
+            &original.timestamp.to_rfc3339(),
+            &original.topic,
+            body_text,
+            message_dir,
+            model,
+            mode,
+        )
+        .await;
+
+        // 3. Send via SMTP
+        let send_result = self
+            .smtp_send(original, &full_reply, attachments)
+            .await?;
+
+        // 4. Store reply.md
+        self.storage
+            .store_reply(thread_path, &full_reply, message_dir)
+            .await?;
+
+        tracing::debug!(
+            message_dir = %message_dir,
+            "Reply stored"
         );
+
+        Ok(send_result)
+    }
+
+    /// Send a fresh alert email (not a reply, no formatting/threading/storage).
+    async fn send_alert(
+        &self,
+        recipient: &str,
+        subject: &str,
+        body: &str,
+    ) -> Result<SendResult> {
+        let mut smtp = self.smtp.lock().await;
+        let message_id = smtp
+            .send_mail(&self.from_address, recipient, subject, body)
+            .await?;
+        Ok(SendResult { message_id })
+    }
+
+    /// Send a heartbeat/progress update to the user via email.
+    ///
+    /// The `message` is pre-formatted from the per-channel heartbeat_template.
+    /// Sent as a threaded reply to the original email.
+    async fn send_heartbeat(
+        &self,
+        original: &InboundMessage,
+        message: &str,
+    ) -> Result<SendResult> {
+        let subject = format!("[Processing Update] {}", original.topic);
 
         let mut smtp = self.smtp.lock().await;
         let mut refs: Vec<String> = original
@@ -214,7 +211,7 @@ impl EmailOutboundAdapter {
                 self.from_name.as_deref(),
                 &original.sender_address,
                 &subject,
-                &body,
+                message,
                 original.external_id.as_deref(),
                 if refs.is_empty() { None } else { Some(&refs) },
                 None,

@@ -66,14 +66,29 @@ Do NOT include code, command snippets, or tool usage in your reply.
         // BUILD mode (default)
         prompt.push_str(
             r#"## BUILD MODE: Full Execution
-You are in BUILD mode. Use tools and edit files to complete tasks.
+You are in BUILD mode with full tool access.
+
+## How to Handle Messages
+1. **Information questions** (weather, news, facts, translations, calculations, etc.):
+   - Use `bash` with `curl` to fetch information directly. Examples:
+     - Weather: `curl -s "wttr.in/CityName?format=3"` or `curl -s "wttr.in/CityName"`
+     - Web content: `curl -s "https://..."`
+   - Do NOT search the codebase for APIs or integrations. Just use curl directly.
+   - Compose your answer from the fetched data, then reply immediately.
+
+2. **Coding/engineering tasks** (build features, fix bugs, edit files, etc.):
+   - Use all available tools (bash, read, write, edit, glob, grep) to complete the task.
+   - Work only within your working directory.
+
+3. **General conversation** (greetings, opinions, explanations):
+   - Reply directly with your knowledge. No tools needed.
 
 ## Reply Instructions
-When replying to a message, use the jiny_reply_reply_message tool:
+When you have your answer ready, use the jiny_reply_reply_message tool:
 - `message`: Your reply text
 - `attachments`: Optional filenames to attach from the working directory
 After a successful reply, STOP immediately. Do NOT call any other tools or perform further actions.
-CRITICAL: Always use jiny_reply_reply_message tool.
+CRITICAL: Always use jiny_reply_reply_message tool to send your reply.
 "#,
         );
     }

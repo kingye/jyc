@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::channels::email::inbound;
+use crate::channels::email::inbound::{self, EmailMatcher};
 use crate::channels::types::ChannelPattern;
 use crate::config::types::{ImapConfig, MonitorConfig};
 use crate::core::message_router::MessageRouter;
@@ -298,7 +298,7 @@ impl ImapMonitor {
         );
 
         // Route through the message router (pattern match → thread queue)
-        self.router.route_email(message, &self.patterns).await;
+        self.router.route(&EmailMatcher, message, &self.patterns).await;
 
         Ok(())
     }

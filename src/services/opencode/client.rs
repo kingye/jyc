@@ -335,6 +335,7 @@ impl OpenCodeClient {
         let mut logged_tools: HashSet<(String, String)> = HashSet::new();
         let mut model_updated = false;
         let mut tool_start_times: HashMap<String, Instant> = HashMap::new();
+        let mut reply_tool_completed = false;
 
         let mut check_interval = tokio::time::interval(ACTIVITY_CHECK_INTERVAL);
 
@@ -406,6 +407,7 @@ impl OpenCodeClient {
                                     &mut logged_tools,
                                     &start_time,
                                     &mut tool_start_times,
+                                    &mut reply_tool_completed,
                                 ).await;
 
                                 match event_result {
@@ -605,6 +607,7 @@ impl OpenCodeClient {
         logged_tools: &mut HashSet<(String, String)>,
         _start_time: &Instant,
         tool_start_times: &mut HashMap<String, Instant>,
+        reply_tool_completed: &mut bool,
     ) -> SseAction {
         match event.event_type.as_str() {
             "server.connected" => {
@@ -745,6 +748,18 @@ impl OpenCodeClient {
                                                 duration_secs,
                                                 timestamp: Utc::now(),
                                             });
+
+                                            // Early exit: if the reply tool completed successfully,
+                                            // flag it so we can break out of the SSE loop on the
+                                            // next step-finish — no need to wait for the full session.
+                                            if tool_name.contains("reply_message") {
+                                                let has_error = state.output.as_ref()
+                                                    .is_some_and(|o| o.starts_with("Error:"));
+                                                if !has_error {
+                                                    tracing::info!("Reply tool completed — will exit SSE after current step");
+                                                    *reply_tool_completed = true;
+                                                }
+                                            }
                                         }
                                     }
                                     "error" => {
@@ -822,6 +837,18 @@ impl OpenCodeClient {
                                 cost = ?part.cost,
                                 "Step finished (no token information)"
                             );
+                        }
+
+                        // Early exit after reply tool: the reply_message tool already
+                        // completed in this step, so we have the reply text in the parts.
+                        // No need to wait for the AI to finish additional steps.
+                        if *reply_tool_completed {
+                            tracing::info!("Exiting SSE early — reply tool completed in this step");
+                            // Store the part before returning
+                            if let Some(ref id) = part.id {
+                                parts.insert(id.clone(), part);
+                            }
+                            return SseAction::Done;
                         }
                     }
 

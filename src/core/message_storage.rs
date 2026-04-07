@@ -30,14 +30,16 @@ impl MessageStorage {
         }
     }
 
-    /// Store an inbound message.
+    /// Store an inbound message with match status.
     ///
     /// Creates the thread directory and message subdirectory,
-    /// saves attachments (if configured), and writes received.md.
-    pub async fn store(
+    /// saves attachments (if configured), writes received.md,
+    /// and appends to chat log.
+    pub async fn store_with_match(
         &self,
         message: &InboundMessage,
         thread_name: &str,
+        is_matched: bool,
         attachment_config: Option<&AttachmentConfig>,
     ) -> Result<StoreResult> {
         let thread_path = self.workspace.join(thread_name);
@@ -77,11 +79,26 @@ impl MessageStorage {
             "Message stored"
         );
 
+        // Also append to chat log (dual-write mode)
+        self.append_to_chat_log(&thread_path, message, is_matched).await?;
+
         Ok(StoreResult {
             thread_path,
             message_dir,
             message_path,
         })
+    }
+
+    /// Store an inbound message (backward compatibility).
+    ///
+    /// Calls store_with_match with is_matched = true.
+    pub async fn store(
+        &self,
+        message: &InboundMessage,
+        thread_name: &str,
+        attachment_config: Option<&AttachmentConfig>,
+    ) -> Result<StoreResult> {
+        self.store_with_match(message, thread_name, true, attachment_config).await
     }
 
     /// Store a reply for an existing message.
@@ -101,6 +118,52 @@ impl MessageStorage {
             .with_context(|| format!("failed to write {}", reply_path.display()))?;
 
         tracing::debug!(path = %reply_path.display(), "Reply stored");
+        
+        // Also append to chat log (dual-write mode)
+        self.append_reply_to_chat_log(thread_path, reply_text, message_dir).await?;
+        
+        Ok(())
+    }
+
+    /// Append a message to the chat log.
+    async fn append_to_chat_log(
+        &self,
+        thread_path: &Path,
+        message: &InboundMessage,
+        is_matched: bool,
+    ) -> Result<()> {
+        use crate::core::chat_log_store::ChatLogStore;
+        
+        let mut chat_log = ChatLogStore::new(thread_path);
+        chat_log.append_message(message, is_matched)
+            .with_context(|| format!("Failed to append to chat log in {}", thread_path.display()))?;
+        
+        tracing::debug!("Message appended to chat log");
+        Ok(())
+    }
+
+    /// Append a reply to the chat log.
+    async fn append_reply_to_chat_log(
+        &self,
+        thread_path: &Path,
+        reply_text: &str,
+        _message_dir: &str,
+    ) -> Result<()> {
+        use crate::core::chat_log_store::{ChatLogStore, ReplyMetadata};
+        
+        // For now, use simple metadata
+        let metadata = ReplyMetadata {
+            sender: "jyc-bot".to_string(),
+            subject: "Re: Message".to_string(),
+            model: None,
+            mode: None,
+        };
+        
+        let mut chat_log = ChatLogStore::new(thread_path);
+        chat_log.append_reply(reply_text, &metadata)
+            .with_context(|| format!("Failed to append reply to chat log in {}", thread_path.display()))?;
+        
+        tracing::debug!("Reply appended to chat log");
         Ok(())
     }
 

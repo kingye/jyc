@@ -580,8 +580,9 @@ async fn process_message(
     let message = &item.message;
 
     // ── 1. STORE ──────────────────────────────────────────────────────
+    let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = storage
-        .store(message, thread_name, item.attachment_config.as_ref())
+        .store_with_match(message, thread_name, is_matched, item.attachment_config.as_ref())
         .await?;
 
     tracing::info!(

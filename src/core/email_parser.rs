@@ -448,6 +448,7 @@ pub fn parse_chat_log_entry(entry_text: &str) -> Option<TrailEntry> {
     let mut timestamp = String::new();
     let mut entry_type = String::new();
     let mut sender = String::new();
+    let mut sender_name = String::new();
     
     for (i, part) in parts.iter().enumerate() {
         if i == 0 {
@@ -458,11 +459,17 @@ pub fn parse_chat_log_entry(entry_text: &str) -> Option<TrailEntry> {
             if kv.len() == 2 {
                 match kv[0] {
                     "type" => entry_type = kv[1].to_string(),
+                    "sender_name" => sender_name = kv[1].to_string(),
                     "sender" => sender = kv[1].to_string(),
                     _ => {}
                 }
             }
         }
+    }
+
+    // Prefer display name over canonical ID
+    if !sender_name.is_empty() {
+        sender = sender_name;
     }
 
     // Parse FROM/REPLY-FROM and SUBJECT lines
@@ -1118,6 +1125,7 @@ Hello, I need help with X.
 
     #[test]
     fn test_parse_chat_log_entry_received() {
+        // Legacy format (no sender_name) — sender falls back to sender: field
         let entry_text = r#"<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
 **FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
 **SUBJECT:** self-hosting-jyc
@@ -1130,6 +1138,27 @@ Hello, I need help with X.
         assert!(result.is_some());
         let entry = result.unwrap();
         assert_eq!(entry.sender, "ou_c36ae8bf58a1d727fffd2289467fefce");
+        assert_eq!(entry.timestamp, "2026-04-07T01:18:31.002+00:00");
+        assert_eq!(entry.topic, "self-hosting-jyc");
+        assert_eq!(entry.body_text, "部署完成了吗？");
+        assert_eq!(entry.entry_type, "received");
+    }
+
+    #[test]
+    fn test_parse_chat_log_entry_received_with_sender_name() {
+        // New format — sender_name is preferred over sender (raw ID)
+        let entry_text = r#"<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | sender_name:张三 | channel:feishu_bot | external_id:om_test -->
+**FROM:** 张三 (ou_c36ae8bf58a1d727fffd2289467fefce)
+**SUBJECT:** self-hosting-jyc
+
+部署完成了吗？
+
+---"#;
+
+        let result = parse_chat_log_entry(entry_text);
+        assert!(result.is_some());
+        let entry = result.unwrap();
+        assert_eq!(entry.sender, "张三");
         assert_eq!(entry.timestamp, "2026-04-07T01:18:31.002+00:00");
         assert_eq!(entry.topic, "self-hosting-jyc");
         assert_eq!(entry.body_text, "部署完成了吗？");

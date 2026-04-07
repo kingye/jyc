@@ -8,8 +8,6 @@ use rmcp::{
 use std::path::{Path, PathBuf};
 
 use super::context::load_reply_context;
-use crate::core::message_storage::MessageStorage;
-use std::sync::Arc;
 
 const EXCLUDED_DIRS: &[&str] = &[".opencode", ".jyc"];
 
@@ -122,10 +120,9 @@ impl ServerHandler for ReplyToolHandler {
 ///
 /// This tool no longer sends messages directly. It only:
 /// 1. Validates the reply text and attachments
-/// 2. Stores reply.md via MessageStorage
-/// 3. Writes the reply-sent.flag signal file with reply metadata
+/// 2. Writes the reply-sent.flag signal file with reply metadata
 ///
-/// The actual message delivery (SMTP, Feishu API, etc.) is handled by the
+/// The actual message delivery and chat log storage is handled by the
 /// monitor process's outbound adapter, which has pre-warmed connections and
 /// cached tokens — eliminating cold-start timeouts.
 async fn handle_reply(
@@ -157,17 +154,12 @@ async fn handle_reply(
         vec![]
     };
 
-    // 5. Store reply.md to disk (the monitor process will read this and send)
-    let storage = Arc::new(MessageStorage::new(
-        thread_path.parent().unwrap_or(thread_path),
-    ));
-    storage
-        .store_reply(thread_path, message, &ctx.incoming_message_dir)
-        .await?;
-    logger.log("INFO", "Reply stored to reply.md");
-
-    // 6. Write signal file with reply metadata
+    // 5. Write signal file with reply metadata
     //    The monitor process reads this to know a reply is ready for delivery.
+    //    Note: The reply is NOT stored to the chat log here — that is done by
+    //    the outbound adapter after building the full reply with quoted history.
+    //    Storing here would cause the reply to appear in the quoted history
+    //    and be double-stored.
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let signal = serde_json::json!({
@@ -186,7 +178,7 @@ async fn handle_reply(
     .ok();
     logger.log("INFO", "Signal file written");
 
-    // 7. Return success
+    // 6. Return success
     let mut result = format!(
         "Reply stored for delivery via {} ({} chars)",
         ctx.channel,

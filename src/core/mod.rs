@@ -1,4 +1,5 @@
 pub mod alert_service;
+pub mod chat_log_store;
 pub mod command;
 pub mod email_parser;
 pub mod message_router;

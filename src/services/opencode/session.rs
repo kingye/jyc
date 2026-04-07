@@ -711,23 +711,49 @@ fn parse_session_summary_markdown(content: &str) -> Result<SessionSummary> {
     })
 }
 
-/// Count message directories in the thread.
+/// Count messages in the thread by scanning chat log files.
+///
+/// Counts `type:received` entries in `chat_history_*.md` files.
+/// Falls back to counting `messages/` subdirectories for legacy threads.
 pub async fn count_messages(thread_path: &Path) -> Result<usize> {
+    // Primary: count entries in chat log files
+    let pattern = thread_path.join("chat_history_*.md");
+    let pattern_str = pattern.to_string_lossy();
+    let mut count = 0;
+
+    for entry in glob::glob(&pattern_str).into_iter().flatten().flatten() {
+        if let Ok(content) = tokio::fs::read_to_string(&entry).await {
+            count += content.matches("type:received").count();
+        }
+    }
+
+    if count > 0 {
+        return Ok(count);
+    }
+
+    // Fallback: count legacy messages/ subdirectories
     let messages_dir = thread_path.join("messages");
     if !messages_dir.exists() {
         return Ok(0);
     }
 
-    let mut count = 0;
+    let mut legacy_count = 0;
     let mut entries = tokio::fs::read_dir(&messages_dir).await?;
 
     while let Some(entry) = entries.next_entry().await? {
         if entry.file_type().await?.is_dir() {
-            count += 1;
+            legacy_count += 1;
         }
     }
 
-    Ok(count)
+    if legacy_count > 0 {
+        tracing::debug!(
+            legacy_count,
+            "count_messages: using legacy messages/ directory count"
+        );
+    }
+
+    Ok(legacy_count)
 }
 
 /// Create a basic session summary from session state.

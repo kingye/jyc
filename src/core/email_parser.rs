@@ -155,7 +155,7 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
     format!("{}...", &text[..end])
 }
 
-/// Parse a stored received.md file, extracting all frontmatter and body.
+/// Parse a stored message file (legacy format), extracting all frontmatter and body.
 #[derive(Debug)]
 pub struct ParsedStoredMessage {
     pub sender: Option<String>,
@@ -175,7 +175,7 @@ pub struct ParsedStoredMessage {
     pub matched_pattern: Option<String>,
 }
 
-/// Parse a stored received.md file.
+/// Parse a stored message file (legacy format).
 ///
 /// Expected format:
 /// ```text
@@ -300,7 +300,7 @@ pub fn parse_stored_message(content: &str) -> ParsedStoredMessage {
     }
 }
 
-/// Parse a stored reply.md file, extracting only the AI's response text.
+/// Parse a stored reply file (legacy format), extracting only the AI's response text.
 ///
 /// Stops before quoted history blocks (lines starting with `### ` that look
 /// like quoted reply headers, or `---` dividers).
@@ -419,11 +419,220 @@ pub struct TrailEntry {
     pub entry_type: String,
 }
 
-/// Build a thread trail from stored messages.
+/// Parse a chat log file entry to extract message metadata and content.
 ///
-/// Reads message directories in reverse chronological order (newest first).
-/// For each directory, reads reply.md (AI response) then received.md (user message).
-/// The current message directory is excluded.
+/// Expected format:
+/// <!-- timestamp | type:received/reply | matched:true/false | sender:... | channel:... | external_id:... -->
+/// **FROM:** sender_address (or **REPLY-FROM:** for replies)
+/// **SUBJECT:** topic
+///
+/// message content...
+///
+/// ---
+pub fn parse_chat_log_entry(entry_text: &str) -> Option<TrailEntry> {
+    let lines: Vec<&str> = entry_text.trim().lines().collect();
+    if lines.len() < 4 {
+        return None;
+    }
+
+    // Parse metadata comment (first line)
+    let metadata_line = lines[0];
+    if !metadata_line.starts_with("<!--") || !metadata_line.ends_with("-->") {
+        return None;
+    }
+
+    // Extract fields from metadata
+    let metadata = metadata_line.trim_start_matches("<!--").trim_end_matches("-->").trim();
+    let parts: Vec<&str> = metadata.split('|').map(|s| s.trim()).collect();
+    
+    let mut timestamp = String::new();
+    let mut entry_type = String::new();
+    let mut sender = String::new();
+    
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            // First part is always timestamp (may contain colons in ISO format)
+            timestamp = part.to_string();
+        } else if part.contains(':') {
+            let kv: Vec<&str> = part.splitn(2, ':').map(|s| s.trim()).collect();
+            if kv.len() == 2 {
+                match kv[0] {
+                    "type" => entry_type = kv[1].to_string(),
+                    "sender" => sender = kv[1].to_string(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Parse FROM/REPLY-FROM and SUBJECT lines
+    let mut topic = String::new();
+    let mut body_start_index = 0;
+    let mut found_header = false;
+    
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let line = line.trim();
+        if line.starts_with("**FROM:**") {
+            if sender.is_empty() {
+                sender = line.trim_start_matches("**FROM:**").trim().to_string();
+            }
+            found_header = true;
+        } else if line.starts_with("**REPLY-FROM:**") {
+            if sender.is_empty() {
+                sender = line.trim_start_matches("**REPLY-FROM:**").trim().to_string();
+            }
+            entry_type = "reply".to_string();
+            found_header = true;
+        } else if line.starts_with("**SUBJECT:**") {
+            topic = line.trim_start_matches("**SUBJECT:**").trim().to_string();
+            found_header = true;
+        } else if line.is_empty() {
+            if found_header && body_start_index == 0 {
+                // First empty line after headers marks start of body
+                body_start_index = i + 1;
+            }
+            continue;
+        } else if body_start_index == 0 && found_header {
+            // Non-empty line after headers but before first empty line
+            body_start_index = i;
+        }
+    }
+    
+    // If we didn't find an empty line separator, start after last header
+    if body_start_index == 0 {
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            if line.trim().is_empty() || line.trim().starts_with("**") {
+                continue;
+            }
+            body_start_index = i;
+            break;
+        }
+    }
+
+    // Extract body content (until --- separator)
+    let mut body_lines = Vec::new();
+    for line in lines.iter().skip(body_start_index) {
+        let line = line.trim();
+        if line == "---" {
+            break;
+        }
+        body_lines.push(line);
+    }
+    
+    let body_text = body_lines.join("\n").trim().to_string();
+    
+    if sender.is_empty() || body_text.is_empty() {
+        return None;
+    }
+
+    Some(TrailEntry {
+        sender,
+        timestamp: if timestamp.is_empty() { "unknown".to_string() } else { timestamp },
+        topic,
+        body_text,
+        entry_type,
+    })
+}
+
+/// Build a thread trail from chat log files.
+///
+/// Reads chat_history_*.md files in the thread directory, newest first.
+/// Parses entries in reverse chronological order.
+/// The current message (if provided) is excluded if it matches timestamp.
+///
+/// Trail order: current received → prev reply → prev received → older reply → ...
+pub async fn build_thread_trail_from_logs(
+    thread_path: &std::path::Path,
+    current_message: Option<TrailCurrentMessage>,
+    max_entries: usize,
+    exclude_timestamp: Option<&str>,
+) -> Vec<TrailEntry> {
+    use std::fs;
+    use glob::glob;
+    
+    let mut trail = Vec::new();
+
+    // Prepend current message (stripped of quoted history) if provided.
+    // The current message is also in the chat log, so we must exclude it
+    // from the log scan to avoid duplicates.
+    let current_ts = current_message.as_ref().map(|m| m.timestamp.clone());
+    if let Some(ref current) = current_message {
+        let stripped = strip_quoted_history(&current.body_text);
+        trail.push(TrailEntry {
+            sender: current.sender.clone(),
+            timestamp: current.timestamp.clone(),
+            topic: current.topic.clone(),
+            body_text: stripped,
+            entry_type: "received".to_string(),
+        });
+    }
+
+    // Find all chat history files
+    let pattern = thread_path.join("chat_history_*.md");
+    let pattern_str = pattern.to_str().unwrap_or("chat_history_*.md");
+    
+    let mut files = Vec::new();
+    if let Ok(entries) = glob(pattern_str) {
+        for entry in entries.flatten() {
+            files.push(entry);
+        }
+    }
+    
+    // Sort files by name (newest first based on date in filename)
+    files.sort_by(|a, b| b.cmp(a));
+    
+    for file_path in files {
+        if trail.len() >= max_entries {
+            break;
+        }
+        
+        if let Ok(content) = fs::read_to_string(&file_path) {
+            // Split content into entries (separated by ---)
+            let entries: Vec<&str> = content.split("---\n").collect();
+            
+            // Process entries in reverse order (newest first in file)
+            for entry_text in entries.iter().rev() {
+                if trail.len() >= max_entries {
+                    break;
+                }
+                
+                let entry_text = entry_text.trim();
+                if entry_text.is_empty() {
+                    continue;
+                }
+                
+                if let Some(parsed) = parse_chat_log_entry(entry_text) {
+                    // Skip the current message (already prepended above) by matching
+                    // its actual timestamp from the chat log entry.
+                    if let Some(ref current_timestamp) = current_ts {
+                        if parsed.timestamp.contains(current_timestamp.as_str())
+                            || current_timestamp.contains(&parsed.timestamp)
+                        {
+                            continue;
+                        }
+                    }
+                    // Also skip by the message_dir-derived timestamp (legacy compat)
+                    if let Some(exclude_ts) = exclude_timestamp {
+                        if parsed.timestamp.contains(exclude_ts) {
+                            continue;
+                        }
+                    }
+                    
+                    trail.push(parsed);
+                }
+            }
+        }
+    }
+
+    trail.truncate(max_entries);
+    trail
+}
+
+/// Build a thread trail from stored messages (with fallback to chat logs).
+///
+/// This is a transitional implementation that first tries to read from
+/// chat log files, and falls back to directory-based storage if logs
+/// are not available or empty.
 ///
 /// Trail order: current received → prev reply → prev received → older reply → ...
 pub async fn build_thread_trail(
@@ -432,6 +641,36 @@ pub async fn build_thread_trail(
     max_entries: usize,
     exclude_message_dir: Option<&str>,
 ) -> Vec<TrailEntry> {
+    // First try to build from chat logs
+    let exclude_timestamp = exclude_message_dir.and_then(|dir| {
+        // Try to extract timestamp from directory name
+        // Format: YYYY-MM-DD_HH-MM-SS
+        if dir.len() >= 19 {
+            // Convert to ISO-like format for comparison
+            let date_part = &dir[0..10]; // YYYY-MM-DD
+            let time_part = &dir[11..19]; // HH-MM-SS
+            Some(format!("{}T{}", date_part, time_part.replace("-", ":")))
+        } else {
+            None
+        }
+    });
+    
+    let log_trail = build_thread_trail_from_logs(
+        thread_path,
+        current_message.clone(),
+        max_entries,
+        exclude_timestamp.as_deref(),
+    ).await;
+    
+    if !log_trail.is_empty() {
+        return log_trail;
+    }
+    
+    // Fallback to directory-based storage (legacy threads only)
+    tracing::warn!(
+        thread = %thread_path.display(),
+        "build_thread_trail: no chat log entries found, falling back to legacy messages/ directory"
+    );
     let mut trail = Vec::new();
 
     // Prepend current message (stripped) if provided
@@ -522,6 +761,7 @@ pub async fn build_thread_trail(
 }
 
 /// Current message info for building the thread trail.
+#[derive(Clone)]
 pub struct TrailCurrentMessage {
     pub sender: String,
     pub timestamp: String,
@@ -874,5 +1114,68 @@ Hello, I need help with X.
         let result = format_quoted_reply("John <john@example.com>", "2026-03-22 14:30", "", "Hi");
         assert!(result.contains("### John (2026-03-22 14:30)"));
         assert!(!result.contains("<john@example.com>"));
+    }
+
+    #[test]
+    fn test_parse_chat_log_entry_received() {
+        let entry_text = r#"<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
+**FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
+**SUBJECT:** self-hosting-jyc
+
+部署完成了吗？
+
+---"#;
+
+        let result = parse_chat_log_entry(entry_text);
+        assert!(result.is_some());
+        let entry = result.unwrap();
+        assert_eq!(entry.sender, "ou_c36ae8bf58a1d727fffd2289467fefce");
+        assert_eq!(entry.timestamp, "2026-04-07T01:18:31.002+00:00");
+        assert_eq!(entry.topic, "self-hosting-jyc");
+        assert_eq!(entry.body_text, "部署完成了吗？");
+        assert_eq!(entry.entry_type, "received");
+    }
+
+    #[test]
+    fn test_parse_chat_log_entry_reply() {
+        let entry_text = r#"<!-- 2026-04-07T01:18:53.567620892+00:00 | type:reply | matched:true | sender:jyc-bot | channel:jyc -->
+**REPLY-FROM:** jyc-bot
+**SUBJECT:** Re: Message
+
+部署已完成！JYC 服务已重启并正常运行。
+
+---"#;
+
+        let result = parse_chat_log_entry(entry_text);
+        assert!(result.is_some());
+        let entry = result.unwrap();
+        assert_eq!(entry.sender, "jyc-bot");
+        assert_eq!(entry.timestamp, "2026-04-07T01:18:53.567620892+00:00");
+        assert_eq!(entry.topic, "Re: Message");
+        assert_eq!(entry.body_text, "部署已完成！JYC 服务已重启并正常运行。");
+        assert_eq!(entry.entry_type, "reply");
+    }
+
+    #[test]
+    fn test_parse_chat_log_entry_invalid() {
+        // Missing metadata
+        let entry_text = r#"**FROM:** test
+**SUBJECT:** test
+
+test"#;
+        assert!(parse_chat_log_entry(entry_text).is_none());
+
+        // Empty body
+        let entry_text = r#"<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:test | channel:test -->
+**FROM:** test
+**SUBJECT:** test
+
+---"#;
+        assert!(parse_chat_log_entry(entry_text).is_none());
+
+        // Too few lines
+        let entry_text = r#"<!-- test -->
+test"#;
+        assert!(parse_chat_log_entry(entry_text).is_none());
     }
 }

@@ -100,7 +100,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                    Worker (per message) — ThreadManager                   │
 │                                                                          │
 │  0. If event support enabled: create thread event bus and start listener │
-│  1. MessageStorage::store(msg) → messages/<ts>/received.md               │
+ │  1. MessageStorage::store(msg) → append to chat_history_YYYY-MM-DD.md   │
 │  2. Save inbound attachments (allowlisted)                               │
 │  3. CommandRegistry::process_commands(body, ctx)                         │
 │     → parse, execute, strip in single pass → cleaned body + results      │
@@ -137,10 +137,10 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │  Transport: stdio (rmcp)                │                            │
 │  │                                         │                            │
 │  │  1. Decode reply-context.json (routing only)   │                            │
-│  │  2. Write reply.md to disk              │                            │
-│  │  3. Write reply-sent.flag signal file   │                            │
-│  │  (Monitor reads reply.md + sends via    │                            │
-│  │   pre-warmed outbound adapter)          │                            │
+ │  │  2. Append reply to chat log (chat_history_YYYY-MM-DD.md) │                │
+ │  │  3. Write reply-sent.flag signal file   │                            │
+ │  │  (Monitor reads from chat log + sends via│                            │
+ │  │   pre-warmed outbound adapter)          │                            │
 │  └─────────────────────────────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────────┘
                       │
@@ -168,8 +168,13 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
  7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
  8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section) via `send_heartbeat()`.
  9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
-9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, writes reply.md and signal file to disk. The monitor process (ThreadManager) reads reply.md and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu API calls.
-10. **Message Storage** — Persist messages and replies as markdown files per thread
+9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
+ 10. **Message Storage** — Unified chat log storage system
+     - **Chat Log Storage**: Messages and replies are appended to daily log files (`chat_history_YYYY-MM-DD.md`)
+     - **HTML Comment Metadata**: Each entry includes timestamp, message type, sender, channel, and external ID metadata
+     - **Dual-write Integration**: During migration, messages are written to both legacy directory format and new log format
+     - **AI Access**: Chat logs are accessible to AI via system prompt instructions using `glob`, `read`, and `grep` tools
+     - **Backward Compatibility**: Email parser reads from logs first, falls back to directory storage if needed
 11. **State Manager** — Track processed UIDs per channel, handle migrations
 12. **Security Module** — Path validation, file size/extension checks for attachments
 13. **Alert Service** — Error alert digests + periodic health check reports via email
@@ -186,11 +191,12 @@ Each component has a single, clear responsibility. Data flows through the system
 - Produces a clean `InboundMessage` — all downstream consumers receive clean data
 
 **MessageStorage**
-- Pure storage: reads and writes files to disk via `tokio::fs`
-- No transformation, no cleaning, no business logic
-- Stores `received.md` and `reply.md` exactly as given
-- `received.md` = the clean inbound message (cleaned by InboundAdapter)
-- `reply.md` = the full reply as sent (built by Reply Tool)
+- Unified chat log storage: appends messages and replies to daily log files
+- HTML comment metadata: stores timestamp, type, sender, channel, and external ID
+- Dual-write support: during migration, maintains compatibility with legacy format
+- No transformation or business logic - stores messages exactly as given
+- Chat logs are stored in `chat_history_YYYY-MM-DD.md` files
+- Format: HTML comments for metadata + Markdown content
 
 **PromptBuilder**
 - Builds the user prompt from the incoming message
@@ -201,18 +207,18 @@ Each component has a single, clear responsibility. Data flows through the system
 **Reply Tool** (MCP `reply_message`)
 - Orchestrator for the reply flow
 - Decodes the minimal `reply-context.json=` to get routing info (channel name, message directory)
-- Reads ALL message metadata (sender, recipient, topic, threading headers) from `received.md` frontmatter — NOT from the token
+- Reads ALL message metadata (sender, recipient, topic, threading headers) from chat log frontmatter — NOT from the token
 - Builds the full reply in markdown: AI reply text + quoted history (`prepare_body_for_quoting`)
 - Delegates sending to OutboundAdapter (passes the full markdown reply)
-- Delegates storage to MessageStorage (stores the same full reply as `reply.md`)
-- `reply.md` reflects exactly what was sent to the recipient
+- Delegates storage to MessageStorage (appends to daily chat log file)
+- Chat log entries reflect exactly what was sent to the recipient
 
 **SmtpClient** (and other transport services)
 - Dumb transport: receives markdown, converts to HTML (via `comrak`), adds email headers, sends via `lettre`
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
-- **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, monitor reply send path (when MCP tool writes reply.md), and AlertService
+ - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, monitor reply send path (when MCP tool appends to chat log), and AlertService
 
 **Thread Event System**
 - **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
@@ -233,21 +239,52 @@ Each component has a single, clear responsibility. Data flows through the system
 - Only 5 fields: `channel`, `threadName`, `incomingMessageDir`, `uid`, `_nonce`
 - Channel-agnostic — no email-specific fields (no sender, recipient, topic, threading headers)
 - The AI passes it through unchanged as `reply-context.json=<base64>` (not XML tags)
-- The Reply Tool decodes it for routing only — reads all message metadata from `received.md` frontmatter
-- Short token (~120 bytes) reduces AI corruption risk compared to the old 12-field token (~400 bytes)
+ - The Reply Tool decodes it for routing only — reads all message metadata from chat log frontmatter
+ - Short token (~120 bytes) reduces AI corruption risk compared to the old 12-field token (~400 bytes)
+
+### Chat Log Storage Architecture
+
+JYC 0.1.2 introduces a new unified chat log storage system that replaces the previous timestamped directory approach.
+
+#### Design Goals
+1. **Simplicity**: Single log file per day instead of nested directories
+2. **Searchability**: All messages in chronological order for easy searching
+3. **AI Accessibility**: Chat history accessible to AI via tool calls
+4. **Backward Compatibility**: Smooth transition with dual-write support
+
+#### Log File Format
+```
+<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
+**FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
+**SUBJECT:** self-hosting-jyc
+
+部署完成了吗？
+
+---
+```
+
+#### Migration Strategy
+1. **Dual-write Phase**: Messages written to both legacy directories and new logs
+2. **Email Parser Enhancement**: `email_parser` reads from logs first, falls back to directories
+3. **Directory Removal**: Legacy directories gradually phased out after verification
+
+#### AI Access Pattern
+- AI uses `glob "chat_history_*.md"` to find log files
+- `read "chat_history_2026-04-07.md"` to access specific logs
+- `grep "keyword" --include "chat_history_*.md"` to search history
 
 ### Data Flow Summary
 
 ```
 Email arrives
   → InboundAdapter: parse, clean subject + body → clean InboundMessage
-    → MessageStorage: store as-is → received.md (with full frontmatter metadata)
-      → PromptBuilder: strip + truncate body → prompt =<routing token>
-        → AI: receives stripped body + minimal routing token
-          → Reply Tool: decode reply-context.json → read received.md for all metadata
+     → MessageStorage: store as-is → append to chat log (with full frontmatter metadata)
+       → PromptBuilder: strip + truncate body → prompt =<routing token>
+         → AI: receives stripped body + minimal routing token
+           → Reply Tool: decode reply-context.json → read chat log for all metadata
             → build_full_reply_text(): AI reply + quoted history
             → SmtpClient: markdown→HTML, add headers + attachments, send via SMTP
-            → MessageStorage: store full reply → reply.md (= what was sent)
+             → MessageStorage: append full reply to chat log (= what was sent)
 ```
 
 ### End-to-End Sequence Diagram
@@ -277,8 +314,8 @@ Email arrives
    │           │             │<────────────┤             │             │             │             │
    │           │             │             │             │             │             │             │
    │           │        tokio::fs::write   │             │             │             │             │
-   │           │        received.md        │             │             │             │             │
-   │           │        (full frontmatter)  │             │             │             │             │
+    │           │        append to chat log │             │             │             │             │
+    │           │        (full frontmatter)  │             │             │             │             │
    │           │             │             │             │             │             │             │
    │           │             │             │ build_prompt()            │             │             │
    │           │             │             ├────────────>│             │             │             │
@@ -302,7 +339,7 @@ Email arrives
    │           │             │             │             │             ├────────────>│             │
    │           │             │             │             │             │             │             │
    │           │             │             │             │        decode context      │             │
-   │           │             │             │             │        read received.md    │             │
+   │           │             │             │             │        read chat log      │             │
    │           │             │             │             │             │             │             │
    │           │             │             │             │   prepare_body_for_quoting │             │
    │           │             │             │             │             │             │             │
@@ -331,8 +368,8 @@ Email arrives
 - **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (OpenCode session memory handles that)
 - **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or ThreadManager
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
-- **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from `received.md` frontmatter
- - **reply.md** = exactly what the recipient receives (minus HTML formatting)
+ - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
+ - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
 
 ## Feishu Channel Implementation
 
@@ -1036,7 +1073,7 @@ impl ThreadManager {
 │  │                                                          │       │
 │  │    new_msg = pending_rx.recv() => {                      │       │
 │  │      // Live message injection                           │       │
-│  │      1. Store new message → received.md (new dir)        │       │
+ │  │      1. Store new message → append to chat log           │       │
 │  │      2. Strip quoted history from body                   │       │
 │  │      3. Update reply-context.json (new messageDir)       │       │
 │  │      4. Send body via prompt_async (follow-up prompt)    │       │
@@ -1258,7 +1295,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 **OutboundAdapter** (`src/channels/email/outbound.rs`) — Channel-specific reply lifecycle:
 - Builds channel-formatted reply (email: `build_full_reply_text()` with quoted history)
 - Sends via channel transport (SMTP with threading headers + attachments)
-- Stores `reply.md`
+ - Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
 **OpenCodeService** (`src/services/opencode/service.rs`) implements `AgentService`:

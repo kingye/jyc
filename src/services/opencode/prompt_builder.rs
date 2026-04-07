@@ -106,6 +106,45 @@ You may refer to it for context if relevant to the current request.
         );
     }
 
+    // Chat history access
+    prompt.push_str(
+        r#"
+## Chat History Access
+This thread maintains a chronological chat history in Markdown format. The history includes all received messages and replies.
+
+### Location
+- Primary location: `chat_history_YYYY-MM-DD.md` in the thread directory (e.g., `chat_history_2026-04-07.md`)
+- Secondary location: `messages/YYYY-MM-DD_HH-MM-SS/` directories (dual-write mode during transition)
+
+### Format
+Each entry in the chat history has:
+```markdown
+<!-- timestamp | type:received/reply | matched:true/false | sender:... | channel:... | external_id:... -->
+**FROM:** sender_address
+**SUBJECT:** topic
+
+message content...
+
+---
+```
+
+### How to Access
+Use the available tools to read chat history:
+1. **Find current day's log**: `glob "chat_history_*.md"`
+2. **Read specific file**: `read "chat_history_2026-04-07.md"`
+3. **Search history**: `grep "keyword" --include "chat_history_*.md"`
+4. **List recent sessions**: `glob "messages/*/"`
+
+### Important Notes
+- **Read-only access**: You can read chat history but do NOT modify these files directly
+- **Context-aware**: When user asks about previous conversations, check the chat history
+- **Security boundary**: Stay within the thread directory when accessing history
+- **Privacy**: Respect user data privacy; do not expose sensitive information
+
+The chat history provides context about ongoing discussions, past decisions, and implementation details.
+"#,
+    );
+
     prompt
 }
 

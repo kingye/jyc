@@ -16,7 +16,7 @@ use crate::services::smtp::client::{EmailAttachment, SmtpClient};
 /// Responsibilities:
 /// - Build email-formatted reply with quoted history (channel-specific)
 /// - Send via SMTP with threading headers and attachments
-/// - Store reply.md
+/// - Store reply to chat log
 ///
 /// This is the channel-specific component. The agent (OpenCodeService) and
 /// ThreadManager are channel-agnostic — they pass raw AI text to this adapter.
@@ -118,7 +118,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
     /// Owns the full reply lifecycle:
     /// 1. Build email-formatted reply with quoted history
     /// 2. Send via SMTP with threading headers + attachments
-    /// 3. Store reply.md
+    /// 3. Store reply to chat log
     async fn send_reply(
         &self,
         original: &InboundMessage,
@@ -158,7 +158,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
             .smtp_send(original, &full_reply, attachments)
             .await?;
 
-        // 4. Store reply.md
+        // 4. Store reply to chat log
         self.storage
             .store_reply(thread_path, &full_reply, message_dir)
             .await?;

@@ -39,7 +39,7 @@ pub struct QueueStats {
 ///
 /// Responsible for:
 /// - Queue management, concurrency control (semaphore + mpsc)
-/// - Storing received messages (received.md)
+/// - Storing received messages (via chat log)
 /// - Command processing (parse, execute, strip, reply results)
 /// - Checking body emptiness (after commands + quoted history stripping)
 /// - Dispatching to the agent service (via AgentService trait)
@@ -564,7 +564,7 @@ impl ThreadManager {
 /// Process a single message within a worker.
 ///
 /// Flow:
-/// 1. STORE → received.md
+/// 1. STORE → chat log
 /// 2. COMMAND PROCESS → parse, execute, strip
 /// 3. REPLY COMMAND RESULTS → direct reply (if commands found)
 /// 4. CHECK BODY → if empty after commands + quoted history stripping → stop
@@ -580,8 +580,9 @@ async fn process_message(
     let message = &item.message;
 
     // ── 1. STORE ──────────────────────────────────────────────────────
+    let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = storage
-        .store(message, thread_name, item.attachment_config.as_ref())
+        .store_with_match(message, thread_name, is_matched, item.attachment_config.as_ref())
         .await?;
 
     tracing::info!(
@@ -666,21 +667,18 @@ async fn process_message(
         .await?;
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
-    // The MCP reply tool stores reply.md and writes a signal file, but does NOT
-    // send the message. The monitor process (this code) handles actual delivery
-    // using its pre-warmed outbound adapter with cached connections/tokens.
+    // The MCP reply tool stores the reply in the chat log and writes a signal file.
+    // The monitor process (this code) handles actual delivery using its
+    // pre-warmed outbound adapter with cached connections/tokens.
     if result.reply_sent_by_tool {
-        // MCP tool stored the reply — read it from disk and deliver
-        let reply_path = store_result.thread_path
-            .join("messages")
-            .join(&store_result.message_dir)
-            .join("reply.md");
-
-        match tokio::fs::read_to_string(&reply_path).await {
-            Ok(reply_text) if !reply_text.trim().is_empty() => {
+        // Reply text comes from the SSE tool input (extracted by service layer).
+        // Fallback: if not available (e.g. blocking mode), log a warning — the
+        // reply is already stored in the chat log but we cannot deliver it.
+        if let Some(ref reply_text) = result.reply_text {
+            if !reply_text.trim().is_empty() {
                 tracing::info!(
                     text_len = reply_text.len(),
-                    "Delivering reply stored by MCP tool"
+                    "Delivering reply from MCP tool"
                 );
 
                 // Read signal file for attachment info
@@ -690,24 +688,18 @@ async fn process_message(
                 outbound
                     .send_reply(
                         &message,
-                        &reply_text,
+                        reply_text,
                         &store_result.thread_path,
                         &store_result.message_dir,
                         attachments.as_deref(),
                     )
                     .await?;
                 tracing::info!("Reply delivered via outbound adapter");
+            } else {
+                tracing::warn!("MCP tool reply text is empty, skipping delivery");
             }
-            Ok(_) => {
-                tracing::warn!("reply.md is empty, skipping delivery");
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    path = %reply_path.display(),
-                    "Failed to read reply.md for delivery"
-                );
-            }
+        } else {
+            tracing::warn!("MCP tool signaled reply but no reply text available (blocking mode?) — reply is in chat log but not delivered");
         }
     } else if let Some(ref text) = result.reply_text {
         tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");

@@ -188,7 +188,7 @@ pub trait OutboundAdapter: Send + Sync {
     /// Each channel implementation handles:
     /// - Channel-specific formatting (quoted history for email, etc.)
     /// - Sending via the channel's transport (SMTP, HTTP API, etc.)
-    /// - Storing reply.md to disk
+    /// - Storing the reply to the chat log
     async fn send_reply(
         &self,
         original: &InboundMessage,

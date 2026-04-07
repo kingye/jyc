@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use crate::channels::feishu::client::FeishuClient;
 use crate::channels::feishu::config::FeishuConfig;
 use crate::channels::types::{InboundMessage, OutboundAttachment, SendResult};
+use crate::core::email_parser;
 use crate::core::message_storage::MessageStorage;
 
 /// Feishu outbound adapter for sending messages via HTTP API.
@@ -71,13 +72,28 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
         // Extract chat ID from original message
         let chat_id = original.channel_uid.as_str();
         
-        // 1. Send text reply
-        let result = self.client.send_text_message(chat_id, reply_text).await
+        // 1. Read model/mode from reply context file (if available)
+        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
+        let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
+        let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
+        
+        // 2. Build footer with model/mode information
+        let footer = email_parser::build_footer(model, mode);
+        
+        // 3. Combine reply text with footer
+        let full_reply = if footer.is_empty() {
+            reply_text.to_string()
+        } else {
+            format!("{}\n\n{}", reply_text, footer)
+        };
+        
+        // 4. Send text reply
+        let result = self.client.send_text_message(chat_id, &full_reply).await
             .context("Failed to send Feishu reply")?;
         
         tracing::info!(
             chat_id = %chat_id,
-            text_len = reply_text.len(),
+            text_len = full_reply.len(),
             "Feishu reply sent"
         );
 
@@ -140,9 +156,9 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
             }
         }
 
-        // 3. Store reply.md
+        // 5. Store reply to chat log
         self.storage
-            .store_reply(thread_path, reply_text, message_dir)
+            .store_reply(thread_path, &full_reply, message_dir)
             .await?;
 
         tracing::debug!(

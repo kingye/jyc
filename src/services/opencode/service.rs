@@ -438,10 +438,16 @@ impl OpenCodeService {
             || session::check_signal_file(thread_path).await;
 
         if reply_sent {
-            tracing::info!("Reply sent by MCP tool");
+            // Extract the reply text from the tool's input so the monitor can deliver it
+            // without reading from disk (reply.md is no longer created).
+            let reply_text = extract_reply_text_from_tool_parts(&result.parts);
+            tracing::info!(
+                has_reply_text = reply_text.is_some(),
+                "Reply sent by MCP tool"
+            );
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: true,
-                reply_text: None,
+                reply_text,
                 model_id: result.model_id,
                 provider_id: result.provider_id,
                 mode: result.mode,
@@ -464,7 +470,8 @@ impl OpenCodeService {
             let sent = retry.reply_sent_by_tool || session::check_signal_file(thread_path).await;
             if sent {
                 return Ok(GenerateReplyResult {
-                    reply_sent_by_tool: true, reply_text: None,
+                    reply_sent_by_tool: true,
+                    reply_text: extract_reply_text_from_tool_parts(&retry.parts),
                     model_id: retry.model_id, provider_id: retry.provider_id,
                     mode: retry.mode,
                 });
@@ -481,7 +488,8 @@ impl OpenCodeService {
         if result.timed_out {
             if session::check_signal_file(thread_path).await {
                 return Ok(GenerateReplyResult {
-                    reply_sent_by_tool: true, reply_text: None,
+                    reply_sent_by_tool: true,
+                    reply_text: extract_reply_text_from_tool_parts(&result.parts),
                     model_id: result.model_id, provider_id: result.provider_id,
                     mode: result.mode,
                 });
@@ -533,6 +541,8 @@ impl OpenCodeService {
         }
 
         if session::check_signal_file(thread_path).await {
+            // Blocking mode: no SSE parts available, reply text must be read
+            // from the chat log by the monitor (thread_manager).
             return Ok(GenerateReplyResult {
                 reply_sent_by_tool: true, reply_text: None,
                 model_id: None, provider_id: None, mode: None,
@@ -630,4 +640,23 @@ fn is_prompt_echo(text: &str) -> bool {
     trimmed.starts_with("## Incoming Message")
         || trimmed.starts_with("## Conversation history")
         || trimmed.starts_with("<system-reminder>")
+}
+
+/// Extract the reply text from the MCP reply tool's input in the SSE parts.
+///
+/// When the reply_message tool completes successfully, the SSE tool part contains
+/// the tool's input with a `message` field holding the full reply text.
+/// This allows the monitor to deliver the reply without reading from disk.
+fn extract_reply_text_from_tool_parts(parts: &[ResponsePart]) -> Option<String> {
+    parts.iter()
+        .find(|p| {
+            p.part_type == "tool"
+                && p.tool.as_deref().map(|t| t.contains("reply_message")).unwrap_or(false)
+                && p.state.as_ref().is_some_and(|s| s.status == "completed")
+        })
+        .and_then(|p| p.state.as_ref())
+        .and_then(|s| s.input.as_ref())
+        .and_then(|input| input.get("message"))
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string())
 }

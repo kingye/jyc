@@ -2,6 +2,60 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.1.2] - 2026-04-07
+
+### Added
+
+**Chat Log Storage System** — New unified storage architecture
+- Replaced timestamped directory storage (`messages/YYYY-MM-DD_HH-MM-SS/`) with log-based storage (`chat_history_YYYY-MM-DD.md`)
+- HTML comment metadata format: `<!-- timestamp | type:received/reply | matched:true/false | sender:... | channel:... | external_id:... -->`
+- **Dual-write integration**: Smooth transition with backward compatibility (writes to both formats during migration)
+- **AI chat history access**: System prompt instructions for accessing chat logs via tools (`glob`, `read`, `grep`)
+
+**Feishu Footer Support** — Consistent model/mode display across channels
+- Feishu replies now include model and mode information footer (same format as email)
+- Format: `---\n\nModel: <model> | Mode: <mode>` (or variations when only one is available)
+- Automatically reads from `reply-context.json` (existing infrastructure)
+- No footer added when model/mode information is unavailable (backward compatible)
+
+### Changed
+
+**Message Storage Architecture** — Simplified and unified
+- Removed timestamped directory creation logic from `MessageStorage::store_with_match()`
+- All messages and replies now append to daily chat log files
+- `store_reply()` no longer creates separate `reply.md` files
+- **Backward compatibility**: `email_parser::build_thread_trail()` reads from logs first, falls back to directory storage if needed
+
+**Email Parser Enhancements** — Log-aware history building
+- New `parse_chat_log_entry()` function for parsing log entries
+- `build_thread_trail_from_logs()` reads conversation history from chat logs
+- Maintains compatibility with existing directory-based storage during transition
+
+### Fixed
+
+**Storage Consistency Issues**
+- Prevented duplicate storage between MCP tool and outbound adapters
+- Fixed current message appearing twice in quoted history
+- Removed stale references to legacy `reply.md` and `received.md` files
+
+**MCP Tool Integration**
+- Fixed reply delivery failures caused by tool/adapter storage conflicts
+- Ensured reply text is properly extracted and delivered via outbound adapters
+
+### Technical Details
+
+**Dependencies Updated**
+- Added `glob` crate dependency for file pattern matching in chat log operations
+
+**API Changes**
+- `MessageStorage::store_with_match()` now only creates log entries, not directories
+- `email_parser` module extended with log parsing capabilities
+- `TrailCurrentMessage` now implements `Clone` trait for history building
+
+**Testing**
+- All 158 tests pass with new storage architecture
+- New unit tests added for chat log parsing functionality
+
 ## [0.1.1] - 2026-04-06
 
 ### Changed

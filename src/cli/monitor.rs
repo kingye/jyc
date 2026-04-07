@@ -201,7 +201,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             heartbeat_template,
         ));
 
-        let router = Arc::new(MessageRouter::new(thread_manager.clone()));
+        let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
         let mut state_manager =
             StateManager::for_channel(workdir, channel_name);

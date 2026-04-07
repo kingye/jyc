@@ -140,6 +140,15 @@ pub trait ChannelMatcher: Send + Sync {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch>;
+
+    /// Determine whether unmatched messages should be stored for this channel type.
+    ///
+    /// Defaults to `false` for backward compatibility (skip unmatched messages).
+    /// Can be overridden by channel implementations that want to store all messages
+    /// regardless of pattern matching (e.g., Feishu for full conversation context).
+    fn store_unmatched_messages(&self) -> bool {
+        false
+    }
 }
 
 /// Inbound adapter trait — adds connection lifecycle on top of ChannelMatcher.

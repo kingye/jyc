@@ -78,6 +78,11 @@ impl ChannelMatcher for FeishuMatcher {
     ) -> Option<PatternMatch> {
         feishu_match_message(message, patterns)
     }
+
+    /// Feishu stores all messages for full conversation context, even if unmatched.
+    fn store_unmatched_messages(&self) -> bool {
+        true
+    }
 }
 
 /// Match a message against feishu-specific patterns.

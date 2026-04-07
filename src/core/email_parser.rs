@@ -552,7 +552,10 @@ pub async fn build_thread_trail_from_logs(
     
     let mut trail = Vec::new();
 
-    // Prepend current message (stripped) if provided
+    // Prepend current message (stripped of quoted history) if provided.
+    // The current message is also in the chat log, so we must exclude it
+    // from the log scan to avoid duplicates.
+    let current_ts = current_message.as_ref().map(|m| m.timestamp.clone());
     if let Some(ref current) = current_message {
         let stripped = strip_quoted_history(&current.body_text);
         trail.push(TrailEntry {
@@ -599,7 +602,16 @@ pub async fn build_thread_trail_from_logs(
                 }
                 
                 if let Some(parsed) = parse_chat_log_entry(entry_text) {
-                    // Skip if timestamp matches excluded timestamp
+                    // Skip the current message (already prepended above) by matching
+                    // its actual timestamp from the chat log entry.
+                    if let Some(ref current_timestamp) = current_ts {
+                        if parsed.timestamp.contains(current_timestamp.as_str())
+                            || current_timestamp.contains(&parsed.timestamp)
+                        {
+                            continue;
+                        }
+                    }
+                    // Also skip by the message_dir-derived timestamp (legacy compat)
                     if let Some(exclude_ts) = exclude_timestamp {
                         if parsed.timestamp.contains(exclude_ts) {
                             continue;

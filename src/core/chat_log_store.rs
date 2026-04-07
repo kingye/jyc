@@ -97,18 +97,31 @@ impl ChatLogStore {
 
         let mut formatted = String::new();
 
-        // Metadata comment
+        // Metadata comment — sender_address is the canonical ID, sender_name is the display name
+        let sender_name_str =
+            if message.sender != message.sender_address && !message.sender.is_empty() {
+                format!(" | sender_name:{}", message.sender)
+            } else {
+                String::new()
+            };
         formatted.push_str(&format!(
-            "<!-- {} | type:received | {} | sender:{} | channel:{}{} -->\n",
+            "<!-- {} | type:received | {} | sender:{}{} | channel:{}{} -->\n",
             message.timestamp.to_rfc3339(),
             matched_str,
             message.sender_address,
+            sender_name_str,
             message.channel,
             external_id_str
         ));
 
-        // Content header
-        formatted.push_str(&format!("**FROM:** {}\n", message.sender_address));
+        // Content header — use display name for readability
+        let from_display = if !message.sender.is_empty() && message.sender != message.sender_address
+        {
+            format!("{} ({})", message.sender, message.sender_address)
+        } else {
+            message.sender_address.clone()
+        };
+        formatted.push_str(&format!("**FROM:** {}\n", from_display));
         formatted.push_str(&format!("**SUBJECT:** {}\n\n", message.topic));
 
         // Content body
@@ -256,6 +269,10 @@ mod tests {
         assert!(content.contains("matched:true"));
         assert!(content.contains("Hello, this is a test message."));
         assert!(content.contains("---"));
+        // Sender display name + address when they differ (e.g. Feishu)
+        assert!(content.contains("sender:ou_test"));
+        assert!(content.contains("sender_name:Test User"));
+        assert!(content.contains("**FROM:** Test User (ou_test)"));
     }
 
     #[test]

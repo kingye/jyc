@@ -5,6 +5,9 @@ use std::path::Path;
 use super::client::OpenCodeClient;
 use crate::config::types::AgentConfig;
 
+/// Default maximum input tokens per session before resetting
+const DEFAULT_MAX_INPUT_TOKENS: u64 = 108_000; // 108K tokens
+
 /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
@@ -36,13 +39,14 @@ pub struct SessionState {
 /// Get or create a session for a thread.
 ///
 /// 1. Read `.jyc/opencode-session.json`
-/// 2. Check if session has exceeded maximum active time (default: 1 hour)
+/// 2. Check if session has exceeded maximum input tokens (default: 108K)
 /// 3. If exceeded → delete old session and create new one
 /// 4. Verify session still exists via API
 /// 5. If missing → create new session
 pub async fn get_or_create_session(
     client: &OpenCodeClient,
     thread_path: &Path,
+    max_input_tokens: Option<u64>,
 ) -> Result<String> {
     let state_path = thread_path.join(".jyc").join("opencode-session.json");
 
@@ -50,16 +54,14 @@ pub async fn get_or_create_session(
     if state_path.exists() {
         if let Ok(content) = tokio::fs::read_to_string(&state_path).await {
             if let Ok(state) = serde_json::from_str::<SessionState>(&content) {
-                // Check if session has exceeded maximum active time (1 hour default)
-                const MAX_ACTIVE_HOURS: f64 = 1.0;
-                let max_active_secs = (MAX_ACTIVE_HOURS * 3600.0) as u64;
-                
-                if state.total_active_time >= max_active_secs {
+                // Check if session has exceeded maximum input tokens
+                let max_tokens = max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS);
+                if state.total_input_tokens >= max_tokens {
                     tracing::info!(
                         session_id = %state.session_id,
-                        total_active_time = state.total_active_time,
-                        max_active_secs = max_active_secs,
-                        "Session exceeded maximum active time, resetting"
+                        total_input_tokens = state.total_input_tokens,
+                        max_input_tokens = max_tokens,
+                        "Session exceeded maximum input tokens, resetting"
                     );
 
                     // Delete old session and create new one

@@ -161,6 +161,26 @@ pub async fn start_active_time_tracking(thread_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Add input tokens to session and save updated state.
+pub async fn add_input_tokens(thread_path: &Path, input_tokens: u64) -> Result<()> {
+    let state_path = thread_path.join(".jyc").join("opencode-session.json");
+    if let Ok(content) = tokio::fs::read_to_string(&state_path).await {
+        if let Ok(mut state) = serde_json::from_str::<SessionState>(&content) {
+            state.total_input_tokens += input_tokens;
+            
+            tracing::debug!(
+                session_id = %state.session_id,
+                input_tokens = input_tokens,
+                total_input_tokens = state.total_input_tokens,
+                "Added input tokens to session"
+            );
+            
+            save_session_state(thread_path, &state).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Stop tracking active time and accumulate it to total active time.
 pub async fn stop_active_time_tracking(thread_path: &Path) -> Result<()> {
     let state_path = thread_path.join(".jyc").join("opencode-session.json");

@@ -463,6 +463,14 @@ impl OpenCodeService {
             let new_id = session::create_new_session(client, thread_path).await?;
             session::cleanup_signal_file(thread_path).await;
             let retry = client.prompt_with_sse(&new_id, thread_path, request, mode_label, pending_rx).await?;
+            
+            // Save input tokens from retry
+            if let Some(input_tokens) = retry.input_tokens {
+                if let Err(e) = session::add_input_tokens(thread_path, input_tokens).await {
+                    tracing::warn!(error = %e, "Failed to save input tokens from retry");
+                }
+            }
+            
             let sent = retry.reply_sent_by_tool || session::check_signal_file(thread_path).await;
             if sent {
                 return Ok(GenerateReplyResult {
@@ -482,6 +490,13 @@ impl OpenCodeService {
 
         // Timeout
         if result.timed_out {
+            // Save input tokens even on timeout
+            if let Some(input_tokens) = result.input_tokens {
+                if let Err(e) = session::add_input_tokens(thread_path, input_tokens).await {
+                    tracing::warn!(error = %e, "Failed to save input tokens on timeout");
+                }
+            }
+            
             if session::check_signal_file(thread_path).await {
                 return Ok(GenerateReplyResult {
                     reply_sent_by_tool: true,
@@ -508,6 +523,18 @@ impl OpenCodeService {
         } else {
             extract_text_from_parts(&result.parts).unwrap_or_default()
         };
+
+        // Save input tokens to session state
+        if let Some(input_tokens) = result.input_tokens {
+            if let Err(e) = session::add_input_tokens(thread_path, input_tokens).await {
+                tracing::warn!(error = %e, "Failed to save input tokens to session");
+            } else {
+                tracing::debug!(
+                    "Saved {} input tokens to session state",
+                    input_tokens
+                );
+            }
+        }
 
         Ok(GenerateReplyResult {
             reply_sent_by_tool: false,

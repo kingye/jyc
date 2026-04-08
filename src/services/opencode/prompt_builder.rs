@@ -151,7 +151,9 @@ pub async fn build_prompt(
     // Session reset notification (if applicable)
     if session_was_reset_due_to_tokens {
         tracing::info!("Session reset note injected into prompt (input token limit exceeded)");
-        prompt.push_str("⚠️ **Note:** The session has been reset because the input token limit (108K) was exceeded. This ensures response quality by clearing the conversation history.\n\n");
+        prompt.push_str("⚠️ **Note:** This is a NEW session. The previous session was reset because the input token limit was exceeded.\n");
+        prompt.push_str("You have lost all previous conversation context. To understand what was discussed and worked on before, read the chat history log file `chat_history_<date>.md` in the thread directory. It is a chronological record of all messages and replies.\n");
+        prompt.push_str("Continue your work based on the latest entries in that file.\n\n");
     }
 
     // Incoming message
@@ -278,7 +280,8 @@ mod tests {
         assert!(prompt.contains("john@example.com"));
         assert!(prompt.contains("Hello, help me."));
         // Should contain session reset notification
-        assert!(prompt.contains("session has been reset"));
-        assert!(prompt.contains("input token limit (108K)"));
+        assert!(prompt.contains("NEW session"));
+        assert!(prompt.contains("input token limit"));
+        assert!(prompt.contains("chat_history_"));
     }
 }

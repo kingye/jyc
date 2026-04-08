@@ -120,11 +120,17 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  1. Ensure OpenCode server is running (auto-start)                       │
 │  2. Setup per-thread opencode.json (model, MCP tools, permissions)       │
 │  3. Get or create session (verify via API, persist .jyc/opencode-session.json)    │
+│     - Check if session has exceeded max_input_tokens threshold           │
+│     - If exceeded → delete old session, create new one                   │
+│     - Record if session was reset due to token limit                     │
 │  4. Clean up stale signal file                                           │
-│  5. Build system prompt (config + directory rules + system.md)            │
+│  5. Build system prompt (config + directory rules + system.md)           │
+│     - Include session reset notification if token limit was hit          │
 │  6. Build user prompt (stripped body )                       │
 │  7. Check mode override (plan/build)                                     │
-│  8. Send prompt via SSE streaming (activity timeout, tool detection)      │
+│  8. Send prompt via SSE streaming (activity timeout, tool detection)     │
+│     - Track input tokens from step-finish events                         │
+│     - Persist token count immediately after each step                    │
 │  9. Handle result → return GenerateReplyResult                           │
 │     - reply_sent_by_tool: true → done                                    │
 │     - ContextOverflow → new session + retry                              │
@@ -1399,6 +1405,7 @@ JYC uses the following subset of the OpenCode server API:
 | `session.status` | Processing status | `properties.{ sessionID, status.type }` |
 | `session.idle` | Prompt complete | `properties.sessionID` |
 | `session.error` | Session error | `properties.{ sessionID, error.name }` |
+| `step.finish` | Step completion with token counts | `properties.step.{ id, sessionID, cost, inputTokens, outputTokens, reason }` |
 
 **Per-thread configuration:**
 - Each thread gets its own `opencode.json` with model settings, MCP tool config, and permissions
@@ -1498,6 +1505,9 @@ JYC uses the following subset of the OpenCode server API:
 │     → writes opencode.json with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
 │  3. Get or create session (.jyc/opencode-session.json)
+│     - Check token limit: if total_input_tokens > max_input_tokens → new session
+│     - Update max_input_tokens: detect model context or use configured value
+│     - Record if session reset due to token limit for prompt notification
 │  4. Clean up stale signal file
 │  5. Build system prompt (config + directory boundaries + system.md)
 │     BUILD MODE prompt categorizes incoming messages:
@@ -1514,6 +1524,7 @@ JYC uses the following subset of the OpenCode server API:
 │        - server.connected → confirm SSE stream alive
 │        - message.updated → capture model_id/provider_id, log model
 │        - message.part.updated → accumulate parts, detect tool calls
+│        - step.finish → track input/output tokens, persist to session state
 │        - session.status → track busy/retry (deduped)
 │        - session.idle → done, collect result
 │        - session.error → handle (ContextOverflow → new session + retry)
@@ -1556,67 +1567,95 @@ JYC uses the following subset of the OpenCode server API:
 **Session lifecycle:**
 - Sessions are created on first use per thread and persisted in `.jyc/opencode-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
+- Sessions track input tokens (`total_input_tokens`) and maximum threshold (`max_input_tokens`)
+- Sessions are automatically reset when token limit is exceeded
 - Sessions are deleted for error recovery (ContextOverflow, stale session detection)
-- Sessions are summarized when:
-  - Accumulated active time exceeds `timeout_hours` (default 2 hours), or
-  - Idle time exceeds `max_idle_hours` (default 120 hours) when active time is low
-- On session summary: session file is deleted and a new session is created for retry
+- On session reset: AI prompt includes notification and reference to chat history
 
 ### Context Management Strategy
 
 The agent relies on OpenCode's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
 
 1. **OpenCode Session (Primary)** — Conversation memory maintained by OpenCode
-   - Session is reused across messages in the same thread (`opencode-session.json`)
-   - AI remembers previous messages and replies within the session
-   - Session is deleted on config change (model switch) or ContextOverflow
-   - New session created on server restart
+    - Session is reused across messages in the same thread (`opencode-session.json`)
+    - AI remembers previous messages and replies within the session
+    - Session is deleted when token limit is exceeded or on ContextOverflow
+    - New session created on server restart
 
-2. **Session Timeout Management** — Automatic session reset for long-running sessions
-   - **Active time based reset**:
-     - Session accumulates active time (`total_active_time`) during AI processing
-     - When accumulated time exceeds maximum active time (default 1h), session is reset
-     - Old session is deleted and a new session is created
-   - **Active time tracking**:
-     - `start_active_time_tracking()` called when AI processing begins
-     - `stop_active_time_tracking()` called when AI processing completes
-     - Active duration accumulated to `total_active_time` in session state
-   - **Context preservation**:
-     - Chat history is preserved in `chat_history_YYYY-MM-DD.md` files
-     - AI can read chat history for context continuity
-     - No session summaries are generated or stored
+ 2. **Token-based Session Management** — Automatic session reset based on input tokens
+    - **Token-based reset**:
+      - Session accumulates input tokens (`total_input_tokens`) from each AI processing step
+      - When accumulated tokens exceed `max_input_tokens` threshold, session is automatically reset
+      - Old session is deleted and a new session is created
+    - **Token tracking**:
+      - Real-time token counting from SSE `step-finish` events
+      - Immediate persistence to `opencode-session.json` after each step
+      - Token usage displayed in reply footer (e.g., `Tokens: 20.7K/122K`)
+    - **Intelligent threshold detection**:
+      - Automatically detects model context limit (e.g., 128K, 200K, 1M tokens)
+      - Uses 95% of model context as default threshold for safety margin
+      - Configurable via `max_input_tokens` setting in `config.toml`
+    - **Standardized units**:
+      - Uses 1024 as K unit basis (1K = 1024 tokens)
+      - Default threshold: 122,880 tokens (120K * 1024)
+      - Display format: `{current}K/{max}K` with 0.1K precision
+    - **Context preservation**:
+      - Chat history is preserved in `chat_history_YYYY-MM-DD.md` files
+      - AI can read chat history for context continuity after session reset
+      - Session reset notification injected into AI prompt to reference chat history
 
-3. **Session State Data Structure** (`src/services/opencode/session.rs`)
-   ```rust
-   /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
-   #[derive(Debug, Clone, Serialize, Deserialize)]
-   pub struct SessionState {
-       #[serde(rename = "sessionId")]
-       pub session_id: String,
-       #[serde(rename = "createdAt")]
-       pub created_at: String,
-       #[serde(rename = "lastUsedAt")]
-       pub last_used_at: String,
-       /// Total active time in seconds (accumulated over session lifetime)
-       #[serde(rename = "totalActiveTime", default)]
-       pub total_active_time: u64,
-       /// Timestamp when current active period started (if session is currently active)
-       #[serde(rename = "lastActiveStart", default, skip_serializing_if = "Option::is_none")]
-       pub last_active_start: Option<String>,
-   }
-   ```
+ 3. **Session State Data Structure** (`src/services/opencode/session.rs`)
+    ```rust
+    /// Default maximum input tokens per session before resetting
+    pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
 
-4. **Incoming Message (Current)** — Latest message being processed
-   - Body stripped of quoted reply history (`strip_quoted_history()`)
-   - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
-   - Limited to 2,000 chars
+    /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SessionState {
+        #[serde(rename = "sessionId")]
+        pub session_id: String,
+        #[serde(rename = "createdAt")]
+        pub created_at: String,
+        #[serde(rename = "lastUsedAt")]
+        pub last_used_at: String,
+        /// Current input tokens (from latest step-finish SSE event)
+        #[serde(rename = "totalInputTokens", default)]
+        pub total_input_tokens: u64,
+        /// Resolved max input tokens for this session
+        #[serde(rename = "maxInputTokens", default)]
+        pub max_input_tokens: u64,
+    }
+    ```
 
-3. **Thread Files (Durable, for quoted history only)** — Markdown files stored in thread folder
-   - Used by `build_full_reply_text()` for quoted history in reply emails
-   - NOT loaded into the AI prompt
+ 4. **Configuration** (`config.toml`):
+    ```toml
+    [opencode]
+    # Optional: Maximum input tokens per session before resetting
+    # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
+    # When not set, automatically detects model context limit and uses 95%
+    max_input_tokens = 122880
+    ```
 
-**Context Limits:**
-```rust
+ 5. **User Interface Enhancements**:
+    - **Reply footer display**: Shows current token usage and threshold
+      - Format: `Model: ark/deepseek-v3.2 | Mode: build | Tokens: 20.7K/122K`
+      - Current tokens: Formatted in K units (1024 basis) with 0.1 precision
+      - Max tokens: Shows actual reset threshold (model context 95% or configured value)
+    - **Session reset notification**: When token limit is exceeded:
+      - AI prompt includes notification about session reset
+      - References `chat_history_<date>.md` for previous conversation context
+      - Clear indication that this is a new session with fresh token counter
+
+ 6. **Incoming Message (Current)** — Latest message being processed
+    - Body stripped of quoted reply history (`strip_quoted_history()`)
+    - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
+    - Limited to 2,000 chars
+
+ 7. **Thread Files (Durable, for quoted history only)** — Markdown files stored in thread folder
+    - Used by `build_full_reply_text()` for quoted history in reply emails
+    - NOT loaded into the AI prompt
+
+ **Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
 ```
 
@@ -1646,6 +1685,7 @@ Thread files still provide recent conversation context
 | SSE subscription fails | Falls back to blocking prompt with 5-min timeout |
 | OpenCode server dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
+| Token limit exceeded | Detected at session creation → new session created → AI notified via prompt |
 | Thread queue full | Message dropped with warning; IMAP re-fetch recovers on restart |
 
 ### Reply Text Building Pipeline

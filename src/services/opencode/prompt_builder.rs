@@ -47,7 +47,13 @@ After you have replied to the current message, STOP. Do not do anything else.
     // Mode-specific reply instructions
     if mode == Some("plan") {
         prompt.push_str(
-            r#"## PLAN MODE: Read-Only
+            r#"<system-reminder>
+You are in PLAN MODE (read-only).
+You are NOT permitted to make file changes, run shell commands, or use write tools.
+You may only read files and analyze code.
+</system-reminder>
+
+## PLAN MODE: Read-Only
 You are in PLAN mode. Provide a detailed plan only — do NOT execute commands, edit files, or use tools.
 Your reply should contain:
 1. A brief summary of the request

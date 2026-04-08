@@ -6,7 +6,7 @@ use super::client::OpenCodeClient;
 use crate::config::types::AgentConfig;
 
 /// Default maximum input tokens per session before resetting
-const DEFAULT_MAX_INPUT_TOKENS: u64 = 120_000; // 120K tokens
+pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120_000; // 120K tokens
 
 /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,9 +17,12 @@ pub struct SessionState {
     pub created_at: String,
     #[serde(rename = "lastUsedAt")]
     pub last_used_at: String,
-    /// Total input tokens accumulated in this session
+    /// Current input tokens (from latest step-finish SSE event)
     #[serde(rename = "totalInputTokens", default)]
     pub total_input_tokens: u64,
+    /// Resolved max input tokens for this session
+    #[serde(rename = "maxInputTokens", default)]
+    pub max_input_tokens: u64,
 }
 
 
@@ -115,6 +118,7 @@ pub async fn create_new_session(client: &OpenCodeClient, thread_path: &Path) -> 
         created_at: chrono::Utc::now().to_rfc3339(),
         last_used_at: chrono::Utc::now().to_rfc3339(),
         total_input_tokens: 0,
+        max_input_tokens: 0,
     };
 
     save_session_state(thread_path, &state).await?;
@@ -290,16 +294,32 @@ pub async fn ensure_thread_opencode_setup(
     Ok(true)
 }
 
-/// Read the current input tokens from session state.
-pub async fn read_input_tokens(thread_path: &Path) -> Option<u64> {
+/// Read the current and max input tokens from session state.
+pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>) {
     let state_path = thread_path.join(".jyc").join("opencode-session.json");
-    let content = tokio::fs::read_to_string(&state_path).await.ok()?;
-    let state: SessionState = serde_json::from_str(&content).ok()?;
-    if state.total_input_tokens > 0 {
-        Some(state.total_input_tokens)
-    } else {
-        None
+    let content = match tokio::fs::read_to_string(&state_path).await.ok() {
+        Some(c) => c,
+        None => return (None, None),
+    };
+    let state: SessionState = match serde_json::from_str(&content).ok() {
+        Some(s) => s,
+        None => return (None, None),
+    };
+    let current = if state.total_input_tokens > 0 { Some(state.total_input_tokens) } else { None };
+    let max = if state.max_input_tokens > 0 { Some(state.max_input_tokens) } else { None };
+    (current, max)
+}
+
+/// Save the resolved max_input_tokens to the session state.
+pub async fn save_max_input_tokens(thread_path: &Path, max_tokens: u64) -> Result<()> {
+    let state_path = thread_path.join(".jyc").join("opencode-session.json");
+    if !state_path.exists() {
+        return Ok(());
     }
+    let content = tokio::fs::read_to_string(&state_path).await?;
+    let mut state: SessionState = serde_json::from_str(&content)?;
+    state.max_input_tokens = max_tokens;
+    save_session_state(thread_path, &state).await
 }
 
 /// Read the model override file if it exists.
@@ -451,6 +471,7 @@ mod tests {
             created_at: "2026-03-27T10:00:00Z".to_string(),
             last_used_at: "2026-03-27T10:00:00Z".to_string(),
             total_input_tokens: 0,
+            max_input_tokens: 0,
         };
 
         save_session_state(&thread_path, &state).await.unwrap();
@@ -502,6 +523,7 @@ mod tests {
             created_at: start.to_rfc3339(),
             last_used_at: end.to_rfc3339(),
             total_input_tokens: 0,
+            max_input_tokens: 0,
         };
 
         let duration = calculate_session_duration(&state).unwrap();

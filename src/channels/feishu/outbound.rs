@@ -78,10 +78,10 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
         
         // Read current input tokens from session state
-        let input_tokens = crate::services::opencode::session::read_input_tokens(thread_path).await;
+        let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
         
         // 2. Build footer with model/mode/tokens information
-        let footer = email_parser::build_footer(model, mode, input_tokens);
+        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens);
         
         // 3. Combine reply text with footer
         let full_reply = if footer.is_empty() {

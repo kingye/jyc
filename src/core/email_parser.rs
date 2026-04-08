@@ -816,8 +816,8 @@ pub async fn prepare_body_for_quoting(
 /// Build a footer with model, mode, and token information.
 ///
 /// Returns empty string if both model and mode are None.
-/// Format: `---\n\nModel: <model> | Mode: <mode> | Tokens: <current>/<max>`
-pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>) -> String {
+/// Format: `---\n\nModel: <model> | Mode: <mode> | Tokens: <current>K/<max>K`
+pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>) -> String {
     let mut parts = Vec::new();
 
     if let Some(m) = model {
@@ -826,10 +826,17 @@ pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Optio
     if let Some(md) = mode {
         parts.push(format!("Mode: {}", md));
     }
-    if let Some(tokens) = input_tokens {
-        // Format tokens in K for readability (e.g., 20748 → "20.7K")
-        let tokens_k = tokens as f64 / 1000.0;
-        parts.push(format!("Tokens: {:.1}K", tokens_k));
+    match (input_tokens, max_tokens) {
+        (Some(current), Some(max)) => {
+            let current_k = current as f64 / 1000.0;
+            let max_k = max as f64 / 1000.0;
+            parts.push(format!("Tokens: {:.1}K/{:.0}K", current_k, max_k));
+        }
+        (Some(current), None) => {
+            let current_k = current as f64 / 1000.0;
+            parts.push(format!("Tokens: {:.1}K", current_k));
+        }
+        _ => {}
     }
 
     if parts.is_empty() {
@@ -873,6 +880,7 @@ pub async fn build_full_reply_text(
     model: Option<&str>,
     mode: Option<&str>,
     input_tokens: Option<u64>,
+    max_tokens: Option<u64>,
 ) -> String {
     let current_message = TrailCurrentMessage {
         sender: sender.to_string(),
@@ -889,7 +897,7 @@ pub async fn build_full_reply_text(
     )
     .await;
 
-    let footer = build_footer(model, mode, input_tokens);
+    let footer = build_footer(model, mode, input_tokens, max_tokens);
 
     if quoted_history.is_empty() && footer.is_empty() {
         reply_text.to_string()

@@ -10,6 +10,7 @@ use tracing::Instrument;
 use super::client::{OpenCodeClient, SseResult};
 use super::types::*;
 use super::{session, prompt_builder, OpenCodeServer};
+use super::session::DEFAULT_MAX_INPUT_TOKENS;
 use crate::channels::types::InboundMessage;
 use crate::config::types::AgentConfig;
 use crate::core::thread_event::ThreadEvent;
@@ -314,6 +315,10 @@ impl OpenCodeService {
             thread_path,
             max_input_tokens,
         ).await?;
+
+        // Save resolved max_input_tokens to session state for footer display
+        let resolved_max = max_input_tokens.unwrap_or(DEFAULT_MAX_INPUT_TOKENS);
+        session::save_max_input_tokens(thread_path, resolved_max).await.ok();
 
         // 5. Clean up stale signal file
         session::cleanup_signal_file(thread_path).await;

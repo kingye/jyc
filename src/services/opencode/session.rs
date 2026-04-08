@@ -17,6 +17,9 @@ pub struct SessionState {
     /// Total active time in seconds (accumulated over session lifetime)
     #[serde(rename = "totalActiveTime", default)]
     pub total_active_time: u64,
+    /// Total input tokens accumulated in this session
+    #[serde(rename = "totalInputTokens", default)]
+    pub total_input_tokens: u64,
     /// Timestamp when current active period started (if session is currently active)
     #[serde(
         rename = "lastActiveStart",
@@ -112,6 +115,7 @@ pub async fn create_new_session(client: &OpenCodeClient, thread_path: &Path) -> 
         created_at: chrono::Utc::now().to_rfc3339(),
         last_used_at: chrono::Utc::now().to_rfc3339(),
         total_active_time: 0,
+        total_input_tokens: 0,
         last_active_start: None,
     };
 
@@ -434,6 +438,7 @@ mod tests {
             created_at: "2026-03-27T10:00:00Z".to_string(),
             last_used_at: "2026-03-27T10:00:00Z".to_string(),
             total_active_time: 0,
+            total_input_tokens: 0,
             last_active_start: None,
         };
 
@@ -486,6 +491,7 @@ mod tests {
             created_at: start.to_rfc3339(),
             last_used_at: end.to_rfc3339(),
             total_active_time: 0,
+            total_input_tokens: 0,
             last_active_start: None,
         };
 

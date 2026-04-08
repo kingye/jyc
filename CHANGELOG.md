@@ -2,6 +2,77 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.1.3] - 2026-04-08
+
+### Added
+
+**Token-based Session Management** — Replace time-based with token-based approach
+- Real-time token tracking from SSE `step.finish` events
+- Automatic model context detection (95% as safety threshold)
+- Session reset when accumulated tokens exceed configured maximum
+- Immediate persistence of token count after each processing step
+
+**Token Usage Display** — Real-time token monitoring in user interface
+- Reply footer displays current token usage: `Tokens: 20.7K/122K`
+- Standardized K unit display (1024 basis) with 0.1K precision
+- Shows actual reset threshold (model context 95% or configured value)
+
+**Advanced Configuration** — Flexible token limit management
+- `max_input_tokens` config option in `config.toml`
+- Default threshold: 122,880 tokens (120K × 1024)
+- Supports automatic detection of model context limits
+- Override capability for specific use cases
+
+### Changed
+
+**SessionState Data Structure** — Updated for token tracking
+- Removed `total_active_time` and `last_active_start` fields
+- Added `total_input_tokens` and `max_input_tokens` fields
+- Session lifecycle now based on token limits instead of time
+
+**DESIGN.md Documentation** — Complete update for token-based system
+- Revised session management architecture
+- Updated flowcharts and process descriptions
+- Added configuration and user interface documentation
+- Removed obsolete time-based session management content
+
+**Reply Footer Format** — Enhanced with token information
+- Format: `---\n\nModel: <model> | Mode: <mode> | Tokens: <current>K/<max>K`
+- Clean formatting with standardized units
+- Clear display of remaining token capacity
+
+### Fixed
+
+**Token Counting Accuracy** — Standardized units for consistency
+- Use 1024 instead of 1000 for K unit calculations
+- Default max input tokens: 120 × 1024 = 122,880 (not 120,000)
+- Precise display formatting to 0.1K
+
+**Debug Logging** — Enhanced model context detection visibility
+- Added detailed logging for model limit lookup process
+- Log available models in provider and found model details
+- Improved diagnostics for detection success/failure scenarios
+
+### Technical Details
+
+**Session Persistence** — State saved in `.jyc/opencode-session.json`
+- Includes current token count and maximum threshold
+- Automatic reset detection at session creation
+- AI prompt includes notification when session resets due to token limit
+
+**Configuration Example**:
+```toml
+[opencode]
+# Optional: Maximum input tokens per session before resetting
+# Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
+max_input_tokens = 122880
+```
+
+**System Integration** — Seamless adoption in existing architecture
+- Maintains all existing API contracts
+- Compatible with both Email and Feishu channels
+- Full backward compatibility with chat history system
+
 ## [0.1.2] - 2026-04-07
 
 ### Added

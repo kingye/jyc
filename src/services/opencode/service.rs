@@ -256,26 +256,8 @@ impl OpenCodeService {
             tracing::info!("opencode.json updated");
         }
 
-        // 3. Get or create session (reuse across messages, mode switches, model switches)
-        // Sessions are only deleted for error recovery:
-        // - ContextOverflow (handle_sse_result)
-        // - Stale session detection (handle_sse_result)
-        // - Session token limit (input token based reset)
-        let max_input_tokens = self.agent_config
-            .opencode
-            .as_ref()
-            .map(|oc| oc.max_input_tokens);
-        let (session_id, session_reset_due_to_tokens) = session::get_or_create_session(
-            &client, 
-            thread_path,
-            max_input_tokens,
-        ).await?;
-
-        // 4. Clean up stale signal file
-        session::cleanup_signal_file(thread_path).await;
-
-        // 5. Read model (from override or config) and mode (from override)
-        let model = session::read_model_override(thread_path)
+        // 3. Read model early (needed for context limit lookup before session creation)
+        let model: Option<String> = session::read_model_override(thread_path)
             .await
             .or_else(|| {
                 self.agent_config
@@ -284,6 +266,59 @@ impl OpenCodeService {
                     .and_then(|o| o.model.clone())
             });
 
+        // 4. Get or create session (reuse across messages, mode switches, model switches)
+        // Sessions are only deleted for error recovery:
+        // - ContextOverflow (handle_sse_result)
+        // - Stale session detection (handle_sse_result)
+        // - Session token limit (input token based reset)
+        //
+        // max_input_tokens priority:
+        // 1. Config override (agent.opencode.max_input_tokens)
+        // 2. 95% of the model's context window (from OpenCode /provider API)
+        // 3. Default (120K)
+        let config_max_tokens = self.agent_config
+            .opencode
+            .as_ref()
+            .map(|oc| oc.max_input_tokens);
+
+        let max_input_tokens = if config_max_tokens.is_some() {
+            tracing::debug!(
+                max_input_tokens = ?config_max_tokens,
+                "Using config-defined max input tokens"
+            );
+            config_max_tokens
+        } else if let Some(ref m) = model {
+            if let Some(context_limit) = client.get_model_context_limit(thread_path, m).await {
+                let limit_95 = (context_limit as f64 * 0.95) as u64;
+                tracing::info!(
+                    model = %m,
+                    context_limit = context_limit,
+                    max_input_tokens = limit_95,
+                    "Using 95% of model context window as input token limit"
+                );
+                Some(limit_95)
+            } else {
+                tracing::debug!(
+                    model = %m,
+                    "Could not get model context limit, falling back to default"
+                );
+                None
+            }
+        } else {
+            tracing::debug!("No model specified, using default max input tokens");
+            None
+        };
+
+        let (session_id, session_reset_due_to_tokens) = session::get_or_create_session(
+            &client, 
+            thread_path,
+            max_input_tokens,
+        ).await?;
+
+        // 5. Clean up stale signal file
+        session::cleanup_signal_file(thread_path).await;
+
+        // 6. Read mode (from override)
         let mode_override = session::read_mode_override(thread_path).await;
         let agent_mode = if mode_override.as_deref() == Some("plan") {
             Some("plan".to_string())

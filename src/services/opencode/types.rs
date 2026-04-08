@@ -209,6 +209,20 @@ pub struct Model {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    /// Token limits for this model.
+    #[serde(default)]
+    pub limit: Option<ModelLimit>,
+}
+
+/// Token limits for a model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelLimit {
+    /// Context window size in tokens.
+    #[serde(default)]
+    pub context: u64,
+    /// Maximum output tokens.
+    #[serde(default)]
+    pub output: u64,
 }
 
 /// Provider information.

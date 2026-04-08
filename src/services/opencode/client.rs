@@ -213,6 +213,33 @@ impl OpenCodeClient {
         Ok(providers)
     }
 
+    /// Look up the context window limit for a specific model.
+    ///
+    /// Returns the context token limit if found, or None.
+    /// The model string should be in "provider/model-id" format.
+    pub async fn get_model_context_limit(&self, directory: &Path, model: &str) -> Option<u64> {
+        let (provider_id, model_id) = model.split_once('/')?;
+        let providers = self.get_providers(directory).await.ok()?;
+
+        for provider in &providers.all {
+            if provider.id == provider_id {
+                if let Some(model_info) = provider.models.get(model_id) {
+                    if let Some(ref limit) = model_info.limit {
+                        if limit.context > 0 {
+                            tracing::debug!(
+                                model = %model,
+                                context_limit = limit.context,
+                                "Model context limit discovered"
+                            );
+                            return Some(limit.context);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // --- Prompt API ---
 
     /// Send an async prompt (returns immediately, results via SSE).

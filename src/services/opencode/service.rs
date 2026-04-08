@@ -375,6 +375,7 @@ impl OpenCodeService {
             thread_path,
             message_dir,
             session_reset_due_to_tokens,
+            agent_mode.as_deref(),
         ).await?;
 
         // Model and mode are passed per-prompt — no session restart needed for switches

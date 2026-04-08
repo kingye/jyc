@@ -48,23 +48,25 @@ After you have replied to the current message, STOP. Do not do anything else.
     if mode == Some("plan") {
         prompt.push_str(
             r#"<system-reminder>
-You are in PLAN MODE (read-only).
-You are NOT permitted to make file changes, run shell commands, or use write tools.
-You may only read files and analyze code.
+PLAN MODE: READ-ONLY ANALYSIS ONLY.
+STRICT: No file edits, modifications, or system changes.
+ABSOLUTE: Do NOT use edit, write, or modifying bash commands.
 </system-reminder>
 
-## PLAN MODE: Read-Only
-You are in PLAN mode. Provide a detailed plan only — do NOT execute commands, edit files, or use tools.
-Your reply should contain:
-1. A brief summary of the request
-2. Step-by-step plan for completing the task
-3. Any considerations or risks
-Do NOT include code, command snippets, or tool usage in your reply.
+## PLAN MODE: Analysis & Planning
+ALLOWED: read, glob, grep, task:explore, websearch.
+ALLOWED bash: ls, grep, find, cat, curl (read-only only).
+PROHIBITED: edit, write, bash commands that modify files.
 
-## Reply Instructions
-- DO NOT use the jiny_reply_reply_message tool — it requires write permissions which are blocked.
-- Simply provide your text response as natural language output.
-- Focus on analysis, planning, and recommendations.
+## Your Task
+1. Analyze code and requirements
+2. Create implementation plan
+3. Identify risks and dependencies
+4. Ask clarifying questions
+
+## Output
+Natural language analysis and plan only.
+No code execution or file modifications.
 "#,
         );
     } else {
@@ -151,8 +153,14 @@ pub async fn build_prompt(
     _thread_path: &Path,
     _message_dir: &str,
     session_was_reset_due_to_tokens: bool,
+    mode: Option<&str>,
 ) -> Result<String> {
     let mut prompt = String::new();
+
+    // Add mode prefix if in PLAN mode
+    if mode == Some("plan") {
+        prompt.push_str("[PLAN: READ-ONLY]\n\n");
+    }
 
     // Session reset notification (if applicable)
     if session_was_reset_due_to_tokens {
@@ -249,8 +257,8 @@ mod tests {
 
         assert!(prompt.contains("Be helpful."));
         assert!(prompt.contains("PLAN MODE"));
-        assert!(prompt.contains("DO NOT use the jiny_reply_reply_message tool"));
-        assert!(!prompt.contains("Always use jiny_reply_reply_message tool"));
+        assert!(prompt.contains("PROHIBITED: edit, write, bash commands that modify files"));
+        assert!(!prompt.contains("jiny_reply_reply_message"));
     }
 
     #[tokio::test]
@@ -258,7 +266,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let msg = test_message();
 
-        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", false)
+        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", false, None)
             .await
             .unwrap();
 
@@ -277,7 +285,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let msg = test_message();
 
-        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-00-00", true)
+        let prompt = build_prompt(&msg, tmp.path(), "2026-03-27_10-ONLY", true, None)
             .await
             .unwrap();
 

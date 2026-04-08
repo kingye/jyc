@@ -223,10 +223,21 @@ impl OpenCodeClient {
 
         for provider in &providers.all {
             if provider.id == provider_id {
+                tracing::debug!(
+                    provider = %provider_id,
+                    available_models = ?provider.models.keys().collect::<Vec<_>>(),
+                    looking_for = %model_id,
+                    "Searching for model in provider"
+                );
                 if let Some(model_info) = provider.models.get(model_id) {
+                    tracing::debug!(
+                        model = %model,
+                        limit = ?model_info.limit,
+                        "Model found in provider"
+                    );
                     if let Some(ref limit) = model_info.limit {
                         if limit.context > 0 {
-                            tracing::debug!(
+                            tracing::info!(
                                 model = %model,
                                 context_limit = limit.context,
                                 "Model context limit discovered"

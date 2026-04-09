@@ -97,23 +97,43 @@ impl FeishuClient {
         Ok(client.api_config().clone())
     }
 
-    /// Get the current tenant access token.
+    /// Get the current tenant access token via direct HTTP request.
     ///
-    /// Uses the openlark AuthService to request a tenant_access_token.
-    /// For self-built apps, this is equivalent to app_access_token.
+    /// Calls Feishu's internal app token endpoint directly instead of
+    /// using the openlark SDK (which returns empty responses for tenant tokens).
     pub async fn get_token(&self) -> Result<String> {
-        let core_config = self.get_core_config().await?;
-        let auth = open_lark::auth::AuthService::new(core_config);
-        let resp = auth
-            .v3()
-            .tenant_access_token_internal()
-            .app_id(&self.config.app_id)
-            .app_secret(&self.config.app_secret)
-            .execute()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get Feishu tenant access token: {e}"))?;
+        let http = reqwest::Client::new();
+        let url = format!(
+            "{}/open-apis/auth/v3/tenant_access_token/internal",
+            self.config.base_url.trim_end_matches('/')
+        );
 
-        Ok(resp.data.tenant_access_token)
+        let resp = http
+            .post(&url)
+            .json(&serde_json::json!({
+                "app_id": self.config.app_id,
+                "app_secret": self.config.app_secret
+            }))
+            .send()
+            .await
+            .context("Failed to request Feishu tenant access token")?;
+
+        let body: serde_json::Value = resp.json().await
+            .context("Failed to parse Feishu token response")?;
+
+        let code = body["code"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!(
+                "Feishu token request failed: code={}, msg={}",
+                code,
+                body["msg"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        body["tenant_access_token"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Feishu token response missing tenant_access_token"))
     }
 
     /// Send a message to a chat as an interactive card with markdown rendering.

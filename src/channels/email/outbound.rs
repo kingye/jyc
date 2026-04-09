@@ -1,12 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::channels::types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
-use crate::config::types::SmtpConfig;
+use crate::config::types::{OutboundAttachmentConfig, SmtpConfig};
+use crate::utils::attachment_validator;
 use crate::core::email_parser;
 use crate::core::message_storage::MessageStorage;
 use crate::services::smtp::client::{EmailAttachment, SmtpClient};
@@ -25,10 +26,19 @@ pub struct EmailOutboundAdapter {
     storage: Arc<MessageStorage>,
     from_address: String,
     from_name: Option<String>,
+    attachment_config: Option<OutboundAttachmentConfig>,
 }
 
 impl EmailOutboundAdapter {
     pub fn new(config: &SmtpConfig, storage: Arc<MessageStorage>) -> Self {
+        Self::new_with_attachments(config, storage, None)
+    }
+    
+    pub fn new_with_attachments(
+        config: &SmtpConfig,
+        storage: Arc<MessageStorage>,
+        attachment_config: Option<OutboundAttachmentConfig>,
+    ) -> Self {
         let from_address = config
             .from_address
             .clone()
@@ -40,6 +50,7 @@ impl EmailOutboundAdapter {
             storage,
             from_address,
             from_name,
+            attachment_config,
         }
     }
 
@@ -158,7 +169,17 @@ impl OutboundAdapter for EmailOutboundAdapter {
         )
         .await;
 
-        // 3. Send via SMTP
+        // 3. Validate attachments if configuration is present
+        if let Some(attachments) = attachments {
+            if let Some(ref config) = self.attachment_config {
+                attachment_validator::validate_outbound_attachments(attachments, config)
+                    .await
+                    .context("Failed to validate outbound attachments")?;
+                tracing::debug!("Outbound attachments validated successfully");
+            }
+        }
+
+        // 4. Send via SMTP
         let send_result = self
             .smtp_send(original, &full_reply, attachments)
             .await?;

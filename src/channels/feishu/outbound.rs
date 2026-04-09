@@ -11,21 +11,34 @@ use async_trait::async_trait;
 use crate::channels::feishu::client::FeishuClient;
 use crate::channels::feishu::config::FeishuConfig;
 use crate::channels::types::{InboundMessage, OutboundAttachment, SendResult};
+use crate::config::types::OutboundAttachmentConfig;
 use crate::core::email_parser;
 use crate::core::message_storage::MessageStorage;
+use crate::utils::attachment_validator;
 
 /// Feishu outbound adapter for sending messages via HTTP API.
 pub struct FeishuOutboundAdapter {
     client: FeishuClient,
     storage: Arc<MessageStorage>,
+    attachment_config: Option<OutboundAttachmentConfig>,
 }
 
 impl FeishuOutboundAdapter {
     /// Create a new Feishu outbound adapter.
     pub fn new(config: FeishuConfig, storage: Arc<MessageStorage>) -> Self {
+        Self::new_with_attachments(config, storage, None)
+    }
+    
+    /// Create a new Feishu outbound adapter with attachment configuration.
+    pub fn new_with_attachments(
+        config: FeishuConfig,
+        storage: Arc<MessageStorage>,
+        attachment_config: Option<OutboundAttachmentConfig>,
+    ) -> Self {
         Self {
             client: FeishuClient::new(config),
             storage,
+            attachment_config,
         }
     }
 }
@@ -93,7 +106,17 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
             format!("{}\n\n{}", clean_reply, footer)
         };
         
-        // 4. Send text reply
+        // 4. Validate attachments if configuration is present
+        if let Some(attachments) = attachments {
+            if let Some(ref config) = self.attachment_config {
+                attachment_validator::validate_outbound_attachments(attachments, config)
+                    .await
+                    .context("Failed to validate outbound attachments")?;
+                tracing::debug!("Outbound attachments validated successfully for Feishu");
+            }
+        }
+
+        // 5. Send text reply
         let result = self.client.send_text_message(chat_id, &full_reply).await
             .context("Failed to send Feishu reply")?;
         

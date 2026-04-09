@@ -87,6 +87,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .clone()
             .unwrap_or_default();
 
+        // Get outbound attachment configuration from unified config
+        let outbound_attachment_config = config.attachments
+            .as_ref()
+            .and_then(|att| att.outbound.clone());
+
         // Create the outbound adapter based on channel type
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
@@ -96,7 +101,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .ok_or_else(|| {
                         anyhow::anyhow!("channel '{channel_name}': missing outbound config")
                     })?;
-                Arc::new(EmailOutboundAdapter::new(outbound_config, storage.clone()))
+                Arc::new(EmailOutboundAdapter::new_with_attachments(
+                    outbound_config,
+                    storage.clone(),
+                    outbound_attachment_config,
+                ))
             }
             "feishu" => {
                 let feishu_config = channel_config
@@ -106,7 +115,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         anyhow::anyhow!("channel '{channel_name}': missing feishu config")
                     })?
                     .clone();
-                Arc::new(FeishuOutboundAdapter::new(feishu_config, storage.clone()))
+                Arc::new(FeishuOutboundAdapter::new_with_attachments(
+                    feishu_config,
+                    storage.clone(),
+                    outbound_attachment_config,
+                ))
             }
             other => {
                 tracing::warn!(

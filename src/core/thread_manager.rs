@@ -401,7 +401,7 @@ impl ThreadManager {
                         if event_thread_name == &thread_name {
                             let progress_str = progress.clone().unwrap_or_else(|| "Processing...".to_string());
                             last_processing_state = Some((*elapsed_secs, activity.clone(), progress_str));
-                            tracing::debug!(
+                            tracing::trace!(
                                 thread = %thread_name,
                                 elapsed_secs = elapsed_secs,
                                 activity = %activity,

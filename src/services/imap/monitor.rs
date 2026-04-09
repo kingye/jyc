@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::channels::email::inbound::{self, EmailMatcher};
+use crate::channels::email::inbound::{self, EmailInboundAdapter, EmailMatcher};
 use crate::channels::types::ChannelPattern;
-use crate::config::types::{ImapConfig, MonitorConfig};
+use crate::config::types::{ImapConfig, InboundAttachmentConfig, MonitorConfig};
 use crate::core::message_router::MessageRouter;
 use crate::core::state_manager::StateManager;
 use crate::services::imap::client::ImapClient;
@@ -24,6 +24,7 @@ pub struct ImapMonitor {
     router: Arc<MessageRouter>,
     state_manager: StateManager,
     cancel: CancellationToken,
+    inbound_attachment_config: Option<InboundAttachmentConfig>,
 }
 
 impl ImapMonitor {
@@ -35,6 +36,7 @@ impl ImapMonitor {
         router: Arc<MessageRouter>,
         state_manager: StateManager,
         cancel: CancellationToken,
+        inbound_attachment_config: Option<InboundAttachmentConfig>,
     ) -> Self {
         Self {
             channel_name,
@@ -44,6 +46,7 @@ impl ImapMonitor {
             router,
             state_manager,
             cancel,
+            inbound_attachment_config,
         }
     }
 
@@ -296,6 +299,18 @@ impl ImapMonitor {
             topic = %message.topic,
             "Message received"
         );
+
+        // Save attachments to thread directory if any
+        if !message.attachments.is_empty() {
+            let adapter = EmailInboundAdapter::new(self.channel_name.clone());
+            if let Err(e) = adapter.save_attachments_to_thread_directory(
+                &mut message,
+                &self.patterns,
+                self.inbound_attachment_config.as_ref(),
+            ).await {
+                tracing::warn!("Failed to save email attachments: {}", e);
+            }
+        }
 
         // Route through the message router (pattern match → thread queue)
         self.router.route(&EmailMatcher, message, &self.patterns).await;

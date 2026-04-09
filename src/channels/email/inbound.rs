@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use mail_parser::MimeHeaders;
 use regex::Regex;
@@ -8,8 +9,9 @@ use uuid::Uuid;
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundMessage, MessageAttachment, MessageContent, PatternMatch,
 };
+use crate::config::types::InboundAttachmentConfig;
 use crate::core::email_parser;
-use crate::utils::helpers::extract_domain;
+use crate::utils::helpers::{extract_domain, sanitize_for_filesystem};
 
 /// Email-specific pattern matching and thread name derivation.
 ///
@@ -126,6 +128,11 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
         .unwrap_or_else(Utc::now);
 
     // Extract attachments
+    let attachments_iter = parsed.attachments();
+    let attachments_count = attachments_iter.count();
+    tracing::debug!("Email UID={}: Found {} attachments via attachments()", uid, attachments_count);
+    
+    // Reset iterator after counting
     let attachments: Vec<MessageAttachment> = parsed
         .attachments()
         .map(|att| {
@@ -140,6 +147,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
             let content = att.contents().to_vec();
             let size = content.len();
 
+            tracing::debug!("Email UID={}: Attachment '{}' ({} bytes, {})", uid, filename, size, content_type);
             MessageAttachment {
                 filename,
                 content_type,
@@ -298,10 +306,171 @@ pub fn match_message(
     None
 }
 
+/// Email inbound adapter for receiving messages via IMAP.
+pub struct EmailInboundAdapter {
+    /// Channel name from config (e.g., "email_bot")
+    channel_name: String,
+    /// Workspace root path (e.g., "/home/jiny/projects/jyc-data/feishu_bot/workspace/")
+    workspace_root: std::path::PathBuf,
+}
+
+impl EmailInboundAdapter {
+    /// Create a new Email inbound adapter.
+    pub fn new(channel_name: String) -> Self {
+        // Determine workspace root from current working directory
+        let workspace_root = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        
+        Self {
+            channel_name,
+            workspace_root,
+        }
+    }
+    
+    /// Create a new Email inbound adapter with custom workspace root.
+    #[allow(dead_code)]
+    pub fn new_with_workspace(channel_name: String, workspace_root: std::path::PathBuf) -> Self {
+        Self {
+            channel_name,
+            workspace_root,
+        }
+    }
+
+    /// Save attachments to thread directory.
+    pub async fn save_attachments_to_thread_directory(
+        &self,
+        message: &mut InboundMessage,
+        patterns: &[ChannelPattern],
+        attachment_config: Option<&InboundAttachmentConfig>,
+    ) -> Result<()> {
+        // Check if we have attachments to save
+        if message.attachments.is_empty() {
+            tracing::debug!("No attachments to save for message");
+            return Ok(());
+        }
+
+        // Derive thread name using EmailMatcher
+        let thread_name = EmailMatcher.derive_thread_name(message, patterns, None);
+        
+        tracing::debug!(
+            "Saving {} attachments to thread directory for thread: {}",
+            message.attachments.len(),
+            thread_name
+        );
+
+        // Determine the thread directory
+        // Format: <workspace_root>/<channel_name>/workspace/<thread_name>/
+        let thread_dir = self.workspace_root
+            .join(&self.channel_name)
+            .join("workspace")
+            .join(&thread_name);
+
+        // Determine save path: use configured path or default to thread_dir/attachments/
+        let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
+            Some(path) => {
+                // If path is relative, make it relative to thread_dir
+                let path_buf = std::path::PathBuf::from(path);
+                if path_buf.is_absolute() {
+                    path_buf
+                } else {
+                    thread_dir.join(path_buf)
+                }
+            }
+            None => {
+                // Default path: <thread_dir>/attachments/
+                thread_dir.join("attachments")
+            }
+        };
+
+        tracing::debug!("Attachment save directory: {}", save_dir.display());
+
+        // Ensure directory exists
+        tokio::fs::create_dir_all(&save_dir).await
+            .context("Failed to create attachment directory")?;
+
+        // Save each attachment
+        for (i, attachment) in message.attachments.iter_mut().enumerate() {
+            tracing::debug!(
+                "Processing attachment {}: {} (size: {}, has content: {})",
+                i + 1,
+                attachment.filename,
+                attachment.size,
+                attachment.content.is_some()
+            );
+
+            // Skip if no content
+            if attachment.content.is_none() {
+                tracing::warn!("Attachment has no content: {}", attachment.filename);
+                continue;
+            }
+
+            // Generate a unique filename
+            let filename = self.generate_attachment_filename(attachment);
+            
+            // Full file path
+            let file_path = save_dir.join(&filename);
+
+            tracing::debug!("Saving attachment to: {}", file_path.display());
+
+            // Write file content
+            if let Some(content) = &attachment.content {
+                tokio::fs::write(&file_path, content).await
+                    .context(format!("Failed to write attachment file: {}", attachment.filename))?;
+                
+                // Update saved_path
+                attachment.saved_path = Some(file_path.clone());
+                
+                tracing::info!(
+                    "Attachment saved to thread directory: {} ({} bytes) -> {}",
+                    attachment.filename,
+                    attachment.size,
+                    file_path.display()
+                );
+            }
+        }
+
+        tracing::debug!("All attachments saved successfully");
+        Ok(())
+    }
+
+    /// Generate a unique filename for an attachment.
+    fn generate_attachment_filename(&self, attachment: &MessageAttachment) -> String {
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let uuid_short = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        
+        // Sanitize original filename
+        let safe_name = sanitize_for_filesystem(&attachment.filename);
+        
+        // Preserve extension if possible
+        let (name_no_ext, ext) = if let Some(dot_idx) = safe_name.rfind('.') {
+            let (name, ext) = safe_name.split_at(dot_idx);
+            (name.to_string(), Some(ext.to_string()))
+        } else {
+            (safe_name, None)
+        };
+        
+        // Limit name length
+        let truncated_name = if name_no_ext.len() > 50 {
+            &name_no_ext[..50]
+        } else {
+            &name_no_ext
+        };
+        
+        // Build final filename
+        let mut final_name = format!("{}_{}_{}", timestamp, uuid_short, truncated_name);
+        if let Some(ext) = ext {
+            final_name.push_str(&ext);
+        }
+        
+        final_name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::channels::types::{PatternRules, SenderRule, SubjectRule};
+    use tempfile::tempdir;
 
     fn make_message(sender_addr: &str, subject: &str) -> InboundMessage {
         InboundMessage {
@@ -483,5 +652,104 @@ mod tests {
         )];
 
         assert!(match_message(&msg, &patterns).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_save_attachments_to_thread_directory() {
+        // Create a temporary directory for workspace
+        let temp_dir = tempdir().unwrap();
+        let workspace_root = temp_dir.path().to_path_buf();
+
+        // Create EmailInboundAdapter with custom workspace root
+        let adapter = EmailInboundAdapter::new_with_workspace(
+            "test_channel".to_string(),
+            workspace_root.clone(),
+        );
+
+        // Create a test message with attachments
+        let mut message = InboundMessage {
+            id: "test-msg".to_string(),
+            channel: "email".to_string(),
+            channel_uid: "123".to_string(),
+            sender: "Test Sender".to_string(),
+            sender_address: "test@example.com".to_string(),
+            recipients: vec![],
+            topic: "Test Subject".to_string(),
+            content: MessageContent::default(),
+            timestamp: Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![
+                MessageAttachment {
+                    filename: "test1.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    size: 11,
+                    content: Some(b"Hello World".to_vec()),
+                    saved_path: None,
+                },
+                MessageAttachment {
+                    filename: "test2.pdf".to_string(),
+                    content_type: "application/pdf".to_string(),
+                    size: 20,
+                    content: Some(b"PDF content here...".to_vec()),
+                    saved_path: None,
+                },
+            ],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+
+        // Empty patterns for test
+        let patterns = vec![];
+
+        // Save attachments
+        let result = adapter.save_attachments_to_thread_directory(
+            &mut message,
+            &patterns,
+            None,
+        ).await;
+
+        // Verify the operation succeeded
+        assert!(result.is_ok(), "Failed to save attachments: {:?}", result.err());
+
+        // Verify attachments have saved_path set
+        for attachment in &message.attachments {
+            assert!(attachment.saved_path.is_some(), 
+                "Attachment {} should have saved_path set", attachment.filename);
+            
+            let saved_path = attachment.saved_path.as_ref().unwrap();
+            assert!(saved_path.exists(), 
+                "File should exist at: {}", saved_path.display());
+            
+            // Verify file content
+            let content = std::fs::read(saved_path).unwrap();
+            assert_eq!(content, *attachment.content.as_ref().unwrap());
+        }
+
+        // Verify the directory structure
+        let thread_name = EmailMatcher.derive_thread_name(&message, &patterns, None);
+        let expected_attachments_dir = workspace_root
+            .join(&thread_name)
+            .join("attachments");
+        
+        assert!(expected_attachments_dir.exists(), 
+            "Attachments directory should exist: {}", expected_attachments_dir.display());
+        
+        // List files in directory
+        let entries: Vec<_> = std::fs::read_dir(&expected_attachments_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        
+        assert_eq!(entries.len(), 2, "Should have 2 files in attachments directory");
+        
+        // Verify filename patterns
+        for entry in entries {
+            assert!(entry.contains("_test1") || entry.contains("_test2"), 
+                "Filename should contain original name: {}", entry);
+            assert!(entry.ends_with(".txt") || entry.ends_with(".pdf"),
+                "Filename should preserve extension: {}", entry);
+        }
     }
 }

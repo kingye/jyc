@@ -425,6 +425,7 @@ impl FeishuClient {
     /// Download a file from Feishu servers.
     ///
     /// Returns the file content as bytes.
+    /// Validates that the response is actual file data, not an API error.
     pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>> {
         let core_config = self.get_core_config().await?;
 
@@ -435,6 +436,19 @@ impl FeishuClient {
 
         let file_bytes = request.execute().await
             .map_err(|e| anyhow::anyhow!("Failed to download file from Feishu: {e}"))?;
+
+        // Validate response is actual file data, not a JSON error
+        if file_bytes.starts_with(b"{\"code\"") || file_bytes.starts_with(b"{\"error\"") {
+            let body_str = String::from_utf8_lossy(&file_bytes);
+            anyhow::bail!(
+                "Feishu file download returned error instead of file data: {}",
+                &body_str[..body_str.len().min(200)]
+            );
+        }
+
+        if file_bytes.is_empty() {
+            anyhow::bail!("Feishu file download returned empty data for file_key={}", file_key);
+        }
 
         tracing::debug!(
             "Downloaded file from Feishu: file_key = {}, size = {} bytes",
@@ -448,6 +462,7 @@ impl FeishuClient {
     /// Download an image from Feishu servers.
     ///
     /// Returns the image content as bytes.
+    /// Validates that the response is actually image data, not an API error.
     pub async fn download_image(&self, image_key: &str) -> Result<Vec<u8>> {
         let core_config = self.get_core_config().await?;
 
@@ -458,6 +473,19 @@ impl FeishuClient {
 
         let image_bytes = request.execute().await
             .map_err(|e| anyhow::anyhow!("Failed to download image from Feishu: {e}"))?;
+
+        // Validate response is actual image data, not a JSON error
+        if image_bytes.starts_with(b"{") || image_bytes.starts_with(b"<") {
+            let body_str = String::from_utf8_lossy(&image_bytes);
+            anyhow::bail!(
+                "Feishu image download returned error instead of image data: {}",
+                &body_str[..body_str.len().min(200)]
+            );
+        }
+
+        if image_bytes.is_empty() {
+            anyhow::bail!("Feishu image download returned empty data for image_key={}", image_key);
+        }
 
         tracing::debug!(
             "Downloaded image from Feishu: image_key = {}, size = {} bytes",

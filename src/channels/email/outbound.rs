@@ -30,6 +30,7 @@ pub struct EmailOutboundAdapter {
 }
 
 impl EmailOutboundAdapter {
+    #[allow(dead_code)]
     pub fn new(config: &SmtpConfig, storage: Arc<MessageStorage>) -> Self {
         Self::new_with_attachments(config, storage, None)
     }

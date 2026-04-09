@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use mail_parser::MimeHeaders;
 use regex::Regex;
@@ -11,7 +11,7 @@ use crate::channels::types::{
 };
 use crate::config::types::InboundAttachmentConfig;
 use crate::core::email_parser;
-use crate::utils::helpers::{extract_domain, sanitize_for_filesystem};
+use crate::utils::helpers::extract_domain;
 
 /// Email-specific pattern matching and thread name derivation.
 ///
@@ -136,7 +136,9 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
     let attachments: Vec<MessageAttachment> = parsed
         .attachments()
         .map(|att| {
-            let filename = att.attachment_name().unwrap_or("unnamed").to_string();
+            let filename = crate::core::attachment_storage::sanitize_attachment_filename(
+                att.attachment_name().unwrap_or("unnamed")
+            );
             let content_type = att
                 .content_type()
                 .map(|ct| {
@@ -343,126 +345,15 @@ impl EmailInboundAdapter {
         patterns: &[ChannelPattern],
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<()> {
-        // Check if we have attachments to save
-        if message.attachments.is_empty() {
-            tracing::debug!("No attachments to save for message");
-            return Ok(());
-        }
-
-        // Derive thread name using EmailMatcher
         let thread_name = EmailMatcher.derive_thread_name(message, patterns, None);
-        
-        tracing::debug!(
-            "Saving {} attachments to thread directory for thread: {}",
-            message.attachments.len(),
-            thread_name
-        );
-
-        // Determine the thread directory
-        // Format: <workspace_root>/<channel_name>/workspace/<thread_name>/
-        let thread_dir = self.workspace_root
-            .join(&self.channel_name)
-            .join("workspace")
-            .join(&thread_name);
-
-        // Determine save path: use configured path or default to thread_dir/attachments/
-        let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
-            Some(path) => {
-                // If path is relative, make it relative to thread_dir
-                let path_buf = std::path::PathBuf::from(path);
-                if path_buf.is_absolute() {
-                    path_buf
-                } else {
-                    thread_dir.join(path_buf)
-                }
-            }
-            None => {
-                // Default path: <thread_dir>/attachments/
-                thread_dir.join("attachments")
-            }
-        };
-
-        tracing::debug!("Attachment save directory: {}", save_dir.display());
-
-        // Ensure directory exists
-        tokio::fs::create_dir_all(&save_dir).await
-            .context("Failed to create attachment directory")?;
-
-        // Save each attachment
-        for (i, attachment) in message.attachments.iter_mut().enumerate() {
-            tracing::debug!(
-                "Processing attachment {}: {} (size: {}, has content: {})",
-                i + 1,
-                attachment.filename,
-                attachment.size,
-                attachment.content.is_some()
-            );
-
-            // Skip if no content
-            if attachment.content.is_none() {
-                tracing::warn!("Attachment has no content: {}", attachment.filename);
-                continue;
-            }
-
-            // Generate a unique filename
-            let filename = self.generate_attachment_filename(attachment);
-            
-            // Full file path
-            let file_path = save_dir.join(&filename);
-
-            tracing::debug!("Saving attachment to: {}", file_path.display());
-
-            // Write file content
-            if let Some(content) = &attachment.content {
-                tokio::fs::write(&file_path, content).await
-                    .context(format!("Failed to write attachment file: {}", attachment.filename))?;
-                
-                // Update saved_path
-                attachment.saved_path = Some(file_path.clone());
-                
-                tracing::info!(
-                    "Attachment saved to thread directory: {} ({} bytes) -> {}",
-                    attachment.filename,
-                    attachment.size,
-                    file_path.display()
-                );
-            }
-        }
-
-        tracing::debug!("All attachments saved successfully");
-        Ok(())
-    }
-
-    /// Generate a unique filename for an attachment.
-    fn generate_attachment_filename(&self, attachment: &MessageAttachment) -> String {
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let uuid_short = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        
-        // Sanitize original filename
-        let safe_name = sanitize_for_filesystem(&attachment.filename);
-        
-        // Preserve extension if possible
-        let (name_no_ext, ext) = if let Some(dot_idx) = safe_name.rfind('.') {
-            let (name, ext) = safe_name.split_at(dot_idx);
-            (name.to_string(), Some(ext.to_string()))
-        } else {
-            (safe_name, None)
-        };
-        
-        // Limit name length
-        let truncated_name = if name_no_ext.len() > 50 {
-            &name_no_ext[..50]
-        } else {
-            &name_no_ext
-        };
-        
-        // Build final filename
-        let mut final_name = format!("{}_{}_{}", timestamp, uuid_short, truncated_name);
-        if let Some(ext) = ext {
-            final_name.push_str(&ext);
-        }
-        
-        final_name
+        crate::core::attachment_storage::save_attachments_to_thread_directory(
+            message,
+            &self.workspace_root,
+            &self.channel_name,
+            &thread_name,
+            attachment_config,
+        )
+        .await
     }
 }
 
@@ -730,6 +621,8 @@ mod tests {
         // Verify the directory structure
         let thread_name = EmailMatcher.derive_thread_name(&message, &patterns, None);
         let expected_attachments_dir = workspace_root
+            .join("test_channel")
+            .join("workspace")
             .join(&thread_name)
             .join("attachments");
         

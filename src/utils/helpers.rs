@@ -3,7 +3,7 @@ use regex::Regex;
 
 /// Parse a human-readable file size string into bytes.
 ///
-/// Supports formats like "25mb", "150kb", "1gb", "1024", "10 MB".
+/// Supports formats like "25mb", "150kb", "1gb", "1024", "10 MB", "2.5m", "100k".
 /// Case-insensitive. If no unit is given, assumes bytes.
 pub fn parse_file_size(input: &str) -> Result<u64> {
     let input = input.trim().to_lowercase();
@@ -11,7 +11,7 @@ pub fn parse_file_size(input: &str) -> Result<u64> {
         bail!("empty file size string");
     }
 
-    let re = Regex::new(r"^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|bytes?)?$").unwrap();
+    let re = Regex::new(r"^(\d+(?:\.\d+)?)\s*(b|kb?|mb?|gb?|tb?|bytes?)?$").unwrap();
     let caps = re
         .captures(&input)
         .ok_or_else(|| anyhow::anyhow!("invalid file size format: '{input}'"))?;
@@ -19,10 +19,10 @@ pub fn parse_file_size(input: &str) -> Result<u64> {
     let number: f64 = caps[1].parse()?;
     let multiplier: u64 = match caps.get(2).map(|m| m.as_str()) {
         None | Some("") | Some("b") | Some("byte") | Some("bytes") => 1,
-        Some("kb") => 1024,
-        Some("mb") => 1024 * 1024,
-        Some("gb") => 1024 * 1024 * 1024,
-        Some("tb") => 1024 * 1024 * 1024 * 1024,
+        Some("k") | Some("kb") => 1024,
+        Some("m") | Some("mb") => 1024 * 1024,
+        Some("g") | Some("gb") => 1024 * 1024 * 1024,
+        Some("t") | Some("tb") => 1024 * 1024 * 1024 * 1024,
         Some(unit) => bail!("unknown file size unit: '{unit}'"),
     };
 

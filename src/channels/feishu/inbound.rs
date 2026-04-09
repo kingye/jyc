@@ -3,15 +3,14 @@
 //! This module handles receiving messages from Feishu via WebSocket connections
 //! and provides channel-specific pattern matching and thread name derivation.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
-    ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, 
-    MessageAttachment, PatternMatch,
+    ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
 };
 use crate::config::types::InboundAttachmentConfig;
 use crate::utils::helpers::sanitize_for_filesystem;
@@ -338,103 +337,15 @@ impl FeishuInboundAdapter {
         patterns: &[ChannelPattern],
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<()> {
-        // Check if we have attachments to save
-        if message.attachments.is_empty() {
-            tracing::debug!("No attachments to save for message");
-            return Ok(());
-        }
-
-        // Derive thread name using FeishuMatcher
         let thread_name = FeishuMatcher.derive_thread_name(message, patterns, None);
-        
-        tracing::debug!(
-            "Saving {} attachments to thread directory for thread: {}",
-            message.attachments.len(),
-            thread_name
-        );
-
-        // Determine the thread directory
-        // Format: <workspace_root>/<channel_name>/workspace/<thread_name>/
-        let thread_dir = self.workspace_root
-            .join(&self.channel_name)
-            .join("workspace")
-            .join(&thread_name);
-
-        // Determine save path: use configured path or default to thread_dir/attachments/
-        let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
-            Some(path) => {
-                // If path is relative, make it relative to thread_dir
-                let path_buf = std::path::PathBuf::from(path);
-                if path_buf.is_absolute() {
-                    path_buf
-                } else {
-                    thread_dir.join(path_buf)
-                }
-            }
-            None => {
-                // Default path: <thread_dir>/attachments/
-                thread_dir.join("attachments")
-            }
-        };
-
-        tracing::debug!("Attachment save directory: {}", save_dir.display());
-
-        // Ensure directory exists
-        tokio::fs::create_dir_all(&save_dir).await
-            .context("Failed to create attachment directory")?;
-
-        // Save each attachment
-        for (i, attachment) in message.attachments.iter_mut().enumerate() {
-            tracing::debug!(
-                "Processing attachment {}: {} (size: {}, has content: {})",
-                i + 1,
-                attachment.filename,
-                attachment.size,
-                attachment.content.is_some()
-            );
-
-            // Skip if no content
-            if attachment.content.is_none() {
-                tracing::warn!("Attachment has no content: {}", attachment.filename);
-                continue;
-            }
-
-            // Generate a unique filename
-            let filename = self.generate_attachment_filename(attachment);
-            
-            // Full file path
-            let file_path = save_dir.join(&filename);
-
-            tracing::debug!("Saving attachment to: {}", file_path.display());
-
-            // Write file content
-            if let Some(content) = &attachment.content {
-                tokio::fs::write(&file_path, content).await
-                    .context(format!("Failed to write attachment file: {}", attachment.filename))?;
-                
-                // Update saved_path
-                attachment.saved_path = Some(file_path.clone());
-                
-                tracing::info!(
-                    "Attachment saved to thread directory: {} ({} bytes) -> {}",
-                    attachment.filename,
-                    attachment.size,
-                    file_path.display()
-                );
-            }
-        }
-
-        tracing::debug!("All attachments saved successfully");
-        Ok(())
-    }
-
-    /// Generate a unique filename for an attachment.
-    fn generate_attachment_filename(&self, attachment: &MessageAttachment) -> String {
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let uuid_short = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        let safe_filename = sanitize_for_filesystem(&attachment.filename);
-        
-        format!("{}_{}_{}", timestamp, uuid_short, safe_filename)
+        crate::core::attachment_storage::save_attachments_to_thread_directory(
+            message,
+            &self.workspace_root,
+            &self.channel_name,
+            &thread_name,
+            attachment_config,
+        )
+        .await
     }
 }
 

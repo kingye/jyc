@@ -25,6 +25,7 @@ pub struct FeishuOutboundAdapter {
 
 impl FeishuOutboundAdapter {
     /// Create a new Feishu outbound adapter.
+    #[allow(dead_code)]
     pub fn new(config: FeishuConfig, storage: Arc<MessageStorage>) -> Self {
         Self::new_with_attachments(config, storage, None)
     }

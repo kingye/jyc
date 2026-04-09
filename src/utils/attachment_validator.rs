@@ -28,10 +28,12 @@ pub enum AttachmentValidationError {
     FileNotFound(String),
     
     #[error("cannot read file metadata: {0}")]
+    #[allow(dead_code)]
     FileMetadataError(String),
 }
 
 /// Validates a single file against inbound attachment configuration.
+#[allow(dead_code)]
 pub async fn validate_inbound_file(
     file_path: &Path,
     filename: &str,
@@ -104,8 +106,8 @@ pub async fn validate_outbound_file(
 }
 
 /// Validates a collection of files against attachment count limits.
-pub fn validate_attachment_count(
-    attachments: &[impl std::fmt::Debug],
+pub fn validate_attachment_count<T>(
+    attachments: &[T],
     max_per_message: Option<usize>,
 ) -> Result<()> {
     if let Some(max) = max_per_message {
@@ -136,25 +138,17 @@ fn validate_file_extension(filename: &str, allowed_extensions: &[String]) -> Res
     
     let ext = Path::new(filename)
         .extension()
-        .map(|e| e.to_string_lossy().to_lowercase());
+        .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()));
     
-    let has_valid_extension = if let Some(ref ext_value) = ext {
+    let has_valid_extension = if let Some(ref ext_with_dot) = ext {
         allowed_extensions.iter().any(|allowed| {
-            // Normalize both extensions: ensure they start with dot
-            let normalized_allowed = if allowed.starts_with('.') {
-                allowed.as_str()
+            // Normalize: config validation enforces dot-prefix, but handle both for safety
+            let normalized = if allowed.starts_with('.') {
+                allowed.to_lowercase()
             } else {
-                // This shouldn't happen if config validation is working
-                &format!(".{}", allowed)
+                format!(".{}", allowed).to_lowercase()
             };
-            
-            let normalized_ext = if ext_value.starts_with('.') {
-                ext_value.as_str()
-            } else {
-                &format!(".{}", ext_value)
-            };
-            
-            normalized_ext == normalized_allowed
+            ext_with_dot == &normalized
         })
     } else {
         false
@@ -191,11 +185,6 @@ pub async fn validate_outbound_attachments(
     Ok(())
 }
 
-/// Helper function to parse file size from human-readable string.
-/// This re-exports the helper function for convenience.
-pub fn parse_attachment_size(size_str: &str) -> Result<u64> {
-    parse_file_size(size_str).map_err(|e| anyhow::anyhow!(e))
-}
 
 #[cfg(test)]
 mod tests {

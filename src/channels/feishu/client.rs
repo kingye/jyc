@@ -478,25 +478,33 @@ impl FeishuClient {
         Ok(file_bytes)
     }
 
-    /// Download an image from Feishu servers.
+    /// Download an image from a Feishu message.
     ///
-    /// Returns the image content as bytes.
-    /// Uses direct HTTP request with the required `type` query parameter
-    /// that the openlark SDK doesn't support.
-    pub async fn download_image(&self, image_key: &str) -> Result<Vec<u8>> {
+    /// Uses the message resource endpoint which requires both message_id and image_key.
+    /// The standalone image endpoint (/im/v1/images/:image_key) returns 400 for
+    /// chat message images.
+    pub async fn download_image(&self, image_key: &str, message_id: Option<&str>) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
-        let base_url = &self.config.base_url;
-        let url = format!(
-            "{}/open-apis/im/v1/images/{}",
-            base_url.trim_end_matches('/'),
-            image_key
-        );
+        let base_url = self.config.base_url.trim_end_matches('/');
+
+        // Use message resource endpoint if message_id is available (preferred)
+        // Falls back to standalone image endpoint
+        let url = if let Some(msg_id) = message_id {
+            format!(
+                "{}/open-apis/im/v1/messages/{}/resources/{}?type=image",
+                base_url, msg_id, image_key
+            )
+        } else {
+            format!(
+                "{}/open-apis/im/v1/images/{}?type=image",
+                base_url, image_key
+            )
+        };
 
         let http = reqwest::Client::new();
         let resp = http
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
-            .query(&[("type", "image")])
             .send()
             .await
             .context("Failed to download image from Feishu")?;

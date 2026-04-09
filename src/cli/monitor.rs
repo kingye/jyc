@@ -186,7 +186,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     opencode_server.clone(),
                     agent_config.clone(),
                     workdir.to_path_buf(),
-                ))
+                ).with_vision_config(config.vision.clone()))
             }
             "static" => {
                 let text = agent_config

@@ -27,6 +27,9 @@ pub struct AppConfig {
     /// Unified attachment configuration (inbound downloading and outbound sending)
     #[serde(default)]
     pub attachments: Option<UnifiedAttachmentConfig>,
+
+    /// Vision API configuration (image analysis via OpenAI-compatible API)
+    pub vision: Option<VisionConfig>,
 }
 
 /// General application settings.
@@ -256,6 +259,36 @@ impl Default for HeartbeatConfig {
             min_elapsed_secs: 60,
         }
     }
+}
+
+/// Vision API configuration for image analysis.
+///
+/// Uses any OpenAI-compatible vision API (Kimi, Volcengine/Ark, OpenAI, etc.)
+/// Configures the MCP vision tool that the AI agent can call to analyze images.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VisionConfig {
+    /// Whether the vision tool is enabled
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// API key for the vision provider
+    pub api_key: String,
+
+    /// API endpoint URL (OpenAI-compatible chat completions endpoint)
+    #[serde(default = "default_vision_api_url")]
+    pub api_url: String,
+
+    /// Model name to use for vision analysis
+    #[serde(default = "default_vision_model")]
+    pub model: String,
+}
+
+fn default_vision_api_url() -> String {
+    "https://api.moonshot.cn/v1/chat/completions".to_string()
+}
+
+fn default_vision_model() -> String {
+    "kimi-k2.5".to_string()
 }
 
 // --- Default value functions ---

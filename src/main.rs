@@ -55,6 +55,10 @@ enum Commands {
     /// MCP reply tool server (internal — spawned by OpenCode)
     #[command(hide = true)]
     McpReplyTool,
+
+    /// MCP vision tool server (internal — spawned by OpenCode)
+    #[command(hide = true)]
+    McpVisionTool,
 }
 
 fn init_tracing(debug: bool, verbose: bool) {
@@ -128,6 +132,9 @@ async fn main() -> Result<()> {
         }
         Commands::McpReplyTool => {
             cli::mcp_reply::run().await
+        }
+        Commands::McpVisionTool => {
+            cli::mcp_vision::run().await
         }
     }
 }

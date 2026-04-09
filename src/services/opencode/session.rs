@@ -229,6 +229,7 @@ pub async fn ensure_thread_opencode_setup(
     thread_path: &Path,
     agent_config: &AgentConfig,
     jyc_root: &Path,
+    vision_config: Option<&crate::config::types::VisionConfig>,
 ) -> Result<bool> {
     // Read model override
     let model = read_model_override(thread_path)
@@ -247,26 +248,54 @@ pub async fn ensure_thread_opencode_setup(
     // Build the reply tool command
     let tool_command = get_reply_tool_command();
 
+    // Build MCP tools configuration
+    let mut mcp_tools = serde_json::json!({
+        "jiny_reply": {
+            "type": "local",
+            "command": tool_command,
+            "environment": {
+                "JYC_ROOT": jyc_root.to_string_lossy()
+            },
+            "enabled": true,
+            "timeout": 180000
+        }
+    });
+
+    // Register vision MCP tool if configured and enabled
+    if let Some(vision) = vision_config {
+        if vision.enabled {
+            let vision_command = get_vision_tool_command();
+            mcp_tools["vision"] = serde_json::json!({
+                "type": "local",
+                "command": vision_command,
+                "environment": {
+                    "VISION_API_KEY": vision.api_key,
+                    "VISION_API_URL": vision.api_url,
+                    "VISION_MODEL": vision.model
+                },
+                "enabled": true,
+                "timeout": 120000
+            });
+            tracing::debug!("Vision MCP tool registered in opencode.json");
+        }
+    }
+
     let new_config = OpencodeConfig {
         schema: "https://opencode.ai/config.json".to_string(),
         model,
         small_model,
         permission: serde_json::json!({
-            "*": "allow",
             "question": "deny"
         }),
-        agent: None, // For simplicity, not configuring agent here
-        mcp: serde_json::json!({
-            "jiny_reply": {
-                "type": "local",
-                "command": tool_command,
-                "environment": {
-                    "JYC_ROOT": jyc_root.to_string_lossy()
-                },
-                "enabled": true,
-                "timeout": 180000
+        agent: Some(serde_json::json!({
+            "build": {
+                "permission": {
+                    "*": "allow",
+                    "question": "deny"
+                }
             }
-        }),
+        })),
+        mcp: mcp_tools,
     };
 
     let config_path = thread_path.join("opencode.json");
@@ -346,21 +375,30 @@ pub async fn read_mode_override(thread_path: &Path) -> Option<String> {
 ///
 /// Resolves the jyc binary path and returns `["/path/to/jyc", "mcp-reply-tool"]`.
 fn get_reply_tool_command() -> Vec<String> {
+    get_mcp_tool_command("mcp-reply-tool")
+}
+
+fn get_vision_tool_command() -> Vec<String> {
+    get_mcp_tool_command("mcp-vision-tool")
+}
+
+/// Resolve the command to invoke a jyc MCP tool subcommand.
+fn get_mcp_tool_command(subcommand: &str) -> Vec<String> {
     // Try current executable path
     if let Ok(exe) = std::env::current_exe() {
         let exe_str = exe.to_string_lossy().to_string();
-        return vec![exe_str, "mcp-reply-tool".to_string()];
+        return vec![exe_str, subcommand.to_string()];
     }
 
     // Fallback: check common paths
     for path in &["/usr/local/bin/jyc", "/usr/bin/jyc"] {
         if Path::new(path).exists() {
-            return vec![path.to_string(), "mcp-reply-tool".to_string()];
+            return vec![path.to_string(), subcommand.to_string()];
         }
     }
 
     // Last resort
-    vec!["jyc".to_string(), "mcp-reply-tool".to_string()]
+    vec!["jyc".to_string(), subcommand.to_string()]
 }
 
 

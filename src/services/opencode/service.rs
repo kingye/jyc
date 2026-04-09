@@ -35,6 +35,8 @@ pub struct OpenCodeService {
     event_bus: Mutex<Option<ThreadEventBusRef>>,
     /// Per-thread event bus mapping for thread isolation.
     event_bus_map: Mutex<std::collections::HashMap<String, ThreadEventBusRef>>,
+    /// Vision API configuration (optional).
+    vision_config: Option<Arc<crate::config::types::VisionConfig>>,
 }
 
 impl OpenCodeService {
@@ -51,6 +53,7 @@ impl OpenCodeService {
             http_client: reqwest::Client::new(),
             event_bus: Mutex::new(None),
             event_bus_map: Mutex::new(std::collections::HashMap::new()),
+            vision_config: None,
         }
     }
     
@@ -69,7 +72,14 @@ impl OpenCodeService {
             http_client: reqwest::Client::new(),
             event_bus: Mutex::new(event_bus),
             event_bus_map: Mutex::new(std::collections::HashMap::new()),
+            vision_config: None,
         }
+    }
+
+    /// Set the vision configuration.
+    pub fn with_vision_config(mut self, config: Option<crate::config::types::VisionConfig>) -> Self {
+        self.vision_config = config.map(Arc::new);
+        self
     }
     
     /// Helper method to publish an event if event bus is available.
@@ -249,6 +259,7 @@ impl OpenCodeService {
             thread_path,
             &self.agent_config,
             &self.workdir,
+            self.vision_config.as_deref(),
         ).await?;
 
         tracing::debug!(config_changed = config_changed, "opencode.json check");

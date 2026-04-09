@@ -152,8 +152,9 @@ mode = "opencode"
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 include_thread_history = false
 
-# Maximum input tokens per session before resetting (default: 108000)
-max_input_tokens = 108000
+# Maximum input tokens per session before resetting.
+# If not set, uses 95% of the model's context window (auto-detected), or 120K as fallback.
+# max_input_tokens = 122880
 
 
 [agent.attachments]
@@ -212,3 +213,17 @@ reply_tool_log_tail_lines = 50
 [alerting.health_check]
 enabled = true
 interval_hours = 3
+
+# --- Vision API ---
+# OpenAI-compatible vision API for image analysis.
+# The AI agent can call the vision_analyze_image MCP tool to analyze images
+# (e.g., attachments saved to thread directories).
+# Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc.
+
+# [vision]
+# enabled = true
+# api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# api_url = "https://api.moonshot.cn/v1/chat/completions"  # Kimi (default)
+# # api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"  # Volcengine/Ark
+# # api_url = "https://api.openai.com/v1/chat/completions"  # OpenAI
+# model = "kimi-k2.5"  # default

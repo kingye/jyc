@@ -4,12 +4,11 @@ All notable changes to JYC will be documented in this file.
 
 ## [0.1.4] - 2026-04-09
 
-### Added
+### Changed
 
-**Feishu Attachment Saving** — Download attachments to thread directory
-- Save attachments to `<thread_dir>/attachments/` directory
-- Integrate with FeishuInboundAdapter and monitor callback system
-- Automatic thread name calculation using FeishuMatcher
+**Version bump** — Prepare for upcoming features
+- Version increment for upcoming feature integration
+- Maintain compatibility with existing configurations
 
 ## [0.1.3] - 2026-04-08
 

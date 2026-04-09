@@ -49,15 +49,15 @@ impl McpLogger {
 /// Parameters for the analyze_image tool.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AnalyzeImageParams {
-    #[schemars(description = "Absolute path to a local image file, or an HTTP(S) URL")]
+    #[schemars(description = "Absolute path to a local file (image, PDF, etc.) or an HTTP(S) URL")]
     pub image_path: String,
-    #[schemars(description = "Analysis prompt (what to look for in the image)")]
+    #[schemars(description = "Analysis prompt (what to look for in the content)")]
     #[serde(default = "default_prompt")]
     pub prompt: String,
 }
 
 fn default_prompt() -> String {
-    "Please describe this image in detail.".to_string()
+    "Please describe this content in detail.".to_string()
 }
 
 /// Vision API configuration read from environment variables.
@@ -95,7 +95,7 @@ impl VisionToolHandler {
 
 #[tool_router]
 impl VisionToolHandler {
-    #[tool(description = "Analyze an image using a vision AI model. Accepts a local file path (absolute) or an HTTP(S) URL. Returns the model's description/analysis of the image.")]
+    #[tool(description = "Analyze visual content (images, PDFs, screenshots, etc.) using a vision AI model. Accepts a local file path (absolute) or an HTTP(S) URL. Returns the model's description/analysis of the content.")]
     async fn analyze_image(
         &self,
         Parameters(params): Parameters<AnalyzeImageParams>,
@@ -130,7 +130,7 @@ impl ServerHandler for VisionToolHandler {
                 "vision",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("MCP vision tool — analyzes images using an OpenAI-compatible vision API")
+            .with_instructions("MCP vision tool — analyzes visual content (images, PDFs, videos, etc.) using an OpenAI-compatible vision API")
     }
 }
 
@@ -215,6 +215,10 @@ fn guess_mime_type(path: &str) -> String {
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
         "tiff" | "tif" => "image/tiff",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
         _ => "image/jpeg", // Default to JPEG for jpg, jpeg, and unknown
     }
     .to_string()

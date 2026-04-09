@@ -216,8 +216,8 @@ impl FeishuWebSocket {
                         );
                     
                     if config.enabled && image_allowed {
-                        // Download image from Feishu
-                        match self.client.download_image(&content.image_key).await {
+                        // Download image from Feishu using message resource endpoint
+                        match self.client.download_image(&content.image_key, Some(&msg.message_id)).await {
                             Ok(image_bytes) if !image_bytes.is_empty() => {
                                 tracing::debug!("Image downloaded: size = {} bytes", image_bytes.len());
                                 

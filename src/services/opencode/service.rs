@@ -400,8 +400,12 @@ impl OpenCodeService {
         };
 
         // 7. Send prompt via SSE streaming with ai{m=model:mode} span
-        // m starts Empty — recorded once when model is discovered in SSE client
+        // Use Empty field — SSE handler will record the actual model when discovered.
+        // If model is known upfront (config or /model override), record it immediately.
         let ai_span = tracing::info_span!("ai", m = tracing::field::Empty);
+        if let Some(ref m) = model {
+            ai_span.record("m", format!("{}:{}", m, mode_label));
+        }
 
         tracing::info!(
             session_id = %session_id,

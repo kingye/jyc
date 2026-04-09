@@ -2,22 +2,73 @@
 
 All notable changes to JYC will be documented in this file.
 
-## [0.1.4] - 2026-04-09
+## [0.1.5] - 2026-04-09
 
 ### Added
 
-**Enhanced PLAN Mode Prompt Builder** — Clearer instructions and mode parameter support
+**Vision MCP Tool** — Image and visual content analysis
+- New `vision_analyze_image` MCP tool for analyzing images, PDFs, screenshots, and videos
+- Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, or any OpenAI-compatible vision API
+- Configuration via `[vision]` section in `config.toml` (api_key, api_url, model)
+- Supports local file paths (absolute) and HTTP(S) URLs
+- Base64 data URI encoding for API transport
+- 300s MCP timeout for large files
+- File-based logging to `.jyc/vision-tool.log`
+- Hidden CLI subcommand `mcp-vision-tool` (spawned by OpenCode)
+
+**Unified Attachment Configuration** — Channel-agnostic attachment handling
+- New `[attachments.inbound]` and `[attachments.outbound]` config sections
+- Per-pattern attachment overrides in channel pattern config
+- Shared `core/attachment_storage.rs` module (replaces duplicated code in email/Feishu)
+- Consistent filename generation with extension preservation and 50-char truncation
+- Path traversal protection at ingestion time (strips directory components, control chars)
+
+**System Prompt Enhancements**
+- Tool usage instructions: use `webfetch` for web searches (not curl/wget)
+- Resilience instructions: try multiple approaches, don't give up after single failure
+- Try alternative sites when a URL fails
+- Enhanced plan mode with `<system-reminder>` tag for emphasis
 - Updated PLAN mode system prompt with clearer allowed/prohibited actions
-- Added mode parameter to `build_prompt` function for proper PLAN mode detection
-- Improved test coverage for PLAN mode scenarios
 
 ### Fixed
 
+**Feishu Image Downloads** — Complete fix for image attachment handling
+- Use message resource endpoint (`/im/v1/messages/:id/resources/:key`) instead of standalone image endpoint (was returning 400)
+- Direct HTTP for tenant access token retrieval (openlark SDK returned empty responses)
+- Validate download responses are actual file data, not JSON API errors
+- Skip phantom attachments on download failure (no more zero-byte entries)
+
+**Feishu Command Parsing** — Strip mentions for `/command` recognition
+- Remove `@mention` placeholders entirely instead of replacing with display names
+- `@jyc /model ls ark` now correctly parsed as `/model ls ark`
+
+**Model Display in Logs** — Restored ai{m=...} span
+- Use `Empty` + `.record()` pattern for model discovery via SSE
+- SSE handler records model on parent span when discovered from `message.updated`
+- Upfront recording when model is known from config or `/model` override
+
 **Duplicate Footer Separators** — Prevent duplicate '---' in Feishu and email replies
 - Added `strip_trailing_separators()` function to email_parser module
-- Clean reply text before adding footer in Feishu outbound adapter
-- Clean reply text before adding footer in `build_full_reply_text` function
-- Root cause: AI replies sometimes end with '---' separators, causing duplicates
+- Clean reply text before adding footer in both Feishu and email outbound adapters
+
+**Attachment Security**
+- Unified file size parser (removed duplicate `parse_human_size`)
+- Consistent dot-prefix extension validation across all channels
+- Size check before creating attachment (not after full download)
+
+### Changed
+
+- Consolidated `config_template.toml` and `config.example.toml` into single `config.example.toml`
+- `config init` CLI command now uses `config.example.toml`
+- Vision tool timeout: 300s (was 120s)
+- `Updated processing state` log reduced from debug to trace
+- Refactored `get_mcp_tool_command()` shared between reply and vision tools
+- Remove `.opencode/package-lock.json` from git tracking
+
+### Removed
+
+- Dead code: `save_attachment_to_disk` (websocket.rs), `parse_attachment_size` (attachment_validator.rs), `parse_human_size` (websocket.rs)
+- Duplicate `config_template.toml` file
 
 ## [0.1.3] - 2026-04-08
 

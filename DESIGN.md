@@ -199,8 +199,9 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
      - **Backward Compatibility**: Email parser reads from logs first, falls back to directory storage if needed
 11. **State Manager** — Track processed UIDs per channel, handle migrations
 12. **Security Module** — Path validation, file size/extension checks for attachments
-13. **Alert Service** — Error alert digests + periodic health check reports via email
-14. **Command System** — Email `/command` parsing and execution (e.g., `/model` for model switching)
+13. **Attachment Storage** — Channel-agnostic attachment saving (`core/attachment_storage.rs`). Shared by email and Feishu adapters. Includes path traversal protection at ingestion, unified filename generation, and configurable save paths.
+14. **Alert Service** — Error alert digests + periodic health check reports via email
+15. **Command System** — Email and Feishu `/command` parsing and execution (e.g., `/model` for model switching, `/plan`, `/build`, `/reset`)
 
 ### Design Principles: Component Responsibilities
 

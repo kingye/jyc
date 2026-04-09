@@ -641,7 +641,7 @@ impl OpenCodeClient {
         session_id: &str,
         thread_name: &str,
         directory: &Path,
-        _mode_label: &str,
+        mode_label: &str,
         parts: &mut HashMap<String, ResponsePart>,
         result: &mut SseResult,
         last_activity: &mut Instant,
@@ -679,7 +679,11 @@ impl OpenCodeClient {
                                     } else {
                                         model.clone()
                                     };
-                                    tracing::info!(model = %combined_model, mode = ?info.mode, "AI model selected");
+                                    // Record model on the parent ai span so all subsequent
+                                    // log lines show the actual model name
+                                    let m_value = format!("{}:{}", combined_model, mode_label);
+                                    tracing::Span::current().record("m", &m_value);
+                                    tracing::info!("AI model selected");
                                 }
                             }
                             // Only update if new value is Some (don't overwrite with None)

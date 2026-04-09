@@ -274,7 +274,7 @@ pub async fn ensure_thread_opencode_setup(
                     "VISION_MODEL": vision.model
                 },
                 "enabled": true,
-                "timeout": 120000
+                "timeout": 300000
             });
             tracing::debug!("Vision MCP tool registered in opencode.json");
         }

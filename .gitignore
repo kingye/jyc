@@ -5,6 +5,7 @@
 
 # Config files with credentials
 config.toml
+config.test.toml
 
 # Docker env (contains local paths)
 docker/.env

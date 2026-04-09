@@ -552,8 +552,11 @@ fn strip_mention_placeholders(text: &str, mentions: Option<&[super::types::Event
 
     let mut result = text.to_string();
     for mention in mentions {
-        // Replace "@_user_1" with "@displayname"
-        result = result.replace(&mention.key, &format!("@{}", mention.name));
+        // Remove mention placeholder entirely (e.g., "@_user_1 " → "")
+        // This ensures "/command" is at the start of the line for command parsing
+        result = result.replace(&format!("{} ", mention.key), "");
+        // Also handle case without trailing space (end of line)
+        result = result.replace(&mention.key, "");
     }
     result.trim().to_string()
 }
@@ -615,7 +618,24 @@ mod tests {
             name: "jyc".to_string(),
         }];
         let result = strip_mention_placeholders("@_user_1 hello", Some(&mentions));
-        assert_eq!(result, "@jyc hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_strip_mention_placeholders_command() {
+        use super::super::types::{EventMention, MentionIds};
+        let mentions = vec![EventMention {
+            key: "@_user_1".to_string(),
+            id: MentionIds {
+                open_id: Some("ou_xxx".to_string()),
+                user_id: None,
+                union_id: None,
+            },
+            name: "jyc".to_string(),
+        }];
+        // "@jyc /model ls ark" should become "/model ls ark" for command parsing
+        let result = strip_mention_placeholders("@_user_1 /model ls ark", Some(&mentions));
+        assert_eq!(result, "/model ls ark");
     }
 
     #[test]
@@ -642,7 +662,7 @@ mod tests {
             },
         ];
         let result = strip_mention_placeholders("@_user_1 @_user_2 help", Some(&mentions));
-        assert_eq!(result, "@bot @admin help");
+        assert_eq!(result, "help");
     }
 
     #[test]

@@ -34,7 +34,7 @@ async fn run_init(workdir: &Path) -> Result<()> {
         );
     }
 
-    let template = include_str!("../../config_template.toml");
+    let template = include_str!("../../config.example.toml");
     tokio::fs::write(&config_path, template)
         .await
         .with_context(|| format!("failed to write {}", config_path.display()))?;

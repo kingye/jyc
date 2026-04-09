@@ -97,24 +97,23 @@ impl FeishuClient {
         Ok(client.api_config().clone())
     }
 
-    /// Get the current app access token.
+    /// Get the current tenant access token.
     ///
     /// Uses the openlark AuthService to request a tenant_access_token.
-    /// The token is managed internally by the SDK with caching.
-    #[allow(dead_code)]
+    /// For self-built apps, this is equivalent to app_access_token.
     pub async fn get_token(&self) -> Result<String> {
         let core_config = self.get_core_config().await?;
         let auth = open_lark::auth::AuthService::new(core_config);
         let resp = auth
             .v3()
-            .app_access_token_internal()
+            .tenant_access_token_internal()
             .app_id(&self.config.app_id)
             .app_secret(&self.config.app_secret)
             .execute()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get Feishu app access token: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to get Feishu tenant access token: {e}"))?;
 
-        Ok(resp.data.app_access_token)
+        Ok(resp.data.tenant_access_token)
     }
 
     /// Send a message to a chat as an interactive card with markdown rendering.
@@ -462,24 +461,45 @@ impl FeishuClient {
     /// Download an image from Feishu servers.
     ///
     /// Returns the image content as bytes.
-    /// Validates that the response is actually image data, not an API error.
+    /// Uses direct HTTP request with the required `type` query parameter
+    /// that the openlark SDK doesn't support.
     pub async fn download_image(&self, image_key: &str) -> Result<Vec<u8>> {
-        let core_config = self.get_core_config().await?;
+        let token = self.get_token().await?;
+        let base_url = &self.config.base_url;
+        let url = format!(
+            "{}/open-apis/im/v1/images/{}",
+            base_url.trim_end_matches('/'),
+            image_key
+        );
 
-        use open_lark::communication::im::im::v1::image::get::GetImageRequest;
+        let http = reqwest::Client::new();
+        let resp = http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .query(&[("type", "image")])
+            .send()
+            .await
+            .context("Failed to download image from Feishu")?;
 
-        let request = GetImageRequest::new(core_config)
-            .image_key(image_key);
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
 
-        let image_bytes = request.execute().await
-            .map_err(|e| anyhow::anyhow!("Failed to download image from Feishu: {e}"))?;
+        let image_bytes = resp.bytes().await
+            .context("Failed to read image response body")?
+            .to_vec();
 
-        // Validate response is actual image data, not a JSON error
-        if image_bytes.starts_with(b"{") || image_bytes.starts_with(b"<") {
+        // Check for API error responses
+        if !status.is_success() || content_type.contains("application/json") {
             let body_str = String::from_utf8_lossy(&image_bytes);
             anyhow::bail!(
-                "Feishu image download returned error instead of image data: {}",
-                &body_str[..body_str.len().min(200)]
+                "Feishu image download failed (HTTP {}): {}",
+                status,
+                &body_str[..body_str.len().min(300)]
             );
         }
 
@@ -488,9 +508,10 @@ impl FeishuClient {
         }
 
         tracing::debug!(
-            "Downloaded image from Feishu: image_key = {}, size = {} bytes",
+            "Downloaded image from Feishu: image_key={}, size={} bytes, content_type={}",
             image_key,
-            image_bytes.len()
+            image_bytes.len(),
+            content_type
         );
 
         Ok(image_bytes)

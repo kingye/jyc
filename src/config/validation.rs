@@ -211,6 +211,16 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         validate_attachment_config("agent.attachments", att, &mut errors);
     }
 
+    // Validate unified attachment config
+    if let Some(ref unified_att) = config.attachments {
+        if let Some(ref inbound) = unified_att.inbound {
+            validate_inbound_attachment_config("attachments.inbound", inbound, &mut errors);
+        }
+        if let Some(ref outbound) = unified_att.outbound {
+            validate_outbound_attachment_config("attachments.outbound", outbound, &mut errors);
+        }
+    }
+
     // Heartbeat
     if config.heartbeat.enabled {
         if config.heartbeat.interval_secs == 0 {
@@ -309,6 +319,74 @@ fn validate_attachment_config(
             errors.push(ValidationError {
                 path: format!("{prefix}.allowed_extensions"),
                 message: format!("extension '{}' must start with '.'", ext),
+            });
+        }
+    }
+}
+
+/// Validate inbound attachment configuration.
+fn validate_inbound_attachment_config(
+    prefix: &str,
+    att: &crate::config::types::InboundAttachmentConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(ref size_str) = att.max_file_size {
+        if let Err(e) = parse_file_size(size_str) {
+            errors.push(ValidationError {
+                path: format!("{prefix}.max_file_size"),
+                message: format!("invalid file size '{}': {}", size_str, e),
+            });
+        }
+    }
+
+    for ext in &att.allowed_extensions {
+        if !ext.starts_with('.') {
+            errors.push(ValidationError {
+                path: format!("{prefix}.allowed_extensions"),
+                message: format!("extension '{}' must start with '.'", ext),
+            });
+        }
+    }
+
+    if let Some(max_per_message) = att.max_per_message {
+        if max_per_message == 0 {
+            errors.push(ValidationError {
+                path: format!("{prefix}.max_per_message"),
+                message: "must be at least 1".into(),
+            });
+        }
+    }
+}
+
+/// Validate outbound attachment configuration.
+fn validate_outbound_attachment_config(
+    prefix: &str,
+    att: &crate::config::types::OutboundAttachmentConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(ref size_str) = att.max_file_size {
+        if let Err(e) = parse_file_size(size_str) {
+            errors.push(ValidationError {
+                path: format!("{prefix}.max_file_size"),
+                message: format!("invalid file size '{}': {}", size_str, e),
+            });
+        }
+    }
+
+    for ext in &att.allowed_extensions {
+        if !ext.starts_with('.') {
+            errors.push(ValidationError {
+                path: format!("{prefix}.allowed_extensions"),
+                message: format!("extension '{}' must start with '.'", ext),
+            });
+        }
+    }
+
+    if let Some(max_per_message) = att.max_per_message {
+        if max_per_message == 0 {
+            errors.push(ValidationError {
+                path: format!("{prefix}.max_per_message"),
+                message: "must be at least 1".into(),
             });
         }
     }
@@ -462,5 +540,119 @@ mode = "static"
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
         assert!(errors.iter().any(|e| e.path == "agent.text"));
+    }
+
+    #[test]
+    fn test_unified_attachment_config() {
+        let toml = r#"
+[general]
+max_concurrent_threads = 3
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "user"
+password = "pass"
+
+[agent]
+enabled = true
+mode = "opencode"
+
+[attachments]
+
+[attachments.inbound]
+enabled = true
+allowed_extensions = [".pdf", ".docx"]
+max_file_size = "25mb"
+max_per_message = 10
+
+[attachments.outbound]
+enabled = true
+allowed_extensions = [".pdf", ".pptx"]
+max_file_size = "10mb"
+max_per_message = 5
+"#;
+        let config = load_config_from_str(toml).unwrap();
+
+        // Test that unified config is loaded
+        assert!(config.attachments.is_some());
+        let attachments = config.attachments.as_ref().unwrap();
+
+        // Test inbound config
+        assert!(attachments.inbound.is_some());
+        let inbound = attachments.inbound.as_ref().unwrap();
+        assert!(inbound.enabled);
+        assert_eq!(inbound.allowed_extensions, vec![".pdf", ".docx"]);
+        assert_eq!(inbound.max_file_size, Some("25mb".to_string()));
+        assert_eq!(inbound.max_per_message, Some(10));
+
+        // Test outbound config
+        assert!(attachments.outbound.is_some());
+        let outbound = attachments.outbound.as_ref().unwrap();
+        assert!(outbound.enabled);
+        assert_eq!(outbound.allowed_extensions, vec![".pdf", ".pptx"]);
+        assert_eq!(outbound.max_file_size, Some("10mb".to_string()));
+        assert_eq!(outbound.max_per_message, Some(5));
+
+        // Test validation passes
+        let errors = validate_config(&config);
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_invalid_unified_attachment_config() {
+        let toml = r#"
+[general]
+max_concurrent_threads = 3
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "user"
+password = "pass"
+
+[agent]
+enabled = true
+mode = "opencode"
+
+[attachments]
+
+[attachments.inbound]
+enabled = true
+allowed_extensions = ["pdf", ".docx"]  # Missing dot in first extension
+max_file_size = "invalid_size"
+max_per_message = 0  # Invalid: must be at least 1
+
+[attachments.outbound]
+enabled = true
+allowed_extensions = [".pdf", ".pptx"]
+max_file_size = "10mb"
+max_per_message = 5
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+
+        // Should have errors for invalid extension and max_per_message
+        assert!(errors.iter().any(|e| e.path.contains("allowed_extensions")));
+        assert!(errors.iter().any(|e| e.path.contains("max_file_size")));
+        assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
     }
 }

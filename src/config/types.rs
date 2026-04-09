@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::channels::types::{AttachmentConfig, ChannelPattern};
+use crate::channels::types::{AttachmentConfig as PatternAttachmentConfig, ChannelPattern};
 
 /// Top-level application configuration, deserialized from config.toml.
 #[derive(Debug, Deserialize)]
@@ -23,6 +23,10 @@ pub struct AppConfig {
     /// Heartbeat configuration (progress updates during long AI processing)
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
+
+    /// Unified attachment configuration (inbound downloading and outbound sending)
+    #[serde(default)]
+    pub attachments: Option<UnifiedAttachmentConfig>,
 }
 
 /// General application settings.
@@ -155,7 +159,7 @@ pub struct AgentConfig {
     pub opencode: Option<OpenCodeConfig>,
 
     /// Outbound attachment configuration
-    pub attachments: Option<AttachmentConfig>,
+    pub attachments: Option<PatternAttachmentConfig>,
 }
 
 /// OpenCode AI service configuration.
@@ -310,4 +314,52 @@ fn default_1_0() -> f64 {
 
 fn default_120_0() -> f64 {
     120.0
+}
+
+/// Unified attachment configuration with inbound and outbound sections.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnifiedAttachmentConfig {
+    /// Inbound attachment configuration (downloading attachments from messages)
+    pub inbound: Option<InboundAttachmentConfig>,
+
+    /// Outbound attachment configuration (sending attachments with replies)
+    pub outbound: Option<OutboundAttachmentConfig>,
+}
+
+/// Configuration for inbound attachment downloading.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InboundAttachmentConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Allowed file extensions (e.g., [".pdf", ".docx"])
+    #[serde(default)]
+    pub allowed_extensions: Vec<String>,
+
+    /// Max file size per attachment (human-readable: "25mb", "150kb")
+    pub max_file_size: Option<String>,
+
+    /// Max number of attachments to download per message
+    pub max_per_message: Option<usize>,
+
+    /// Path to save downloaded attachments (relative to workspace or absolute)
+    /// If not set, attachments will be saved to thread directory
+    pub save_path: Option<String>,
+}
+
+/// Configuration for outbound attachment sending.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutboundAttachmentConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Allowed file extensions (e.g., [".pdf", ".docx"])
+    #[serde(default)]
+    pub allowed_extensions: Vec<String>,
+
+    /// Max file size per attachment (human-readable: "10mb", "5mb")
+    pub max_file_size: Option<String>,
+
+    /// Max number of attachments to send per message
+    pub max_per_message: Option<usize>,
 }

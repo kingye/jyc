@@ -161,6 +161,44 @@ enabled = true
 max_file_size = "10mb"
 allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md", ".pdf"]
 
+# --- Unified Attachment Configuration ---
+# This is the new unified configuration for both inbound and outbound attachments.
+# It can be used alongside the per-pattern attachments configuration.
+[attachments]
+
+# Inbound attachment configuration (downloading attachments from messages)
+[attachments.inbound]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+]
+max_file_size = "25mb"
+max_per_message = 10
+# save_path = "./downloads"  # Optional: custom path for downloaded attachments
+
+# Outbound attachment configuration (sending attachments with replies)
+[attachments.outbound]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+]
+max_file_size = "10mb"
+max_per_message = 5
+
 # --- Alerting ---
 
 [alerting]

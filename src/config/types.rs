@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::channels::types::{AttachmentConfig as PatternAttachmentConfig, ChannelPattern};
+use crate::channels::types::ChannelPattern;
 
 /// Top-level application configuration, deserialized from config.toml.
 #[derive(Debug, Deserialize)]
@@ -159,7 +159,7 @@ pub struct AgentConfig {
     pub opencode: Option<OpenCodeConfig>,
 
     /// Outbound attachment configuration
-    pub attachments: Option<PatternAttachmentConfig>,
+    pub attachments: Option<OutboundAttachmentConfig>,
 }
 
 /// OpenCode AI service configuration.
@@ -327,7 +327,7 @@ pub struct UnifiedAttachmentConfig {
 }
 
 /// Configuration for inbound attachment downloading.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundAttachmentConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -348,7 +348,7 @@ pub struct InboundAttachmentConfig {
 }
 
 /// Configuration for outbound attachment sending.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundAttachmentConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,

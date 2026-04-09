@@ -8,8 +8,8 @@ use tracing::Instrument;
 
 use crate::core::thread_event_bus::{ThreadEventBusRef, SimpleThreadEventBus};
 
-use crate::channels::types::{AttachmentConfig, InboundMessage, OutboundAdapter, PatternMatch};
-use crate::config::types::HeartbeatConfig;
+use crate::channels::types::{InboundMessage, OutboundAdapter, PatternMatch};
+use crate::config::types::{HeartbeatConfig, InboundAttachmentConfig};
 use crate::core::command::handler::CommandContext;
 use crate::core::command::model_handler::ModelCommandHandler;
 use crate::core::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
@@ -23,7 +23,7 @@ pub struct QueueItem {
     pub message: InboundMessage,
     #[allow(dead_code)]
     pub pattern_match: PatternMatch,
-    pub attachment_config: Option<AttachmentConfig>,
+    pub attachment_config: Option<InboundAttachmentConfig>,
 }
 
 /// Per-thread queue stats.
@@ -130,7 +130,7 @@ impl ThreadManager {
         message: InboundMessage,
         thread_name: String,
         pattern_match: PatternMatch,
-        attachment_config: Option<AttachmentConfig>,
+        attachment_config: Option<InboundAttachmentConfig>,
     ) {
         let mut queues = self.thread_queues.lock().await;
 

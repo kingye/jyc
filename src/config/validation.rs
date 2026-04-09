@@ -208,7 +208,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
 
     // Validate agent attachment config
     if let Some(ref att) = config.agent.attachments {
-        validate_attachment_config("agent.attachments", att, &mut errors);
+        validate_outbound_attachment_config("agent.attachments", att, &mut errors);
     }
 
     // Validate unified attachment config
@@ -295,32 +295,7 @@ fn validate_pattern(
 
     // Validate attachment config if present
     if let Some(ref att) = pattern.attachments {
-        validate_attachment_config(&format!("{prefix}.attachments"), att, errors);
-    }
-}
-
-/// Validate an attachment configuration.
-fn validate_attachment_config(
-    prefix: &str,
-    att: &crate::channels::types::AttachmentConfig,
-    errors: &mut Vec<ValidationError>,
-) {
-    if let Some(ref size_str) = att.max_file_size {
-        if let Err(e) = parse_file_size(size_str) {
-            errors.push(ValidationError {
-                path: format!("{prefix}.max_file_size"),
-                message: format!("invalid file size '{}': {}", size_str, e),
-            });
-        }
-    }
-
-    for ext in &att.allowed_extensions {
-        if !ext.starts_with('.') {
-            errors.push(ValidationError {
-                path: format!("{prefix}.allowed_extensions"),
-                message: format!("extension '{}' must start with '.'", ext),
-            });
-        }
+        validate_inbound_attachment_config(&format!("{prefix}.attachments"), att, errors);
     }
 }
 

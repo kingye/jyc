@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
-use crate::channels::types::{AttachmentConfig, InboundMessage};
+use crate::channels::types::InboundMessage;
+use crate::config::types::InboundAttachmentConfig;
 
 /// Result of storing a message.
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ impl MessageStorage {
         message: &InboundMessage,
         thread_name: &str,
         is_matched: bool,
-        _attachment_config: Option<&AttachmentConfig>,
+        _attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
         let thread_path = self.workspace.join(thread_name);
         
@@ -67,7 +68,7 @@ impl MessageStorage {
         &self,
         message: &InboundMessage,
         thread_name: &str,
-        attachment_config: Option<&AttachmentConfig>,
+        attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
         self.store_with_match(message, thread_name, true, attachment_config).await
     }

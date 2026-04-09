@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::types::InboundAttachmentConfig;
+
 /// Channel type identifier (e.g., "email", "feishu", "slack")
 pub type ChannelType = String;
 
@@ -250,7 +252,7 @@ pub struct ChannelPattern {
     /// Matching rules (channel-specific)
     pub rules: PatternRules,
     /// Attachment download configuration for messages matching this pattern
-    pub attachments: Option<AttachmentConfig>,
+    pub attachments: Option<InboundAttachmentConfig>,
 }
 
 /// Channel-agnostic pattern matching rules.
@@ -297,20 +299,6 @@ pub struct SubjectRule {
     pub prefix: Option<Vec<String>>,
     /// Regex pattern to match against subject
     pub regex: Option<String>,
-}
-
-/// Configuration for inbound attachment downloading.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Allowed file extensions (e.g., [".pdf", ".docx"])
-    #[serde(default)]
-    pub allowed_extensions: Vec<String>,
-    /// Max file size per attachment (human-readable: "25mb", "150kb")
-    pub max_file_size: Option<String>,
-    /// Max number of attachments to download per message
-    pub max_per_message: Option<usize>,
 }
 
 fn default_true() -> bool {

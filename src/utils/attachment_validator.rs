@@ -3,7 +3,7 @@
 //! This module provides validation functions that work across all channel types,
 //! ensuring consistent security and size limits regardless of the transport.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 
 use crate::config::types::{InboundAttachmentConfig, OutboundAttachmentConfig};

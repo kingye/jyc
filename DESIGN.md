@@ -148,6 +148,21 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
  │  │  (Monitor reads from chat log + sends via│                            │
  │  │   pre-warmed outbound adapter)          │                            │
 │  └─────────────────────────────────────────┘                            │
+│                                                                          │
+│  ┌─────────────────────────────────────┐                            │
+│  │  MCP Tool: analyze_image (subprocess)   │                            │
+│  │  Binary: jyc mcp-vision-tool            │                            │
+│  │  Transport: stdio (rmcp)                │                            │
+│  │                                         │                            │
+│  │  1. Read image from absolute file path  │                            │
+│  │     or download from HTTP(S) URL        │                            │
+│  │  2. Convert to base64 data URI          │                            │
+│  │  3. Call OpenAI-compatible vision API   │                            │
+│  │  4. Return analysis text                │                            │
+│  │  Config: [vision] in config.toml        │                            │
+│  │  (api_key, api_url, model passed via    │                            │
+│  │   env vars in opencode.json)            │                            │
+│  └─────────────────────────────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────────┘
                       │
                       ▼
@@ -174,8 +189,9 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
  7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
  8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section) via `send_heartbeat()`.
  9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
-9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
- 10. **Message Storage** — Unified chat log storage system
+ 9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
+ 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using an OpenAI-compatible vision API. Accepts absolute file paths (e.g., saved attachments) or HTTP(S) URLs. Configuration in `[vision]` section of `config.toml` (api_key, api_url, model). Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc. Only registered when `vision.enabled = true`.
+  11. **Message Storage** — Unified chat log storage system
      - **Chat Log Storage**: Messages and replies are appended to daily log files (`chat_history_YYYY-MM-DD.md`)
      - **HTML Comment Metadata**: Each entry includes timestamp, message type, sender, channel, and external ID metadata
      - **Dual-write Integration**: During migration, messages are written to both legacy directory format and new log format

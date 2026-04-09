@@ -3,15 +3,17 @@
 //! This module handles receiving messages from Feishu via WebSocket connections
 //! and provides channel-specific pattern matching and thread name derivation.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
-    ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
+    ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, 
+    MessageAttachment, PatternMatch,
 };
+use crate::config::types::InboundAttachmentConfig;
 use crate::utils::helpers::sanitize_for_filesystem;
 
 use super::client::FeishuClient;
@@ -274,14 +276,31 @@ pub struct FeishuInboundAdapter {
     config: FeishuConfig,
     /// Channel name from config (e.g., "feishu_bot")
     channel_name: String,
+    /// Workspace root path (e.g., "/home/jiny/projects/jyc-data")
+    workspace_root: std::path::PathBuf,
 }
 
 impl FeishuInboundAdapter {
     /// Create a new Feishu inbound adapter.
-    pub fn new(config: FeishuConfig, channel_name: String) -> Self {
+    pub fn new(config: &FeishuConfig, channel_name: String) -> Self {
+        // Determine workspace root from current working directory
+        let workspace_root = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        
         Self {
-            config,
+            config: config.clone(),
             channel_name,
+            workspace_root,
+        }
+    }
+    
+    /// Create a new Feishu inbound adapter with custom workspace root.
+    #[allow(dead_code)]
+    pub fn new_with_workspace(config: &FeishuConfig, channel_name: String, workspace_root: std::path::PathBuf) -> Self {
+        Self {
+            config: config.clone(),
+            channel_name,
+            workspace_root,
         }
     }
 }
@@ -310,6 +329,115 @@ impl ChannelMatcher for FeishuInboundAdapter {
     }
 }
 
+impl FeishuInboundAdapter {
+    /// Save attachments to thread directory.
+    /// This method calculates the thread name and saves attachments.
+    pub async fn save_attachments_to_thread_directory(
+        &self,
+        message: &mut InboundMessage,
+        patterns: &[ChannelPattern],
+        attachment_config: Option<&InboundAttachmentConfig>,
+    ) -> Result<()> {
+        // Check if we have attachments to save
+        if message.attachments.is_empty() {
+            tracing::debug!("No attachments to save for message");
+            return Ok(());
+        }
+
+        // Derive thread name using FeishuMatcher
+        let thread_name = FeishuMatcher.derive_thread_name(message, patterns, None);
+        
+        tracing::debug!(
+            "Saving {} attachments to thread directory for thread: {}",
+            message.attachments.len(),
+            thread_name
+        );
+
+        // Determine the thread directory
+        // Format: <workspace_root>/<channel_name>/workspace/<thread_name>/
+        let thread_dir = self.workspace_root
+            .join(&self.channel_name)
+            .join("workspace")
+            .join(&thread_name);
+
+        // Determine save path: use configured path or default to thread_dir/attachments/
+        let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
+            Some(path) => {
+                // If path is relative, make it relative to thread_dir
+                let path_buf = std::path::PathBuf::from(path);
+                if path_buf.is_absolute() {
+                    path_buf
+                } else {
+                    thread_dir.join(path_buf)
+                }
+            }
+            None => {
+                // Default path: <thread_dir>/attachments/
+                thread_dir.join("attachments")
+            }
+        };
+
+        tracing::debug!("Attachment save directory: {}", save_dir.display());
+
+        // Ensure directory exists
+        tokio::fs::create_dir_all(&save_dir).await
+            .context("Failed to create attachment directory")?;
+
+        // Save each attachment
+        for (i, attachment) in message.attachments.iter_mut().enumerate() {
+            tracing::debug!(
+                "Processing attachment {}: {} (size: {}, has content: {})",
+                i + 1,
+                attachment.filename,
+                attachment.size,
+                attachment.content.is_some()
+            );
+
+            // Skip if no content
+            if attachment.content.is_none() {
+                tracing::warn!("Attachment has no content: {}", attachment.filename);
+                continue;
+            }
+
+            // Generate a unique filename
+            let filename = self.generate_attachment_filename(attachment);
+            
+            // Full file path
+            let file_path = save_dir.join(&filename);
+
+            tracing::debug!("Saving attachment to: {}", file_path.display());
+
+            // Write file content
+            if let Some(content) = &attachment.content {
+                tokio::fs::write(&file_path, content).await
+                    .context(format!("Failed to write attachment file: {}", attachment.filename))?;
+                
+                // Update saved_path
+                attachment.saved_path = Some(file_path.clone());
+                
+                tracing::info!(
+                    "Attachment saved to thread directory: {} ({} bytes) -> {}",
+                    attachment.filename,
+                    attachment.size,
+                    file_path.display()
+                );
+            }
+        }
+
+        tracing::debug!("All attachments saved successfully");
+        Ok(())
+    }
+
+    /// Generate a unique filename for an attachment.
+    fn generate_attachment_filename(&self, attachment: &MessageAttachment) -> String {
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let uuid_short = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let safe_filename = sanitize_for_filesystem(&attachment.filename);
+        
+        format!("{}_{}_{}", timestamp, uuid_short, safe_filename)
+    }
+}
+
 #[async_trait]
 impl crate::channels::types::InboundAdapter for FeishuInboundAdapter {
     async fn start(
@@ -326,7 +454,11 @@ impl crate::channels::types::InboundAdapter for FeishuInboundAdapter {
         let client = Arc::new(FeishuClient::new(self.config.clone()));
         client.initialize().await.ok(); // Pre-warm for name lookups
 
-        let mut ws = FeishuWebSocket::new(&self.config, client);
+        let mut ws = FeishuWebSocket::new_with_attachments(
+            &self.config,
+            client,
+            options.attachment_config.clone(),
+        );
         let channel_name = self.channel_name.clone();
 
         loop {
@@ -748,5 +880,168 @@ mod tests {
         let name = matcher.derive_thread_name(&msg, &[], None);
         // sanitize_for_filesystem replaces / with _
         assert_eq!(name, "项目_测试群");
+    }
+
+    #[tokio::test]
+    async fn test_save_attachments_to_thread_directory() -> anyhow::Result<()> {
+        use tempfile::tempdir;
+        use crate::channels::types::{InboundMessage, MessageAttachment, MessageContent};
+        use crate::channels::feishu::config::{FeishuConfig, WebSocketConfig};
+        
+        // Create a temporary directory for testing
+        let temp_dir = tempdir()?;
+        
+        // Create a simple Feishu config
+        let config = FeishuConfig {
+            app_id: "test_app_id".to_string(),
+            app_secret: "test_app_secret".to_string(),
+            base_url: "https://open.feishu.cn".to_string(),
+            websocket: WebSocketConfig::default(),
+            events: vec!["im.message.receive_v1".to_string()],
+            message_format: "text".to_string(),
+            metadata: Default::default(),
+        };
+
+        // Create the adapter with custom workspace root
+        let adapter = FeishuInboundAdapter::new_with_workspace(&config, "feishu".to_string(), temp_dir.path().to_path_buf());
+
+        // Create a test message with attachments
+        let mut message = InboundMessage {
+            id: "test_message_123".to_string(),
+            channel: "feishu".to_string(),
+            channel_uid: "msg_123".to_string(),
+            sender: "Test User".to_string(),
+            sender_address: "user_123".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Test message with attachment".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: Some(vec!["thread_123".to_string()]),
+            reply_to_id: None,
+            external_id: Some("ext_123".to_string()),
+            attachments: vec![
+                MessageAttachment {
+                    filename: "test.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    size: 15,
+                    content: Some(b"Hello, World!\n".to_vec()),
+                    saved_path: None,
+                },
+                MessageAttachment {
+                    filename: "data.json".to_string(),
+                    content_type: "application/json".to_string(),
+                    size: 25,
+                    content: Some(br#"{"test": "data"}"#.to_vec()),
+                    saved_path: None,
+                },
+            ],
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("chat_id".to_string(), serde_json::Value::String("oc_12345".to_string()));
+                map
+            },
+            matched_pattern: None,
+        };
+
+        // Create a simple pattern for thread matching
+        let patterns = vec![]; // Empty patterns - will use default thread name
+
+        // Save attachments
+        adapter.save_attachments_to_thread_directory(&mut message, &patterns, None)
+            .await?;
+
+        // Verify attachments were saved
+        assert_eq!(message.attachments.len(), 2);
+        
+        // Check saved_path was set
+        for attachment in &message.attachments {
+            assert!(attachment.saved_path.is_some());
+            
+            // Verify file exists
+            let saved_path = attachment.saved_path.as_ref().unwrap();
+            assert!(saved_path.exists(), "File should exist: {}", saved_path.display());
+            
+            // Verify file content
+            let content = std::fs::read(saved_path)?;
+            assert_eq!(&content, attachment.content.as_ref().unwrap());
+        }
+
+        // Verify directory structure
+        let expected_thread_dir = temp_dir.path().join("feishu").join("workspace").join("feishu_chat_oc_12345");
+        let expected_attachment_dir = expected_thread_dir.join("attachments");
+        
+        // Verify directories exist
+        assert!(expected_thread_dir.exists(), "Thread directory should exist: {}", expected_thread_dir.display());
+        assert!(expected_attachment_dir.exists(), "Attachment directory should exist: {}", expected_attachment_dir.display());
+        
+        // Count files in attachment directory
+        let file_count = std::fs::read_dir(&expected_attachment_dir)?.count();
+        assert_eq!(file_count, 2, "Should have 2 files in attachment directory");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_save_attachments_no_attachments() -> anyhow::Result<()> {
+        use tempfile::tempdir;
+        use crate::channels::types::{InboundMessage, MessageContent};
+        use crate::channels::feishu::config::{FeishuConfig, WebSocketConfig};
+        
+        // Create a temporary directory
+        let temp_dir = tempdir()?;
+        
+        // Create a simple Feishu config
+        let config = FeishuConfig {
+            app_id: "test_app_id".to_string(),
+            app_secret: "test_app_secret".to_string(),
+            base_url: "https://open.feishu.cn".to_string(),
+            websocket: WebSocketConfig::default(),
+            events: vec!["im.message.receive_v1".to_string()],
+            message_format: "text".to_string(),
+            metadata: Default::default(),
+        };
+
+        // Create the adapter with custom workspace root
+        let adapter = FeishuInboundAdapter::new_with_workspace(&config, "feishu".to_string(), temp_dir.path().to_path_buf());
+
+        // Create a test message WITHOUT attachments
+        let mut message = InboundMessage {
+            id: "test_message_no_attach".to_string(),
+            channel: "feishu".to_string(),
+            channel_uid: "msg_456".to_string(),
+            sender: "Another User".to_string(),
+            sender_address: "user_456".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Test message without attachment".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: Some(vec!["thread_456".to_string()]),
+            reply_to_id: None,
+            external_id: Some("ext_456".to_string()),
+            attachments: vec![],
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("chat_id".to_string(), serde_json::Value::String("oc_67890".to_string()));
+                map
+            },
+            matched_pattern: None,
+        };
+
+        // Save attachments (should do nothing)
+        adapter.save_attachments_to_thread_directory(&mut message, &[], None)
+            .await?;
+
+        // Verify no error and attachments remain empty
+        assert_eq!(message.attachments.len(), 0);
+
+        Ok(())
     }
 }

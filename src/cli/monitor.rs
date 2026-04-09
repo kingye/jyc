@@ -87,10 +87,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .clone()
             .unwrap_or_default();
 
-        // Get outbound attachment configuration from unified config
+        // Get attachment configuration from unified config
         let outbound_attachment_config = config.attachments
             .as_ref()
             .and_then(|att| att.outbound.clone());
+        let inbound_attachment_config = config.attachments
+            .as_ref()
+            .and_then(|att| att.inbound.clone());
 
         // Create the outbound adapter based on channel type
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
@@ -300,15 +303,45 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let router_for_callback = router.clone();
 
                 let task = tokio::spawn(async move {
-                    let adapter = FeishuInboundAdapter::new(feishu_config, channel_name_owned.clone());
+                    // Clone configs before moving into closures
+                    let feishu_config_cloned = feishu_config.clone();
+                    let inbound_attachment_config_for_callback = inbound_attachment_config.clone();
+                    
+                    let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
 
                     // Wire on_message to route through FeishuMatcher → MessageRouter
+
                     use crate::channels::types::InboundAdapter;
+                    
                     let options = crate::channels::types::InboundAdapterOptions {
-                        on_message: Box::new(move |message| {
+                        on_message: Box::new(move |mut message| {
                             let router = router_for_callback.clone();
                             let patterns = patterns_for_callback.clone();
+                            
+                            // Clone values for the async move closure
+
+                            let feishu_config_clone = feishu_config_cloned.clone();
+                            let channel_name_clone = channel_name_owned.clone();
+                            let attachment_config_clone = inbound_attachment_config_for_callback.clone();
+                            
                             tokio::spawn(async move {
+                                // 1. Create adapter and save attachments to thread directory
+
+
+                                // The adapter will calculate thread name internally
+
+                                let adapter = FeishuInboundAdapter::new(&feishu_config_clone, channel_name_clone);
+                                
+                                if let Err(e) = adapter.save_attachments_to_thread_directory(
+                                    &mut message,
+                                    &patterns,
+                                    attachment_config_clone.as_ref(),
+                                ).await {
+                                    tracing::warn!("Failed to save attachments: {}", e);
+                                }
+                                
+                                // 2. Route the message
+
                                 router.route(&FeishuMatcher, message, &patterns).await;
                             });
                             Ok(())
@@ -316,6 +349,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         on_error: Box::new(|error| {
                             tracing::error!(error = %error, "Feishu inbound error");
                         }),
+                        attachment_config: inbound_attachment_config.clone(),
                     };
 
                     if let Err(e) = adapter.start(options, cancel_child).await {

@@ -1,0 +1,62 @@
+# Test configuration for attachment sending
+
+[general]
+max_concurrent_threads = 1
+max_queue_size_per_thread = 5
+
+# Agent configuration
+[agent]
+model = "gpt-4o"
+max_tokens = 1000
+system_prompt = "You are a helpful AI assistant."
+
+[agent.attachments]
+enabled = true
+allowed_extensions = [".md", ".txt", ".pdf"]
+max_file_size = "10mb"
+max_per_message = 3
+
+# Unified attachment configuration
+[attachments]
+inbound = { enabled = true, allowed_extensions = [".md", ".txt", ".pdf"], max_file_size = "10mb", max_per_message = 3 }
+outbound = { enabled = true, allowed_extensions = [".md", ".txt", ".pdf"], max_file_size = "10mb", max_per_message = 3 }
+
+# Simple email channel for testing
+[channels.test_email]
+type = "email"
+
+[channels.test_email.inbound]
+host = "imap.test.com"
+port = 993
+tls = true
+auth_timeout_ms = 30000
+username = "test@test.com"
+password = "test123"
+
+[channels.test_email.outbound]
+host = "smtp.test.com"
+port = 465
+secure = true
+username = "test@test.com"
+password = "test123"
+
+[channels.test_email.monitor]
+mode = "poll"
+poll_interval_secs = 30
+max_retries = 3
+folder = "INBOX"
+
+# Simple feishu channel for testing  
+[channels.test_feishu]
+type = "feishu"
+
+[channels.test_feishu.config]
+app_id = "test_app_id"
+app_secret = "test_app_secret"
+verification_token = "test_verification_token"
+encrypt_key = "test_encrypt_key"
+tenant_key = "test_tenant_key"
+
+[channels.test_feishu.monitor]
+mode = "websocket"
+max_retries = 3

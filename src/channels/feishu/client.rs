@@ -412,7 +412,60 @@ impl FeishuClient {
             .unwrap_or("unknown")
             .to_string();
 
+        tracing::debug!(
+            "Sent image message: chat_id = {}, image_key = {}, message_id = {}",
+            chat_id,
+            image_key,
+            message_id
+        );
+
         Ok(FeishuMessageResult { message_id })
+    }
+
+    /// Download a file from Feishu servers.
+    ///
+    /// Returns the file content as bytes.
+    pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>> {
+        let core_config = self.get_core_config().await?;
+
+        use open_lark::communication::im::im::v1::file::get::GetFileRequest;
+
+        let request = GetFileRequest::new(core_config)
+            .file_key(file_key);
+
+        let file_bytes = request.execute().await
+            .map_err(|e| anyhow::anyhow!("Failed to download file from Feishu: {e}"))?;
+
+        tracing::debug!(
+            "Downloaded file from Feishu: file_key = {}, size = {} bytes",
+            file_key,
+            file_bytes.len()
+        );
+
+        Ok(file_bytes)
+    }
+
+    /// Download an image from Feishu servers.
+    ///
+    /// Returns the image content as bytes.
+    pub async fn download_image(&self, image_key: &str) -> Result<Vec<u8>> {
+        let core_config = self.get_core_config().await?;
+
+        use open_lark::communication::im::im::v1::image::get::GetImageRequest;
+
+        let request = GetImageRequest::new(core_config)
+            .image_key(image_key);
+
+        let image_bytes = request.execute().await
+            .map_err(|e| anyhow::anyhow!("Failed to download image from Feishu: {e}"))?;
+
+        tracing::debug!(
+            "Downloaded image from Feishu: image_key = {}, size = {} bytes",
+            image_key,
+            image_bytes.len()
+        );
+
+        Ok(image_bytes)
     }
 }
 

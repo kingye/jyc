@@ -113,6 +113,8 @@ pub struct InboundAdapterOptions {
     /// Callback for errors
     #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,
+    /// Attachment download configuration
+    pub attachment_config: Option<crate::config::types::InboundAttachmentConfig>,
 }
 
 /// Channel-specific message matching and thread name derivation.

@@ -43,7 +43,8 @@ impl MessageStorage {
         // Generate a timestamp identifier for this message
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         
-        // TODO: Consider attachment handling for log-based storage
+        // Attachments are now saved in the channel-specific inbound adapter
+        // before the message reaches the MessageRouter
         
         // Append to chat log
         self.append_to_chat_log(&thread_path, message, is_matched).await?;

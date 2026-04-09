@@ -37,6 +37,12 @@ pub fn build_system_prompt(
 - Do NOT use absolute paths outside your working directory.
 - If a task requires files outside this directory, refuse and explain you cannot access them.
 
+## Tool Usage
+- Use `webfetch` for web searches and fetching web content. Do NOT use `curl` or `wget`.
+- Always try multiple approaches before saying you cannot do something.
+- When one tool or approach fails, try alternatives. Do NOT give up after a single failure.
+- If a URL fails, try alternative websites or search engines for the same information.
+
 ## Important: Focus on the Current Message
 You MUST only respond to the CURRENT "Incoming Message". Do NOT continue work from previous messages.
 After you have replied to the current message, STOP. Do not do anything else.

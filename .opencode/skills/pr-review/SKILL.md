@@ -18,7 +18,7 @@ CRITICAL: This skill is strictly read-only.
 IMPORTANT: All `gh` and `git` commands MUST be run from inside the jyc repository directory.
 Use `cd jyc && <command>` for every command.
 
-### Step 0: Ensure Repository and Check GitHub CLI
+### Step 0: Ensure Repository
 
 ```bash
 # Clone repo if not present
@@ -26,13 +26,10 @@ if [ ! -d jyc ]; then git clone https://github.com/kingye/jyc.git jyc; fi
 
 # Fetch latest
 cd jyc && git fetch origin
-
-# Check gh authentication
-cd jyc && gh auth status
 ```
 
-If gh is authenticated, use `gh` for PR info and posting comments.
-If not, fall back to git commands and output review as text.
+NOTE: `gh` CLI is pre-configured and authenticated. Do NOT run `gh auth login`,
+`gh auth refresh`, or any other auth commands. Just use `gh` directly.
 
 ### Step 1: Fetch PR Information
 

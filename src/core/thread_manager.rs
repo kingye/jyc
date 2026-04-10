@@ -17,6 +17,7 @@ use crate::core::command::model_handler::ModelCommandHandler;
 use crate::core::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::core::command::registry::CommandRegistry;
 use crate::core::command::reset_handler::ResetCommandHandler;
+use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
 use crate::services::agent::AgentService;
 
@@ -646,6 +647,7 @@ async fn process_message(
     command_registry.register(Box::new(PlanCommandHandler));
     command_registry.register(Box::new(BuildCommandHandler));
     command_registry.register(Box::new(ResetCommandHandler));
+    command_registry.register(Box::new(TemplateCommandHandler));
 
     let cmd_context = CommandContext {
         args: vec![],
@@ -838,9 +840,7 @@ async fn initialize_thread_from_template(
     template_name: &str,
     template_dir: &Path,
 ) -> Result<()> {
-    let jyc_dir = thread_path.join(".jyc");
-    
-    if jyc_dir.exists() {
+    if thread_path.exists() {
         return Ok(());
     }
     
@@ -854,11 +854,11 @@ async fn initialize_thread_from_template(
         return Ok(());
     }
     
-    tokio::fs::create_dir_all(&jyc_dir).await?;
+    tokio::fs::create_dir_all(thread_path).await?;
     
     for entry in WalkDir::new(&template_src).into_iter().filter_map(|e| e.ok()) {
         let relative = entry.path().strip_prefix(&template_src)?;
-        let target = jyc_dir.join(relative);
+        let target = thread_path.join(relative);
         
         if target.exists() {
             continue;

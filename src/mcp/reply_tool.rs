@@ -109,7 +109,7 @@ impl ServerHandler for ReplyToolHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
-                "jiny_reply",
+                "jyc_reply",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions("MCP reply tool for JYC — stores replies for delivery by the monitor process")

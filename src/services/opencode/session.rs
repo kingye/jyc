@@ -251,7 +251,7 @@ pub async fn ensure_thread_opencode_setup(
 
     // Build MCP tools configuration
     let mut mcp_tools = serde_json::json!({
-        "jiny_reply": {
+        "jyc_reply": {
             "type": "local",
             "command": tool_command,
             "environment": {
@@ -260,7 +260,7 @@ pub async fn ensure_thread_opencode_setup(
             "enabled": true,
             "timeout": 180000
         },
-        "jiny_question": {
+        "jyc_question": {
             "type": "local",
             "command": question_command,
             "enabled": true,
@@ -272,7 +272,7 @@ pub async fn ensure_thread_opencode_setup(
     if let Some(vision) = vision_config {
         if vision.enabled {
             let vision_command = get_vision_tool_command();
-            mcp_tools["vision"] = serde_json::json!({
+            mcp_tools["jyc_vision"] = serde_json::json!({
                 "type": "local",
                 "command": vision_command,
                 "environment": {

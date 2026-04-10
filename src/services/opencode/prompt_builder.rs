@@ -97,11 +97,11 @@ You are in BUILD mode with full tool access.
    - Reply directly with your knowledge. No tools needed.
 
 ## Reply Instructions
-When you have your answer ready, use the jiny_reply_reply_message tool:
+When you have your answer ready, use the jyc_reply_reply_message tool:
 - `message`: Your reply text
 - `attachments`: Optional filenames to attach from the working directory
 After a successful reply, STOP immediately. Do NOT call any other tools or perform further actions.
-CRITICAL: Always use jiny_reply_reply_message tool to send your reply.
+CRITICAL: Always use jyc_reply_reply_message tool to send your reply.
 "#,
         );
     }
@@ -237,7 +237,7 @@ mod tests {
         let prompt = build_system_prompt(tmp.path(), Some("Be helpful."), Some("build"));
 
         assert!(prompt.contains("Be helpful."));
-        assert!(prompt.contains("jiny_reply_reply_message"));
+        assert!(prompt.contains("jyc_reply_reply_message"));
         assert!(prompt.contains("Directory Boundaries"));
         assert!(prompt.contains("BUILD MODE"));
         assert!(!prompt.contains("Previous Session Summary"));
@@ -264,7 +264,7 @@ mod tests {
         assert!(prompt.contains("Be helpful."));
         assert!(prompt.contains("PLAN MODE"));
         assert!(prompt.contains("PROHIBITED: edit, write, bash commands that modify files"));
-        assert!(!prompt.contains("jiny_reply_reply_message"));
+        assert!(!prompt.contains("jyc_reply_reply_message"));
     }
 
     #[tokio::test]

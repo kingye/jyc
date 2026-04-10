@@ -127,7 +127,7 @@ impl ServerHandler for VisionToolHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
-                "vision",
+                "jyc_vision",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions("MCP vision tool — analyzes visual content (images, PDFs, videos, etc.) using an OpenAI-compatible vision API")

@@ -370,6 +370,7 @@ impl OpenCodeClient {
         let mut last_activity = Instant::now();
         let mut last_progress_log = Instant::now();
         let mut last_tool_name: Option<String> = None;
+        let mut last_tool_input: Option<String> = None;
         let mut last_status_type: Option<String> = None;
         let start_time = Instant::now();
         let mut done = false;
@@ -445,6 +446,7 @@ impl OpenCodeClient {
                                     &mut result,
                                     &mut last_activity,
                                     &mut last_tool_name,
+                                    &mut last_tool_input,
                                     &mut last_status_type,
                                     &mut logged_tools,
                                     &start_time,
@@ -521,6 +523,10 @@ impl OpenCodeClient {
                             .as_deref()
                             .unwrap_or("generating");
 
+                        let tool_detail = last_tool_input
+                            .as_deref()
+                            .unwrap_or("");
+
                         let output_len: usize = parts.values()
                             .filter_map(|p| p.text.as_ref())
                             .map(|t| t.len())
@@ -532,6 +538,7 @@ impl OpenCodeClient {
                             activity = %activity,
                             silence_secs = silence.as_secs(),
                             output_len,
+                            tool_detail = %tool_detail,
                             "Progress"
                         );
 
@@ -646,6 +653,7 @@ impl OpenCodeClient {
         result: &mut SseResult,
         last_activity: &mut Instant,
         last_tool_name: &mut Option<String>,
+        last_tool_input: &mut Option<String>,
         last_status_type: &mut Option<String>,
         logged_tools: &mut HashSet<(String, String)>,
         _start_time: &Instant,
@@ -671,27 +679,26 @@ impl OpenCodeClient {
                  ) {
                     if let Some(ref info) = info.info {
                         if info.session_id.as_deref() == Some(session_id) {
-                            // When we first learn the model, record on the parent ai span
-                            if result.model_id.is_none() {
-                                if let Some(ref model) = info.model_id {
-                                    let combined_model = if let (Some(ref provider), Some(ref model_id)) = (info.provider_id.as_ref(), info.model_id.as_ref()) {
-                                        format!("{}/{}", provider, model_id)
-                                    } else {
-                                        model.clone()
-                                    };
-                                    // Record model on the parent ai span so all subsequent
-                                    // log lines show the actual model name
-                                    let m_value = format!("{}:{}", combined_model, mode_label);
-                                    tracing::Span::current().record("m", &m_value);
-                                    tracing::info!("AI model selected");
-                                }
-                            }
                             // Only update if new value is Some (don't overwrite with None)
                             if info.model_id.is_some() {
                                 result.model_id = info.model_id.clone();
                             }
                             if info.provider_id.is_some() {
                                 result.provider_id = info.provider_id.clone();
+                            }
+
+                            // When we first learn the model, record on the parent ai span (once only).
+                            // Check model_id AFTER setting it above to prevent duplicate recording.
+                            if result.model_id.is_some() && !result.model_recorded {
+                                let combined_model = match (&result.provider_id, &result.model_id) {
+                                    (Some(provider), Some(model_id)) => format!("{}/{}", provider, model_id),
+                                    (_, Some(model_id)) => model_id.clone(),
+                                    _ => "unknown".to_string(),
+                                };
+                                let m_value = format!("{}:{}", combined_model, mode_label);
+                                tracing::Span::current().record("m", &m_value);
+                                tracing::info!("AI model selected");
+                                result.model_recorded = true;
                             }
                             if info.mode.is_some() {
                                 result.mode = info.mode.clone();
@@ -730,13 +737,14 @@ impl OpenCodeClient {
                                             // Extract tool input preview
                                             let input_preview = state.input.as_ref()
                                                 .and_then(|v| {
-                                                    v.get("command").and_then(|c| c.as_str()).map(|s| s.to_string())
-                                                        .or_else(|| v.get("pattern").and_then(|c| c.as_str()).map(|s| s.to_string()))
-                                                        .or_else(|| v.get("path").and_then(|c| c.as_str()).map(|s| s.to_string()))
+                                                    v.as_str().map(|s| s.to_string())
                                                         .or_else(|| Some(v.to_string()))
                                                 })
                                                 .map(|s| if s.len() > 120 { format!("{}...", &s[..s.floor_char_boundary(120)]) } else { s })
                                                 .unwrap_or_default();
+                                            
+                                            // Save for progress logging
+                                            *last_tool_input = Some(input_preview.clone());
                                             tracing::info!(
                                                 tool = %tool_name,
                                                 input = %input_preview,
@@ -756,6 +764,7 @@ impl OpenCodeClient {
                                     }
                                     "completed" => {
                                         *last_tool_name = None;
+                                        *last_tool_input = None;
                                         if logged_tools.insert(dedup_key) {
                                             if let Some(ref output) = state.output {
                                                 if output.starts_with("Error:") {
@@ -807,6 +816,7 @@ impl OpenCodeClient {
                                     }
                                     "error" => {
                                         *last_tool_name = None;
+                                        *last_tool_input = None;
                                         tracing::error!(
                                             tool = %tool_name,
                                             error = ?state.error,
@@ -1050,6 +1060,8 @@ pub struct SseResult {
     pub reply_sent_by_tool: bool,
     pub model_id: Option<String>,
     pub provider_id: Option<String>,
+    /// Whether the model has been recorded on the ai span (prevent duplicate m=)
+    pub model_recorded: bool,
     /// The actual mode OpenCode used (from SSE message.updated)
     pub mode: Option<String>,
     pub error: Option<String>,

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use walkdir::WalkDir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use crate::core::template_utils::copy_template_files;
 
 pub struct TemplateCommandHandler;
 
@@ -59,24 +59,7 @@ impl CommandHandler for TemplateCommandHandler {
             });
         }
         
-        tokio::fs::create_dir_all(thread_path).await?;
-        
-        let mut copied = 0;
-        for entry in WalkDir::new(&template_src).into_iter().filter_map(|e| e.ok()) {
-            let relative = entry.path().strip_prefix(&template_src).unwrap();
-            let target = thread_path.join(relative);
-            
-            if target.exists() {
-                continue;
-            }
-            
-            if entry.file_type().is_dir() {
-                tokio::fs::create_dir_all(&target).await?;
-            } else {
-                tokio::fs::copy(entry.path(), &target).await?;
-                copied += 1;
-            }
-        }
+        let copied = copy_template_files(&template_src, thread_path).await?;
         
         Ok(CommandResult {
             success: true,

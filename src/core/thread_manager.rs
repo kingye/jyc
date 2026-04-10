@@ -2,7 +2,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use walkdir::WalkDir;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +18,7 @@ use crate::core::command::registry::CommandRegistry;
 use crate::core::command::reset_handler::ResetCommandHandler;
 use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::template_utils::copy_template_files;
 use crate::services::agent::AgentService;
 
 /// An item in a thread's message queue.
@@ -854,22 +854,7 @@ async fn initialize_thread_from_template(
         return Ok(());
     }
     
-    tokio::fs::create_dir_all(thread_path).await?;
-    
-    for entry in WalkDir::new(&template_src).into_iter().filter_map(|e| e.ok()) {
-        let relative = entry.path().strip_prefix(&template_src)?;
-        let target = thread_path.join(relative);
-        
-        if target.exists() {
-            continue;
-        }
-        
-        if entry.file_type().is_dir() {
-            tokio::fs::create_dir_all(&target).await?;
-        } else {
-            tokio::fs::copy(entry.path(), &target).await?;
-        }
-    }
+    copy_template_files(&template_src, thread_path).await?;
     
     tracing::info!(template = %template_name, "Thread initialized from template");
     

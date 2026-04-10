@@ -77,11 +77,21 @@ impl MessageRouter {
             "Routing to thread"
         );
 
-        // 3. Get attachment config from the matched pattern
+        // 3. Get attachment config and template from the matched pattern
+        let matched_pattern_name = pattern_match.as_ref().unwrap().pattern_name.clone();
         let attachment_config = patterns
             .iter()
-            .find(|p| p.name == pattern_match.as_ref().unwrap().pattern_name)
+            .find(|p| p.name == matched_pattern_name)
             .and_then(|p| p.attachments.clone());
+        
+        // Store template name in message metadata for thread initialization
+        if let Some(template) = patterns
+            .iter()
+            .find(|p| p.name == matched_pattern_name)
+            .and_then(|p| p.template.clone())
+        {
+            message.metadata.insert("template".to_string(), serde_json::Value::String(template));
+        }
 
         // 4. Enqueue (channel-agnostic)
         self.thread_manager

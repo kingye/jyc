@@ -291,10 +291,23 @@ pub async fn ensure_thread_opencode_setup(
         schema: "https://opencode.ai/config.json".to_string(),
         model,
         small_model,
-        permission: serde_json::json!({
-            "question": "deny",
-            "external_directory": "allow"
-        }),
+        // Allow external_directory only if the thread has symlinked or local skills.
+        // This prevents plan mode sub-agent deadlock (external_directory:ask + question:deny)
+        // while keeping other threads restricted.
+        permission: {
+            let skills_path = thread_path.join(".opencode").join("skills");
+            let needs_external = skills_path.is_symlink() || skills_path.exists();
+            if needs_external {
+                serde_json::json!({
+                    "question": "deny",
+                    "external_directory": "allow"
+                })
+            } else {
+                serde_json::json!({
+                    "question": "deny"
+                })
+            }
+        },
         agent: Some(serde_json::json!({
             "build": {
                 "permission": {

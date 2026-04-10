@@ -112,7 +112,7 @@ impl ServerHandler for QuestionToolHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
-                "jiny_question",
+                "jyc_question",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions("MCP question tool for JYC — sends questions to users via messaging channels and waits for their response")

@@ -218,8 +218,6 @@ struct OpencodeConfig {
     permission: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<serde_json::Value>,
     mcp: serde_json::Value,
 }
 
@@ -304,7 +302,6 @@ pub async fn ensure_thread_opencode_setup(
                 }
             }
         })),
-        provider: None,
         mcp: mcp_tools,
     };
 

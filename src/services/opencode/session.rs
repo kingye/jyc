@@ -292,7 +292,8 @@ pub async fn ensure_thread_opencode_setup(
         model,
         small_model,
         permission: serde_json::json!({
-            "question": "deny"
+            "question": "deny",
+            "external_directory": "allow"
         }),
         agent: Some(serde_json::json!({
             "build": {

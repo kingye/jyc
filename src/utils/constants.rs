@@ -37,9 +37,10 @@ pub const OPENCODE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 // --- SSE / Timeout ---
 /// Activity-based timeout: silence threshold (default, no tool running)
-pub const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Activity-based timeout: silence threshold when a tool is running
-pub const TOOL_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Reduced from 60min to 5min — a stuck tool should be detected quickly
+pub const TOOL_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How often to check for activity timeout
 pub const ACTIVITY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// How often to log progress

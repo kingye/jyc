@@ -304,14 +304,7 @@ pub async fn ensure_thread_opencode_setup(
                 }
             }
         })),
-        provider: Some(serde_json::json!({
-            "*": {
-                "options": {
-                    "timeout": 600000,
-                    "chunkTimeout": 120000
-                }
-            }
-        })),
+        provider: None,
         mcp: mcp_tools,
     };
 

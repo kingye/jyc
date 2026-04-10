@@ -6,7 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- PR Review skill for code review workflow
 - Bump version skill for automated version bumping workflow
+
+### Changed
+
+- MCP tool names unified to `jyc_` prefix (`jyc_reply`, `jyc_question`, `jyc_vision`)
 
 ## [0.1.5] - 2026-04-09
 

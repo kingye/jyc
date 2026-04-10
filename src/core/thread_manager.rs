@@ -655,6 +655,32 @@ async fn process_message(
         return Ok(());
     }
 
+    // ── 4.5. CHECK IF THREAD IS WAITING FOR QUESTION ANSWER ──────────
+    // If the AI previously asked a question via the ask_user MCP tool,
+    // the next user message is the answer — route it to the answer file
+    // instead of creating a new AI prompt.
+    let question_flag = store_result.thread_path.join(".jyc").join("question-sent.flag");
+    if question_flag.exists() {
+        tracing::info!("Thread is waiting for question answer, routing response");
+        let answer_file = store_result.thread_path.join(".jyc").join("question-answer.json");
+        let answer = serde_json::json!({
+            "answer": cleaned_body.trim(),
+            "sender": message.sender_address,
+            "answered_at": chrono::Utc::now().to_rfc3339(),
+        });
+        tokio::fs::write(
+            &answer_file,
+            serde_json::to_string_pretty(&answer).unwrap_or_default(),
+        )
+        .await
+        .ok();
+        tracing::info!(
+            answer_len = cleaned_body.trim().len(),
+            "Question answer written, MCP tool will pick it up"
+        );
+        return Ok(());
+    }
+
     // ── 5. DISPATCH TO AGENT ──────────────────────────────────────────
     // Build message with cleaned body for agent processing
     let message = {

@@ -247,6 +247,7 @@ pub async fn ensure_thread_opencode_setup(
 
     // Build the reply tool command
     let tool_command = get_reply_tool_command();
+    let question_command = get_question_tool_command();
 
     // Build MCP tools configuration
     let mut mcp_tools = serde_json::json!({
@@ -258,6 +259,12 @@ pub async fn ensure_thread_opencode_setup(
             },
             "enabled": true,
             "timeout": 180000
+        },
+        "jiny_question": {
+            "type": "local",
+            "command": question_command,
+            "enabled": true,
+            "timeout": 360000
         }
     });
 
@@ -376,6 +383,10 @@ pub async fn read_mode_override(thread_path: &Path) -> Option<String> {
 /// Resolves the jyc binary path and returns `["/path/to/jyc", "mcp-reply-tool"]`.
 fn get_reply_tool_command() -> Vec<String> {
     get_mcp_tool_command("mcp-reply-tool")
+}
+
+fn get_question_tool_command() -> Vec<String> {
+    get_mcp_tool_command("mcp-question-tool")
 }
 
 fn get_vision_tool_command() -> Vec<String> {

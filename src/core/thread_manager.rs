@@ -1,7 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use walkdir::WalkDir;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,7 @@ pub struct QueueItem {
     #[allow(dead_code)]
     pub pattern_match: PatternMatch,
     pub attachment_config: Option<InboundAttachmentConfig>,
+    pub template: Option<String>,
 }
 
 /// Per-thread queue stats.
@@ -162,10 +164,15 @@ impl ThreadManager {
             }
         }
 
+        let template = message.metadata.get("template")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        
         let item = QueueItem {
             message,
             pattern_match,
             attachment_config,
+            template,
         };
 
         if let Some(sender) = queues.get(&thread_name) {
@@ -305,6 +312,29 @@ impl ThreadManager {
                         break;
                     }
                 };
+
+                // Initialize thread from template if needed
+                if let Some(ref template_name) = item.template {
+                    let workspace = storage.workspace();
+                    let thread_path = workspace.join(&thread_name);
+                    
+                    // Save pattern name for /template command
+                    let pattern_file = thread_path.join(".jyc").join("pattern");
+                    let _ = tokio::fs::create_dir_all(thread_path.join(".jyc")).await;
+                    let _ = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await;
+                    
+                    if let Err(e) = initialize_thread_from_template(
+                        &thread_path,
+                        template_name,
+                        &template_dir,
+                    ).await {
+                        tracing::warn!(
+                            error = %e,
+                            template = %template_name,
+                            "Failed to initialize thread from template"
+                        );
+                    }
+                }
 
                 // Update current message for event listeners
                 let _ = current_message_tx.send(Some(item.message.clone()));
@@ -801,4 +831,47 @@ async fn read_signal_attachments(
         .collect();
 
     Some(attachments)
+}
+
+async fn initialize_thread_from_template(
+    thread_path: &Path,
+    template_name: &str,
+    template_dir: &Path,
+) -> Result<()> {
+    let jyc_dir = thread_path.join(".jyc");
+    
+    if jyc_dir.exists() {
+        return Ok(());
+    }
+    
+    let template_src = template_dir.join(template_name);
+    if !template_src.exists() {
+        tracing::warn!(
+            template = %template_name,
+            path = %template_src.display(),
+            "Template directory does not exist"
+        );
+        return Ok(());
+    }
+    
+    tokio::fs::create_dir_all(&jyc_dir).await?;
+    
+    for entry in WalkDir::new(&template_src).into_iter().filter_map(|e| e.ok()) {
+        let relative = entry.path().strip_prefix(&template_src)?;
+        let target = jyc_dir.join(relative);
+        
+        if target.exists() {
+            continue;
+        }
+        
+        if entry.file_type().is_dir() {
+            tokio::fs::create_dir_all(&target).await?;
+        } else {
+            tokio::fs::copy(entry.path(), &target).await?;
+        }
+    }
+    
+    tracing::info!(template = %template_name, "Thread initialized from template");
+    
+    Ok(())
 }

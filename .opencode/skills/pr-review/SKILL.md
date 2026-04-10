@@ -15,34 +15,43 @@ CRITICAL: This skill is strictly read-only.
 - Do NOT fix issues — only describe them and suggest fixes in comments
 - ONLY read, analyze, and post review comments
 
-### Step 0: Check GitHub CLI
+IMPORTANT: All `gh` and `git` commands MUST be run from inside the jyc repository directory.
+Use `cd jyc && <command>` for every command.
+
+### Step 0: Ensure Repository and Check GitHub CLI
 
 ```bash
-gh auth status 2>&1
+# Clone repo if not present
+if [ ! -d jyc ]; then git clone https://github.com/kingye/jyc.git jyc; fi
+
+# Fetch latest
+cd jyc && git fetch origin
+
+# Check gh authentication
+cd jyc && gh auth status
 ```
 
-If authenticated, use `gh` for PR info and posting comments.
+If gh is authenticated, use `gh` for PR info and posting comments.
 If not, fall back to git commands and output review as text.
 
 ### Step 1: Fetch PR Information
 
 **With gh:**
 ```bash
-gh pr view <number> --json title,body,state,commits,files
-gh pr diff <number>
+cd jyc && gh pr view <number> --json title,body,state,commits,files
+cd jyc && gh pr diff <number>
 ```
 
 **Without gh:**
 ```bash
-git fetch origin
-git log --oneline main..<branch>
-git diff main..<branch> --stat
-git diff main..<branch>
+cd jyc && git log --oneline main..<branch>
+cd jyc && git diff main..<branch> --stat
+cd jyc && git diff main..<branch>
 ```
 
 ### Step 2: Review Against Project Standards
 
-**Design Principles (see DESIGN.md):**
+**Design Principles (see jyc/DESIGN.md):**
 - Channel-agnostic: no channel-specific logic in core modules
 - AI-agent-agnostic: no coupling to specific AI backend
 - Error handling: `?` with `.context()`, no `.unwrap()` on fallible ops
@@ -82,9 +91,10 @@ End with overall verdict:
 
 ### Step 4: Post Review
 
-**With gh (preferred):**
+**With gh (preferred) — run from inside jyc/ directory:**
+
 ```bash
-gh pr review <number> --approve --body "$(cat <<'EOF'
+cd jyc && gh pr review <number> --approve --body "$(cat <<'EOF'
 ## PR Review
 
 <findings>
@@ -96,7 +106,7 @@ EOF
 
 Use `--request-changes` for critical/high issues:
 ```bash
-gh pr review <number> --request-changes --body "$(cat <<'EOF'
+cd jyc && gh pr review <number> --request-changes --body "$(cat <<'EOF'
 ## PR Review
 
 <findings>
@@ -108,7 +118,7 @@ EOF
 
 Use `--comment` for medium/low only:
 ```bash
-gh pr review <number> --comment --body "$(cat <<'EOF'
+cd jyc && gh pr review <number> --comment --body "$(cat <<'EOF'
 ## PR Review
 
 <findings>

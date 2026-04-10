@@ -11,6 +11,12 @@ description: |
 CRITICAL: All code changes MUST follow the incremental small-step iteration method.
 This applies to both implementation AND planning.
 
+### Before Starting
+
+- Always create a feature branch: `git checkout -b feat/<description>` or `fix/<description>`
+- NEVER work directly on main
+- See `dev-workflow` skill for branching conventions
+
 ### Principle
 
 Break every task into the smallest possible steps. Each step must be:

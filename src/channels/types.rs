@@ -255,6 +255,23 @@ pub struct ChannelPattern {
     pub rules: PatternRules,
     /// Attachment download configuration for messages matching this pattern
     pub attachments: Option<InboundAttachmentConfig>,
+    /// Template name to initialize thread (from workdir/templates/)
+    /// If not specified, no template is applied
+    #[serde(default)]
+    pub template: Option<String>,
+}
+
+impl Default for ChannelPattern {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            channel: String::new(),
+            enabled: true,
+            rules: PatternRules::default(),
+            attachments: None,
+            template: None,
+        }
+    }
 }
 
 /// Channel-agnostic pattern matching rules.

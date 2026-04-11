@@ -8,6 +8,23 @@ pub async fn copy_template_files(
     template_src: &Path,
     target_dir: &Path,
 ) -> anyhow::Result<usize> {
+    copy_template_files_inner(template_src, target_dir, false).await
+}
+
+/// Copy template files from source to target directory, overwriting existing files.
+/// Returns the number of files copied/overwritten.
+pub async fn overwrite_template_files(
+    template_src: &Path,
+    target_dir: &Path,
+) -> anyhow::Result<usize> {
+    copy_template_files_inner(template_src, target_dir, true).await
+}
+
+async fn copy_template_files_inner(
+    template_src: &Path,
+    target_dir: &Path,
+    overwrite: bool,
+) -> anyhow::Result<usize> {
     tokio::fs::create_dir_all(target_dir).await?;
     
     let mut copied = 0;
@@ -15,7 +32,7 @@ pub async fn copy_template_files(
         let relative = entry.path().strip_prefix(template_src)?;
         let target = target_dir.join(relative);
         
-        if target.exists() {
+        if !overwrite && target.exists() {
             continue;
         }
         

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 

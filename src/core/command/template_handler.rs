@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use crate::core::template_utils::copy_template_files;
+use crate::core::template_utils::{copy_template_files, overwrite_template_files};
 
 pub struct TemplateCommandHandler;
 
@@ -13,10 +13,22 @@ impl CommandHandler for TemplateCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Re-apply template to this thread"
+        "Manage thread templates. Subcommands: update (overwrite existing files)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        let subcommand = context.args.first().map(|s| s.as_str());
+        
+        match subcommand {
+            Some("update") => self.execute_update(&context).await,
+            _ => self.execute_apply(&context).await,
+        }
+    }
+}
+
+impl TemplateCommandHandler {
+    /// `/template` (no subcommand) — apply template, skip existing files
+    async fn execute_apply(&self, context: &CommandContext) -> Result<CommandResult> {
         let thread_path = &context.thread_path;
         
         let pattern_file = thread_path.join(".jyc").join("pattern");
@@ -63,7 +75,61 @@ impl CommandHandler for TemplateCommandHandler {
         
         Ok(CommandResult {
             success: true,
-            message: format!("/template: applied '{}' template ({} files copied)", template_name, copied),
+            message: format!("/template: applied '{}' template ({} files copied, existing files skipped)", template_name, copied),
+            error: None,
+            requires_restart: false,
+        })
+    }
+
+    /// `/template update` — re-apply template, overwrite existing files
+    async fn execute_update(&self, context: &CommandContext) -> Result<CommandResult> {
+        let thread_path = &context.thread_path;
+        
+        let pattern_file = thread_path.join(".jyc").join("pattern");
+        let pattern_name = if pattern_file.exists() {
+            tokio::fs::read_to_string(&pattern_file).await?
+        } else {
+            return Ok(CommandResult {
+                success: false,
+                message: "/template update: pattern file not found. Cannot determine template.".into(),
+                error: Some("No .jyc/pattern file".to_string()),
+                requires_restart: false,
+            });
+        };
+        
+        let template_name = context.config.channels
+            .values()
+            .flat_map(|c| c.patterns.iter().flatten())
+            .find(|p| p.name == pattern_name)
+            .and_then(|p| p.template.clone());
+        
+        let template_name = match template_name {
+            Some(t) => t,
+            None => {
+                return Ok(CommandResult {
+                    success: false,
+                    message: format!("/template update: pattern '{}' has no template configured", pattern_name),
+                    error: Some("No template in pattern config".to_string()),
+                    requires_restart: false,
+                });
+            }
+        };
+        
+        let template_src = context.template_dir.join(&template_name);
+        if !template_src.exists() {
+            return Ok(CommandResult {
+                success: false,
+                message: format!("/template update: template '{}' not found in templates/", template_name),
+                error: Some(format!("Path does not exist: {}", template_src.display())),
+                requires_restart: false,
+            });
+        }
+        
+        let copied = overwrite_template_files(&template_src, thread_path).await?;
+        
+        Ok(CommandResult {
+            success: true,
+            message: format!("/template update: applied '{}' template ({} files overwritten)", template_name, copied),
             error: None,
             requires_restart: false,
         })

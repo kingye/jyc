@@ -2213,6 +2213,58 @@ Each channel manages its own state independently. For email, state tracks IMAP s
     └── ...
 ```
 
+## Thread Template
+
+Thread Template allows initializing new threads with predefined files and directories. Templates are defined at the pattern level and applied when a thread is first created.
+
+### Configuration
+
+Templates are configured at the pattern level in `config.toml`:
+
+```toml
+[channels.my_channel]
+type = "email"
+
+[[channels.my_channel.patterns]]
+name = "urgent"
+template = "urgent"  # Use templates/urgent/ for this pattern
+
+[[channels.my_channel.patterns]]
+name = "normal"
+# No template - thread starts empty
+```
+
+Template directory structure (in workdir):
+
+```
+<root-dir>/
+├── templates/
+│   ├── urgent/
+│   │   ├── agent.md      # OpenCode reads this as thread-specific prompt
+│   │   ├── skills/
+│   │   │   └── my_skill/
+│   │   │       └── SKILL.md
+│   │   └── custom_file.txt
+│   └── default/
+│       └── ...
+```
+
+### How It Works
+
+1. **Pattern Matching**: When a message matches a pattern with a `template` field, the template name is stored in the message metadata.
+
+2. **Thread Initialization**: On the first message to a thread, `ThreadManager` copies all files from `templates/{template_name}/` to the thread directory (skipping existing files).
+
+3. **Pattern Tracking**: The pattern name is saved to `.jyc/pattern` for later reference.
+
+4. **`/template` Command**: Users can run `/template` to re-apply the template to the current thread (copies missing files).
+
+### Files Copied
+
+- Template files are copied to the thread root directory (not `.jyc/`)
+- Directories are created as needed
+- Existing files are **not** overwritten (safe to re-run)
+
 ### Source Tree
 
 ```

@@ -73,6 +73,9 @@ pub struct ThreadManager {
     // Template directory for thread initialization
     template_dir: PathBuf,
 
+    // Application config (for command handlers that need channel/pattern info)
+    config: Arc<crate::config::types::AppConfig>,
+
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -90,6 +93,7 @@ impl ThreadManager {
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
         template_dir: PathBuf,
+        config: Arc<crate::config::types::AppConfig>,
     ) -> Self {
         Self::new_with_options(
             max_concurrent,
@@ -98,10 +102,11 @@ impl ThreadManager {
             outbound,
             agent,
             cancel,
-            true, // enable_events: true by default (Thread Event system)
+            true,
             heartbeat_config,
             heartbeat_template,
             template_dir,
+            config,
         )
     }
     
@@ -117,6 +122,7 @@ impl ThreadManager {
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
         template_dir: PathBuf,
+        config: Arc<crate::config::types::AppConfig>,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -130,6 +136,7 @@ impl ThreadManager {
             heartbeat_config,
             heartbeat_template,
             template_dir,
+            config,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
         }
@@ -248,6 +255,7 @@ impl ThreadManager {
         let heartbeat_config = self.heartbeat_config.clone();
         let heartbeat_template = self.heartbeat_template.clone();
         let template_dir = self.template_dir.clone();
+        let config = self.config.clone();
         let tm_span = tracing::info_span!("tm", t = %thread_name);
 
         tokio::spawn(async move {
@@ -353,6 +361,7 @@ impl ThreadManager {
                     agent.clone(),
                     &mut rx,
                     &template_dir,
+                    &config,
                 ).await {
                     tracing::error!(
                         error = %e,
@@ -624,6 +633,7 @@ async fn process_message(
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &PathBuf,
+    config: &Arc<crate::config::types::AppConfig>,
 ) -> Result<()> {
     let message = &item.message;
 
@@ -657,9 +667,7 @@ async fn process_message(
     let cmd_context = CommandContext {
         args: vec![],
         thread_path: store_result.thread_path.clone(),
-        config: Arc::new(crate::config::load_config_from_str(
-            "[general]\n[agent]\nenabled = true\nmode = \"opencode\""
-        ).unwrap()),
+        config: config.clone(),
         channel: message.channel.clone(),
         agent: Some(agent.clone()),
         template_dir: template_dir.clone(),

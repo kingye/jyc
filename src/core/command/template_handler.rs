@@ -99,6 +99,17 @@ impl TemplateCommandHandler {
         
         tracing::debug!(pattern = %pattern_name, "Looking up template for pattern");
         
+        // Debug: log all available patterns
+        let all_patterns: Vec<_> = context.config.channels
+            .iter()
+            .flat_map(|(ch, c)| {
+                c.patterns.iter().flatten().map(move |p| {
+                    format!("{}:{} template={:?}", ch, p.name, p.template)
+                })
+            })
+            .collect();
+        tracing::debug!(patterns = ?all_patterns, "Available patterns in config");
+        
         let template_name = context.config.channels
             .values()
             .flat_map(|c| c.patterns.iter().flatten())

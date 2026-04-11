@@ -56,6 +56,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .join("\n");
         anyhow::bail!("Configuration validation failed:\n{msg}");
     }
+    let config = Arc::new(config);
 
     // 2. Setup cancellation (Ctrl+C)
     let cancel = CancellationToken::new();
@@ -234,6 +235,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             config.heartbeat.clone(),
             heartbeat_template,
             template_dir,
+            config.clone(),
         ));
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));

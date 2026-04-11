@@ -319,15 +319,7 @@ impl ThreadManager {
                     let workspace = storage.workspace();
                     let thread_path = workspace.join(&thread_name);
                     
-                    // Save pattern name for /template command
-                    let pattern_file = thread_path.join(".jyc").join("pattern");
-                    if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
-                        tracing::warn!(error = %e, "Failed to create .jyc directory");
-                    }
-                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
-                        tracing::warn!(error = %e, "Failed to write pattern file");
-                    }
-                    
+                    // Initialize template first (before creating .jyc to avoid exists check failing)
                     if let Err(e) = initialize_thread_from_template(
                         &thread_path,
                         template_name,
@@ -338,6 +330,15 @@ impl ThreadManager {
                             template = %template_name,
                             "Failed to initialize thread from template"
                         );
+                    }
+                    
+                    // Save pattern name for /template command (after template init)
+                    let pattern_file = thread_path.join(".jyc").join("pattern");
+                    if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
+                        tracing::warn!(error = %e, "Failed to create .jyc directory");
+                    }
+                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                        tracing::warn!(error = %e, "Failed to write pattern file");
                     }
                 }
 

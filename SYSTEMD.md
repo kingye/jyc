@@ -4,7 +4,20 @@ This allows jyc to run with systemd process supervision, enabling self-bootstrap
 
 ## Setup
 
-### 1. Create systemd user service (one-time setup)
+### 1. Set environment variables (one-time setup)
+
+Add to `~/.zshrc.local`:
+
+```bash
+export JYC_BINARY=/path/to/jyc          # Where the installed jyc binary lives
+export JYC_WORKDIR=/path/to/jyc-data     # Where jyc data (config, channels, workspaces) lives
+```
+
+These are used by:
+- `run-jyc.sh` — to start jyc
+- `deploy.sh` — reads install path from systemd `ExecStart` (which uses `JYC_BINARY`)
+
+### 2. Create systemd user service (one-time setup)
 
 Replace `<JYC_BINARY>` with the path to your jyc binary and `<JYC_WORKDIR>` with your jyc data directory.
 
@@ -50,10 +63,10 @@ Alternatively, use the `run-jyc.sh` wrapper script as `ExecStart`:
 ExecStart=/path/to/run-jyc.sh
 ```
 
-The wrapper script auto-detects paths from `JYC_BINARY` and `JYC_WORKDIR` environment variables,
-or falls back to `which jyc` and the current directory.
+The wrapper script reads `JYC_BINARY` and `JYC_WORKDIR` from environment variables
+(set in `~/.zshrc.local`). Both are required.
 
-### 2. Build jyc binary
+### 3. Build jyc binary
 
 ```bash
 cd jyc  # your cloned jyc repository
@@ -106,11 +119,31 @@ The AI can rebuild and deploy jyc using `deploy.sh`:
 1. Build: `cd jyc && cargo test && cargo build --release`
 2. Deploy: `systemd-run --user --unit=jyc-deploy --working-directory=$(pwd)/jyc bash ./deploy.sh`
 
-`deploy.sh` auto-detects:
-- Source binary from its own directory (`target/release/jyc`)
-- Install path from systemd service (`ExecStart`)
+### Deployment Flow
 
-See the `jyc-deploy-bare` skill for detailed instructions.
+```
+JYC_BINARY (e.g., /home/user/bin/jyc)
+    ↑ deploy.sh copies here
+    |
+target/release/jyc (built by cargo)
+    ↑ cargo build --release
+    |
+jyc/ (cloned repo in thread directory)
+```
+
+`deploy.sh` auto-detects paths:
+- **Source binary**: `target/release/jyc` relative to the script's own directory
+- **Install target**: read from systemd service `ExecStart` (the `JYC_BINARY` path)
+
+Steps performed by `deploy.sh`:
+1. Find the new binary in `target/release/jyc`
+2. Read install path from `systemctl --user show jyc -p ExecStart`
+3. Stop the jyc service
+4. Copy new binary to the install path (`JYC_BINARY`)
+5. Start the jyc service
+6. Verify service started successfully
+
+See the `jyc-deploy-bare` skill for AI-specific deployment instructions.
 
 ## Architecture
 

@@ -25,6 +25,10 @@ pub struct GitHubInboundAdapter {
     channel_name: String,
     workspace_root: std::path::PathBuf,
     last_poll_timestamp: std::sync::Mutex<Option<String>>,
+    /// Track processed issue IDs to avoid re-processing unchanged issues
+    processed_issue_ids: std::sync::Mutex<std::collections::HashSet<i64>>,
+    /// Track processed comment IDs to avoid duplicates
+    processed_comment_ids: std::sync::Mutex<std::collections::HashSet<i64>>,
 }
 
 impl GitHubInboundAdapter {
@@ -36,6 +40,8 @@ impl GitHubInboundAdapter {
             channel_name,
             workspace_root,
             last_poll_timestamp: std::sync::Mutex::new(None),
+            processed_issue_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
+            processed_comment_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -50,6 +56,8 @@ impl GitHubInboundAdapter {
             channel_name,
             workspace_root,
             last_poll_timestamp: std::sync::Mutex::new(None),
+            processed_issue_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
+            processed_comment_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -237,7 +245,22 @@ impl GitHubInboundAdapter {
             let comments = client.get_issue_comments(since.as_deref()).await
                 .context("Failed to fetch issue comments")?;
 
+            let mut processed_comments = self.processed_comment_ids.lock().unwrap();
+
             for comment in comments {
+                // Skip already processed comments
+                if processed_comments.contains(&comment.id) {
+                    continue;
+                }
+
+                // Skip bot's own comments (detect by checking if body contains our reply footer)
+                // Also skip if the comment user matches the GitHub app/bot user
+                if comment.user.login.ends_with("[bot]") || comment.body.contains("Model:") && comment.body.contains("Mode:") {
+                    tracing::trace!(comment_id = comment.id, user = %comment.user.login, "Skipping bot's own comment");
+                    processed_comments.insert(comment.id);
+                    continue;
+                }
+
                 // Extract issue number from comment URL
                 let issue_number = comment.html_url
                     .split("/issues/")
@@ -249,12 +272,17 @@ impl GitHubInboundAdapter {
                 if let Some(num) = issue_number {
                     if !open_issue_numbers.contains(&num) {
                         tracing::trace!(comment_id = comment.id, issue = num, "Skipping comment on closed/PR issue");
+                        processed_comments.insert(comment.id);
                         continue;
                     }
                 } else {
                     tracing::trace!(comment_id = comment.id, url = %comment.html_url, "Skipping comment: cannot extract issue number");
+                    processed_comments.insert(comment.id);
                     continue;
                 }
+
+                // Mark as processed
+                processed_comments.insert(comment.id);
 
                 let mut metadata = HashMap::new();
                 metadata.insert("repo".to_string(), serde_json::Value::String(format!("{}/{}", self.config.owner, self.config.repo)));
@@ -268,7 +296,7 @@ impl GitHubInboundAdapter {
 
                 let message = InboundMessage {
                     id: Uuid::new_v4().to_string(),
-                    channel: "github".to_string(),
+                    channel: self.channel_name.clone(),
                     channel_uid: comment.id.to_string(),
                     sender: comment.user.login.clone(),
                     sender_address: comment.user.id.to_string(),
@@ -295,15 +323,24 @@ impl GitHubInboundAdapter {
         }
 
         if self.config.events.contains(&"issues".to_string()) {
+            let mut processed_issues = self.processed_issue_ids.lock().unwrap();
+
             for issue in &open_issues {
                 if issue.pull_request.is_some() {
                     continue;
                 }
 
                 if issue.state != "open" {
-                    tracing::debug!(issue = issue.number, state = %issue.state, "Skipping non-open issue");
                     continue;
                 }
+
+                // Skip already-processed issues (avoid re-sending unchanged issues every poll)
+                if processed_issues.contains(&issue.id) {
+                    continue;
+                }
+
+                // Mark as processed
+                processed_issues.insert(issue.id);
 
                 let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
                 let labels_json: Vec<serde_json::Value> = labels.iter().map(|l| serde_json::Value::String(l.clone())).collect();
@@ -320,7 +357,7 @@ impl GitHubInboundAdapter {
 
                 let message = InboundMessage {
                     id: Uuid::new_v4().to_string(),
-                    channel: "github".to_string(),
+                    channel: self.channel_name.clone(),
                     channel_uid: issue.number.to_string(),
                     sender: issue.user.login.clone(),
                     sender_address: issue.user.id.to_string(),

@@ -190,7 +190,7 @@ impl crate::channels::types::InboundAdapter for GitHubInboundAdapter {
                 break;
             }
 
-            tracing::info!("Polling GitHub for new events...");
+            tracing::trace!("Polling GitHub for new events...");
 
             let since = self.get_last_poll_timestamp();
             let now: DateTime<Utc> = Utc::now();

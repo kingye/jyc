@@ -208,7 +208,7 @@ pub fn feishu_match_message(
 
                 let chat_name_matches = chat_names
                     .iter()
-                    .any(|cn| cn.to_lowercase() == msg_chat_name);
+                    .any(|cn| msg_chat_name.starts_with(&cn.to_lowercase()));
 
                 if !chat_name_matches {
                     matches = false;

@@ -60,7 +60,7 @@ impl GitHubClient {
             url = format!("{}?since={}", url, since);
         }
 
-        tracing::debug!(url = %url, "Fetching GitHub issue comments");
+        tracing::trace!(url = %url, "Fetching GitHub issue comments");
 
         let response = self
             .http_client

@@ -33,7 +33,7 @@ impl TemplateCommandHandler {
         
         let pattern_file = thread_path.join(".jyc").join("pattern");
         let pattern_name = if pattern_file.exists() {
-            tokio::fs::read_to_string(&pattern_file).await?
+            tokio::fs::read_to_string(&pattern_file).await?.trim().to_string()
         } else {
             return Ok(CommandResult {
                 success: false,
@@ -87,7 +87,7 @@ impl TemplateCommandHandler {
         
         let pattern_file = thread_path.join(".jyc").join("pattern");
         let pattern_name = if pattern_file.exists() {
-            tokio::fs::read_to_string(&pattern_file).await?
+            tokio::fs::read_to_string(&pattern_file).await?.trim().to_string()
         } else {
             return Ok(CommandResult {
                 success: false,
@@ -96,6 +96,8 @@ impl TemplateCommandHandler {
                 requires_restart: false,
             });
         };
+        
+        tracing::debug!(pattern = %pattern_name, "Looking up template for pattern");
         
         let template_name = context.config.channels
             .values()

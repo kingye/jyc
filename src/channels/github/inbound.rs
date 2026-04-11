@@ -195,11 +195,17 @@ impl crate::channels::types::InboundAdapter for GitHubInboundAdapter {
             let since = self.get_last_poll_timestamp();
             let now: DateTime<Utc> = Utc::now();
 
-            if let Err(e) = self.poll_events(&client, &since, &options).await {
-                tracing::error!(error = %e, "Error polling GitHub");
+            match self.poll_events(&client, &since, &options).await {
+                Ok(()) => {
+                    // Only advance timestamp on successful poll
+                    // Use ISO 8601 format without nanoseconds (GitHub API requirement)
+                    self.set_last_poll_timestamp(&now.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                }
+                Err(e) => {
+                    // Don't advance timestamp on failure — retry same window next cycle
+                    tracing::error!(error = %e, "Error polling GitHub");
+                }
             }
-
-            self.set_last_poll_timestamp(&now.to_rfc3339());
 
             tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -219,23 +225,45 @@ impl GitHubInboundAdapter {
         since: &Option<String>,
         options: &InboundAdapterOptions,
     ) -> Result<()> {
+        // Fetch open issues once (used for both issue processing and comment filtering)
+        let open_issues = client.get_issues(since.as_deref(), Some("open")).await
+            .context("Failed to fetch open issues")?;
+        let open_issue_numbers: std::collections::HashSet<i64> = open_issues.iter()
+            .filter(|i| i.pull_request.is_none())
+            .map(|i| i.number)
+            .collect();
+
         if self.config.events.contains(&"issue_comment".to_string()) {
             let comments = client.get_issue_comments(since.as_deref()).await
                 .context("Failed to fetch issue comments")?;
 
             for comment in comments {
+                // Extract issue number from comment URL
+                let issue_number = comment.html_url
+                    .split("/issues/")
+                    .nth(1)
+                    .and_then(|s| s.split('#').next())
+                    .and_then(|s| s.parse::<i64>().ok());
+
+                // Skip comments on closed issues or PRs
+                if let Some(num) = issue_number {
+                    if !open_issue_numbers.contains(&num) {
+                        tracing::trace!(comment_id = comment.id, issue = num, "Skipping comment on closed/PR issue");
+                        continue;
+                    }
+                } else {
+                    tracing::trace!(comment_id = comment.id, url = %comment.html_url, "Skipping comment: cannot extract issue number");
+                    continue;
+                }
+
                 let mut metadata = HashMap::new();
                 metadata.insert("repo".to_string(), serde_json::Value::String(format!("{}/{}", self.config.owner, self.config.repo)));
                 metadata.insert("action".to_string(), serde_json::Value::String("created".to_string()));
                 metadata.insert("event_type".to_string(), serde_json::Value::String("issue_comment".to_string()));
                 metadata.insert("comment_id".to_string(), serde_json::Value::Number(comment.id.into()));
 
-                if let Some(issue_num) = comment.html_url.split("/issues/").nth(1) {
-                    if let Some(num) = issue_num.split('#').next() {
-                        if let Ok(n) = num.parse::<i64>() {
-                            metadata.insert("issue_number".to_string(), serde_json::Value::Number(n.into()));
-                        }
-                    }
+                if let Some(num) = issue_number {
+                    metadata.insert("issue_number".to_string(), serde_json::Value::Number(num.into()));
                 }
 
                 let message = InboundMessage {
@@ -267,11 +295,13 @@ impl GitHubInboundAdapter {
         }
 
         if self.config.events.contains(&"issues".to_string()) {
-            let issues = client.get_issues(since.as_deref(), None).await
-                .context("Failed to fetch issues")?;
-
-            for issue in issues {
+            for issue in &open_issues {
                 if issue.pull_request.is_some() {
+                    continue;
+                }
+
+                if issue.state != "open" {
+                    tracing::debug!(issue = issue.number, state = %issue.state, "Skipping non-open issue");
                     continue;
                 }
 
@@ -286,7 +316,7 @@ impl GitHubInboundAdapter {
                 metadata.insert("labels".to_string(), serde_json::Value::Array(labels_json));
                 metadata.insert("html_url".to_string(), serde_json::Value::String(issue.html_url.clone()));
 
-                let body = issue.body.unwrap_or_default();
+                let body = issue.body.clone().unwrap_or_default();
 
                 let message = InboundMessage {
                     id: Uuid::new_v4().to_string(),

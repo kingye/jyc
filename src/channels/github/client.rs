@@ -44,6 +44,10 @@ impl GitHubClient {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", self.config.token).parse().unwrap(),
         );
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            "jyc-bot".parse().unwrap(),
+        );
         headers
     }
 
@@ -56,6 +60,8 @@ impl GitHubClient {
             url = format!("{}?since={}", url, since);
         }
 
+        tracing::debug!(url = %url, "Fetching GitHub issue comments");
+
         let response = self
             .http_client
             .get(&url)
@@ -67,7 +73,7 @@ impl GitHubClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("GitHub API error: {} - {}", status, text);
+            anyhow::bail!("GitHub API error ({}): {} - URL: {}", status, text, url);
         }
 
         let comments: Vec<GitHubIssueComment> = response

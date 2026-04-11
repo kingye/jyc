@@ -45,16 +45,18 @@ Step 1: Verify jyc/target/release/jyc exists
 Step 2: Send reply FIRST using reply_message tool — confirm deployment is starting and report build results
 Step 3: AFTER reply is sent, execute this deploy command EXACTLY:
    ```
-   systemd-run --user --unit=jyc-deploy --working-directory=$(pwd)/jyc bash ./deploy.sh
+   systemd-run --user --unit=jyc-deploy-$(date +%s) --working-directory=$(pwd)/jyc bash ./deploy.sh
    ```
    This runs deploy.sh as a separate systemd transient unit, outside the jyc service cgroup,
    so it survives the jyc service stop/restart cycle.
+   The timestamp in the unit name prevents conflicts with previous deploy units.
 Step 4: STOP immediately after running the deploy command. Do NOT run any more commands.
 
 CRITICAL Warnings:
 - Do NOT send reply AFTER the deploy command — process will be dead and reply will fail
 - Do NOT run the deploy command multiple times — one restart is sufficient
 - Do NOT improvise or use alternative commands
+- Do NOT run deploy.sh directly with `bash ./deploy.sh` — it MUST use systemd-run to survive the service restart
 - Do NOT use "systemctl --user stop jyc" or "systemctl --user start jyc" or "systemctl --user restart jyc" directly — always use deploy.sh
 
 ## Build and Deploy (when instructed)

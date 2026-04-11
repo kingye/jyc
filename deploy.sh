@@ -7,17 +7,21 @@ trap '' HUP
 
 echo "=== JYC Deployment Script ==="
 
-# Set directories (can be overridden via environment)
-WORKDIR="${WORKDIR:-/home/jiny/projects/jyc-data/jiny283a/workspace/self-hosting-jyc}"
-JYC_DIR="${WORKDIR}/jyc"
-INSTALL_DIR="${INSTALL_DIR:-/home/jiny/projects/jyc}"
+# Auto-detect: script is in the jyc repo directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NEW_BINARY="${SCRIPT_DIR}/target/release/jyc"
 
-NEW_BINARY="${JYC_DIR}/target/release/jyc"
-INSTALL_BINARY="${INSTALL_DIR}/jyc"
+# Auto-detect install path from systemd service ExecStart
+INSTALL_BINARY=$(systemctl --user show jyc -p ExecStart --value | awk '{print $1}')
 
-echo "Source directory: ${WORKDIR}"
-echo "JYC directory: ${JYC_DIR}"
-echo "Installation directory: ${INSTALL_DIR}"
+if [ -z "$INSTALL_BINARY" ]; then
+    echo "ERROR: Cannot detect install path from systemd jyc.service"
+    echo "Is the jyc.service installed? Check: systemctl --user status jyc"
+    exit 1
+fi
+
+echo "Source binary: ${NEW_BINARY}"
+echo "Install target: ${INSTALL_BINARY}"
 echo ""
 
 # Check if new binary exists

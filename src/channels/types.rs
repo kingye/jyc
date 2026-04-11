@@ -298,10 +298,6 @@ pub struct PatternRules {
     /// Feishu group chat names to match (OR logic, case-insensitive)
     /// Matches against the chat name from the Feishu API (metadata["chat_name"])
     pub chat_name: Option<Vec<String>>,
-
-    // --- GitHub rules ---
-    /// GitHub issue labels to match (OR logic, case-insensitive)
-    pub labels: Option<Vec<String>>,
 }
 
 /// Rules for matching the sender of a message.

@@ -469,7 +469,6 @@ mod tests {
                 mentions,
                 keywords,
                 chat_name: None,
-                labels: None,
             },
             attachments: None,
             ..Default::default()

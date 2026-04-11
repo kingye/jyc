@@ -181,11 +181,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 ### Components
 
 1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, etc.)
- 2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/API)
- 3. **Channel Registry** — Lookup adapters by channel type (uses `Arc<dyn>` trait objects). Currently `#[allow(dead_code)]` / unused — ThreadManager uses `Arc<dyn OutboundAdapter>` directly.
- 4. **Message Router** — Delegates matching/naming to `ChannelMatcher` trait, dispatches to thread queues. Channel-agnostic: `route(matcher: &dyn ChannelMatcher, ...)`
- 5. **Thread Manager** — Per-thread mpsc queues with semaphore-bounded concurrency. Dispatches to agent services. Handles fallback send if agent returns text instead of sending via tool. Includes Thread Event system for heartbeat control.
- 6. **OpenCode Service** — AI agent: server lifecycle, session management, prompt building, SSE streaming, error recovery. Returns `GenerateReplyResult` to the caller — does NOT send emails.
+ 2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API)
 
 ### Supported Channels
 
@@ -193,7 +189,6 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 |---------|---------|----------|------|
 | Email | IMAP polling/IDLE | SMTP | DESIGN.md |
 | Feishu | WebSocket events | Feishu API | FEISHU.md |
-| GitHub | REST API polling | Issue comments | GITHUB_CHANNEL.md |
  7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
  8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section) via `send_heartbeat()`.
  9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage

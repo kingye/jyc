@@ -70,15 +70,18 @@ impl MessageRouter {
         let thread_name =
             matcher.derive_thread_name(&message, patterns, pattern_match.as_ref());
 
+        // Safe to unwrap because we checked is_some() above
+        let pattern_name = pattern_match.as_ref().expect("pattern_match should be Some").pattern_name.clone();
+        
         tracing::info!(
             channel = %ch,
             thread = %thread_name,
-            pattern = %pattern_match.as_ref().unwrap().pattern_name,
+            pattern = %pattern_name,
             "Routing to thread"
         );
 
         // 3. Get attachment config and template from the matched pattern
-        let matched_pattern_name = pattern_match.as_ref().unwrap().pattern_name.clone();
+        let matched_pattern_name = pattern_name;
         let attachment_config = patterns
             .iter()
             .find(|p| p.name == matched_pattern_name)
@@ -94,8 +97,9 @@ impl MessageRouter {
         }
 
         // 4. Enqueue (channel-agnostic)
+        let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager
-            .enqueue(message, thread_name, pattern_match.unwrap(), attachment_config)
+            .enqueue(message, thread_name, pm, attachment_config)
             .await;
     }
 

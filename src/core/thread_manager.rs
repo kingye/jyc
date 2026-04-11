@@ -321,8 +321,12 @@ impl ThreadManager {
                     
                     // Save pattern name for /template command
                     let pattern_file = thread_path.join(".jyc").join("pattern");
-                    let _ = tokio::fs::create_dir_all(thread_path.join(".jyc")).await;
-                    let _ = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await;
+                    if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
+                        tracing::warn!(error = %e, "Failed to create .jyc directory");
+                    }
+                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                        tracing::warn!(error = %e, "Failed to write pattern file");
+                    }
                     
                     if let Err(e) = initialize_thread_from_template(
                         &thread_path,

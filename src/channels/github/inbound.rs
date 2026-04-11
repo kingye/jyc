@@ -233,157 +233,300 @@ impl GitHubInboundAdapter {
         since: &Option<String>,
         options: &InboundAdapterOptions,
     ) -> Result<()> {
-        // Fetch open issues once (used for both issue processing and comment filtering)
-        let open_issues = client.get_issues(since.as_deref(), Some("open")).await
+        // Fetch all open items (issues + PRs) from GitHub.
+        // GitHub's /issues API returns both issues and PRs.
+        let open_items = client.get_issues(since.as_deref(), Some("open")).await
             .context("Failed to fetch open issues")?;
-        let open_issue_numbers: std::collections::HashSet<i64> = open_issues.iter()
-            .filter(|i| i.pull_request.is_none())
-            .map(|i| i.number)
-            .collect();
 
-        if self.config.events.contains(&"issue_comment".to_string()) {
-            let comments = client.get_issue_comments(since.as_deref()).await
-                .context("Failed to fetch issue comments")?;
-
-            let mut processed_comments = self.processed_comment_ids.lock().unwrap();
-
-            for comment in comments {
-                // Skip already processed comments
-                if processed_comments.contains(&comment.id) {
-                    continue;
-                }
-
-                // Skip bot's own comments (detect by checking if body contains our reply footer)
-                // Also skip if the comment user matches the GitHub app/bot user
-                if comment.user.login.ends_with("[bot]") || comment.body.contains("Model:") && comment.body.contains("Mode:") {
-                    tracing::trace!(comment_id = comment.id, user = %comment.user.login, "Skipping bot's own comment");
-                    processed_comments.insert(comment.id);
-                    continue;
-                }
-
-                // Extract issue number from comment URL
-                let issue_number = comment.html_url
-                    .split("/issues/")
-                    .nth(1)
-                    .and_then(|s| s.split('#').next())
-                    .and_then(|s| s.parse::<i64>().ok());
-
-                // Skip comments on closed issues or PRs
-                if let Some(num) = issue_number {
-                    if !open_issue_numbers.contains(&num) {
-                        tracing::trace!(comment_id = comment.id, issue = num, "Skipping comment on closed/PR issue");
-                        processed_comments.insert(comment.id);
-                        continue;
-                    }
-                } else {
-                    tracing::trace!(comment_id = comment.id, url = %comment.html_url, "Skipping comment: cannot extract issue number");
-                    processed_comments.insert(comment.id);
-                    continue;
-                }
-
-                // Mark as processed
-                processed_comments.insert(comment.id);
-
-                let mut metadata = HashMap::new();
-                metadata.insert("repo".to_string(), serde_json::Value::String(format!("{}/{}", self.config.owner, self.config.repo)));
-                metadata.insert("action".to_string(), serde_json::Value::String("created".to_string()));
-                metadata.insert("event_type".to_string(), serde_json::Value::String("issue_comment".to_string()));
-                metadata.insert("comment_id".to_string(), serde_json::Value::Number(comment.id.into()));
-
-                if let Some(num) = issue_number {
-                    metadata.insert("issue_number".to_string(), serde_json::Value::Number(num.into()));
-                }
-
-                let message = InboundMessage {
-                    id: Uuid::new_v4().to_string(),
-                    channel: self.channel_name.clone(),
-                    channel_uid: comment.id.to_string(),
-                    sender: comment.user.login.clone(),
-                    sender_address: comment.user.id.to_string(),
-                    recipients: vec![],
-                    topic: "".to_string(),
-                    content: MessageContent {
-                        text: Some(comment.body.clone()),
-                        html: None,
-                        markdown: Some(comment.body.clone()),
-                    },
-                    timestamp: DateTime::parse_from_rfc3339(&comment.created_at)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    thread_refs: None,
-                    reply_to_id: metadata.get("issue_number").and_then(|v| v.as_i64()).map(|n| n.to_string()),
-                    external_id: Some(comment.id.to_string()),
-                    attachments: vec![],
-                    metadata,
-                    matched_pattern: None,
-                };
-
-                (options.on_message)(message)?;
+        // Classify open items into issues and PRs, build lookup sets
+        let mut open_issue_numbers = std::collections::HashSet::new();
+        let mut open_pr_numbers = std::collections::HashSet::new();
+        for item in &open_items {
+            if item.pull_request.is_some() {
+                open_pr_numbers.insert(item.number);
+            } else {
+                open_issue_numbers.insert(item.number);
             }
         }
 
+        // All open item numbers (for comment filtering — both issues and PRs)
+        let all_open_numbers: std::collections::HashSet<i64> = open_issue_numbers
+            .union(&open_pr_numbers)
+            .cloned()
+            .collect();
+
+        // Process comments on open issues and PRs
+        if self.config.events.contains(&"issue_comment".to_string()) {
+            self.process_comments(client, since, &all_open_numbers, options).await?;
+        }
+
+        // Process new issues
         if self.config.events.contains(&"issues".to_string()) {
-            let mut processed_issues = self.processed_issue_ids.lock().unwrap();
+            self.process_issues(&open_items, options)?;
+        }
 
-            for issue in &open_issues {
-                if issue.pull_request.is_some() {
-                    continue;
-                }
-
-                if issue.state != "open" {
-                    continue;
-                }
-
-                // Skip already-processed issues (avoid re-sending unchanged issues every poll)
-                if processed_issues.contains(&issue.id) {
-                    continue;
-                }
-
-                // Mark as processed
-                processed_issues.insert(issue.id);
-
-                let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
-                let labels_json: Vec<serde_json::Value> = labels.iter().map(|l| serde_json::Value::String(l.clone())).collect();
-
-                let mut metadata = HashMap::new();
-                metadata.insert("repo".to_string(), serde_json::Value::String(format!("{}/{}", self.config.owner, self.config.repo)));
-                metadata.insert("action".to_string(), serde_json::Value::String(issue.state.clone()));
-                metadata.insert("event_type".to_string(), serde_json::Value::String("issues".to_string()));
-                metadata.insert("issue_number".to_string(), serde_json::Value::Number(issue.number.into()));
-                metadata.insert("labels".to_string(), serde_json::Value::Array(labels_json));
-                metadata.insert("html_url".to_string(), serde_json::Value::String(issue.html_url.clone()));
-
-                let body = issue.body.clone().unwrap_or_default();
-
-                let message = InboundMessage {
-                    id: Uuid::new_v4().to_string(),
-                    channel: self.channel_name.clone(),
-                    channel_uid: issue.number.to_string(),
-                    sender: issue.user.login.clone(),
-                    sender_address: issue.user.id.to_string(),
-                    recipients: vec![],
-                    topic: issue.title.clone(),
-                    content: MessageContent {
-                        text: Some(body.clone()),
-                        html: None,
-                        markdown: Some(body.clone()),
-                    },
-                    timestamp: DateTime::parse_from_rfc3339(&issue.created_at)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    thread_refs: None,
-                    reply_to_id: Some(issue.number.to_string()),
-                    external_id: Some(issue.id.to_string()),
-                    attachments: vec![],
-                    metadata,
-                    matched_pattern: None,
-                };
-
-                (options.on_message)(message)?;
-            }
+        // Process new PRs (routed to linked issue thread or own PR thread)
+        if self.config.events.contains(&"pull_request".to_string()) {
+            self.process_pull_requests(&open_items, options)?;
         }
 
         Ok(())
+    }
+
+    /// Process new comments on open issues and PRs.
+    ///
+    /// Comments are routed to the thread of the issue/PR they belong to.
+    /// Bot's own comments are skipped to prevent feedback loops.
+    async fn process_comments(
+        &self,
+        client: &GitHubClient,
+        since: &Option<String>,
+        open_numbers: &std::collections::HashSet<i64>,
+        options: &InboundAdapterOptions,
+    ) -> Result<()> {
+        let comments = client.get_issue_comments(since.as_deref()).await
+            .context("Failed to fetch issue comments")?;
+
+        let mut processed = self.processed_comment_ids.lock().unwrap();
+
+        for comment in comments {
+            if processed.contains(&comment.id) {
+                continue;
+            }
+
+            // Skip bot's own comments to prevent feedback loops
+            if self.is_bot_comment(&comment) {
+                tracing::trace!(comment_id = comment.id, user = %comment.user.login, "Skipping bot comment");
+                processed.insert(comment.id);
+                continue;
+            }
+
+            // Extract issue/PR number from comment URL
+            let item_number = Self::extract_item_number_from_url(&comment.html_url);
+
+            // Skip comments on closed items
+            if let Some(num) = item_number {
+                if !open_numbers.contains(&num) {
+                    tracing::trace!(comment_id = comment.id, item = num, "Skipping comment on closed item");
+                    processed.insert(comment.id);
+                    continue;
+                }
+            } else {
+                tracing::trace!(comment_id = comment.id, url = %comment.html_url, "Skipping comment: cannot extract item number");
+                processed.insert(comment.id);
+                continue;
+            }
+
+            processed.insert(comment.id);
+
+            let issue_number = item_number.unwrap();
+            let mut metadata = HashMap::new();
+            metadata.insert("repo".to_string(), serde_json::json!(format!("{}/{}", self.config.owner, self.config.repo)));
+            metadata.insert("action".to_string(), serde_json::json!("created"));
+            metadata.insert("event_type".to_string(), serde_json::json!("issue_comment"));
+            metadata.insert("comment_id".to_string(), serde_json::json!(comment.id));
+            metadata.insert("issue_number".to_string(), serde_json::json!(issue_number));
+
+            let message = InboundMessage {
+                id: Uuid::new_v4().to_string(),
+                channel: self.channel_name.clone(),
+                channel_uid: comment.id.to_string(),
+                sender: comment.user.login.clone(),
+                sender_address: comment.user.id.to_string(),
+                recipients: vec![],
+                topic: "".to_string(),
+                content: MessageContent {
+                    text: Some(comment.body.clone()),
+                    html: None,
+                    markdown: Some(comment.body.clone()),
+                },
+                timestamp: DateTime::parse_from_rfc3339(&comment.created_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                thread_refs: None,
+                reply_to_id: Some(issue_number.to_string()),
+                external_id: Some(comment.id.to_string()),
+                attachments: vec![],
+                metadata,
+                matched_pattern: None,
+            };
+
+            (options.on_message)(message)?;
+        }
+
+        Ok(())
+    }
+
+    /// Process new issues (not PRs).
+    ///
+    /// Only open issues that haven't been processed before are sent.
+    fn process_issues(
+        &self,
+        open_items: &[super::types::GitHubIssue],
+        options: &InboundAdapterOptions,
+    ) -> Result<()> {
+        let mut processed = self.processed_issue_ids.lock().unwrap();
+
+        for issue in open_items {
+            // Skip PRs — handled by process_pull_requests
+            if issue.pull_request.is_some() {
+                continue;
+            }
+
+            if issue.state != "open" {
+                continue;
+            }
+
+            if processed.contains(&issue.id) {
+                continue;
+            }
+
+            processed.insert(issue.id);
+
+            let message = self.build_issue_message(issue, "issues");
+            (options.on_message)(message)?;
+        }
+
+        Ok(())
+    }
+
+    /// Process new PRs.
+    ///
+    /// PRs are treated similarly to issues. If a PR body references an issue
+    /// (e.g., "Fixes #42"), it could be linked to the issue's thread.
+    /// Otherwise, it gets its own thread (github-<pr_number>).
+    fn process_pull_requests(
+        &self,
+        open_items: &[super::types::GitHubIssue],
+        options: &InboundAdapterOptions,
+    ) -> Result<()> {
+        let mut processed = self.processed_issue_ids.lock().unwrap();
+
+        for item in open_items {
+            // Only PRs
+            if item.pull_request.is_none() {
+                continue;
+            }
+
+            if item.state != "open" {
+                continue;
+            }
+
+            if processed.contains(&item.id) {
+                continue;
+            }
+
+            processed.insert(item.id);
+
+            // Check if PR body references an issue (Fixes #N, Closes #N, etc.)
+            let linked_issue = item.body.as_deref()
+                .and_then(Self::extract_linked_issue_number);
+
+            let mut message = self.build_issue_message(item, "pull_request");
+
+            // If linked to an issue, route to that issue's thread
+            if let Some(issue_num) = linked_issue {
+                message.metadata.insert("linked_issue".to_string(), serde_json::json!(issue_num));
+                message.metadata.insert("issue_number".to_string(), serde_json::json!(issue_num));
+                tracing::debug!(
+                    pr = item.number,
+                    linked_issue = issue_num,
+                    "PR linked to issue, routing to issue thread"
+                );
+            }
+
+            (options.on_message)(message)?;
+        }
+
+        Ok(())
+    }
+
+    /// Build an InboundMessage from a GitHub issue/PR.
+    fn build_issue_message(&self, issue: &super::types::GitHubIssue, event_type: &str) -> InboundMessage {
+        let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+        let labels_json: Vec<serde_json::Value> = labels.iter().map(|l| serde_json::json!(l)).collect();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("repo".to_string(), serde_json::json!(format!("{}/{}", self.config.owner, self.config.repo)));
+        metadata.insert("action".to_string(), serde_json::json!(issue.state.clone()));
+        metadata.insert("event_type".to_string(), serde_json::json!(event_type));
+        metadata.insert("issue_number".to_string(), serde_json::json!(issue.number));
+        metadata.insert("labels".to_string(), serde_json::Value::Array(labels_json));
+        metadata.insert("html_url".to_string(), serde_json::json!(issue.html_url.clone()));
+
+        if issue.pull_request.is_some() {
+            metadata.insert("is_pr".to_string(), serde_json::json!(true));
+        }
+
+        let body = issue.body.clone().unwrap_or_default();
+
+        InboundMessage {
+            id: Uuid::new_v4().to_string(),
+            channel: self.channel_name.clone(),
+            channel_uid: issue.number.to_string(),
+            sender: issue.user.login.clone(),
+            sender_address: issue.user.id.to_string(),
+            recipients: vec![],
+            topic: issue.title.clone(),
+            content: MessageContent {
+                text: Some(body.clone()),
+                html: None,
+                markdown: Some(body),
+            },
+            timestamp: DateTime::parse_from_rfc3339(&issue.created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            thread_refs: None,
+            reply_to_id: Some(issue.number.to_string()),
+            external_id: Some(issue.id.to_string()),
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        }
+    }
+
+    /// Check if a comment was posted by the bot itself.
+    fn is_bot_comment(&self, comment: &super::types::GitHubIssueComment) -> bool {
+        // Check for [bot] suffix (GitHub App bots)
+        if comment.user.login.ends_with("[bot]") {
+            return true;
+        }
+        // Check for reply footer pattern (jyc's reply footer)
+        if comment.body.contains("Model:") && comment.body.contains("Mode:") {
+            return true;
+        }
+        false
+    }
+
+    /// Extract issue/PR number from a GitHub URL.
+    /// Handles both /issues/N and /pull/N URLs.
+    fn extract_item_number_from_url(url: &str) -> Option<i64> {
+        // Try /issues/N#issuecomment-...
+        if let Some(num_str) = url.split("/issues/").nth(1) {
+            if let Some(num) = num_str.split('#').next() {
+                if let Ok(n) = num.parse::<i64>() {
+                    return Some(n);
+                }
+            }
+        }
+        // Try /pull/N#...
+        if let Some(num_str) = url.split("/pull/").nth(1) {
+            if let Some(num) = num_str.split('#').next() {
+                if let Ok(n) = num.parse::<i64>() {
+                    return Some(n);
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract linked issue number from PR body.
+    /// Looks for patterns like "Fixes #42", "Closes #42", "Resolves #42".
+    fn extract_linked_issue_number(body: &str) -> Option<i64> {
+        let re = regex::Regex::new(r"(?i)(?:fix(?:es)?|close[sd]?|resolve[sd]?)\s+#(\d+)").ok()?;
+        re.captures(body)
+            .and_then(|caps| caps.get(1))
+            .and_then(|m| m.as_str().parse::<i64>().ok())
     }
 }
 

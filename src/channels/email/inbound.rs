@@ -400,6 +400,7 @@ mod tests {
                 chat_name: None,
             },
             attachments: None,
+            ..Default::default()
         }
     }
 

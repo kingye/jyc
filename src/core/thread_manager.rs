@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinHandle;
@@ -15,7 +16,9 @@ use crate::core::command::model_handler::ModelCommandHandler;
 use crate::core::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::core::command::registry::CommandRegistry;
 use crate::core::command::reset_handler::ResetCommandHandler;
+use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::template_utils::copy_template_files;
 use crate::services::agent::AgentService;
 
 /// An item in a thread's message queue.
@@ -24,6 +27,7 @@ pub struct QueueItem {
     #[allow(dead_code)]
     pub pattern_match: PatternMatch,
     pub attachment_config: Option<InboundAttachmentConfig>,
+    pub template: Option<String>,
 }
 
 /// Per-thread queue stats.
@@ -66,6 +70,9 @@ pub struct ThreadManager {
     // Per-channel heartbeat message template (supports {elapsed} placeholder)
     heartbeat_template: String,
 
+    // Template directory for thread initialization
+    template_dir: PathBuf,
+
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -82,6 +89,7 @@ impl ThreadManager {
         cancel: CancellationToken,
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
+        template_dir: PathBuf,
     ) -> Self {
         Self::new_with_options(
             max_concurrent,
@@ -93,6 +101,7 @@ impl ThreadManager {
             true, // enable_events: true by default (Thread Event system)
             heartbeat_config,
             heartbeat_template,
+            template_dir,
         )
     }
     
@@ -107,6 +116,7 @@ impl ThreadManager {
         enable_events: bool,
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
+        template_dir: PathBuf,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -119,6 +129,7 @@ impl ThreadManager {
             enable_events,
             heartbeat_config,
             heartbeat_template,
+            template_dir,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
         }
@@ -154,10 +165,15 @@ impl ThreadManager {
             }
         }
 
+        let template = message.metadata.get("template")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        
         let item = QueueItem {
             message,
             pattern_match,
             attachment_config,
+            template,
         };
 
         if let Some(sender) = queues.get(&thread_name) {
@@ -231,6 +247,7 @@ impl ThreadManager {
         let agent = self.agent.clone();
         let heartbeat_config = self.heartbeat_config.clone();
         let heartbeat_template = self.heartbeat_template.clone();
+        let template_dir = self.template_dir.clone();
         let tm_span = tracing::info_span!("tm", t = %thread_name);
 
         tokio::spawn(async move {
@@ -297,6 +314,34 @@ impl ThreadManager {
                     }
                 };
 
+                // Initialize thread from template if needed
+                if let Some(ref template_name) = item.template {
+                    let workspace = storage.workspace();
+                    let thread_path = workspace.join(&thread_name);
+                    
+                    // Initialize template first (before creating .jyc to avoid exists check failing)
+                    if let Err(e) = initialize_thread_from_template(
+                        &thread_path,
+                        template_name,
+                        &template_dir,
+                    ).await {
+                        tracing::warn!(
+                            error = %e,
+                            template = %template_name,
+                            "Failed to initialize thread from template"
+                        );
+                    }
+                    
+                    // Save pattern name for /template command (after template init)
+                    let pattern_file = thread_path.join(".jyc").join("pattern");
+                    if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
+                        tracing::warn!(error = %e, "Failed to create .jyc directory");
+                    }
+                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                        tracing::warn!(error = %e, "Failed to write pattern file");
+                    }
+                }
+
                 // Update current message for event listeners
                 let _ = current_message_tx.send(Some(item.message.clone()));
                 
@@ -307,6 +352,7 @@ impl ThreadManager {
                     outbound.as_ref(),
                     agent.clone(),
                     &mut rx,
+                    &template_dir,
                 ).await {
                     tracing::error!(
                         error = %e,
@@ -577,6 +623,7 @@ async fn process_message(
     outbound: &dyn OutboundAdapter,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
+    template_dir: &PathBuf,
 ) -> Result<()> {
     let message = &item.message;
 
@@ -605,6 +652,7 @@ async fn process_message(
     command_registry.register(Box::new(PlanCommandHandler));
     command_registry.register(Box::new(BuildCommandHandler));
     command_registry.register(Box::new(ResetCommandHandler));
+    command_registry.register(Box::new(TemplateCommandHandler));
 
     let cmd_context = CommandContext {
         args: vec![],
@@ -614,6 +662,7 @@ async fn process_message(
         ).unwrap()),
         channel: message.channel.clone(),
         agent: Some(agent.clone()),
+        template_dir: template_dir.clone(),
     };
 
     let cmd_output = command_registry
@@ -789,4 +838,30 @@ async fn read_signal_attachments(
         .collect();
 
     Some(attachments)
+}
+
+async fn initialize_thread_from_template(
+    thread_path: &Path,
+    template_name: &str,
+    template_dir: &Path,
+) -> Result<()> {
+    if thread_path.exists() {
+        return Ok(());
+    }
+    
+    let template_src = template_dir.join(template_name);
+    if !template_src.exists() {
+        tracing::warn!(
+            template = %template_name,
+            path = %template_src.display(),
+            "Template directory does not exist"
+        );
+        return Ok(());
+    }
+    
+    copy_template_files(&template_src, thread_path).await?;
+    
+    tracing::info!(template = %template_name, "Thread initialized from template");
+    
+    Ok(())
 }

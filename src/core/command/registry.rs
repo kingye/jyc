@@ -205,6 +205,7 @@ mode = "opencode"
             ).unwrap()),
             channel: "test".into(),
             agent: None,
+            template_dir: PathBuf::from("/tmp/test/templates"),
         }
     }
 

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::services::opencode::client::OpenCodeClient;
@@ -337,6 +337,7 @@ mode = "opencode"
             ),
             channel: "test".into(),
             agent: None,
+            template_dir: PathBuf::from("/tmp/test/templates"),
         }
     }
 

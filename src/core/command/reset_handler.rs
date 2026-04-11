@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::path::PathBuf;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -76,6 +77,7 @@ mode = "opencode"
             ),
             channel: "test".into(),
             agent: None,
+            template_dir: PathBuf::from("/tmp/test/templates"),
         }
     }
 

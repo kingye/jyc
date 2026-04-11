@@ -7,16 +7,23 @@ trap '' HUP
 
 echo "=== JYC Deployment Script ==="
 
+# Source environment variables (for JYC_BINARY)
+if [ -f ~/.zshrc.local ]; then
+  set -a
+  source ~/.zshrc.local
+  set +a
+fi
+
 # Auto-detect: script is in the jyc repo directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NEW_BINARY="${SCRIPT_DIR}/target/release/jyc"
 
-# Auto-detect install path from systemd service ExecStart
-INSTALL_BINARY=$(systemctl --user show jyc -p ExecStart --value | awk '{print $1}')
+# Install path from JYC_BINARY env var (set in ~/.zshrc.local)
+INSTALL_BINARY="${JYC_BINARY}"
 
 if [ -z "$INSTALL_BINARY" ]; then
-    echo "ERROR: Cannot detect install path from systemd jyc.service"
-    echo "Is the jyc.service installed? Check: systemctl --user status jyc"
+    echo "ERROR: JYC_BINARY environment variable not set."
+    echo "Add 'export JYC_BINARY=/path/to/jyc' to ~/.zshrc.local"
     exit 1
 fi
 

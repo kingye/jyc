@@ -907,16 +907,11 @@ impl OpenCodeClient {
                             );
                         }
 
-                        // Early exit after reply tool: the reply_message tool already
-                        // completed in this step, so we have the reply text in the parts.
-                        // No need to wait for the AI to finish additional steps.
+                        // Reply tool completed: mark for result tracking but do NOT exit early.
+                        // The AI may have additional steps after reply (e.g., deploy command).
+                        // Let OpenCode finish all steps naturally.
                         if *reply_tool_completed {
-                            tracing::info!("Exiting SSE early — reply tool completed in this step");
-                            // Store the part before returning
-                            if let Some(ref id) = part.id {
-                                parts.insert(id.clone(), part);
-                            }
-                            return SseAction::Done;
+                            tracing::info!("Reply tool completed — continuing to process remaining steps");
                         }
                     }
 

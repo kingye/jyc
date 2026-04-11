@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::services::opencode::client::OpenCodeClient;
@@ -306,6 +306,7 @@ impl CommandHandler for ModelCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn test_context(thread_path: &Path) -> CommandContext {

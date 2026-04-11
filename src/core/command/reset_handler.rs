@@ -44,7 +44,7 @@ impl CommandHandler for ResetCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     fn test_context(thread_path: &Path) -> CommandContext {

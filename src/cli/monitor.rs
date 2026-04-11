@@ -205,6 +205,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "Still working on your request... ({elapsed} elapsed)".to_string());
 
+        let template_dir = workdir.join("templates");
+        
         let thread_manager = Arc::new(ThreadManager::new_with_options(
             config.general.max_concurrent_threads,
             config.general.max_queue_size_per_thread,
@@ -215,6 +217,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             true, // enable_events: true for Thread Event system
             config.heartbeat.clone(),
             heartbeat_template,
+            template_dir,
         ));
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));

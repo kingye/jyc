@@ -6,6 +6,7 @@ pub mod email_parser;
 pub mod message_router;
 pub mod message_storage;
 pub mod state_manager;
+pub mod template_utils;
 pub mod thread_event;
 pub mod thread_event_bus;
 pub mod thread_manager;

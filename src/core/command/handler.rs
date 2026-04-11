@@ -18,6 +18,8 @@ pub struct CommandContext {
     pub channel: String,
     /// Agent service (optional, for commands that need to query server)
     pub agent: Option<Arc<dyn crate::services::agent::AgentService>>,
+    /// Template directory path
+    pub template_dir: PathBuf,
 }
 
 impl std::fmt::Debug for CommandContext {

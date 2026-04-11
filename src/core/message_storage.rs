@@ -28,6 +28,10 @@ impl MessageStorage {
         }
     }
 
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     /// Store an inbound message with match status.
     ///
     /// Appends the message to the chat log (log-based storage).

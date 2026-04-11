@@ -257,7 +257,7 @@ impl GitHubInboundAdapter {
 
         // Process comments on open issues and PRs
         if self.config.events.contains(&"issue_comment".to_string()) {
-            self.process_comments(client, since, &all_open_numbers, options).await?;
+            self.process_comments(client, since, &all_open_numbers, &open_items, options).await?;
         }
 
         // Process new issues
@@ -276,16 +276,26 @@ impl GitHubInboundAdapter {
     /// Process new comments on open issues and PRs.
     ///
     /// Comments are routed to the thread of the issue/PR they belong to.
+    /// Labels are inherited from the parent issue/PR for pattern matching.
     /// Bot's own comments are skipped to prevent feedback loops.
     async fn process_comments(
         &self,
         client: &GitHubClient,
         since: &Option<String>,
         open_numbers: &std::collections::HashSet<i64>,
+        open_items: &[super::types::GitHubIssue],
         options: &InboundAdapterOptions,
     ) -> Result<()> {
         let comments = client.get_issue_comments(since.as_deref()).await
             .context("Failed to fetch issue comments")?;
+
+        // Build a lookup: issue/PR number → labels
+        let item_labels: HashMap<i64, Vec<String>> = open_items.iter()
+            .map(|item| {
+                let labels = item.labels.iter().map(|l| l.name.clone()).collect();
+                (item.number, labels)
+            })
+            .collect();
 
         let mut processed = self.processed_comment_ids.lock().unwrap();
 
@@ -320,12 +330,24 @@ impl GitHubInboundAdapter {
             processed.insert(comment.id);
 
             let issue_number = item_number.unwrap();
+
+            // Inherit labels from parent issue/PR for pattern matching
+            let labels = item_labels.get(&issue_number).cloned().unwrap_or_default();
+            let labels_json: Vec<serde_json::Value> = labels.iter().map(|l| serde_json::json!(l)).collect();
+
+            // Get parent issue/PR title for the topic field
+            let parent_title = open_items.iter()
+                .find(|i| i.number == issue_number)
+                .map(|i| i.title.clone())
+                .unwrap_or_default();
+
             let mut metadata = HashMap::new();
             metadata.insert("repo".to_string(), serde_json::json!(format!("{}/{}", self.config.owner, self.config.repo)));
             metadata.insert("action".to_string(), serde_json::json!("created"));
             metadata.insert("event_type".to_string(), serde_json::json!("issue_comment"));
             metadata.insert("comment_id".to_string(), serde_json::json!(comment.id));
             metadata.insert("issue_number".to_string(), serde_json::json!(issue_number));
+            metadata.insert("labels".to_string(), serde_json::Value::Array(labels_json));
 
             let message = InboundMessage {
                 id: Uuid::new_v4().to_string(),
@@ -334,7 +356,7 @@ impl GitHubInboundAdapter {
                 sender: comment.user.login.clone(),
                 sender_address: comment.user.id.to_string(),
                 recipients: vec![],
-                topic: "".to_string(),
+                topic: parent_title,
                 content: MessageContent {
                     text: Some(comment.body.clone()),
                     html: None,

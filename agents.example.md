@@ -5,9 +5,9 @@ uncomment the environment section that matches your deployment.
 
 ## Setup
 
-1. Copy this file to your thread workspace:
+1. Clone the jyc repository into your thread workspace (if not already present):
    ```bash
-   cp jyc/agents.example.md AGENTS.md
+   git clone https://github.com/kingye/jyc.git jyc
    ```
 
 2. Symlink the deploy skills so OpenCode can discover them:
@@ -16,7 +16,12 @@ uncomment the environment section that matches your deployment.
    ln -s ../jyc/.opencode/skills .opencode/skills
    ```
 
-3. Edit `AGENTS.md` and uncomment the environment section below that
+3. Copy this file as AGENTS.md:
+   ```bash
+   cp jyc/agents.example.md AGENTS.md
+   ```
+
+4. Edit `AGENTS.md` and uncomment the environment section below that
    matches your deployment.
 
 ## Instructions

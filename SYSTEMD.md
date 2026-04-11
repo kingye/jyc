@@ -6,7 +6,7 @@ This allows jyc to run with systemd process supervision, enabling self-bootstrap
 
 ### 1. Create systemd user service (one-time setup)
 
-The service file is created at `~/.config/systemd/user/jyc.service`:
+Replace `<JYC_BINARY>` with the path to your jyc binary and `<JYC_WORKDIR>` with your jyc data directory.
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -17,10 +17,10 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/home/jiny/.zshrc.local
-Environment=PATH=/home/jiny/.opencode/bin:/home/jiny/.local/bin:/home/jiny/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc-data --debug
-WorkingDirectory=/home/jiny/projects/jyc-data
+EnvironmentFile=%h/.zshrc.local
+Environment=PATH=%h/.opencode/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=<JYC_BINARY> monitor --workdir <JYC_WORKDIR> --debug
+WorkingDirectory=<JYC_WORKDIR>
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -34,39 +34,40 @@ systemctl --user daemon-reload
 systemctl --user enable jyc
 ```
 
+**Example** (adjust paths for your setup):
+```
+ExecStart=/home/user/bin/jyc monitor --workdir /home/user/jyc-data --debug
+WorkingDirectory=/home/user/jyc-data
+```
+
 **Environment Variables:**
 
-The service uses `run-jyc.sh` wrapper script that sources `~/.zshrc.local`.
-This means any environment variables defined in `~/.zshrc.local` will be available to jyc when running under systemd.
+The service uses `EnvironmentFile` to source `~/.zshrc.local`.
+Any environment variables defined there (API keys, etc.) will be available to jyc.
 
-The wrapper script (`run-jyc.sh`):
+Alternatively, use the `run-jyc.sh` wrapper script as `ExecStart`:
 ```bash
-#!/usr/bin/bash
-cd /home/jiny/projects/jyc-data
-
-# Source environment variables from .zshrc.local
-if [ -f ~/.zshrc.local ]; then
-  set -a
-  source ~/.zshrc.local
-  set +a
-fi
-
-exec /home/jiny/projects/jyc/jyc monitor --workdir /home/jiny/projects/jyc-data --debug
+ExecStart=/path/to/run-jyc.sh
 ```
 
-Update `~/.zshrc.local` and restart the service to apply changes:
-```bash
-systemctl --user restart jyc
-```
+The wrapper script auto-detects paths from `JYC_BINARY` and `JYC_WORKDIR` environment variables,
+or falls back to `which jyc` and the current directory.
 
 ### 2. Build jyc binary
 
 ```bash
+cd jyc  # your cloned jyc repository
 cargo build --release
-cp target/release/jyc jyc
 ```
 
-### 3. Start jyc with systemd
+### 3. Install the binary
+
+Copy the built binary to the location referenced in the service file:
+```bash
+cp target/release/jyc <JYC_BINARY>
+```
+
+### 4. Start jyc with systemd
 
 ```bash
 systemctl --user start jyc
@@ -76,7 +77,7 @@ systemctl --user start jyc
 
 ### Control Scripts
 
-- `./jyc-ctl.sh` - Control the jyc service
+- `jyc-ctl.sh` - Control the jyc service
 
 ### jyc-ctl Commands
 
@@ -87,56 +88,36 @@ systemctl --user start jyc
 # Follow service logs
 ./jyc-ctl.sh logs
 
-# Restart jyc (e.g., after self-bootstrapping)
+# Restart jyc
 ./jyc-ctl.sh restart
 
 # Stop jyc
-# WARN:-As AI never call this command, it will break the whole process
+# WARN: AI should never call this command, it will break the whole process
 ./jyc-ctl.sh stop
 
 # Start jyc
 ./jyc-ctl.sh start
 ```
 
-### Direct systemctl Commands
-
-```bash
-# Check service status
-systemctl --user status jyc
-
-# View logs
-journalctl --user -u jyc -f
-
-# Restart service
-systemctl --user restart jyc
-
-# Stop service
-# WARN:-As AI never call this command, it will break the whole process
-systemctl --user stop jyc
-
-# Start service
-systemctl --user start jyc
-```
-
 ## Self-Bootstrapping
 
-The AI can rebuild and deploy jyc from inside the running process:
+The AI can rebuild and deploy jyc using `deploy.sh`:
 
-1. Build: `cargo build --release`
-2. Deploy:
-   ```bash
-   cp target/release/jyc jyc
-   systemctl --user restart jyc
-   ```
-3. systemd automatically restarts jyc with the new binary
+1. Build: `cd jyc && cargo test && cargo build --release`
+2. Deploy: `systemd-run --user --unit=jyc-deploy --working-directory=$(pwd)/jyc bash ./deploy.sh`
 
-See `system.md.example` for detailed bootstrap instructions.
+`deploy.sh` auto-detects:
+- Source binary from its own directory (`target/release/jyc`)
+- Install path from systemd service (`ExecStart`)
+
+See the `jyc-deploy-bare` skill for detailed instructions.
 
 ## Architecture
 
 - **systemd user service**: Process supervisor (built into Linux)
 - **Service file**: `~/.config/systemd/user/jyc.service`
-- **Binary location**: `/home/jiny/projects/jyc/jyc` (gitignored)
+- **Binary location**: Configured in service file `ExecStart`
+- **Data directory**: Configured in service file `WorkingDirectory`
 - **Logs**: Managed by systemd journal (`journalctl --user -u jyc`)
 - **Restart policy**: `Restart=always` with 5-second delay
 
@@ -144,12 +125,15 @@ See `system.md.example` for detailed bootstrap instructions.
 
 ```
 ~/.config/systemd/user/
-└── jyc.service             # systemd user service file
+└── jyc.service              # systemd user service file
 
-/home/jiny/projects/jyc/
-├── jyc                      # binary (gitignored)
-├── jyc-ctl.sh              # control script
-└── system.md.example         # bootstrap instructions
+<JYC_WORKDIR>/               # jyc data directory
+├── config.toml              # jyc configuration
+├── <channel>/workspace/     # per-channel thread workspaces
+│   └── <thread>/
+│       └── jyc/             # cloned jyc repo (per-thread)
+
+<JYC_BINARY>                 # installed jyc binary
 ```
 
 ## Service Features
@@ -162,20 +146,9 @@ See `system.md.example` for detailed bootstrap instructions.
 
 ## Troubleshooting
 
-### Binary not found
-
-If the service fails to start due to missing binary:
-
-```bash
-cargo build --release
-cp target/release/jyc jyc
-systemctl --user restart jyc
-```
-
 ### Service won't start
 
 Check service status and logs:
-
 ```bash
 ./jyc-ctl.sh status
 ./jyc-ctl.sh logs
@@ -197,7 +170,6 @@ journalctl --user -u jyc -f
 ### Missing OpenSSL dev packages
 
 If build fails with OpenSSL errors:
-
 ```bash
 sudo apt-get install pkg-config libssl-dev
 ```

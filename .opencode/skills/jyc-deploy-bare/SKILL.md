@@ -42,15 +42,15 @@ WARNING: Process will be killed and restarted automatically by deploy.sh.
 MUST execute EXACTLY these steps in order:
 
 Step 1: Verify jyc/target/release/jyc exists
-Step 2: Send reply FIRST using reply_message tool — confirm deployment is starting and report build results
-Step 3: AFTER reply is sent, execute this deploy command EXACTLY:
+Step 2: Execute the deploy command FIRST (it returns immediately, deployment runs in background):
    ```
    systemd-run --user --unit=jyc-deploy-$(date +%s) --working-directory=$(pwd)/jyc bash ./deploy.sh
    ```
    This runs deploy.sh as a separate systemd transient unit, outside the jyc service cgroup,
    so it survives the jyc service stop/restart cycle.
    The timestamp in the unit name prevents conflicts with previous deploy units.
-Step 4: STOP immediately after running the deploy command. Do NOT run any more commands.
+Step 3: IMMEDIATELY after the deploy command, send reply using reply_message tool confirming deployment started.
+Step 4: STOP immediately. Do NOT run any more commands.
 
 CRITICAL Warnings:
 - Do NOT send reply AFTER the deploy command — process will be dead and reply will fail

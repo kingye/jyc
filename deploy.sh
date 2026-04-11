@@ -44,6 +44,12 @@ if [ -f "${INSTALL_BINARY}" ]; then
     echo ""
 fi
 
+# Wait for any pending reply to be delivered before stopping the service.
+# deploy.sh is launched via systemd-run (returns immediately), and the AI
+# sends a reply right after. This delay ensures the reply reaches the user.
+echo "Waiting 5 seconds for pending operations..."
+sleep 5
+
 # Stop service
 echo "Stopping jyc service..."
 if ! systemctl --user is-active --quiet jyc; then

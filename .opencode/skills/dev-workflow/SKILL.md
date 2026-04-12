@@ -102,6 +102,35 @@ Do NOT stop after updating files — complete all steps through push.
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 
+## GitHub CLI (gh)
+
+Use `gh` for ALL GitHub operations. Do NOT use `webfetch`, `curl`, or `wget` to access GitHub.
+The `gh` CLI is pre-authenticated. Always run from inside the repo directory (`cd jyc`).
+
+```bash
+# View PR details
+cd jyc && gh pr view <number>
+
+# View PR diff
+cd jyc && gh pr diff <number>
+
+# View PR review comments
+cd jyc && gh pr view <number> --comments
+cd jyc && gh api repos/{owner}/{repo}/pulls/<number>/reviews
+cd jyc && gh api repos/{owner}/{repo}/pulls/<number>/comments
+
+# Create PR
+cd jyc && gh pr create --title "..." --body "..."
+
+# List open PRs
+cd jyc && gh pr list
+
+# Post review comment
+cd jyc && gh pr review <number> --comment --body "..."
+```
+
+Do NOT attempt to access GitHub via HTTP URLs — the repo may be private.
+
 ## Commit Message Convention
 
 - `fix:` — bug fix

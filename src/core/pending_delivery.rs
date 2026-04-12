@@ -74,3 +74,229 @@ pub async fn watch_pending_deliveries(
         tokio::fs::remove_file(&reply_path).await.ok();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channels::types::{InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult};
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+    use tempfile::tempdir;
+
+    /// Mock outbound adapter that records delivered messages.
+    struct MockOutbound {
+        delivered: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockOutbound {
+        fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+            let delivered = Arc::new(Mutex::new(Vec::new()));
+            (Self { delivered: delivered.clone() }, delivered)
+        }
+    }
+
+    #[async_trait]
+    impl OutboundAdapter for MockOutbound {
+        fn channel_type(&self) -> &str { "mock" }
+
+        async fn connect(&self) -> anyhow::Result<()> { Ok(()) }
+
+        async fn disconnect(&self) -> anyhow::Result<()> { Ok(()) }
+
+        fn clean_body(&self, body: &str) -> String { body.to_string() }
+
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            reply_text: &str,
+            _thread_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[OutboundAttachment]>,
+        ) -> anyhow::Result<SendResult> {
+            self.delivered.lock().unwrap().push(reply_text.to_string());
+            Ok(SendResult { message_id: "mock-id".to_string() })
+        }
+
+        async fn send_alert(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult { message_id: "mock-id".to_string() })
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _original: &InboundMessage,
+            _text: &str,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult { message_id: "mock-id".to_string() })
+        }
+    }
+
+    fn test_message() -> InboundMessage {
+        InboundMessage {
+            id: "test".to_string(),
+            channel: "test".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user@test".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent::default(),
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: std::collections::HashMap::new(),
+            matched_pattern: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delivers_when_signal_and_reply_exist() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+
+        // Create directories
+        let jyc_dir = thread_path.join(".jyc");
+        let msg_dir = thread_path.join("messages").join(message_dir);
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
+
+        // Write signal and reply files
+        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
+        tokio::fs::write(msg_dir.join("reply.md"), "❓ What color?").await.unwrap();
+
+        let (outbound, delivered) = MockOutbound::new();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let tp = thread_path.clone();
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+            ).await;
+        });
+
+        // Wait for watcher to pick up the files
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        cancel.cancel();
+        let _ = handle.await;
+
+        // Verify delivery
+        let msgs = delivered.lock().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], "❓ What color?");
+
+        // Verify cleanup
+        assert!(!jyc_dir.join("reply-sent.flag").exists());
+        assert!(!msg_dir.join("reply.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_no_delivery_without_signal() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+
+        let msg_dir = thread_path.join("messages").join(message_dir);
+        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
+        tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
+        tokio::fs::write(msg_dir.join("reply.md"), "test").await.unwrap();
+
+        let (outbound, delivered) = MockOutbound::new();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let tp = thread_path.clone();
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+            ).await;
+        });
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert!(delivered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_no_delivery_with_empty_reply() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+
+        let jyc_dir = thread_path.join(".jyc");
+        let msg_dir = thread_path.join("messages").join(message_dir);
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
+
+        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
+        tokio::fs::write(msg_dir.join("reply.md"), "   ").await.unwrap();
+
+        let (outbound, delivered) = MockOutbound::new();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let tp = thread_path.clone();
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+            ).await;
+        });
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert!(delivered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_stops_watcher() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+
+        tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
+        tokio::fs::create_dir_all(thread_path.join("messages").join(message_dir)).await.unwrap();
+
+        let (outbound, _delivered) = MockOutbound::new();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &thread_path,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+            ).await;
+        });
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("Watcher should stop within 5 seconds")
+            .unwrap();
+    }
+}

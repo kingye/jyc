@@ -79,7 +79,7 @@ impl QuestionToolHandler {
 
 #[tool_router]
 impl QuestionToolHandler {
-    #[tool(description = "Ask the user a question and wait for their response. The question is sent via the messaging channel (email, Feishu, etc.) and the tool blocks until the user replies or timeout (5 minutes). Use this when you need clarification or a decision from the user before proceeding.")]
+    #[tool(description = "Wait for a user response to a question. IMPORTANT: Before calling this tool, you MUST first send the question to the user using jyc_reply_reply_message. This tool only waits for the answer — it does NOT deliver the question. Flow: 1) Call jyc_reply_reply_message with your question text, 2) Call this tool with the same question to wait for the user's reply (blocks up to 5 minutes).")]
     async fn ask_user(
         &self,
         Parameters(params): Parameters<AskUserParams>,
@@ -121,7 +121,12 @@ impl ServerHandler for QuestionToolHandler {
 
 /// Core question logic.
 ///
-/// 1. Write question signal file (.jyc/question-sent.flag)
+/// The question tool does NOT deliver the question to the user directly.
+/// The AI should first call jyc_reply_reply_message to send the question text,
+/// then call this tool to wait for the answer.
+///
+/// This tool:
+/// 1. Write question flag (.jyc/question-sent.flag) for answer routing
 /// 2. Poll for answer file (.jyc/question-answer.json)
 /// 3. Return the answer text
 async fn handle_ask_user(
@@ -145,21 +150,21 @@ async fn handle_ask_user(
         tokio::fs::remove_file(&answer_file).await.ok();
     }
 
-    // Write question signal file
-    // The monitor reads this to know a question needs to be sent,
-    // and routes the next user message as an answer instead of a new prompt.
-    let signal = serde_json::json!({
+    // Write question flag for answer routing.
+    // When the next message arrives, the thread manager detects this flag
+    // and routes the message body as the answer instead of a new prompt.
+    let flag = serde_json::json!({
         "question": question,
         "asked_at": chrono::Utc::now().to_rfc3339(),
     });
     tokio::fs::write(
         &question_flag,
-        serde_json::to_string_pretty(&signal).unwrap_or_default(),
+        serde_json::to_string_pretty(&flag).unwrap_or_default(),
     )
     .await
     .context("Failed to write question signal file")?;
 
-    logger.log("INFO", "Question signal file written, waiting for answer...");
+    logger.log("INFO", "Question flag written, waiting for answer...");
 
     // Poll for answer
     let start = tokio::time::Instant::now();

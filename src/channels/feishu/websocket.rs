@@ -14,7 +14,7 @@ use open_lark::ws_client::{EventDispatcherHandler, LarkWsClient};
 
 use crate::channels::types::{InboundMessage, MessageAttachment, MessageContent};
 use crate::config::types::InboundAttachmentConfig;
-use crate::utils::helpers;
+use crate::utils::helpers::{self, sanitize_for_filesystem};
 
 use super::client::FeishuClient;
 use super::config::FeishuConfig;
@@ -68,11 +68,16 @@ impl FeishuWebSocket {
     /// For each received message event, converts to `InboundMessage`
     /// and calls `on_message`.
     ///
+    /// The `on_thread_close` callback is invoked when a chat is disbanded,
+    /// receiving the thread name derived from the chat_id. Can be None if
+    /// thread close handling is not needed.
+    ///
     /// Returns `Ok(())` on clean cancellation, `Err(...)` on connection failure.
     pub async fn run(
         &mut self,
         channel_name: &str,
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
+        on_thread_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         // 1. Build openlark client Config from FeishuConfig
@@ -108,7 +113,7 @@ impl FeishuWebSocket {
                 payload = payload_rx.recv() => {
                     match payload {
                         Some(data) => {
-                            if let Err(e) = self.handle_payload(channel_name, &data, on_message).await {
+                            if let Err(e) = self.handle_payload(channel_name, &data, on_message, on_thread_close).await {
                                 tracing::warn!(error = %e, "Failed to process Feishu event");
                             }
                         }
@@ -151,9 +156,66 @@ impl FeishuWebSocket {
         channel_name: &str,
         data: &[u8],
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
+        on_thread_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
     ) -> Result<()> {
-        let envelope: EventEnvelope = serde_json::from_slice(data)
-            .context("Failed to parse Feishu event payload as JSON")?;
+        // First parse as generic JSON to check event type
+        let json: serde_json::Value = match serde_json::from_slice(data) {
+            Ok(v) => v,
+            Err(e) => {
+                let data_str = String::from_utf8_lossy(data);
+                tracing::warn!(error = %e, payload = %data_str, "Failed to parse Feishu event payload as JSON");
+                return Err(anyhow::anyhow!("Failed to parse Feishu event payload as JSON: {}", e));
+            }
+        };
+
+        let event_type = json.get("header")
+            .and_then(|h| h.get("event_type"))
+            .and_then(|e| e.as_str())
+            .unwrap_or("");
+
+        tracing::debug!(event_type = %event_type, "Received Feishu event");
+
+        // Handle chat disbanded event specially (note: event_type is "im.chat.disbanded_v1")
+        if event_type == "im.chat.disbanded_v1" {
+            if let Some(callback) = on_thread_close {
+                let chat_id = json.get("event")
+                    .and_then(|e| e.get("chat_id"))
+                    .and_then(|id| id.as_str())
+                    .unwrap_or("");
+                
+                if chat_id.is_empty() {
+                    tracing::warn!("Chat disbanded event missing chat_id");
+                    return Ok(());
+                }
+                
+                // Try to get chat name: first from event, then from API/cache
+                let chat_name = json.get("event")
+                    .and_then(|e| e.get("name"))
+                    .and_then(|n| n.as_str());
+                
+                let thread_name = if chat_name.is_some() {
+                    helpers::sanitize_for_filesystem(chat_name.unwrap())
+                } else if let Ok(Some(name)) = self.client.get_chat_name(chat_id).await {
+                    name
+                } else {
+                    derive_thread_name_from_chat_id(channel_name, chat_id)
+                };
+                
+                tracing::info!(chat_id = %chat_id, thread = %thread_name, "Chat disbanded, closing thread");
+                callback(thread_name)?;
+            }
+            return Ok(());
+        }
+
+        // For other events, use the standard parsing
+        let envelope: EventEnvelope = match serde_json::from_slice(data) {
+            Ok(e) => e,
+            Err(e) => {
+                let data_str = String::from_utf8_lossy(data);
+                tracing::warn!(error = %e, payload = %data_str, "Failed to parse Feishu event as EventEnvelope");
+                return Err(anyhow::anyhow!("Failed to parse Feishu event: {} | payload: {}", e, data_str));
+            }
+        };
 
         // Only handle message received events
         if envelope.header.event_type != "im.message.receive_v1" {
@@ -620,6 +682,50 @@ mod tests {
         let result = strip_mention_placeholders("@_user_1 hello", Some(&mentions));
         assert_eq!(result, "hello");
     }
+    
+    #[test]
+    fn test_derive_thread_name_from_chat_id() {
+        let thread_name = super::derive_thread_name_from_chat_id("feishu", "oc_12345678");
+        assert_eq!(thread_name, "feishu_oc_12345678");
+    }
+
+    #[test]
+    fn test_chat_disbanded_event_parsing() {
+        let json = r#"{
+            "header": {
+                "event_type": "im.chat.disbanded_v1",
+                "event_id": "ev_xxx",
+                "create_time": "1704067200000",
+                "app_id": "cli_xxx",
+                "tenant_key": "xxx"
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {
+                        "open_id": "ou_xxx"
+                    }
+                },
+                "message": {
+                    "message_id": "om_xxx",
+                    "message_type": "text",
+                    "content": "{}",
+                    "chat_type": "group"
+                },
+                "chat_disbanded": {
+                    "chat_id": "oc_12345678",
+                    "operator_id": "ou_87654321"
+                }
+            }
+        }"#;
+        
+        let envelope: super::EventEnvelope = serde_json::from_str(json).unwrap();
+        assert_eq!(envelope.header.event_type, "im.chat.disbanded_v1");
+        assert!(envelope.event.chat_disbanded.is_some());
+        
+        let disband = envelope.event.chat_disbanded.unwrap();
+        assert_eq!(disband.chat_id, "oc_12345678");
+        assert_eq!(disband.operator_id, "ou_87654321");
+    }
 
     #[test]
     fn test_strip_mention_placeholders_command() {
@@ -677,4 +783,10 @@ mod tests {
         ws.reset_reconnection_count();
         assert_eq!(ws.reconnect_count, 0);
     }
+}
+
+/// Derive thread name from chat_id for thread close events.
+/// This matches the logic in FeishuMatcher::derive_thread_name().
+fn derive_thread_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
+    format!("{}_{}", channel_name, chat_id)
 }

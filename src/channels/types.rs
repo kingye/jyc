@@ -110,6 +110,8 @@ pub struct SendResult {
 pub struct InboundAdapterOptions {
     /// Callback for each received message (fire-and-forget)
     pub on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
+    /// Callback for thread close events (e.g., chat disbanded)
+    pub on_thread_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
     /// Callback for errors
     #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,

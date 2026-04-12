@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,9 +15,11 @@ use crate::core::command::handler::CommandContext;
 use crate::core::command::model_handler::ModelCommandHandler;
 use crate::core::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::core::command::registry::CommandRegistry;
+use crate::core::command::close_handler::CloseCommandHandler;
 use crate::core::command::reset_handler::ResetCommandHandler;
 use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::pending_delivery::watch_pending_deliveries;
 use crate::core::template_utils::copy_template_files;
 use crate::services::agent::AgentService;
 
@@ -227,7 +229,23 @@ impl ThreadManager {
             None
         };
 
-        let handle = self.spawn_worker(thread_name, rx, event_bus);
+        let tm = Arc::new(ThreadManager {
+            thread_queues: Mutex::new(HashMap::new()),
+            semaphore: self.semaphore.clone(),
+            max_queue_size: self.max_queue_size,
+            storage: self.storage.clone(),
+            outbound: self.outbound.clone(),
+            agent: self.agent.clone(),
+            event_buses: Mutex::new(HashMap::new()),
+            enable_events: self.enable_events,
+            heartbeat_config: self.heartbeat_config.clone(),
+            heartbeat_template: self.heartbeat_template.clone(),
+            template_dir: self.template_dir.clone(),
+            config: self.config.clone(),
+            cancel: self.cancel.clone(),
+            worker_handles: Mutex::new(vec![]),
+        });
+        let handle = ThreadManager::spawn_worker(tm, thread_name, rx, event_bus);
 
         // Drain completed worker handles to prevent unbounded Vec growth.
         let mut handles = self.worker_handles.lock().await;
@@ -242,20 +260,21 @@ impl ThreadManager {
     }
 
     fn spawn_worker(
-        &self,
+        thread_manager: Arc<ThreadManager>,
         thread_name: String,
         mut rx: mpsc::Receiver<QueueItem>,
         event_bus: Option<ThreadEventBusRef>,
     ) -> JoinHandle<()> {
-        let semaphore = self.semaphore.clone();
-        let cancel = self.cancel.clone();
-        let storage = self.storage.clone();
-        let outbound = self.outbound.clone();
-        let agent = self.agent.clone();
-        let heartbeat_config = self.heartbeat_config.clone();
-        let heartbeat_template = self.heartbeat_template.clone();
-        let template_dir = self.template_dir.clone();
-        let config = self.config.clone();
+        let semaphore = thread_manager.semaphore.clone();
+        let cancel = thread_manager.cancel.clone();
+        let storage = thread_manager.storage.clone();
+        let outbound = thread_manager.outbound.clone();
+        let agent = thread_manager.agent.clone();
+        let heartbeat_config = thread_manager.heartbeat_config.clone();
+        let heartbeat_template = thread_manager.heartbeat_template.clone();
+        let template_dir = thread_manager.template_dir.clone();
+        let config = thread_manager.config.clone();
+        let tm = thread_manager;
         let tm_span = tracing::info_span!("tm", t = %thread_name);
 
         tokio::spawn(async move {
@@ -357,11 +376,12 @@ impl ThreadManager {
                     &item,
                     &thread_name,
                     &storage,
-                    outbound.as_ref(),
+                    outbound.clone(),
                     agent.clone(),
                     &mut rx,
                     &template_dir,
                     &config,
+                    tm.clone(),
                 ).await {
                     tracing::error!(
                         error = %e,
@@ -615,6 +635,41 @@ impl ThreadManager {
         }
         tracing::info!("All workers shut down");
     }
+
+    /// Close and delete a thread's directory.
+    ///
+    /// This is channel-agnostic — all threads use the same cleanup logic.
+    /// Removes the thread directory from disk and cleans up in-memory state.
+    pub async fn close_thread(&self, thread_name: &str) -> Result<()> {
+        let thread_path = self.storage.workspace().join(thread_name);
+
+        if thread_path.exists() {
+            tokio::fs::remove_dir_all(&thread_path)
+                .await
+                .context(format!("Failed to remove thread directory: {:?}", thread_path))?;
+            tracing::info!(thread = %thread_name, "Thread directory deleted");
+        }
+
+        self.cleanup_thread_state(thread_name).await;
+    Ok(())
+}
+
+    /// Clean up in-memory state (queues, event buses) for a closed thread.
+    async fn cleanup_thread_state(&self, thread_name: &str) {
+        // Remove from thread_queues
+        {
+            let mut queues = self.thread_queues.lock().await;
+            queues.remove(thread_name);
+        }
+
+        // Remove from event_buses
+        if self.enable_events {
+            let mut event_buses = self.event_buses.lock().await;
+            event_buses.remove(thread_name);
+        }
+
+        tracing::debug!(thread = %thread_name, "Thread in-memory state cleaned up");
+    }
 }
 
 /// Process a single message within a worker.
@@ -629,11 +684,12 @@ async fn process_message(
     item: &QueueItem,
     thread_name: &str,
     storage: &MessageStorage,
-    outbound: &dyn OutboundAdapter,
+    outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &PathBuf,
     config: &Arc<crate::config::types::AppConfig>,
+    thread_manager: Arc<ThreadManager>,
 ) -> Result<()> {
     let message = &item.message;
 
@@ -663,6 +719,7 @@ async fn process_message(
     command_registry.register(Box::new(BuildCommandHandler));
     command_registry.register(Box::new(ResetCommandHandler));
     command_registry.register(Box::new(TemplateCommandHandler));
+    command_registry.register(Box::new(CloseCommandHandler::new(thread_manager.clone())));
 
     let cmd_context = CommandContext {
         args: vec![],
@@ -746,9 +803,33 @@ async fn process_message(
         m
     };
 
+    // Spawn a background task to watch for pending question deliveries.
+    // The question MCP tool writes reply.md + reply-sent.flag during the SSE stream.
+    // This watcher detects them and delivers immediately via the outbound adapter,
+    // without waiting for the SSE stream to complete.
+    let delivery_cancel = tokio_util::sync::CancellationToken::new();
+    let delivery_cancel_child = delivery_cancel.clone();
+    let delivery_thread_path = store_result.thread_path.clone();
+    let delivery_message_dir = store_result.message_dir.clone();
+    let delivery_message = message.clone();
+    let delivery_outbound = outbound.clone();
+    let delivery_handle = tokio::spawn(async move {
+        watch_pending_deliveries(
+            &delivery_thread_path,
+            &delivery_message_dir,
+            &delivery_message,
+            &*delivery_outbound,
+            delivery_cancel_child,
+        ).await;
+    });
+
     let result = agent
         .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
         .await?;
+
+    // Stop the delivery watcher
+    delivery_cancel.cancel();
+    let _ = delivery_handle.await;
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
     // The MCP reply tool stores the reply in the chat log and writes a signal file.
@@ -756,34 +837,49 @@ async fn process_message(
     // pre-warmed outbound adapter with cached connections/tokens.
     if result.reply_sent_by_tool {
         // Reply text comes from the SSE tool input (extracted by service layer).
-        // Fallback: if not available (e.g. blocking mode), log a warning — the
-        // reply is already stored in the chat log but we cannot deliver it.
-        if let Some(ref reply_text) = result.reply_text {
-            if !reply_text.trim().is_empty() {
-                tracing::info!(
-                    text_len = reply_text.len(),
-                    "Delivering reply from MCP tool"
-                );
+        // If not available (e.g., question tool), try reading from reply.md.
+        let reply_text = result.reply_text.as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.to_string());
 
-                // Read signal file for attachment info
-                let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
-                let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
-
-                outbound
-                    .send_reply(
-                        &message,
-                        reply_text,
-                        &store_result.thread_path,
-                        &store_result.message_dir,
-                        attachments.as_deref(),
-                    )
-                    .await?;
-                tracing::info!("Reply delivered via outbound adapter");
-            } else {
-                tracing::warn!("MCP tool reply text is empty, skipping delivery");
+        let reply_text = match reply_text {
+            Some(t) => Some(t),
+            None => {
+                // Fallback: read from reply.md (written by question tool or other MCP tools)
+                let reply_md = store_result.thread_path.join("messages")
+                    .join(&store_result.message_dir)
+                    .join("reply.md");
+                if reply_md.exists() {
+                    tokio::fs::read_to_string(&reply_md).await.ok()
+                        .filter(|t| !t.trim().is_empty())
+                } else {
+                    None
+                }
             }
+        };
+
+        if let Some(ref reply_text) = reply_text {
+            tracing::info!(
+                text_len = reply_text.len(),
+                "Delivering reply from MCP tool"
+            );
+
+            // Read signal file for attachment info
+            let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
+            let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
+
+            outbound
+                .send_reply(
+                    &message,
+                    reply_text,
+                    &store_result.thread_path,
+                    &store_result.message_dir,
+                    attachments.as_deref(),
+                )
+                .await?;
+            tracing::info!("Reply delivered via outbound adapter");
         } else {
-            tracing::warn!("MCP tool signaled reply but no reply text available (blocking mode?) — reply is in chat log but not delivered");
+            tracing::warn!("MCP tool signaled reply but no reply text available");
         }
     } else if let Some(ref text) = result.reply_text {
         tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");

@@ -375,7 +375,8 @@ impl crate::channels::types::InboundAdapter for FeishuInboundAdapter {
         loop {
             tracing::info!("Starting Feishu WebSocket connection...");
 
-            match ws.run(&channel_name, &*options.on_message, &cancel).await {
+            let on_thread_close = options.on_thread_close.as_ref().map(|c| c.as_ref());
+            match ws.run(&channel_name, &*options.on_message, on_thread_close, &cancel).await {
                 Ok(()) => {
                     // Clean exit (cancelled)
                     tracing::info!("Feishu WebSocket stopped cleanly");

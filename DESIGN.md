@@ -192,8 +192,10 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
  7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
  8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section) via `send_heartbeat()`.
  9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
- 9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
+  9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
  10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using an OpenAI-compatible vision API. Accepts absolute file paths (e.g., saved attachments) or HTTP(S) URLs. Configuration in `[vision]` section of `config.toml` (api_key, api_url, model). Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc. Only registered when `vision.enabled = true`.
+ 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends a question to the user and waits for their reply (up to 5 minutes). The question is delivered immediately via the background delivery watcher (`pending_delivery.rs`). The user's next message is routed as the answer via `question-sent.flag` / `question-answer.json`. Channel-agnostic.
+ 12. **Pending Delivery Watcher** — Background task (`core/pending_delivery.rs`) that runs alongside the SSE stream. Watches for `reply-sent.flag` + `reply.md` written by MCP tools and delivers messages immediately via the outbound adapter, without waiting for SSE completion. Channel-agnostic: uses `OutboundAdapter` trait.
   11. **Message Storage** — Unified chat log storage system
      - **Chat Log Storage**: Messages and replies are appended to daily log files (`chat_history_YYYY-MM-DD.md`)
      - **HTML Comment Metadata**: Each entry includes timestamp, message type, sender, channel, and external ID metadata
@@ -204,7 +206,8 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 12. **Security Module** — Path validation, file size/extension checks for attachments
 13. **Attachment Storage** — Channel-agnostic attachment saving (`core/attachment_storage.rs`). Shared by email and Feishu adapters. Includes path traversal protection at ingestion, unified filename generation, and configurable save paths.
 14. **Alert Service** — Error alert digests + periodic health check reports via email
-15. **Command System** — Email and Feishu `/command` parsing and execution (e.g., `/model` for model switching, `/plan`, `/build`, `/reset`)
+15. **Command System** — Email and Feishu `/command` parsing and execution (e.g., `/model` for model switching, `/plan`, `/build`, `/reset`, `/close`)
+16. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback. Triggers on `/close` command or Feishu `chat.disbanded` events. Deletes thread directory and cleans up in-memory state.
 
 ### Design Principles: Component Responsibilities
 
@@ -652,6 +655,18 @@ pub trait InboundAdapter: ChannelMatcher {
         options: InboundAdapterOptions,
         cancel: CancellationToken,
     ) -> Result<()>;
+}
+
+/// Options passed to an inbound adapter's `start()` method.
+pub struct InboundAdapterOptions {
+    /// Callback for each received message (fire-and-forget)
+    pub on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
+    /// Callback for thread close events (e.g., Feishu chat.disbanded)
+    pub on_thread_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
+    /// Callback for errors
+    pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,
+    /// Attachment download configuration
+    pub attachment_config: Option<InboundAttachmentConfig>,
 }
 
 /// Outbound adapter trait — one per channel type.
@@ -2320,7 +2335,9 @@ jyc/
 │   │       ├── registry.rs             # Command parsing + dispatch
 │   │       ├── handler.rs              # CommandHandler trait
 │   │       ├── model_handler.rs        # /model command
-│   │       └── mode_handler.rs         # /plan, /build commands
+│   │       ├── mode_handler.rs         # /plan, /build commands
+│   │       ├── reset_handler.rs        # /reset command
+│   │       ├── close_handler.rs        # /close command (thread cleanup)
 │   ├── services/
 │   │   ├── mod.rs
 │   │   ├── agent.rs                   # AgentService trait (process → AgentResult)

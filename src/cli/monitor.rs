@@ -319,6 +319,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                     use crate::channels::types::InboundAdapter;
                     
+                    let thread_manager_clone = thread_manager.clone();
                     let options = crate::channels::types::InboundAdapterOptions {
                         on_message: Box::new(move |mut message| {
                             let router = router_for_callback.clone();
@@ -352,6 +353,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             });
                             Ok(())
                         }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
                         on_error: Box::new(|error| {
                             tracing::error!(error = %error, "Feishu inbound error");
                         }),

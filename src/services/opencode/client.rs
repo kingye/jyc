@@ -812,7 +812,7 @@ impl OpenCodeClient {
                                             // Early exit: if the reply tool completed successfully,
                                             // flag it so we can break out of the SSE loop on the
                                             // next step-finish — no need to wait for the full session.
-                                            if tool_name.contains("reply_message") {
+                                            if tool_name.contains("reply_message") || tool_name.contains("ask_user") {
                                                 let has_error = state.output.as_ref()
                                                     .is_some_and(|o| o.starts_with("Error:"));
                                                 if !has_error {

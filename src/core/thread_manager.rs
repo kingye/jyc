@@ -19,6 +19,7 @@ use crate::core::command::close_handler::CloseCommandHandler;
 use crate::core::command::reset_handler::ResetCommandHandler;
 use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::pending_delivery::watch_pending_deliveries;
 use crate::core::template_utils::copy_template_files;
 use crate::services::agent::AgentService;
 
@@ -375,7 +376,7 @@ impl ThreadManager {
                     &item,
                     &thread_name,
                     &storage,
-                    outbound.as_ref(),
+                    outbound.clone(),
                     agent.clone(),
                     &mut rx,
                     &template_dir,
@@ -683,7 +684,7 @@ async fn process_message(
     item: &QueueItem,
     thread_name: &str,
     storage: &MessageStorage,
-    outbound: &dyn OutboundAdapter,
+    outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &PathBuf,
@@ -802,9 +803,33 @@ async fn process_message(
         m
     };
 
+    // Spawn a background task to watch for pending question deliveries.
+    // The question MCP tool writes reply.md + reply-sent.flag during the SSE stream.
+    // This watcher detects them and delivers immediately via the outbound adapter,
+    // without waiting for the SSE stream to complete.
+    let delivery_cancel = tokio_util::sync::CancellationToken::new();
+    let delivery_cancel_child = delivery_cancel.clone();
+    let delivery_thread_path = store_result.thread_path.clone();
+    let delivery_message_dir = store_result.message_dir.clone();
+    let delivery_message = message.clone();
+    let delivery_outbound = outbound.clone();
+    let delivery_handle = tokio::spawn(async move {
+        watch_pending_deliveries(
+            &delivery_thread_path,
+            &delivery_message_dir,
+            &delivery_message,
+            &*delivery_outbound,
+            delivery_cancel_child,
+        ).await;
+    });
+
     let result = agent
         .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
         .await?;
+
+    // Stop the delivery watcher
+    delivery_cancel.cancel();
+    let _ = delivery_handle.await;
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
     // The MCP reply tool stores the reply in the chat log and writes a signal file.
@@ -812,34 +837,49 @@ async fn process_message(
     // pre-warmed outbound adapter with cached connections/tokens.
     if result.reply_sent_by_tool {
         // Reply text comes from the SSE tool input (extracted by service layer).
-        // Fallback: if not available (e.g. blocking mode), log a warning — the
-        // reply is already stored in the chat log but we cannot deliver it.
-        if let Some(ref reply_text) = result.reply_text {
-            if !reply_text.trim().is_empty() {
-                tracing::info!(
-                    text_len = reply_text.len(),
-                    "Delivering reply from MCP tool"
-                );
+        // If not available (e.g., question tool), try reading from reply.md.
+        let reply_text = result.reply_text.as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.to_string());
 
-                // Read signal file for attachment info
-                let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
-                let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
-
-                outbound
-                    .send_reply(
-                        &message,
-                        reply_text,
-                        &store_result.thread_path,
-                        &store_result.message_dir,
-                        attachments.as_deref(),
-                    )
-                    .await?;
-                tracing::info!("Reply delivered via outbound adapter");
-            } else {
-                tracing::warn!("MCP tool reply text is empty, skipping delivery");
+        let reply_text = match reply_text {
+            Some(t) => Some(t),
+            None => {
+                // Fallback: read from reply.md (written by question tool or other MCP tools)
+                let reply_md = store_result.thread_path.join("messages")
+                    .join(&store_result.message_dir)
+                    .join("reply.md");
+                if reply_md.exists() {
+                    tokio::fs::read_to_string(&reply_md).await.ok()
+                        .filter(|t| !t.trim().is_empty())
+                } else {
+                    None
+                }
             }
+        };
+
+        if let Some(ref reply_text) = reply_text {
+            tracing::info!(
+                text_len = reply_text.len(),
+                "Delivering reply from MCP tool"
+            );
+
+            // Read signal file for attachment info
+            let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
+            let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
+
+            outbound
+                .send_reply(
+                    &message,
+                    reply_text,
+                    &store_result.thread_path,
+                    &store_result.message_dir,
+                    attachments.as_deref(),
+                )
+                .await?;
+            tracing::info!("Reply delivered via outbound adapter");
         } else {
-            tracing::warn!("MCP tool signaled reply but no reply text available (blocking mode?) — reply is in chat log but not delivered");
+            tracing::warn!("MCP tool signaled reply but no reply text available");
         }
     } else if let Some(ref text) = result.reply_text {
         tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");

@@ -18,6 +18,7 @@ use crate::core::command::registry::CommandRegistry;
 use crate::core::command::reset_handler::ResetCommandHandler;
 use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::pending_delivery::watch_pending_deliveries;
 use crate::core::template_utils::copy_template_files;
 use crate::services::agent::AgentService;
 
@@ -357,7 +358,7 @@ impl ThreadManager {
                     &item,
                     &thread_name,
                     &storage,
-                    outbound.as_ref(),
+                    outbound.clone(),
                     agent.clone(),
                     &mut rx,
                     &template_dir,
@@ -629,7 +630,7 @@ async fn process_message(
     item: &QueueItem,
     thread_name: &str,
     storage: &MessageStorage,
-    outbound: &dyn OutboundAdapter,
+    outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &PathBuf,
@@ -746,9 +747,33 @@ async fn process_message(
         m
     };
 
+    // Spawn a background task to watch for pending question deliveries.
+    // The question MCP tool writes reply.md + reply-sent.flag during the SSE stream.
+    // This watcher detects them and delivers immediately via the outbound adapter,
+    // without waiting for the SSE stream to complete.
+    let delivery_cancel = tokio_util::sync::CancellationToken::new();
+    let delivery_cancel_child = delivery_cancel.clone();
+    let delivery_thread_path = store_result.thread_path.clone();
+    let delivery_message_dir = store_result.message_dir.clone();
+    let delivery_message = message.clone();
+    let delivery_outbound = outbound.clone();
+    let delivery_handle = tokio::spawn(async move {
+        watch_pending_deliveries(
+            &delivery_thread_path,
+            &delivery_message_dir,
+            &delivery_message,
+            &*delivery_outbound,
+            delivery_cancel_child,
+        ).await;
+    });
+
     let result = agent
         .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
         .await?;
+
+    // Stop the delivery watcher
+    delivery_cancel.cancel();
+    let _ = delivery_handle.await;
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
     // The MCP reply tool stores the reply in the chat log and writes a signal file.

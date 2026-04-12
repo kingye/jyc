@@ -79,7 +79,7 @@ impl QuestionToolHandler {
 
 #[tool_router]
 impl QuestionToolHandler {
-    #[tool(description = "Wait for a user response to a question. IMPORTANT: Before calling this tool, you MUST first send the question to the user using jyc_reply_reply_message. This tool only waits for the answer — it does NOT deliver the question. Flow: 1) Call jyc_reply_reply_message with your question text, 2) Call this tool with the same question to wait for the user's reply (blocks up to 5 minutes).")]
+    #[tool(description = "Ask the user a question and wait for their response. The question is delivered to the user automatically and the tool blocks until the user replies (up to 5 minutes). Use this when you need clarification or a decision from the user before proceeding.")]
     async fn ask_user(
         &self,
         Parameters(params): Parameters<AskUserParams>,
@@ -121,14 +121,10 @@ impl ServerHandler for QuestionToolHandler {
 
 /// Core question logic.
 ///
-/// The question tool does NOT deliver the question to the user directly.
-/// The AI should first call jyc_reply_reply_message to send the question text,
-/// then call this tool to wait for the answer.
-///
-/// This tool:
-/// 1. Write question flag (.jyc/question-sent.flag) for answer routing
-/// 2. Poll for answer file (.jyc/question-answer.json)
-/// 3. Return the answer text
+/// 1. Deliver the question to the user via the reply signal file mechanism
+/// 2. Write question flag (.jyc/question-sent.flag) for answer routing
+/// 3. Poll for answer file (.jyc/question-answer.json)
+/// 4. Return the answer text
 async fn handle_ask_user(
     logger: &McpLogger,
     cwd: &Path,
@@ -145,12 +141,43 @@ async fn handle_ask_user(
     let question_flag = jyc_dir.join("question-sent.flag");
     let answer_file = jyc_dir.join("question-answer.json");
 
-    // Clean up any stale answer file from previous questions
+    // Clean up any stale files from previous questions
     if answer_file.exists() {
         tokio::fs::remove_file(&answer_file).await.ok();
     }
 
-    // Write question flag for answer routing.
+    // Step 1: Deliver the question to the user via the reply signal file.
+    // Uses the same mechanism as the reply tool — the monitor detects
+    // reply-sent.flag and delivers the message via the outbound adapter.
+    let ctx = crate::mcp::context::load_reply_context(cwd).await
+        .context("Failed to load reply context — cannot deliver question")?;
+
+    let question_text = format!("❓ **Question:** {}", question);
+
+    // Write the question text to reply.md (monitor reads this for delivery)
+    let message_dir = cwd.join("messages").join(&ctx.incoming_message_dir);
+    tokio::fs::create_dir_all(&message_dir).await.ok();
+    tokio::fs::write(message_dir.join("reply.md"), &question_text).await.ok();
+
+    // Write the reply signal file (triggers monitor to deliver)
+    let signal = serde_json::json!({
+        "sent_at": chrono::Utc::now().to_rfc3339(),
+        "channel": ctx.channel,
+        "message_dir": ctx.incoming_message_dir,
+        "message_len": question_text.len(),
+        "attachment_count": 0,
+        "attachments": [],
+    });
+    tokio::fs::write(
+        jyc_dir.join("reply-sent.flag"),
+        serde_json::to_string(&signal).unwrap_or_default(),
+    )
+    .await
+    .ok();
+
+    logger.log("INFO", "Question delivered to user via reply signal");
+
+    // Step 2: Write question flag for answer routing.
     // When the next message arrives, the thread manager detects this flag
     // and routes the message body as the answer instead of a new prompt.
     let flag = serde_json::json!({
@@ -162,15 +189,14 @@ async fn handle_ask_user(
         serde_json::to_string_pretty(&flag).unwrap_or_default(),
     )
     .await
-    .context("Failed to write question signal file")?;
+    .context("Failed to write question flag")?;
 
     logger.log("INFO", "Question flag written, waiting for answer...");
 
-    // Poll for answer
+    // Step 3: Poll for answer
     let start = tokio::time::Instant::now();
     loop {
         if start.elapsed() > ANSWER_TIMEOUT {
-            // Clean up signal file on timeout
             tokio::fs::remove_file(&question_flag).await.ok();
             anyhow::bail!(
                 "Timed out waiting for user response after {} seconds",
@@ -179,7 +205,6 @@ async fn handle_ask_user(
         }
 
         if answer_file.exists() {
-            // Read the answer
             let content = tokio::fs::read_to_string(&answer_file)
                 .await
                 .context("Failed to read answer file")?;
@@ -192,7 +217,7 @@ async fn handle_ask_user(
                 .unwrap_or("")
                 .to_string();
 
-            // Clean up both files
+            // Clean up
             tokio::fs::remove_file(&answer_file).await.ok();
             tokio::fs::remove_file(&question_flag).await.ok();
 

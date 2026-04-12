@@ -107,6 +107,16 @@ Do NOT stop after updating files — complete all steps through push.
 Use `gh` for ALL GitHub operations. Do NOT use `webfetch`, `curl`, or `wget` to access GitHub.
 The `gh` CLI is pre-authenticated. Always run from inside the repo directory (`cd jyc`).
 
+### Required Token Scopes
+
+The GitHub PAT (Personal Access Token) must have these scopes:
+- `repo` — full access to repositories (read/write code, issues, PRs)
+- `read:org` — read organization membership (required for `gh pr view --comments`)
+
+Setup: `gh auth login --with-token <<< "ghp_your_token"`
+
+### Common Commands
+
 ```bash
 # View PR details
 cd jyc && gh pr view <number>

@@ -131,6 +131,25 @@ File: invoice_2026-04/invoice_003.pdf
 Excel: invoice_2026-04/invoices.xlsx (row 4)
 ```
 
+### Step 6: Export Monthly Invoices (when requested)
+
+When the user asks to download or export all invoices for a month:
+
+1. Determine the target month (from user message or default to current month)
+2. Verify the folder exists
+3. Zip the entire monthly folder:
+   ```bash
+   MONTH="2026-04"
+   cd <thread_dir>
+   zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/"
+   ```
+4. Send the zip file as an attachment in the reply
+
+If the user asks for a specific month that doesn't exist, reply with available months:
+```bash
+ls -d invoice_*/
+```
+
 ### Rules
 
 - ALWAYS check/create the monthly folder before processing

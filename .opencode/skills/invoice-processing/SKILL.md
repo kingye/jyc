@@ -309,10 +309,14 @@ ls -d invoice_*/
 
 - ALWAYS check/create the monthly folder before processing
 - ALWAYS copy template.xlsx to the new monthly folder as invoices.xlsx
-- ALWAYS use sequential naming for invoice files (invoice_001, invoice_002, ...)
 - ALWAYS read the Excel template headers before writing to understand column layout
 - If vision tool fails on a PDF, try text extraction with pdftotext as fallback
 - If extraction is uncertain about a value, mark it with "?" and ask the user to confirm
 - Report any extraction errors clearly
 - Do NOT overwrite existing invoice files
 - Do NOT modify the template.xlsx — only modify the copy in the monthly folder
+- Do NOT process QR code images — invoice emails often contain small QR code images
+  (payment links, verification codes). These are NOT invoices. Ignore small images
+  (typically < 50KB) that are likely QR codes. Only process PDF files and large images
+  that are actual invoice scans.
+- Do NOT follow URLs embedded in QR codes

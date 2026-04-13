@@ -184,6 +184,24 @@ Excel: invoice_2026-04/invoices.xlsx (第4行)
 
 When the user asks to summarize a month's invoices:
 
+The summary template (`summary.xlsx`) is an IIT deduction claim form with predefined categories.
+
+**Template structure (Sheet1):**
+- Row 1: Title "Bills for Expat IIT deduction"
+- Row 4: "Handed in by:" + name
+- Row 6: "Month:" + month (e.g., "April of 2026")
+- Row 9: Headers (DATE, AMOUNT)
+- Rows 10-37: Categories with DATE and AMOUNT columns:
+  - Row 10: Laundry
+  - Row 12: Food & Meals
+  - Row 14: Rental fee
+  - Row 16: Airticket
+  - (other rows available for additional categories)
+- Row 38: Total (SUM formula, auto-calculates)
+- Row 43: Date & Signature
+
+**Process:**
+
 1. Determine the target month (from user message or default to current month)
 2. Verify the monthly folder and `invoices.xlsx` exist
 3. Copy `summary.xlsx` template into the monthly folder (if not already there):
@@ -193,37 +211,75 @@ When the user asks to summarize a month's invoices:
      cp summary.xlsx "invoice_${MONTH}/summary.xlsx"
    fi
    ```
-4. Read all data from `invoice_${MONTH}/invoices.xlsx`
-5. Fill `invoice_${MONTH}/summary.xlsx` based on the invoice data:
-   - Read the summary template headers first to understand the layout
-   - Aggregate values as needed (totals, counts, by vendor, by tax rate, etc.)
-   - Use Python openpyxl to read invoices and write summary
+4. Read all invoices from `invoices.xlsx`
+5. Categorize each invoice by its 服务项目名称 (service/item name):
+   - 餐饮/餐费/食品/外卖 → Food & Meals (row 12)
+   - 洗衣/干洗 → Laundry (row 10)
+   - 房租/租金/租赁 → Rental fee (row 14)
+   - 机票/航空 → Airticket (row 16)
+   - Other categories → use available rows (17-37)
+6. Fill the summary:
 
 ```bash
 python3 << 'PYEOF'
 from openpyxl import load_workbook
 
+MONTH = "2026-04"
+
 # Read invoice data
-inv_wb = load_workbook('invoice_YYYY-MM/invoices.xlsx')
+inv_wb = load_workbook(f'invoice_{MONTH}/invoices.xlsx')
 inv_ws = inv_wb.active
 
 # Read summary template
-sum_wb = load_workbook('invoice_YYYY-MM/summary.xlsx')
+sum_wb = load_workbook(f'invoice_{MONTH}/summary.xlsx')
 sum_ws = sum_wb.active
 
-# Read summary headers to understand layout
-headers = [sum_ws.cell(row=1, column=c).value for c in range(1, sum_ws.max_column + 1)]
-print(f"Summary headers: {headers}")
+# Update month
+sum_ws['B6'] = 'April of 2026'  # Adjust month name
 
-# Aggregate data from invoices and fill summary
-# (adapt based on actual summary template layout)
+# Category mapping: row number → category keywords
+categories = {
+    10: ['洗衣', '干洗', 'laundry'],
+    12: ['餐饮', '餐费', '食品', '外卖', 'food', 'meal'],
+    14: ['房租', '租金', '租赁', 'rental', 'rent'],
+    16: ['机票', '航空', 'airticket', 'flight'],
+}
 
-sum_wb.save('invoice_YYYY-MM/summary.xlsx')
+# Read invoices (skip header row)
+for row in range(2, inv_ws.max_row + 1):
+    service = str(inv_ws.cell(row=row, column=9).value or '').lower()  # 服务项目名称
+    date = inv_ws.cell(row=row, column=3).value  # 开票日期
+    amount = inv_ws.cell(row=row, column=13).value  # 价税合计
+
+    if not amount:
+        continue
+
+    # Find matching category
+    target_row = None
+    for cat_row, keywords in categories.items():
+        if any(kw in service for kw in keywords):
+            target_row = cat_row
+            break
+
+    if target_row:
+        # Append amount to existing value
+        existing = sum_ws.cell(row=target_row, column=3).value or 0
+        if isinstance(existing, str):
+            existing = 0
+        sum_ws.cell(row=target_row, column=3, value=existing + float(amount))
+        # Set date if empty
+        if not sum_ws.cell(row=target_row, column=2).value:
+            sum_ws.cell(row=target_row, column=2, value=date)
+
+sum_wb.save(f'invoice_{MONTH}/summary.xlsx')
 print('Summary updated')
 PYEOF
 ```
 
-6. Reply with the summary results
+7. Reply with a summary of categorized amounts
+
+IMPORTANT: Read the actual summary.xlsx headers and structure before writing.
+The template may have been customized — adapt the category mapping accordingly.
 
 ### Step 7: Export Monthly Invoices (when requested)
 

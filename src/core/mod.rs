@@ -11,6 +11,7 @@ pub mod template_utils;
 pub mod thread_event;
 pub mod thread_event_bus;
 pub mod thread_manager;
+pub mod thread_path;
 
 #[cfg(test)]
 mod thread_manager_tests;

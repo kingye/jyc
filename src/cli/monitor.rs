@@ -80,7 +80,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let channel_type = channel_config.channel_type.as_str();
 
         // Workspace directory: always <workdir>/<channel>/workspace/
-        let workspace_dir = workdir.join(channel_name).join("workspace");
+        let workspace_dir = crate::core::thread_path::resolve_workspace(workdir, channel_name);
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
 
         let patterns = channel_config

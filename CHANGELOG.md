@@ -2,6 +2,89 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.1.8] - 2026-04-13
+
+### Added
+
+**Invoice Processing Skill** — Automated invoice extraction and bookkeeping
+- Invoice processing skill with 7-step workflow (download, extract, Excel, summarize, export)
+- Chinese invoice (发票) Excel template with 15 columns (发票号码, 开票日期, 购买方/销售方, etc.)
+- Monthly folder organization (`invoice_YYYY-MM/`)
+- Summary template (IIT deduction claim form) with category mapping
+- Vision tool integration for PDF/image invoice extraction
+- pypdf fallback for text-based PDF extraction
+- Zip export of monthly invoice folders
+- QR code image detection and filtering (skip small images, prefer download URLs)
+- `agents.invoice.example.md` template for invoice processing threads
+
+**Thread Name Override** — Fixed thread routing from config
+- `thread_name` field on `ChannelPattern` for routing all matching messages to a fixed thread
+- Channel-agnostic: works for email, Feishu, and any future channel
+- Example: all invoice emails → `invoice-processing` thread regardless of subject
+
+**MCP Question Tool** — Ask users questions and wait for answers
+- `ask_user` tool with self-delivery (writes reply.md + signal file)
+- Background delivery watcher (`pending_delivery.rs`) delivers messages during SSE stream
+- 5-minute polling timeout for user response
+- Thread manager routes next message as answer via `question-sent.flag`
+
+**Skills**
+- `invoice-processing` — complete invoice workflow with templates
+- `plan-solution` — structured implementation planning for plan mode
+- `incremental-dev` — small-step iteration with validation
+- `pr-review` — read-only PR analysis via gh CLI
+- `github-dev` — GitHub issue/PR development workflow (removed with GitHub channel)
+
+**Thread Close** — `/close` command and Feishu disband event
+- `/close` command to delete thread directory and clean up state
+- Feishu `im.chat.disbanded_v1` event detection for automatic thread cleanup
+
+**Central Path Resolution** — `thread_path.rs` module
+- `resolve_workspace()` function for consistent path construction
+- 10 end-to-end tests covering email, Feishu, config override, and attachment paths
+
+### Fixed
+
+**Email Parser Simplification**
+- Removed quoted history from email replies (reply = text + footer only)
+- Fixed forwarded email body extraction (was stripped as "quoted text")
+- Removed 600 lines of dead quoted history code (`email_parser.rs`: 1296 → 693 lines)
+
+**Attachment Handling**
+- Fixed double-nested attachment directory path (`workspace/channel/workspace/` → `workspace/`)
+- Moved attachment saving to after thread routing (correct directory with `thread_name` override)
+- Reply delivery moved from `messages/<dir>/reply.md` to `.jyc/reply.md`
+
+**Question Tool Delivery**
+- Question tool now self-delivers via reply signal (AI doesn't need two-step flow)
+- Background delivery watcher delivers during SSE stream (no 5-min wait)
+- SSE handler detects `ask_user` tool completion alongside `reply_message`
+
+**Permissions**
+- `external_directory: allow` for threads with symlinks (prevents plan mode sub-agent deadlock)
+- Auto-detect symlinks up to 3 levels deep for permission configuration
+
+**Activity Timeouts**
+- Both `ACTIVITY_TIMEOUT` and `TOOL_ACTIVITY_TIMEOUT` set to 30 min for thinking models
+
+### Changed
+
+- GitHub channel removed (reverted all GitHub-specific implementation)
+- `dev-workflow` skill enhanced with gh CLI instructions and token scope documentation
+- `deploy.sh` auto-detects paths from `JYC_BINARY` env var and script directory
+- `run-jyc.sh` requires `JYC_BINARY` and `JYC_WORKDIR` environment variables
+- `SYSTEMD.md` updated with deployment flow diagram and env var documentation
+- SSE stream no longer exits early after reply tool (allows post-reply actions)
+- `config_template.toml` consolidated into `config.example.toml`
+
+### Removed
+
+- GitHub channel (`src/channels/github/`, `GITHUB_CHANNEL.md`, `agents.github-dev.example.md`)
+- `labels` field from `PatternRules`
+- Dead quoted history functions and tests (600 lines)
+- Dead `thread_path` functions (unused resolve helpers)
+- `messages/` directory references (replaced by `.jyc/` and chat log)
+
 ## [0.1.7] - 2026-04-11
 
 ### Added

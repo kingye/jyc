@@ -66,13 +66,24 @@ Return the values in a structured format, one per line."
 ```
 
 For PDFs that the vision tool cannot process, try text extraction as fallback:
+
+**Option A: pypdf (preferred — pure Python, no system dependencies)**
 ```bash
-python3 -c "
-import subprocess
-result = subprocess.run(['pdftotext', '<file>', '-'], capture_output=True, text=True)
-print(result.stdout[:3000])
-"
+python3 << 'PYEOF'
+from pypdf import PdfReader
+reader = PdfReader('<file>')
+for page in reader.pages:
+    text = page.extract_text()
+    if text:
+        print(text[:3000])
+PYEOF
 ```
+
+**Option B: pdftotext (requires poppler-utils)**
+```bash
+pdftotext '<file>' - | head -100
+```
+
 Then extract values from the text output.
 
 ### Step 4: Update Excel

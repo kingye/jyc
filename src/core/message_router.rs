@@ -66,13 +66,17 @@ impl MessageRouter {
             }
         };
 
-        // 2. Derive thread name (channel-specific)
-        let thread_name =
-            matcher.derive_thread_name(&message, patterns, pattern_match.as_ref());
-
-        // Safe to unwrap because we checked is_some() above
+        // 2. Derive thread name
+        // If the matched pattern has a fixed thread_name, use it (channel-agnostic).
+        // Otherwise, derive from message content (channel-specific).
         let pattern_name = pattern_match.as_ref().expect("pattern_match should be Some").pattern_name.clone();
         
+        let thread_name = patterns
+            .iter()
+            .find(|p| p.name == pattern_name)
+            .and_then(|p| p.thread_name.clone())
+            .unwrap_or_else(|| matcher.derive_thread_name(&message, patterns, pattern_match.as_ref()));
+
         tracing::info!(
             channel = %ch,
             thread = %thread_name,

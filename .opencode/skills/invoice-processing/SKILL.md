@@ -46,17 +46,23 @@ fi
 ### Step 2: Download the Invoice
 
 - **From attachment**: The attachment is already saved in the `attachments/` directory.
-  Copy it to the monthly folder with a sequential name.
+  Copy it to the monthly folder with a temporary name first.
 - **From URL in message**: Download using `bash`:
   ```bash
-  curl -sL "<url>" -o "invoice_${MONTH}/invoice_NNN.pdf"
+  curl -sL "<url>" -o "invoice_${MONTH}/temp_invoice.pdf"
   ```
 
-Naming convention: `invoice_001.pdf`, `invoice_002.jpg`, etc.
-Check existing files to determine the next sequence number:
+After extraction (Step 3), rename the file using the invoice number:
 ```bash
-ls invoice_${MONTH}/invoice_* 2>/dev/null | wc -l
+# Example: rename temp file to invoice number
+mv "invoice_${MONTH}/temp_invoice.pdf" "invoice_${MONTH}/INV-2026-0042.pdf"
 ```
+
+Naming rules:
+- Use the extracted 发票号码 as the filename (e.g., `INV-2026-0042.pdf`)
+- Keep the original file extension
+- If 发票号码 cannot be extracted, fall back to sequential naming (`invoice_001.pdf`)
+- If a file with the same name exists, append a suffix (`INV-2026-0042_2.pdf`)
 
 ### Step 3: Extract Invoice Data
 

@@ -353,4 +353,140 @@ mod tests {
         assert_eq!(jyc_dir, PathBuf::from("/home/jiny/projects/jyc-data/jiny283a/workspace/invoice-processing/.jyc"));
         assert_eq!(messages, PathBuf::from("/home/jiny/projects/jyc-data/jiny283a/workspace/invoice-processing/messages"));
     }
+
+    // === Feishu chat_name → thread path ===
+
+    fn make_feishu_message(chat_name: Option<&str>, chat_type: &str, sender_name: Option<&str>, chat_id: Option<&str>) -> InboundMessage {
+        let mut metadata = HashMap::new();
+        if let Some(name) = chat_name {
+            metadata.insert("chat_name".to_string(), serde_json::json!(name));
+        }
+        metadata.insert("chat_type".to_string(), serde_json::json!(chat_type));
+        if let Some(name) = sender_name {
+            metadata.insert("sender_name".to_string(), serde_json::json!(name));
+        }
+        if let Some(id) = chat_id {
+            metadata.insert("chat_id".to_string(), serde_json::json!(id));
+        }
+
+        InboundMessage {
+            id: "1".to_string(),
+            channel: "feishu_bot".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "ou_xxx".to_string(),
+            sender_address: "ou_xxx".to_string(),
+            recipients: vec![],
+            topic: "".to_string(),
+            content: MessageContent::default(),
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        }
+    }
+
+    #[test]
+    fn test_feishu_group_chat_name_to_thread_path() {
+        use crate::channels::feishu::inbound::FeishuMatcher;
+
+        let workdir = Path::new("/data");
+        let channel = "feishu_bot";
+        let message = make_feishu_message(Some("self-hosting-jyc"), "group", None, None);
+
+        let matcher = FeishuMatcher;
+        let thread_name = matcher.derive_thread_name(&message, &[], None);
+        assert_eq!(thread_name, "self-hosting-jyc");
+
+        let path = resolve_thread_path(workdir, channel, &thread_name);
+        assert_eq!(
+            path,
+            PathBuf::from("/data/feishu_bot/workspace/self-hosting-jyc")
+        );
+    }
+
+    #[test]
+    fn test_feishu_chinese_chat_name_to_thread_path() {
+        use crate::channels::feishu::inbound::FeishuMatcher;
+
+        let workdir = Path::new("/data");
+        let channel = "feishu_bot";
+        let message = make_feishu_message(Some("五一松赞"), "group", None, None);
+
+        let matcher = FeishuMatcher;
+        let thread_name = matcher.derive_thread_name(&message, &[], None);
+        assert_eq!(thread_name, "五一松赞");
+
+        let path = resolve_thread_path(workdir, channel, &thread_name);
+        assert_eq!(
+            path,
+            PathBuf::from("/data/feishu_bot/workspace/五一松赞")
+        );
+    }
+
+    #[test]
+    fn test_feishu_p2p_sender_name_to_thread_path() {
+        use crate::channels::feishu::inbound::FeishuMatcher;
+
+        let workdir = Path::new("/data");
+        let channel = "feishu_bot";
+        // P2P with no chat_name but has sender_name
+        let message = make_feishu_message(None, "p2p", Some("张三"), None);
+
+        let matcher = FeishuMatcher;
+        let thread_name = matcher.derive_thread_name(&message, &[], None);
+        assert_eq!(thread_name, "张三");
+
+        let path = resolve_thread_path(workdir, channel, &thread_name);
+        assert_eq!(
+            path,
+            PathBuf::from("/data/feishu_bot/workspace/张三")
+        );
+    }
+
+    #[test]
+    fn test_feishu_fallback_chat_id_to_thread_path() {
+        use crate::channels::feishu::inbound::FeishuMatcher;
+
+        let workdir = Path::new("/data");
+        let channel = "feishu_bot";
+        // No chat_name, no sender_name, only chat_id
+        let message = make_feishu_message(None, "group", None, Some("oc_abc123"));
+
+        let matcher = FeishuMatcher;
+        let thread_name = matcher.derive_thread_name(&message, &[], None);
+        assert_eq!(thread_name, "feishu_chat_oc_abc123");
+
+        let path = resolve_thread_path(workdir, channel, &thread_name);
+        assert_eq!(
+            path,
+            PathBuf::from("/data/feishu_bot/workspace/feishu_chat_oc_abc123")
+        );
+    }
+
+    #[test]
+    fn test_feishu_chat_name_with_config_override() {
+        let workdir = Path::new("/data");
+        let channel = "feishu_bot";
+
+        // Pattern overrides chat_name-derived thread name
+        let pattern = ChannelPattern {
+            name: "invoices".to_string(),
+            thread_name: Some("invoice-processing".to_string()),
+            ..Default::default()
+        };
+
+        // Chat name would derive "发票处理群" but config overrides to "invoice-processing"
+        let derived = "发票处理群";
+        let thread_name = pattern.thread_name.as_deref().unwrap_or(derived);
+        assert_eq!(thread_name, "invoice-processing");
+
+        let path = resolve_thread_path(workdir, channel, thread_name);
+        assert_eq!(
+            path,
+            PathBuf::from("/data/feishu_bot/workspace/invoice-processing")
+        );
+    }
 }

@@ -261,6 +261,12 @@ pub struct ChannelPattern {
     /// If not specified, no template is applied
     #[serde(default)]
     pub template: Option<String>,
+    /// Fixed thread name override.
+    /// If set, all messages matching this pattern are routed to this thread
+    /// instead of deriving the thread name from the message content.
+    /// Channel-agnostic: works for email, Feishu, or any channel.
+    #[serde(default)]
+    pub thread_name: Option<String>,
 }
 
 impl Default for ChannelPattern {
@@ -272,6 +278,7 @@ impl Default for ChannelPattern {
             rules: PatternRules::default(),
             attachments: None,
             template: None,
+            thread_name: None,
         }
     }
 }

@@ -82,6 +82,68 @@ pub fn generate_attachment_filename(attachment: &MessageAttachment) -> String {
     final_name
 }
 
+/// Save attachments from an inbound message directly to a thread directory.
+///
+/// Simpler version that takes the resolved thread path directly.
+/// Used by the thread manager where the thread path is already known.
+pub async fn save_attachments_to_dir(
+    message: &mut InboundMessage,
+    thread_path: &Path,
+    attachment_config: Option<&InboundAttachmentConfig>,
+) -> Result<()> {
+    if message.attachments.is_empty() {
+        tracing::debug!("No attachments to save for message");
+        return Ok(());
+    }
+
+    // Determine save path: use configured path or default to thread_path/attachments/
+    let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
+        Some(path) => {
+            let path_buf = PathBuf::from(path);
+            if path_buf.is_absolute() {
+                path_buf
+            } else {
+                thread_path.join(path_buf)
+            }
+        }
+        None => thread_path.join("attachments"),
+    };
+
+    tracing::debug!("Attachment save directory: {}", save_dir.display());
+    tokio::fs::create_dir_all(&save_dir)
+        .await
+        .context("Failed to create attachment directory")?;
+
+    for (i, attachment) in message.attachments.iter_mut().enumerate() {
+        if attachment.content.is_none() {
+            tracing::warn!("Attachment has no content: {}", attachment.filename);
+            continue;
+        }
+
+        let filename = generate_attachment_filename(attachment);
+        let file_path = save_dir.join(&filename);
+
+        tracing::debug!("Saving attachment to: {}", file_path.display());
+
+        if let Some(content) = &attachment.content {
+            tokio::fs::write(&file_path, content)
+                .await
+                .context(format!("Failed to write attachment: {}", attachment.filename))?;
+
+            attachment.saved_path = Some(file_path.clone());
+
+            tracing::info!(
+                "Attachment saved: {} ({} bytes) -> {}",
+                attachment.filename,
+                attachment.size,
+                file_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Save attachments from an inbound message to the thread directory.
 ///
 /// This is the shared implementation used by all channel adapters.

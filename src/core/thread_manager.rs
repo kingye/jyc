@@ -710,12 +710,9 @@ async fn process_message(
     // This ensures attachments go to the correct thread directory when
     // thread_name override is configured on the pattern.
     if !message.attachments.is_empty() {
-        let _attachments_dir = store_result.thread_path.join("attachments");
-        if let Err(e) = crate::core::attachment_storage::save_attachments_to_thread_directory(
+        if let Err(e) = crate::core::attachment_storage::save_attachments_to_dir(
             &mut message.clone(),
-            &storage.workspace(),
-            &message.channel,
-            thread_name,
+            &store_result.thread_path,
             item.attachment_config.as_ref(),
         ).await {
             tracing::warn!(error = %e, "Failed to save attachments");

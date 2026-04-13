@@ -12,8 +12,9 @@ When you receive a message containing an invoice (PDF, image attachment, or URL)
 
 ### Step 1: Determine Current Month Folder
 
-The template Excel file is bundled with this skill at:
-`.opencode/skills/invoice-processing/template.xlsx`
+The template Excel files are bundled with this skill at:
+- `.opencode/skills/invoice-processing/template.xlsx` — invoice record template
+- `summary.xlsx` — summary template (placed in thread directory by user)
 
 If the thread doesn't have `template.xlsx` yet, copy it from the skill:
 ```bash
@@ -25,11 +26,13 @@ fi
 ```
 Thread directory structure:
 <thread_dir>/
-  template.xlsx           ← Excel template (copied from skill on first use)
+  template.xlsx           ← Invoice record template (copied from skill)
+  summary.xlsx            ← Summary template (placed by user)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
-    invoices.xlsx          ← Excel with extracted data for this month
-    invoice_001.pdf        ← Downloaded invoices
-    invoice_002.jpg
+    invoices.xlsx          ← Invoice records for this month
+    summary.xlsx           ← Summary for this month (copied + filled when requested)
+    INV-2026-0042.pdf      ← Downloaded invoices (named by invoice number)
+    INV-2026-0043.jpg
     ...
 ```
 
@@ -177,19 +180,65 @@ Example reply:
 Excel: invoice_2026-04/invoices.xlsx (第4行)
 ```
 
-### Step 6: Export Monthly Invoices (when requested)
+### Step 6: Monthly Summary (when requested)
+
+When the user asks to summarize a month's invoices:
+
+1. Determine the target month (from user message or default to current month)
+2. Verify the monthly folder and `invoices.xlsx` exist
+3. Copy `summary.xlsx` template into the monthly folder (if not already there):
+   ```bash
+   MONTH="2026-04"
+   if [ ! -f "invoice_${MONTH}/summary.xlsx" ]; then
+     cp summary.xlsx "invoice_${MONTH}/summary.xlsx"
+   fi
+   ```
+4. Read all data from `invoice_${MONTH}/invoices.xlsx`
+5. Fill `invoice_${MONTH}/summary.xlsx` based on the invoice data:
+   - Read the summary template headers first to understand the layout
+   - Aggregate values as needed (totals, counts, by vendor, by tax rate, etc.)
+   - Use Python openpyxl to read invoices and write summary
+
+```bash
+python3 << 'PYEOF'
+from openpyxl import load_workbook
+
+# Read invoice data
+inv_wb = load_workbook('invoice_YYYY-MM/invoices.xlsx')
+inv_ws = inv_wb.active
+
+# Read summary template
+sum_wb = load_workbook('invoice_YYYY-MM/summary.xlsx')
+sum_ws = sum_wb.active
+
+# Read summary headers to understand layout
+headers = [sum_ws.cell(row=1, column=c).value for c in range(1, sum_ws.max_column + 1)]
+print(f"Summary headers: {headers}")
+
+# Aggregate data from invoices and fill summary
+# (adapt based on actual summary template layout)
+
+sum_wb.save('invoice_YYYY-MM/summary.xlsx')
+print('Summary updated')
+PYEOF
+```
+
+6. Reply with the summary results
+
+### Step 7: Export Monthly Invoices (when requested)
 
 When the user asks to download or export all invoices for a month:
 
 1. Determine the target month (from user message or default to current month)
 2. Verify the folder exists
-3. Zip the entire monthly folder:
+3. If summary has not been generated yet, run Step 6 first to create it
+4. Zip the entire monthly folder (includes invoices.xlsx, summary.xlsx, and all invoice files):
    ```bash
    MONTH="2026-04"
    cd <thread_dir>
    zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/"
    ```
-4. Send the zip file as an attachment in the reply
+5. Send the zip file as an attachment in the reply
 
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash

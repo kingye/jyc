@@ -28,7 +28,7 @@ pub async fn watch_pending_deliveries(
 ) {
     let jyc_dir = thread_path.join(".jyc");
     let signal_path = jyc_dir.join("reply-sent.flag");
-    let reply_path = thread_path.join("messages").join(message_dir).join("reply.md");
+    let reply_path = jyc_dir.join("reply.md");
 
     loop {
         tokio::select! {
@@ -163,13 +163,11 @@ mod tests {
 
         // Create directories
         let jyc_dir = thread_path.join(".jyc");
-        let msg_dir = thread_path.join("messages").join(message_dir);
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
 
-        // Write signal and reply files
+        // Write signal and reply files to .jyc/
         tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
-        tokio::fs::write(msg_dir.join("reply.md"), "❓ What color?").await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "❓ What color?").await.unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -198,7 +196,7 @@ mod tests {
 
         // Verify cleanup
         assert!(!jyc_dir.join("reply-sent.flag").exists());
-        assert!(!msg_dir.join("reply.md").exists());
+        assert!(!jyc_dir.join("reply.md").exists());
     }
 
     #[tokio::test]
@@ -207,10 +205,10 @@ mod tests {
         let thread_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let msg_dir = thread_path.join("messages").join(message_dir);
-        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
-        tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
-        tokio::fs::write(msg_dir.join("reply.md"), "test").await.unwrap();
+        let jyc_dir = thread_path.join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // reply.md exists but no signal file
+        tokio::fs::write(jyc_dir.join("reply.md"), "test").await.unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -241,12 +239,10 @@ mod tests {
         let message_dir = "2026-01-01_00-00-00";
 
         let jyc_dir = thread_path.join(".jyc");
-        let msg_dir = thread_path.join("messages").join(message_dir);
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::create_dir_all(&msg_dir).await.unwrap();
 
         tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
-        tokio::fs::write(msg_dir.join("reply.md"), "   ").await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "   ").await.unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -277,7 +273,6 @@ mod tests {
         let message_dir = "2026-01-01_00-00-00";
 
         tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
-        tokio::fs::create_dir_all(thread_path.join("messages").join(message_dir)).await.unwrap();
 
         let (outbound, _delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();

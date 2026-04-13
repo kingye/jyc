@@ -113,8 +113,7 @@ CRITICAL: Always use jyc_reply_reply_message tool to send your reply.
 This thread maintains a chronological chat history in Markdown format. The history includes all received messages and replies.
 
 ### Location
-- Primary location: `chat_history_YYYY-MM-DD.md` in the thread directory (e.g., `chat_history_2026-04-07.md`)
-- Secondary location: `messages/YYYY-MM-DD_HH-MM-SS/` directories (dual-write mode during transition)
+- `chat_history_YYYY-MM-DD.md` in the thread directory (e.g., `chat_history_2026-04-07.md`)
 
 ### Format
 Each entry in the chat history has:
@@ -133,7 +132,6 @@ Use the available tools to read chat history:
 1. **Find current day's log**: `glob "chat_history_*.md"`
 2. **Read specific file**: `read "chat_history_2026-04-07.md"`
 3. **Search history**: `grep "keyword" --include "chat_history_*.md"`
-4. **List recent sessions**: `glob "messages/*/"`
 
 ### Important Notes
 - **Read-only access**: You can read chat history but do NOT modify these files directly

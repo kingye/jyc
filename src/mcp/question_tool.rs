@@ -154,10 +154,8 @@ async fn handle_ask_user(
 
     let question_text = format!("❓ **Question:** {}", question);
 
-    // Write the question text to reply.md (monitor reads this for delivery)
-    let message_dir = cwd.join("messages").join(&ctx.incoming_message_dir);
-    tokio::fs::create_dir_all(&message_dir).await.ok();
-    tokio::fs::write(message_dir.join("reply.md"), &question_text).await.ok();
+    // Write the question text to .jyc/reply.md (monitor reads this for delivery)
+    tokio::fs::write(jyc_dir.join("reply.md"), &question_text).await.ok();
 
     // Write the reply signal file (triggers monitor to deliver)
     let signal = serde_json::json!({

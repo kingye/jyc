@@ -859,10 +859,8 @@ async fn process_message(
         let reply_text = match reply_text {
             Some(t) => Some(t),
             None => {
-                // Fallback: read from reply.md (written by question tool or other MCP tools)
-                let reply_md = store_result.thread_path.join("messages")
-                    .join(&store_result.message_dir)
-                    .join("reply.md");
+                // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
+                let reply_md = store_result.thread_path.join(".jyc").join("reply.md");
                 if reply_md.exists() {
                     tokio::fs::read_to_string(&reply_md).await.ok()
                         .filter(|t| !t.trim().is_empty())

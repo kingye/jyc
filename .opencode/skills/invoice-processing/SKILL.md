@@ -12,10 +12,20 @@ When you receive a message containing an invoice (PDF, image attachment, or URL)
 
 ### Step 1: Determine Current Month Folder
 
+The template Excel file is bundled with this skill at:
+`.opencode/skills/invoice-processing/template.xlsx`
+
+If the thread doesn't have `template.xlsx` yet, copy it from the skill:
+```bash
+if [ ! -f template.xlsx ]; then
+  cp .opencode/skills/invoice-processing/template.xlsx template.xlsx
+fi
+```
+
 ```
 Thread directory structure:
 <thread_dir>/
-  template.xlsx           ← Empty Excel template (always present)
+  template.xlsx           ← Excel template (copied from skill on first use)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
     invoices.xlsx          ← Excel with extracted data for this month
     invoice_001.pdf        ← Downloaded invoices
@@ -100,15 +110,24 @@ ws = wb.active
 # Find next empty row
 next_row = ws.max_row + 1
 
-# Write extracted values (adjust columns to match template)
-ws.cell(row=next_row, column=1, value='<invoice_number>')
-ws.cell(row=next_row, column=2, value='<invoice_date>')
-ws.cell(row=next_row, column=3, value='<vendor_name>')
-ws.cell(row=next_row, column=4, value=<total_amount>)
-ws.cell(row=next_row, column=5, value=<tax_amount>)
-ws.cell(row=next_row, column=6, value='<due_date>')
-ws.cell(row=next_row, column=7, value='<description>')
-ws.cell(row=next_row, column=8, value='<filename>')
+# Template columns:
+# A:序号 B:发票号码 C:发票日期 D:供应商/卖方 E:商品/服务描述
+# F:金额(不含税) G:税率 H:税额 I:价税合计 J:发票类型
+# K:付款状态 L:付款日期 M:备注 N:文件名
+ws.cell(row=next_row, column=1, value=next_row - 1)       # 序号
+ws.cell(row=next_row, column=2, value='<invoice_number>')  # 发票号码
+ws.cell(row=next_row, column=3, value='<invoice_date>')    # 发票日期
+ws.cell(row=next_row, column=4, value='<vendor_name>')     # 供应商/卖方
+ws.cell(row=next_row, column=5, value='<description>')     # 商品/服务描述
+ws.cell(row=next_row, column=6, value=<amount_excl_tax>)   # 金额(不含税)
+ws.cell(row=next_row, column=7, value='<tax_rate>')        # 税率
+ws.cell(row=next_row, column=8, value=<tax_amount>)        # 税额
+ws.cell(row=next_row, column=9, value=<total_incl_tax>)    # 价税合计
+ws.cell(row=next_row, column=10, value='<invoice_type>')   # 发票类型
+ws.cell(row=next_row, column=11, value='未付款')            # 付款状态
+ws.cell(row=next_row, column=12, value='')                 # 付款日期
+ws.cell(row=next_row, column=13, value='')                 # 备注
+ws.cell(row=next_row, column=14, value='<filename>')       # 文件名
 
 wb.save('invoice_YYYY-MM/invoices.xlsx')
 print('Row added successfully')

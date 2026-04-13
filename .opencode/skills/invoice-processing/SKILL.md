@@ -195,10 +195,14 @@ The summary template (`summary.xlsx`) is an IIT deduction claim form with predef
   - Row 10: Laundry
   - Row 12: Food & Meals
   - Row 14: Rental fee
+  - Row 14: Rental fee (**FIXED VALUE — do NOT modify**)
   - Row 16: Airticket
   - (other rows available for additional categories)
 - Row 38: Total (SUM formula, auto-calculates)
 - Row 43: Date & Signature
+
+**IMPORTANT:** Row 14 (Rental fee) contains a fixed value set by the user.
+Do NOT overwrite or modify this row during summary generation.
 
 **Process:**
 
@@ -238,10 +242,10 @@ sum_ws = sum_wb.active
 sum_ws['B6'] = 'April of 2026'  # Adjust month name
 
 # Category mapping: row number → category keywords
+# NOTE: Row 14 (Rental fee) is a FIXED value — do NOT include it here
 categories = {
     10: ['洗衣', '干洗', 'laundry'],
     12: ['餐饮', '餐费', '食品', '外卖', 'food', 'meal'],
-    14: ['房租', '租金', '租赁', 'rental', 'rent'],
     16: ['机票', '航空', 'airticket', 'flight'],
 }
 

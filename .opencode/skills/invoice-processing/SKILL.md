@@ -63,16 +63,21 @@ ls invoice_${MONTH}/invoice_* 2>/dev/null | wc -l
 Use the `vision_analyze_image` tool to extract key values from the invoice:
 
 ```
-Prompt: "Extract the following information from this invoice:
-1. Invoice number (Rechnungsnummer)
-2. Invoice date (Rechnungsdatum)
-3. Vendor/Supplier name (Lieferant)
-4. Total amount with currency (Gesamtbetrag)
-5. Tax amount if present (Steuerbetrag/MwSt)
-6. Payment due date if present (Fälligkeitsdatum)
-7. Description/items summary (Beschreibung)
+Prompt: "Extract the following information from this Chinese invoice (发票):
+1. 发票号码 (Invoice number)
+2. 开票日期 (Invoice date)
+3. 发票类型 (Invoice type, e.g., 增值税专用发票/增值税普通发票/增值税电子普通发票)
+4. 购买方名称 (Buyer name)
+5. 购买方税号 (Buyer tax ID)
+6. 销售方名称 (Seller name)
+7. 销售方税号 (Seller tax ID)
+8. 服务项目名称 (Service/item name)
+9. 税率 (Tax rate, e.g., 6%, 13%)
+10. 金额 (Amount, excl. tax)
+11. 税额 (Tax amount)
+12. 价税合计 (Total, incl. tax)
 
-Return the values in a structured format, one per line."
+Return each value on a separate line in format: field_name: value"
 ```
 
 For PDFs that the vision tool cannot process, try text extraction as fallback:
@@ -111,23 +116,24 @@ ws = wb.active
 next_row = ws.max_row + 1
 
 # Template columns:
-# A:序号 B:发票号码 C:发票日期 D:供应商/卖方 E:商品/服务描述
-# F:金额(不含税) G:税率 H:税额 I:价税合计 J:发票类型
-# K:付款状态 L:付款日期 M:备注 N:文件名
-ws.cell(row=next_row, column=1, value=next_row - 1)       # 序号
-ws.cell(row=next_row, column=2, value='<invoice_number>')  # 发票号码
-ws.cell(row=next_row, column=3, value='<invoice_date>')    # 发票日期
-ws.cell(row=next_row, column=4, value='<vendor_name>')     # 供应商/卖方
-ws.cell(row=next_row, column=5, value='<description>')     # 商品/服务描述
-ws.cell(row=next_row, column=6, value=<amount_excl_tax>)   # 金额(不含税)
-ws.cell(row=next_row, column=7, value='<tax_rate>')        # 税率
-ws.cell(row=next_row, column=8, value=<tax_amount>)        # 税额
-ws.cell(row=next_row, column=9, value=<total_incl_tax>)    # 价税合计
-ws.cell(row=next_row, column=10, value='<invoice_type>')   # 发票类型
-ws.cell(row=next_row, column=11, value='未付款')            # 付款状态
-ws.cell(row=next_row, column=12, value='')                 # 付款日期
-ws.cell(row=next_row, column=13, value='')                 # 备注
-ws.cell(row=next_row, column=14, value='<filename>')       # 文件名
+# A:序号 B:发票号码 C:开票日期 D:发票类型 E:购买方名称
+# F:购买方税号 G:销售方名称 H:销售方税号 I:服务项目名称
+# J:税率 K:金额 L:税额 M:价税合计 N:备注 O:文件名
+ws.cell(row=next_row, column=1, value=next_row - 1)        # 序号
+ws.cell(row=next_row, column=2, value='<发票号码>')         # 发票号码
+ws.cell(row=next_row, column=3, value='<开票日期>')         # 开票日期
+ws.cell(row=next_row, column=4, value='<发票类型>')         # 发票类型
+ws.cell(row=next_row, column=5, value='<购买方名称>')       # 购买方名称
+ws.cell(row=next_row, column=6, value='<购买方税号>')       # 购买方税号
+ws.cell(row=next_row, column=7, value='<销售方名称>')       # 销售方名称
+ws.cell(row=next_row, column=8, value='<销售方税号>')       # 销售方税号
+ws.cell(row=next_row, column=9, value='<服务项目名称>')     # 服务项目名称
+ws.cell(row=next_row, column=10, value='<税率>')            # 税率
+ws.cell(row=next_row, column=11, value=<金额>)              # 金额
+ws.cell(row=next_row, column=12, value=<税额>)              # 税额
+ws.cell(row=next_row, column=13, value=<价税合计>)          # 价税合计
+ws.cell(row=next_row, column=14, value='')                  # 备注
+ws.cell(row=next_row, column=15, value='<filename>')        # 文件名
 
 wb.save('invoice_YYYY-MM/invoices.xlsx')
 print('Row added successfully')
@@ -146,19 +152,23 @@ Send a reply confirming:
 
 Example reply:
 ```
-✅ Invoice processed
+✅ 发票已处理
 
-| Field | Value |
-|-------|-------|
-| Invoice # | INV-2026-0042 |
-| Date | 2026-04-10 |
-| Vendor | ACME Corp |
-| Total | €1,234.56 |
-| Tax | €234.56 |
-| Due | 2026-05-10 |
+| 字段 | 值 |
+|------|-----|
+| 发票号码 | INV-2026-0042 |
+| 开票日期 | 2026-04-10 |
+| 发票类型 | 增值税普通发票 |
+| 购买方 | XX有限公司 |
+| 销售方 | YY有限公司 |
+| 服务项目 | 信息技术服务 |
+| 税率 | 6% |
+| 金额 | ¥1,000.00 |
+| 税额 | ¥60.00 |
+| 价税合计 | ¥1,060.00 |
 
-File: invoice_2026-04/invoice_003.pdf
-Excel: invoice_2026-04/invoices.xlsx (row 4)
+文件: invoice_2026-04/invoice_003.pdf
+Excel: invoice_2026-04/invoices.xlsx (第4行)
 ```
 
 ### Step 6: Export Monthly Invoices (when requested)

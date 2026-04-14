@@ -7,6 +7,9 @@ set -e
 echo "=== Playwright Installation for Invoice Processing ==="
 echo ""
 
+# Prompt for sudo password upfront so subsequent sudo calls don't block
+sudo -v
+
 # Step 1: System dependencies
 echo "[1/3] Installing system dependencies..."
 sudo apt-get update -qq
@@ -18,18 +21,18 @@ sudo apt-get install -y -qq \
     libxkbcommon0 \
     libatspi2.0-0 \
     libgbm1 \
-    libasound2 \
-    > /dev/null 2>&1
+    libasound2
 echo "      Done."
 
 # Step 2: Python package
 echo "[2/3] Installing Playwright Python package..."
-pip3 install --user playwright > /dev/null 2>&1
+pip3 install --user --break-system-packages playwright 2>&1 || \
+    pip3 install --user playwright 2>&1
 echo "      Done."
 
 # Step 3: Chromium browser
 echo "[3/3] Installing Chromium browser (this may take a minute)..."
-python3 -m playwright install chromium
+python3 -m playwright install --with-deps chromium
 echo "      Done."
 
 # Verify

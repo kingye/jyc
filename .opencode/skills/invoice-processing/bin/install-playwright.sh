@@ -2,7 +2,6 @@
 # One-time Playwright installation for Debian headless servers.
 # Run with: bash install-playwright.sh
 # Requires sudo for system dependencies.
-set -e
 
 echo "=== Playwright Installation for Invoice Processing ==="
 echo ""
@@ -26,9 +25,14 @@ echo "      Done."
 
 # Step 2: Python package
 echo "[2/3] Installing Playwright Python package..."
-pip3 install --user --break-system-packages playwright 2>&1 || \
-    pip3 install --user playwright 2>&1
-echo "      Done."
+if pip3 install --user --break-system-packages playwright 2>&1; then
+    echo "      Done."
+elif pip3 install --user playwright 2>&1; then
+    echo "      Done."
+else
+    echo "      FAILED. Please install manually: pip3 install playwright"
+    exit 1
+fi
 
 # Step 3: Chromium browser
 echo "[3/3] Installing Chromium browser (this may take a minute)..."

@@ -142,14 +142,31 @@ Then extract values from the text output.
 
 ### Step 4: Update Excel
 
-Use Python with openpyxl to add a row to the monthly Excel file:
+**IMPORTANT: Check for duplicate invoice numbers before adding.**
+
+Use Python with openpyxl to check and add a row:
 
 ```bash
 python3 << 'PYEOF'
 from openpyxl import load_workbook
 
-wb = load_workbook('invoice_YYYY-MM/invoices.xlsx')
+INVOICE_NO = '<发票号码>'
+MONTH = '2026-04'
+
+wb = load_workbook(f'invoice_{MONTH}/invoices.xlsx')
 ws = wb.active
+
+# Check for duplicate invoice number (column B = 发票号码)
+existing_rows = []
+for row in range(2, ws.max_row + 1):
+    existing_no = ws.cell(row=row, column=2).value
+    if existing_no and str(existing_no).strip() == INVOICE_NO.strip():
+        existing_rows.append(row)
+
+if existing_rows:
+    print(f'DUPLICATE: Invoice {INVOICE_NO} already exists at row(s): {existing_rows}')
+    print('Skipping - do not add duplicate')
+    exit(0)
 
 # Find next empty row
 next_row = ws.max_row + 1
@@ -159,7 +176,7 @@ next_row = ws.max_row + 1
 # F:购买方税号 G:销售方名称 H:销售方税号 I:服务项目名称
 # J:税率 K:金额 L:税额 M:价税合计 N:备注 O:文件名
 ws.cell(row=next_row, column=1, value=next_row - 1)        # 序号
-ws.cell(row=next_row, column=2, value='<发票号码>')         # 发票号码
+ws.cell(row=next_row, column=2, value=INVOICE_NO)          # 发票号码
 ws.cell(row=next_row, column=3, value='<开票日期>')         # 开票日期
 ws.cell(row=next_row, column=4, value='<发票类型>')         # 发票类型
 ws.cell(row=next_row, column=5, value='<购买方名称>')       # 购买方名称
@@ -174,7 +191,7 @@ ws.cell(row=next_row, column=13, value=<价税合计>)          # 价税合计
 ws.cell(row=next_row, column=14, value='')                  # 备注
 ws.cell(row=next_row, column=15, value='<filename>')        # 文件名
 
-wb.save('invoice_YYYY-MM/invoices.xlsx')
+wb.save(f'invoice_{MONTH}/invoices.xlsx')
 print('Row added successfully')
 PYEOF
 ```
@@ -185,11 +202,12 @@ the column layout. Adapt the column mapping to match the actual template.
 ### Step 5: Reply with Summary
 
 Send a reply confirming:
-- Invoice file saved as: `invoice_YYYY-MM/invoice_NNN.ext`
+- If new: Invoice file saved as: `invoice_YYYY-MM/invoice_NNN.ext`
 - Extracted values (formatted as a table)
 - Row added to `invoice_YYYY-MM/invoices.xlsx`
+- If duplicate: Skip with message
 
-Example reply:
+Example reply (new invoice):
 ```
 ✅ 发票已处理
 
@@ -208,6 +226,14 @@ Example reply:
 
 文件: invoice_2026-04/invoice_003.pdf
 Excel: invoice_2026-04/invoices.xlsx (第4行)
+```
+
+Example reply (duplicate):
+```
+⚠️ 发票已忽略
+
+发票号码 INV-2026-0042 已存在于 invoice_2026-04/invoices.xlsx (第3行)
+跳过重复记录
 ```
 
 ### Step 6: Monthly Summary (when requested)

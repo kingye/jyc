@@ -128,7 +128,35 @@ Naming rules:
 
 ### Step 3: Extract Invoice Data
 
-Use the `vision_analyze_image` tool to extract key values from the invoice:
+**For PDF files**, first try text extraction (fast, no vision API cost).
+If text extraction fails or returns incomplete data, fall back to vision MCP.
+
+**Step 3a: Try PDF text extraction first**
+
+**Option A: pypdf (preferred — pure Python, no system dependencies)**
+```bash
+python3 << 'PYEOF'
+from pypdf import PdfReader
+reader = PdfReader('<file>')
+for page in reader.pages:
+    text = page.extract_text()
+    if text:
+        print(text[:3000])
+PYEOF
+```
+
+**Option B: pdftotext (requires poppler-utils)**
+```bash
+pdftotext '<file>' - | head -100
+```
+
+If text extraction succeeds (non-empty output with recognizable invoice fields),
+parse the extracted text to get the invoice values. Then skip to Step 4.
+
+**Step 3b: Fall back to vision MCP (for scanned PDFs or images)**
+
+If text extraction fails, returns empty text, or the extracted text does not
+contain recognizable invoice fields, use the `vision_analyze_image` tool:
 
 ```
 Prompt: "Extract the following information from this Chinese invoice (发票):
@@ -148,26 +176,7 @@ Prompt: "Extract the following information from this Chinese invoice (发票):
 Return each value on a separate line in format: field_name: value"
 ```
 
-For PDFs that the vision tool cannot process, try text extraction as fallback:
-
-**Option A: pypdf (preferred — pure Python, no system dependencies)**
-```bash
-python3 << 'PYEOF'
-from pypdf import PdfReader
-reader = PdfReader('<file>')
-for page in reader.pages:
-    text = page.extract_text()
-    if text:
-        print(text[:3000])
-PYEOF
-```
-
-**Option B: pdftotext (requires poppler-utils)**
-```bash
-pdftotext '<file>' - | head -100
-```
-
-Then extract values from the text output.
+**For image files** (JPG/PNG), use the vision tool directly (skip text extraction).
 
 ### Step 4: Update Excel
 

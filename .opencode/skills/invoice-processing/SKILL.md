@@ -76,17 +76,32 @@ Invoice emails typically contain:
    ```
 
    **Two-level download handling:**
-   - If the downloaded file is HTML (not PDF/image), it's a redirect/intermediate page
-   - Extract the actual invoice URL from the HTML:
+   - If the downloaded file is HTML (not PDF/image), it is an intermediate page
+   - Use the bundled scripts to extract the real PDF URL automatically:
      ```bash
-     # Look for PDF/image links in the HTML
-     grep -oE 'href="[^"]*\.(pdf|PDF|jpg|JPG|png|PNG)[^"]*"' "invoice_${MONTH}/temp_invoice" | head -1
+     # 1. Try lightweight parsing first
+     result=$(python3 .opencode/skills/invoice-processing/scripts/html_parser.py \
+         "invoice_${MONTH}/temp_invoice" "<original_url>")
+
+     # 2. If lightweight parsing fails, use Playwright (fallback)
+     if echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); exit(0 if r.get('success') else 1)" 2>/dev/null; then
+         pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
+     else
+         result=$(python3 .opencode/skills/invoice-processing/scripts/playwright_extractor.py "<original_url>")
+         if echo "$result" | python3 -c "import sys,json; r=json.load(sys.stdin); exit(0 if r.get('success') else 1)" 2>/dev/null; then
+             pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
+         fi
+     fi
+
+     # 3. Download the real PDF (if URL was extracted)
+     if [ -n "$pdf_url" ]; then
+         curl -sL -o "invoice_${MONTH}/temp_invoice" "$pdf_url"
+     else
+         # Cannot extract — save as HTML for manual handling
+         mv "invoice_${MONTH}/temp_invoice" "invoice_${MONTH}/temp_invoice.html"
+     fi
      ```
-   - If found, download the real invoice:
-     ```bash
-     curl -sL -o "invoice_${MONTH}/temp_invoice" "<extracted_url>"
-     file "invoice_${MONTH}/temp_invoice"
-     ```
+   - The switch between parsers is automatic — no user interaction
    - Determine final extension from file type
 
 3. **From attachment (only if no download URL found)**:
@@ -373,6 +388,23 @@ When the user asks to download or export all invoices for a month:
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash
 ls -d invoice_*/
+```
+
+### Browser Automation for Complex HTML Pages
+
+Some invoice platforms serve JavaScript-heavy pages (e.g. React apps) instead
+of direct PDF links. The system handles this automatically:
+
+1. **Lightweight parser** (`scripts/html_parser.py`) — tries regex-based
+   extraction first (fast, no dependencies beyond Python stdlib)
+2. **Playwright fallback** (`scripts/playwright_extractor.py`) — launches
+   a headless Chromium browser to render the page and extract the PDF URL
+
+The switch is fully automatic. The user only sees the final result.
+
+**One-time Playwright setup** (Debian headless server):
+```bash
+bash .opencode/skills/invoice-processing/bin/install-playwright.sh
 ```
 
 ### Rules

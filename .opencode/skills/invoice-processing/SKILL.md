@@ -12,6 +12,12 @@ When you receive a message containing an invoice (PDF, image attachment, or URL)
 
 ### Step 1: Determine Current Month Folder
 
+**IMPORTANT: The month folder is based on when the invoice is RECEIVED/processed, NOT the invoice date (开票日期).**
+
+For example:
+- Invoice dated 2026-03 (March) but received in 2026-04 (April) → file into `invoice_2026-04/`
+- The 开票日期 is still recorded in the Excel, but the file goes to the current month
+
 The template Excel files are bundled with this skill at:
 - `.opencode/skills/invoice-processing/template.xlsx` — invoice record template
 - `summary.xlsx` — summary template (placed in thread directory by user)

@@ -333,11 +333,13 @@ impl GithubInboundAdapter {
         );
 
         for comment in &comments {
-            // Skip comments posted by JYC (identified by role prefix marker)
-            // We use role prefixes [Planner], [Developer], [Reviewer] to identify
-            // comments posted by our agents via the OutboundAdapter.
-            // We do NOT filter by username — the bot may share a GitHub account
-            // with the user (common for personal repos).
+            // Skip ALL comments posted by JYC agents (identified by role prefix).
+            // We skip [Planner], [Developer], [Reviewer] prefixed comments to prevent
+            // infinite loops (agent posts → poll detects → agent triggered again).
+            //
+            // Cross-role triggering (e.g., reviewer comment triggers developer) is
+            // handled via LABEL changes, not comment routing. The developer reads
+            // review comments via `gh pr view --comments` when triggered by a label.
             let body_trimmed = comment.body.trim();
             if body_trimmed.starts_with("[Planner]")
                 || body_trimmed.starts_with("[Developer]")

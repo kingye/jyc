@@ -11,9 +11,10 @@ attachments are empty. You MUST try PDF URLs from the email body FIRST.
 Step 2a: PDF Attachments        → Found PDF? → Extract with PdfReader → Valid? → STOP ✅
          No PDF attachment?     → Go to Step 2b (NOT Step 2d)
                                   ↓
-Step 2b: PDF URLs from Email    → Download URL → Got PDF? → Extract → Valid? → STOP ✅
-         URL returns HTML?      → Use html_parser.py / playwright_extractor.py
-         URL returns Image?     → Tag for Step 2c, try next URL
+Step 2b: PDF URLs from Email    → Match known platform? → Use platform method directly
+         51fapiao.cn?           → curl with browser headers → html_parser.py → download PDF
+         maycur.com?            → playwright_extractor.py → download PDF
+         Unknown URL?           → Generic download+classify → html_parser/playwright if HTML
          All URLs failed?       → Go to Step 2c (NOT Step 2d)
                                   ↓
 Step 2c: Tagged Image URLs      → Use vision MCP → Valid? → STOP ✅
@@ -288,8 +289,43 @@ Extract URLs from the email body and attempt to download PDFs.
 **Maximum 5 URLs per phase.**
 
 For each URL (up to 5):
-1. Download and classify the file type
-2. Based on file type:
+
+**1. FIRST: Check if URL matches a known platform (see Known Invoice Platforms above)**
+
+   **If URL contains `dlj.51fapiao.cn` → Use 51fapiao method directly:**
+   ```bash
+   # Step 1: Download the viewer HTML with browser headers
+   curl -sL \
+       -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+       -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8" \
+       -o "invoice_${MONTH}/temp_download" "<51fapiao_url>"
+   # Step 2: Run html_parser.py to extract the real PDF download URL
+   result=$(python3 .opencode/skills/invoice-processing/scripts/html_parser.py \
+       "invoice_${MONTH}/temp_download" "<51fapiao_url>")
+   # Step 3: Download the real PDF
+   pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
+   curl -sL -o "invoice_${MONTH}/temp_download" "$pdf_url"
+   # Step 4: Verify it's a PDF, then extract with PdfReader
+   ```
+   - Do NOT try plain `curl` first — go straight to this method
+   - If html_parser.py fails → try `playwright_extractor.py` as fallback
+   - If valid PDF → extract with PdfReader, validate → SUCCESS
+
+   **If URL contains `pms.maycur.com` → Use Maycur method directly:**
+   ```bash
+   # Skip html_parser.py — go straight to Playwright
+   result=$(python3 .opencode/skills/invoice-processing/scripts/playwright_extractor.py "<maycur_url>")
+   pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
+   curl -sL -o "invoice_${MONTH}/temp_download" "$pdf_url"
+   ```
+   - Do NOT download HTML first — Playwright handles the full page
+   - If valid PDF → extract with PdfReader, validate → SUCCESS
+
+**2. If URL does NOT match any known platform → Use generic download+classify:**
+
+   Download and classify the file type (see Shared Logic: Download and Classify).
+
+   Based on file type:
 
    **If PDF:**
    - Extract data using Python PdfReader (Step 3a)
@@ -303,17 +339,20 @@ For each URL (up to 5):
    - Continue to next URL
 
    **If HTML:**
-   - This is common for invoice platforms like 51fapiao and Maycur
+   - This may be an unknown invoice platform
    - Use Two-Level HTML Extraction (see Shared Logic above):
      1. Run `html_parser.py` with the downloaded HTML file and the original URL
      2. If it returns `{"success": true, "pdf_url": "..."}` → download the `pdf_url`
      3. If it returns `{"success": false}` → run `playwright_extractor.py` with the original URL
      4. If Playwright also fails → log as `download_failed`, try next URL
-   - See **Known Invoice Platforms** section above for concrete examples
    - After extraction, re-download the real URL and re-classify:
      - If PDF → extract with PdfReader, validate
      - If Image → tag for Image Phase
      - If still HTML or unknown → log as `download_failed`, try next URL
+
+   **If error_page (405/403/etc.):**
+   - Log as `download_failed` with error details
+   - Try next URL
 
    **If unknown/invalid:**
    - Log as `download_failed`

@@ -273,7 +273,7 @@ esac
 
 ### File Naming
 
-After successful extraction (all 3 mandatory fields present), rename the file:
+After successful extraction (all 2 mandatory fields present), rename the file:
 
 ```bash
 mv "invoice_${MONTH}/temp_download.pdf" "invoice_${MONTH}/INV-2026-0042.pdf"
@@ -306,8 +306,8 @@ ls -la attachments/*.pdf 2>/dev/null
 For each PDF attachment found (>50KB):
 1. Copy to monthly folder as temp file
 2. Extract data using Python PdfReader (Step 3a below)
-3. Validate 3 mandatory fields (销售方税号, 校验码, 价税合计)
-4. If ALL 3 fields present → **SUCCESS**, stop processing entirely
+3. Validate 2 mandatory fields (销售方税号, 价税合计)
+4. If ALL 2 mandatory fields present → **SUCCESS**, stop processing entirely
 5. If any field missing → try next PDF attachment
 
 If no PDF attachments found or all fail validation → **proceed to Step 2b (PDF URLs), NOT Step 2d (Image Attachments)**.
@@ -369,7 +369,7 @@ For each URL (up to 5):
 
    **If PDF:**
    - Extract data using Python PdfReader (Step 3a)
-   - Validate 3 mandatory fields
+   - Validate 2 mandatory fields
    - If valid → **SUCCESS**, stop processing
    - If invalid → try next URL
 
@@ -417,7 +417,7 @@ Process any image URLs that were tagged during PDF Phase (Step 2b).
 For each tagged image URL:
 1. The file may already be downloaded — check `path` from the tag record
 2. Use vision MCP tool for data extraction (Step 3b below)
-3. Validate 3 mandatory fields
+3. Validate 2 mandatory fields
 4. If valid → **SUCCESS**, stop processing
 5. If invalid → try next tagged URL
 
@@ -435,7 +435,7 @@ ls -la attachments/*.jpg attachments/*.jpeg attachments/*.png 2>/dev/null
 For each image attachment (>50KB):
 1. Copy to monthly folder as temp file
 2. Extract data using vision MCP tool (Step 3b below)
-3. Validate 3 mandatory fields
+3. Validate 2 mandatory fields
 4. If valid → **SUCCESS**, stop processing
 5. If invalid → try next image attachment
 
@@ -451,7 +451,7 @@ For each URL (up to 5):
 
    **If Image:**
    - Extract with vision MCP tool (Step 3b)
-   - Validate 3 mandatory fields
+   - Validate 2 mandatory fields
    - If valid → **SUCCESS**
    - If invalid → try next URL
 
@@ -501,12 +501,12 @@ PYEOF
 If text extraction succeeds (non-empty output with recognizable invoice fields),
 parse the extracted text to find:
 
-**Mandatory fields (must find ALL 3):**
+**Mandatory fields (must find ALL 2):**
 1. **销售方税号** (Seller Tax ID) — 纳税人识别号, 18 characters
-2. **校验码** (Verification Code) — 20 numeric digits
-3. **价税合计** (Total amount) — positive number
+2. **价税合计** (Total amount) — positive number
 
 **Other fields to extract if available:**
+- 校验码 (Verification Code) — 20 numeric digits (optional, some invoices don't have it)
 - 发票号码 (Invoice number)
 - 开票日期 (Invoice date)
 - 发票类型 (Invoice type)
@@ -530,12 +530,12 @@ parse the extracted text to find:
 ```
 Prompt: "Extract the following information from this Chinese invoice image (发票):
 
-以下3个字段为必填项，务必仔细识别：
+以下2个字段为必填项，务必仔细识别：
 1. 销售方税号 (Seller Tax ID / 纳税人识别号) — 18 characters [MANDATORY]
-2. 校验码 (Verification Code) — 20 numeric digits [MANDATORY]
-3. 价税合计 (Total amount, incl. tax) — positive number [MANDATORY]
+2. 价税合计 (Total amount, incl. tax) — positive number [MANDATORY]
 
-其他字段尽量提取：
+其他字段尽量提取（可选）：
+3. 校验码 (Verification Code) — 20 numeric digits [OPTIONAL, some invoices don't have it]
 4. 发票号码 (Invoice number)
 5. 开票日期 (Invoice date)
 6. 发票类型 (Invoice type, e.g., 增值税专用发票/增值税普通发票/增值税电子普通发票)

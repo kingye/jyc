@@ -16,20 +16,20 @@ Before proceeding to update Excel, validate that ALL conditions are met:
 
 1. The invoice file is a valid format (PDF or image — JPG/PNG only)
 2. The extraction was successful (non-empty data returned)
-3. ALL 3 mandatory fields are present and valid
+3. ALL 2 mandatory fields are present and valid
 
 **Mandatory fields (invoice INVALID if ANY is missing):**
 
 | Field | Validation Rule |
 |-------|----------------|
 | **销售方税号** (Seller Tax ID) | Must be non-empty, 18 characters, alphanumeric |
-| **校验码** (Verification Code) | Must be non-empty, 20 numeric digits |
 | **价税合计** (Total amount) | Must be a valid positive number |
 
-**Recommended field (warn if missing but do NOT reject):**
+**Optional fields (extract if available, do NOT reject if missing):**
 
 | Field | Notes |
 |-------|-------|
+| 校验码 (Verification Code) | Some invoices don't have it; if present, write to 备注 column |
 | 发票号码 (Invoice number) | Extract if possible; if missing, use sequential naming |
 
 ### Validation Logic
@@ -43,11 +43,6 @@ def validate_invoice(data: dict) -> tuple[bool, list[str]]:
     tax_id = str(data.get('销售方税号', '') or '').strip()
     if not tax_id or len(tax_id) != 18:
         missing.append('销售方税号')
-
-    # 校验码: 20 numeric digits
-    verify_code = str(data.get('校验码', '') or '').strip()
-    if not verify_code or len(verify_code) != 20 or not verify_code.isdigit():
-        missing.append('校验码')
 
     # 价税合计: positive number
     total = data.get('价税合计')
@@ -67,10 +62,6 @@ def validate_invoice(data: dict) -> tuple[bool, list[str]]:
 Extraction complete
     ↓
 Check 销售方税号 (18 chars, alphanumeric)
-    ├─ Missing or invalid → add to missing list
-    └─ Valid → continue
-    ↓
-Check 校验码 (20 digits, numeric)
     ├─ Missing or invalid → add to missing list
     └─ Valid → continue
     ↓
@@ -99,7 +90,6 @@ Only when ALL sources in ALL phases fail is it a final failure.
 | PDF text extraction returned empty | `extraction_failed` | Try next source |
 | Vision MCP returned empty/error | `extraction_failed` | Try next source |
 | Missing 销售方税号 | `incomplete_data` | Try next source |
-| Missing 校验码 | `incomplete_data` | Try next source |
 | Missing 价税合计 | `incomplete_data` | Try next source |
 | ALL sources in ALL phases failed | `all_sources_failed` | Final error, log everything |
 

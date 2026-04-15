@@ -25,18 +25,18 @@ files — read them before processing.
 
 ## Mandatory Fields (发票必填字段)
 
-A valid Chinese invoice (发票) MUST contain these 3 fields. If ANY is missing,
+A valid Chinese invoice (发票) MUST contain these 2 fields. If ANY is missing,
 the invoice is **invalid** and must NOT be written to `invoices.xlsx`.
 
-| Field | Description | Format |
-|-------|-------------|--------|
-| **销售方税号** (Seller Tax ID) | 销售方纳税人识别号 | 18 characters (alphanumeric) |
-| **校验码** | Verification code | 20 numeric digits |
-| **价税合计** | Total amount (incl. tax) | Positive number |
+| Field | Description | Format | Required? |
+|-------|-------------|--------|-----------|
+| **销售方税号** (Seller Tax ID) | 销售方纳税人识别号 | 18 characters (alphanumeric) | **MANDATORY** |
+| **价税合计** | Total amount (incl. tax) | Positive number | **MANDATORY** |
 
-**Recommended field (not mandatory):**
+**Optional fields (extract if available, do NOT reject if missing):**
 | Field | Description | Notes |
 |-------|-------------|-------|
+| 校验码 | Verification code (20 numeric digits) | Some invoices don't have it; still record in 备注 if present |
 | 发票号码 | Invoice number | Extract if possible; warn if missing but do NOT reject |
 
 ---
@@ -50,7 +50,7 @@ Email Received
 │ PDF Phase (see PROCESSING.md)               │
 │  1. PDF attachments (>50KB)                 │
 │     → Extract with Python PdfReader         │
-│     → Validate 3 mandatory fields           │
+│     → Validate 2 mandatory fields           │
 │     → If valid → SUCCESS, stop              │
 │                                             │
 │  2. Extract URLs from email body            │
@@ -60,7 +60,7 @@ Email Received
 │       → If fails → playwright_extractor.py  │
 │       → Re-download extracted URL           │
 │     → If Image → tag for Image Phase        │
-│     → Validate 3 mandatory fields           │
+│     → Validate 2 mandatory fields           │
 │     → If valid → SUCCESS, stop              │
 │                                             │
 │  If ALL PDF sources fail → Image Phase      │
@@ -70,12 +70,12 @@ Email Received
 │ Image Phase (LAST RESORT, see PROCESSING.md)│
 │  3. Tagged image URLs from PDF Phase        │
 │     → Use vision MCP tool                   │
-│     → Validate 3 mandatory fields           │
+│     → Validate 2 mandatory fields           │
 │     → If valid → SUCCESS, stop              │
 │                                             │
 │  4. Image attachments (>50KB, not QR codes) │
 │     → Use vision MCP tool                   │
-│     → Validate 3 mandatory fields           │
+│     → Validate 2 mandatory fields           │
 │     → If valid → SUCCESS, stop              │
 │                                             │
 │  5. Extract URLs from email body for images │
@@ -83,7 +83,7 @@ Email Received
 │     → If Image → use vision MCP             │
 │     → If HTML → html_parser.py              │
 │       → If fails → playwright_extractor.py  │
-│     → Validate 3 mandatory fields           │
+│     → Validate 2 mandatory fields           │
 │     → If valid → SUCCESS, stop              │
 │                                             │
 │  If ALL image sources fail → FINAL FAILURE  │
@@ -147,7 +147,7 @@ fi
 - ALWAYS copy template.xlsx to the new monthly folder as invoices.xlsx
 - The Excel column mapping is FIXED (15 columns, A-O) — do NOT read template headers each time. See EXCEL.md for the exact mapping.
 - ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers (合规凭证)
-- ALWAYS validate 3 mandatory fields (销售方税号, 校验码, 价税合计) before writing to invoices.xlsx
+- ALWAYS validate 2 mandatory fields (销售方税号, 价税合计) before writing to invoices.xlsx
 - ALWAYS follow the STRICT sequential order: PDF attachments → PDF URLs → Image sources (see PROCESSING.md)
 - **NEVER skip PDF URL extraction (Step 2b) — if no PDF attachment found, you MUST try to extract URLs from the email body BEFORE processing any image sources**
 - NEVER write incomplete or failed invoices to invoices.xlsx — log to errors.jsonl instead
@@ -166,11 +166,11 @@ fi
 - **ALWAYS search `chat_history_*.md` for invoice URLs** — the incoming message prompt may be truncated (forwarded content stripped). The full email body including forwarded URLs is saved in the chat history file. Search ONLY the **latest** received message block (the last `type:received` entry), NOT the entire file. See PROCESSING.md "URL Extraction from Email Body" for the exact script.
 
 ### Validation Rules
-- 销售方税号 (Seller Tax ID): 18 characters, alphanumeric — MANDATORY
-- 校验码 (Verification Code): 20 numeric digits — MANDATORY
-- 价税合计 (Total amount): positive number — MANDATORY
+- 销售方税号 (Seller Tax ID): 18 characters, alphanumeric — **MANDATORY**
+- 价税合计 (Total amount): positive number — **MANDATORY**
+- 校验码 (Verification Code): 20 numeric digits — OPTIONAL (some invoices don't have it)
 - 发票号码 (Invoice number): recommended, warn if missing, but NOT mandatory
-- 校验码 is written at the end of 备注 column in Excel (format: "校验码: XXXX")
+- If 校验码 is present, write it at the end of 备注 column in Excel (format: "校验码: XXXX")
 
 ### File Handling Rules
 - Do NOT overwrite existing invoice files

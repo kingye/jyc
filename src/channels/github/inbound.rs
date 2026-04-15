@@ -237,6 +237,9 @@ impl InboundAdapter for GithubInboundAdapter {
         // Track processed event IDs for deduplication
         let mut processed_events: HashSet<String> = HashSet::new();
 
+        // Cache issue info for comment routing (number → title, type, labels)
+        let mut issue_cache: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
+
         // Start polling from 5 minutes ago to catch recent events.
         // Deduplication ensures we don't process the same event twice.
         let mut last_poll = (chrono::Utc::now() - chrono::Duration::minutes(5))
@@ -257,6 +260,7 @@ impl InboundAdapter for GithubInboundAdapter {
                         &client,
                         &options,
                         &mut processed_events,
+                        &mut issue_cache,
                         &mut last_poll,
                     ).await {
                         tracing::error!(
@@ -277,11 +281,13 @@ impl InboundAdapter for GithubInboundAdapter {
 
 impl GithubInboundAdapter {
     /// Execute one poll cycle: fetch issues, comments, and closed items.
+    /// Routes events to threads via on_message callback.
     async fn poll_once(
         &self,
         client: &GithubClient,
         options: &InboundAdapterOptions,
         processed_events: &mut HashSet<String>,
+        issue_cache: &mut HashMap<u64, (String, String, Vec<String>)>, // number → (title, type, labels)
         last_poll: &mut String,
     ) -> Result<()> {
         let poll_start = last_poll.clone();
@@ -302,13 +308,19 @@ impl GithubInboundAdapter {
 
         for issue in &issues {
             let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
+            let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+
+            // Cache issue info for comment routing
+            issue_cache.insert(
+                issue.number,
+                (issue.title.clone(), github_type.to_string(), labels.clone()),
+            );
+
             let event_uid = format!("{}-{}-updated-{}", github_type, issue.number, issue.updated_at);
 
             if processed_events.contains(&event_uid) {
                 continue;
             }
-
-            let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
 
             tracing::info!(
                 channel = %self.channel_name,
@@ -318,8 +330,23 @@ impl GithubInboundAdapter {
                 github_type = github_type,
                 user = %issue.user.login,
                 labels = ?labels,
-                "GitHub event detected"
+                "GitHub event detected → routing to thread"
             );
+
+            // Route: build trigger message and send to on_message
+            let message = self.build_trigger_message(
+                "issue_updated",
+                issue.number,
+                &issue.title,
+                github_type,
+                "updated",
+                &issue.user.login,
+                &labels,
+                &event_uid,
+            );
+            if let Err(e) = (options.on_message)(message) {
+                tracing::error!(error = %e, number = issue.number, "Failed to route issue event");
+            }
 
             processed_events.insert(event_uid);
         }
@@ -361,6 +388,12 @@ impl GithubInboundAdapter {
 
             let issue_number = comment.issue_number().unwrap_or(0);
 
+            // Look up issue info from cache
+            let (title, github_type, labels) = issue_cache
+                .get(&issue_number)
+                .cloned()
+                .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![]));
+
             tracing::info!(
                 channel = %self.channel_name,
                 event = "comment",
@@ -368,13 +401,28 @@ impl GithubInboundAdapter {
                 issue_number = issue_number,
                 user = %comment.user.login,
                 body_preview = %&comment.body[..comment.body.len().min(80)],
-                "GitHub comment detected"
+                "GitHub comment detected → routing to thread"
             );
+
+            // Route: build trigger message and send to on_message
+            let message = self.build_trigger_message(
+                "issue_comment",
+                issue_number,
+                &title,
+                &github_type,
+                "commented",
+                &comment.user.login,
+                &labels,
+                &event_uid,
+            );
+            if let Err(e) = (options.on_message)(message) {
+                tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
+            }
 
             processed_events.insert(event_uid);
         }
 
-        // 3. Fetch recently closed issues/PRs
+        // 3. Fetch recently closed issues/PRs → trigger thread close
         let closed = client.list_closed_since(&poll_start).await?;
         tracing::debug!(
             channel = %self.channel_name,
@@ -402,9 +450,29 @@ impl GithubInboundAdapter {
                 number = item.number,
                 github_type = github_type,
                 is_merged = is_merged,
-                "GitHub close event detected"
+                "GitHub close event detected → closing threads"
             );
 
+            // Close threads (Phase 6 will delete directories)
+            if let Some(ref on_close) = options.on_thread_close {
+                match github_type {
+                    "pull_request" => {
+                        // Close PR thread and review thread
+                        let _ = (on_close)(format!("pr-{}", item.number));
+                        let _ = (on_close)(format!("review-pr-{}", item.number));
+                        // If merged, also close linked issue thread
+                        // (GitHub auto-closes the linked issue)
+                        // TODO: detect linked issue number from PR body "Fixes #N"
+                    }
+                    _ => {
+                        // Close issue thread
+                        let _ = (on_close)(format!("issue-{}", item.number));
+                    }
+                }
+            }
+
+            // Remove from issue cache
+            issue_cache.remove(&item.number);
             processed_events.insert(event_uid);
         }
 

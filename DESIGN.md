@@ -723,6 +723,11 @@ pub struct ChannelPattern {
     pub enabled: bool,
     pub rules: PatternRules,
     pub attachments: Option<AttachmentConfig>,
+    /// When true (default), follow-up messages during AI processing are
+    /// injected into the active session. When false, messages queue
+    /// and are processed sequentially.
+    #[serde(default = "default_true")]
+    pub live_injection: bool,
 }
 
 /// Channel-agnostic pattern matching rules.
@@ -865,6 +870,7 @@ impl ThreadManager {
         message: InboundMessage,
         thread_name: String,
         pattern_match: PatternMatch,
+        live_injection: bool,
     ) {
         let mut queues = self.thread_queues.lock().await;
 
@@ -1113,7 +1119,10 @@ impl ThreadManager {
 │  │    }                                                     │       │
 │  │                                                          │       │
 │  │    new_msg = pending_rx.recv() => {                      │       │
-│  │      // Live message injection                           │       │
+│  │      // Live message injection (only if live_injection    │       │
+│  │      // is enabled on the matched pattern; otherwise a    │       │
+│  │      // closed dummy_rx is passed and this arm returns    │       │
+│  │      // None immediately, skipping injection)             │       │
  │  │      1. Store new message → append to chat log           │       │
 │  │      2. Strip quoted history from body                   │       │
 │  │      3. Update reply-context.json (new messageDir)       │       │

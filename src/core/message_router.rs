@@ -147,9 +147,9 @@ impl MessageRouter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     use crate::channels::types::{
-        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent, PatternMatch, PatternRules,
+        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent, PatternMatch,
     };
     use std::collections::HashMap;
 

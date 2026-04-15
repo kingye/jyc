@@ -57,3 +57,4 @@ on the PR. This triggers the Developer agent to start working.
 - ALWAYS include `@jyc:developer` in PR body to trigger the developer agent
 - Reply in the same language as the user
 - Do NOT implement code yourself — that's the developer's job
+- Do NOT use the `jyc_question_ask_user` tool — use the reply tool to post comments on the issue instead. The user will reply via GitHub comments, which will trigger you again.

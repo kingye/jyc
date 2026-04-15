@@ -68,3 +68,4 @@ gh pr comment <number> --body "@jyc:reviewer Feedback addressed. Please re-revie
 - ALWAYS use `@jyc:reviewer` to hand over to the reviewer
 - Commit frequently with clear messages
 - Do NOT merge the PR yourself — that's the user's decision
+- Do NOT use the `jyc_question_ask_user` tool — use the reply tool to post comments on the PR instead. The user will reply via GitHub comments, which will trigger you again.

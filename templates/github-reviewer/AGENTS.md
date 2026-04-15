@@ -76,3 +76,4 @@ EOF
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
 - Be constructive and objective in feedback
+- Do NOT use the `jyc_question_ask_user` tool — use the reply tool to post comments on the PR instead.

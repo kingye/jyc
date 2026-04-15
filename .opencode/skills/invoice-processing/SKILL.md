@@ -36,6 +36,7 @@ Thread directory structure:
   summary.xlsx            ← Summary template (placed by user)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
     invoices.xlsx          ← Invoice records for this month
+    errors.jsonl           ← Failed invoice log (append-only, one JSON per line)
     summary.xlsx           ← Summary for this month (copied + filled when requested)
     INV-2026-0042.pdf      ← Downloaded invoices (named by invoice number)
     INV-2026-0043.jpg
@@ -108,14 +109,41 @@ looking at the email body for download URLs.
      if [ -n "$pdf_url" ]; then
          curl -sL -o "invoice_${MONTH}/temp_invoice" "$pdf_url"
      else
-         # Cannot extract — save as HTML for manual handling
-         mv "invoice_${MONTH}/temp_invoice" "invoice_${MONTH}/temp_invoice.html"
+         # Cannot extract real PDF URL — this is a download failure.
+         # Log to errors.jsonl and do NOT save the HTML file as an invoice.
+         rm -f "invoice_${MONTH}/temp_invoice"
      fi
      ```
    - The switch between parsers is automatic — no user interaction
-   - Determine final extension from file type
+   - After download, **verify the file is PDF or image** (see validation below)
+
+**File format validation (MANDATORY):**
+
+Only PDF (`.pdf`) and image (`.jpg`, `.jpeg`, `.png`) files are valid invoice
+vouchers. After downloading or locating an attachment, verify the file type:
+```bash
+file_type=$(file --brief --mime-type "invoice_${MONTH}/temp_invoice")
+case "$file_type" in
+    application/pdf|image/jpeg|image/png)
+        echo "Valid invoice file: $file_type"
+        ;;
+    *)
+        echo "INVALID: $file_type — not a certified voucher format"
+        # Log to errors.jsonl and remove the invalid file
+        rm -f "invoice_${MONTH}/temp_invoice"
+        ;;
+esac
+```
+
+If the file is not PDF or image:
+- Log to `errors.jsonl` with `error_type: "download_failed"` and detail explaining the actual file type
+- Do NOT save it to the monthly folder
+- Do NOT proceed to extraction
+- Reply with an error message to the user
 
 **IMPORTANT:**
+- Only PDF and image files (JPG/PNG) are valid certified vouchers (合规凭证)
+- HTML, XML, text, or any other format is NOT a valid invoice — treat as download failure
 - Do NOT use the QR code image as the invoice
 - Do NOT follow or scan the QR code URL
 - The QR code is for the recipient to verify/download manually, not for AI processing
@@ -157,7 +185,7 @@ pdftotext '<file>' - | head -100
 ```
 
 If text extraction succeeds (non-empty output with recognizable invoice fields),
-parse the extracted text to get the invoice values. Then skip to Step 4.
+parse the extracted text to get the invoice values. Then proceed to Step 4 (validation).
 
 **Step 3b: Fall back to vision MCP (for scanned PDFs or images)**
 
@@ -184,7 +212,82 @@ Return each value on a separate line in format: field_name: value"
 
 **For image files** (JPG/PNG), use the vision tool directly (skip text extraction).
 
-### Step 4: Update Excel
+### Step 4: Validate Extraction Before Writing to Excel
+
+**CRITICAL: Do NOT write to invoices.xlsx if the invoice is invalid, extraction failed, or data is incomplete.**
+
+Before proceeding to update Excel, validate that:
+1. The invoice file is a valid format (PDF or image — JPG/PNG only)
+2. The extraction was successful
+3. All required fields are present
+The following fields are **required** — if any are missing, log to `errors.jsonl`
+instead of writing to `invoices.xlsx`:
+
+**Required fields:**
+- `发票号码` (Invoice number) — must be non-empty
+- `价税合计` (Total amount) — must be a valid number
+
+**Validation logic:**
+- If the invoice file is not PDF or image (JPG/PNG) → log error with `download_failed`, skip
+- If the invoice file could not be downloaded → log error with `download_failed`, skip
+- If text extraction AND vision extraction both failed → log error with `extraction_failed`, skip
+- If required fields are missing or clearly invalid → log error with `incomplete_data`, skip
+
+**Error log format: `invoice_YYYY-MM/errors.jsonl`**
+
+One JSON object per line (JSON Lines format). Append-only — never overwrite.
+
+```bash
+python3 << 'PYEOF'
+import json, datetime
+
+error_entry = {
+    "timestamp": datetime.datetime.now().isoformat(),
+    "error_type": "<download_failed|extraction_failed|incomplete_data>",
+    "source": "<attachment filename or download URL>",
+    "sender": "<sender email address>",
+    "subject": "<email subject>",
+    "file_saved_as": "<path to file if saved, or null>",
+    "fields_extracted": {
+        # Include whatever was successfully extracted (partial data)
+        # e.g., "发票号码": "INV-2026-0042", "开票日期": "2026-04-10"
+    },
+    "fields_missing": ["<list of required fields that are missing>"],
+    "error_detail": "<specific error message explaining what went wrong>"
+}
+
+MONTH = "2026-04"
+with open(f'invoice_{MONTH}/errors.jsonl', 'a') as f:
+    f.write(json.dumps(error_entry, ensure_ascii=False) + '\n')
+
+print(f'Error logged to invoice_{MONTH}/errors.jsonl')
+PYEOF
+```
+
+**Error type values:**
+| error_type | When to use |
+|------------|-------------|
+| `download_failed` | URL returned error, file is empty, file is not PDF/image (e.g., HTML, XML, text), Playwright extraction failed |
+| `extraction_failed` | Both text extraction and vision failed, or returned empty output |
+| `incomplete_data` | Extraction returned some data but required fields are missing |
+
+**Example error entries:**
+```json
+{"timestamp":"2026-04-15T14:30:00","error_type":"download_failed","source":"https://fapiao.com/download/abc123","sender":"vendor@example.com","subject":"发票-2026-04","file_saved_as":null,"fields_extracted":{},"fields_missing":["发票号码","价税合计"],"error_detail":"Download returned HTML page, Playwright extraction also failed"}
+{"timestamp":"2026-04-15T15:00:00","error_type":"incomplete_data","source":"attachments/invoice.pdf","sender":"finance@corp.com","subject":"报销发票","file_saved_as":"invoice_2026-04/unknown_001.pdf","fields_extracted":{"开票日期":"2026-03-20","销售方名称":"XX公司"},"fields_missing":["发票号码","价税合计"],"error_detail":"Vision API returned partial data, invoice number and total amount not recognized"}
+```
+
+**IMPORTANT:** If extraction fails but the file IS a valid format (PDF or image),
+still save it to the monthly folder with a fallback name like `unknown_001.pdf`.
+This allows the user to manually process it later. Record the saved path in
+`file_saved_as` so the user can find it.
+
+If the file is NOT a valid format (HTML, XML, text, etc.), do NOT save it —
+set `file_saved_as` to `null` in the error log.
+
+### Step 5: Update Excel
+
+**Only reached if Step 4 validation passes.**
 
 **IMPORTANT: Check for duplicate invoice numbers before adding.**
 
@@ -243,13 +346,14 @@ PYEOF
 IMPORTANT: Before writing to Excel, read the template headers first to understand
 the column layout. Adapt the column mapping to match the actual template.
 
-### Step 5: Reply with Summary
+### Step 6: Reply with Summary
 
 Send a reply confirming:
 - If new: Invoice file saved as: `invoice_YYYY-MM/invoice_NNN.ext`
 - Extracted values (formatted as a table)
 - Row added to `invoice_YYYY-MM/invoices.xlsx`
 - If duplicate: Skip with message
+- If failed: Error logged with details
 
 Example reply (new invoice):
 ```
@@ -280,7 +384,31 @@ Example reply (duplicate):
 跳过重复记录
 ```
 
-### Step 6: Monthly Summary (when requested)
+Example reply (failed — download error):
+```
+❌ 发票处理失败
+
+来源: https://fapiao.com/download/abc123
+发件人: vendor@example.com
+错误: 下载失败，返回HTML页面而非PDF文件
+
+已记录到 invoice_2026-04/errors.jsonl，请手动处理
+```
+
+Example reply (failed — incomplete extraction):
+```
+❌ 发票处理失败
+
+来源: attachments/invoice.pdf
+发件人: finance@corp.com
+文件已保存: invoice_2026-04/unknown_001.pdf
+已提取部分信息: 开票日期=2026-03-20, 销售方=XX公司
+缺失必填字段: 发票号码, 价税合计
+
+已记录到 invoice_2026-04/errors.jsonl，请手动处理
+```
+
+### Step 7: Monthly Summary (when requested)
 
 When the user asks to summarize a month's invoices:
 
@@ -385,13 +513,13 @@ PYEOF
 IMPORTANT: Read the actual summary.xlsx headers and structure before writing.
 The template may have been customized — adapt the category mapping accordingly.
 
-### Step 7: Export Monthly Invoices (when requested)
+### Step 8: Export Monthly Invoices (when requested)
 
 When the user asks to download or export all invoices for a month:
 
 1. Determine the target month (from user message or default to current month)
 2. Verify the folder exists
-3. If summary has not been generated yet, run Step 6 first to create it
+3. If summary has not been generated yet, run Step 7 first to create it
 4. Zip the entire monthly folder (includes invoices.xlsx, summary.xlsx, and all invoice files):
    ```bash
    MONTH="2026-04"
@@ -403,6 +531,59 @@ When the user asks to download or export all invoices for a month:
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash
 ls -d invoice_*/
+```
+
+### Step 9: List Errors (when requested)
+
+When the user asks to see failed invoices, errors, or problems (e.g., "show errors",
+"哪些发票失败了", "list failed invoices"), read and format the error log.
+
+**Trigger phrases:** errors, 错误, 失败, failed, problems, 问题
+
+**Process:**
+
+1. Determine the target month (from user message or default to current month)
+2. Check if `errors.jsonl` exists:
+   ```bash
+   MONTH="2026-04"
+   if [ -f "invoice_${MONTH}/errors.jsonl" ]; then
+       cat "invoice_${MONTH}/errors.jsonl"
+   else
+       echo "No errors recorded for ${MONTH}"
+   fi
+   ```
+3. Parse each JSON line and format as a readable table
+
+**Reply format:**
+
+If errors exist:
+```
+📋 invoice_2026-04 处理失败记录 (共 2 条)
+
+1. ❌ 下载失败
+   来源: https://fapiao.com/download/abc123
+   发件人: vendor@example.com
+   邮件主题: 发票-2026-04
+   错误: 下载返回HTML页面，非PDF/图片格式
+   文件: 未保存
+
+2. ❌ 数据不完整
+   来源: attachments/invoice.pdf
+   发件人: finance@corp.com
+   邮件主题: 报销发票
+   错误: 缺失必填字段 — 发票号码, 价税合计
+   已提取: 开票日期=2026-03-20, 销售方=XX公司
+   文件: invoice_2026-04/unknown_001.pdf
+```
+
+If no errors:
+```
+✅ invoice_2026-04 无失败记录
+```
+
+If multiple months have errors and user doesn't specify a month, list all:
+```bash
+ls invoice_*/errors.jsonl 2>/dev/null
 ```
 
 ### Browser Automation for Complex HTML Pages
@@ -427,9 +608,16 @@ bash .opencode/skills/invoice-processing/bin/install-playwright.sh
 - ALWAYS check/create the monthly folder before processing
 - ALWAYS copy template.xlsx to the new monthly folder as invoices.xlsx
 - ALWAYS read the Excel template headers before writing to understand column layout
+- ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers
+- ALWAYS validate required fields (发票号码, 价税合计) before writing to invoices.xlsx
+- NEVER write incomplete or failed invoices to invoices.xlsx — log to errors.jsonl instead
+- NEVER save non-PDF/non-image files to the monthly folder — they are not valid vouchers
 - If vision tool fails on a PDF, try text extraction with pdftotext as fallback
-- If extraction is uncertain about a value, mark it with "?" and ask the user to confirm
-- Report any extraction errors clearly
+- If both extraction methods fail, log to errors.jsonl with error_type "extraction_failed"
+- If extraction returns partial data missing required fields, log with "incomplete_data"
+- If download fails or file is wrong format, log with "download_failed"
+- If file is valid PDF/image but extraction fails, save it for manual processing
+- Report any extraction errors clearly in the reply
 - Do NOT overwrite existing invoice files
 - Do NOT modify the template.xlsx — only modify the copy in the monthly folder
 - Do NOT process QR code images — invoice emails often contain small QR code images

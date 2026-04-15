@@ -55,10 +55,8 @@ the current one.**
 
 ```bash
 # Extract the LAST received message from today's chat history
-# (everything between the last "type:received" marker and the next "---")
-# Then search that block for invoice platform URLs
+# Then search that block for invoice download URLs
 
-# Step 1: Find the last received message block and search for URLs
 python3 << 'PYEOF'
 import re, glob
 
@@ -84,13 +82,35 @@ if not last_received:
 
 # Extract all URLs from the last received message
 urls = re.findall(r'https?://[^\s<>"\')\]]+', last_received)
+
+# Classify URLs — prioritize actual invoice download links over platform homepages
+invoice_urls = []
+file_urls = []
 for url in urls:
-    # Filter for known invoice platforms and download links
     lower = url.lower()
-    if any(kw in lower for kw in ['51fapiao', 'maycur', 'fapiao', 'download', 'invoice', 'dlj.']):
-        print(f"INVOICE_URL: {url}")
-    elif url.lower().endswith(('.pdf', '.jpg', '.png')):
-        print(f"FILE_URL: {url}")
+    # Skip platform homepages, logos, icons, tracking pixels
+    if any(skip in lower for skip in ['www.51fapiao', 'logo', 'icon', 'favicon', 'pixel', 'track', 'unsubscribe']):
+        continue
+    # 51fapiao invoice download links: dlj.51fapiao.cn/dlj/v7/<hash>
+    if 'dlj.51fapiao.cn/dlj/' in lower:
+        invoice_urls.append(url)
+    # Maycur invoice links: pms.maycur.com/supply/#/invoice-download
+    elif 'maycur.com' in lower and 'invoice' in lower:
+        invoice_urls.append(url)
+    # Other download/invoice URLs
+    elif any(kw in lower for kw in ['download', 'fapiao', 'invoice']) and 'dlj' not in lower:
+        invoice_urls.append(url)
+    # Direct file links
+    elif lower.endswith(('.pdf', '.jpg', '.png')):
+        file_urls.append(url)
+
+# Print results — invoice URLs first (most important)
+for url in invoice_urls:
+    print(f"INVOICE_URL: {url}")
+for url in file_urls:
+    print(f"FILE_URL: {url}")
+if not invoice_urls and not file_urls:
+    print("NO_URLS_FOUND")
 PYEOF
 ```
 
@@ -193,25 +213,36 @@ NEVER assume an invoice URL requires login — always try to download first.**
 
 | Platform | Domain | Extraction Method | Auth Required? |
 |----------|--------|-------------------|----------------|
-| 51发票 | dlj.51fapiao.cn | html_parser.py (Strategy 5+6) | **NO** — URL hash is the credential |
-| 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py | **NO** — `code=` param is the credential |
+| 51发票 | **dlj**.51fapiao.cn | html_parser.py ONLY (no Playwright) | **NO** — URL hash is the credential |
+| 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py ONLY (no html_parser) | **NO** — `code=` param is the credential |
+
+**⚠️ For 51fapiao: ONLY use `dlj.51fapiao.cn` URLs. Ignore `www.51fapiao.cn` (homepage).**
+**⚠️ For 51fapiao: ONLY use html_parser.py. Do NOT use playwright_extractor.py.**
+**⚠️ For Maycur: ONLY use playwright_extractor.py. html_parser.py auto-skips this domain.**
 
 #### 51fapiao (51发票) — Concrete Example
 
 **51fapiao does NOT require login.** The URL contains the full access hash.
 Do NOT skip this URL. Do NOT tell the user it needs login. Just download it.
+**Do NOT use playwright_extractor.py for 51fapiao — html_parser.py handles it.**
+
+**⚠️ URL Pattern — use the CORRECT URL:**
+- ✅ CORRECT: `https://dlj.51fapiao.cn/dlj/v7/<hash>` — this is the invoice download link
+- ❌ WRONG: `https://www.51fapiao.cn/...` — this is the platform homepage, NOT an invoice
+- ❌ WRONG: `https://ei.51fapiao.cn/...` — this is the CDN for images/JS, NOT an invoice
+- The correct URL always starts with `dlj.51fapiao.cn/dlj/`
 
 **⚠️ You MUST use browser headers for 51fapiao.** Without `User-Agent`, the server
 returns a 405 error page instead of the invoice viewer HTML.
 
-When you see a URL like `https://dlj.51fapiao.cn/dlj/v7/...` in the email body:
+When you find a URL matching `dlj.51fapiao.cn/dlj/v7/...`:
 
 1. **Download with browser headers** (MANDATORY — plain `curl` gets 405 error):
    ```bash
    curl -sL \
        -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8" \
-       -o "invoice_${MONTH}/temp_download" "https://dlj.51fapiao.cn/dlj/v7/<hash>"
+       -o "invoice_${MONTH}/temp_download" "<THE_dlj.51fapiao.cn_URL>"
    file --brief --mime-type "invoice_${MONTH}/temp_download"
    # → text/html (the invoice viewer page, NOT a 405 error)
    ```
@@ -219,9 +250,12 @@ When you see a URL like `https://dlj.51fapiao.cn/dlj/v7/...` in the email body:
 2. **Run html_parser.py** — it extracts the PDF download URL from hidden inputs:
    ```bash
    result=$(python3 .opencode/skills/invoice-processing/scripts/html_parser.py \
-       "invoice_${MONTH}/temp_download" "https://dlj.51fapiao.cn/dlj/v7/<hash>")
+       "invoice_${MONTH}/temp_download" "<THE_dlj.51fapiao.cn_URL>")
    # → {"success": true, "pdf_url": "https://dlj.51fapiao.cn/dlj/v7/downloadFile/<hash>?signatureString=<sig>"}
    ```
+   **If html_parser.py fails:** check that you used the correct `dlj.51fapiao.cn` URL
+   (not `www.51fapiao.cn`), and that you included browser headers in the curl command.
+   Do NOT fall back to playwright — fix the URL and retry.
 
 3. **Download the real PDF** using the extracted URL:
    ```bash
@@ -232,9 +266,6 @@ When you see a URL like `https://dlj.51fapiao.cn/dlj/v7/...` in the email body:
    ```
 
 4. **Extract data** from the PDF using Python PdfReader (Step 3a)
-
-**TIP:** `curl` without browser headers may return PDF directly. But when the
-system downloads with default headers and gets HTML, the above flow handles it.
 
 #### 每刻云票 (Maycur) — Concrete Example
 
@@ -345,21 +376,23 @@ For each URL (up to 5):
 
    **If URL contains `dlj.51fapiao.cn` → Use 51fapiao method directly:**
    ```bash
-   # Step 1: Download the viewer HTML with browser headers
+   # Step 1: Download the viewer HTML with browser headers (MANDATORY)
    curl -sL \
        -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8" \
-       -o "invoice_${MONTH}/temp_download" "<51fapiao_url>"
+       -o "invoice_${MONTH}/temp_download" "<THE_dlj.51fapiao.cn_URL>"
    # Step 2: Run html_parser.py to extract the real PDF download URL
    result=$(python3 .opencode/skills/invoice-processing/scripts/html_parser.py \
-       "invoice_${MONTH}/temp_download" "<51fapiao_url>")
+       "invoice_${MONTH}/temp_download" "<THE_dlj.51fapiao.cn_URL>")
    # Step 3: Download the real PDF
    pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
    curl -sL -o "invoice_${MONTH}/temp_download" "$pdf_url"
    # Step 4: Verify it's a PDF, then extract with PdfReader
    ```
-   - Do NOT try plain `curl` first — go straight to this method
-   - If html_parser.py fails → try `playwright_extractor.py` as fallback
+   - The URL MUST start with `dlj.51fapiao.cn` — ignore `www.51fapiao.cn` or `ei.51fapiao.cn`
+   - Browser headers are MANDATORY — plain `curl` gets 405 error
+   - Do NOT use playwright_extractor.py for 51fapiao — html_parser.py handles it
+   - If html_parser.py fails → check you used the correct `dlj.` URL and browser headers
    - If valid PDF → extract with PdfReader, validate → SUCCESS
 
    **If URL contains `pms.maycur.com` → Use Maycur method directly:**

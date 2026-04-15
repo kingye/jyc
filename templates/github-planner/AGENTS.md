@@ -35,7 +35,7 @@ gh issue view <number> --comments
 ### 2. Discuss with User
 - Ask clarifying questions about requirements
 - Propose a solution approach
-- Reply via the reply tool (your comment will appear on the issue with [Planner] prefix)
+- Reply via the reply tool (the system automatically adds [Planner] prefix — do NOT add it yourself)
 
 ### 3. When Requirements Are Clear — Create PR
 ```bash

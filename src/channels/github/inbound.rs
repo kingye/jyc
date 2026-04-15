@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use tokio_util::sync::CancellationToken;
 
@@ -22,9 +23,8 @@ impl ChannelMatcher for GithubMatcher {
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
-        _pattern_match: Option<&PatternMatch>,
+        pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Thread name derived from metadata: issue-{N} or pr-{N}
         let github_type = message
             .metadata
             .get("github_type")
@@ -35,6 +35,14 @@ impl ChannelMatcher for GithubMatcher {
             .get("github_number")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+
+        // Check if this is a hand-over with a specific role
+        // Reviewer gets a separate thread prefix: review-pr-{N}
+        if let Some(ref pm) = pattern_match {
+            if pm.pattern_name == "reviewer" {
+                return format!("review-pr-{}", number);
+            }
+        }
 
         match github_type {
             "pull_request" => format!("pr-{}", number),
@@ -47,6 +55,26 @@ impl ChannelMatcher for GithubMatcher {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
+        // Priority 1: Hand-over marker (@jyc:<role>) — match by role name directly
+        if let Some(handover_role) = message.metadata.get("handover_role").and_then(|v| v.as_str()) {
+            for pattern in patterns {
+                if !pattern.enabled {
+                    continue;
+                }
+                if let Some(ref role) = pattern.role {
+                    if role.eq_ignore_ascii_case(handover_role) {
+                        return Some(PatternMatch {
+                            pattern_name: pattern.name.clone(),
+                            channel: "github".to_string(),
+                            matches: HashMap::new(),
+                        });
+                    }
+                }
+            }
+            // No pattern found with that role — fall through to normal matching
+        }
+
+        // Priority 2: Normal matching by github_type + labels
         let github_type = message
             .metadata
             .get("github_type")
@@ -346,27 +374,51 @@ impl GithubInboundAdapter {
                 .cloned()
                 .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![]));
 
-            tracing::info!(
-                channel = %self.channel_name,
-                event = "comment",
-                comment_id = comment.id,
-                issue_number = issue_number,
-                user = %comment.user.login,
-                body_preview = %&comment.body[..comment.body.len().min(80)],
-                "GitHub comment detected → routing to thread"
-            );
+            // Detect hand-over marker: @jyc:<role> (e.g., @jyc:developer, @jyc:reviewer)
+            let handover_role = extract_handover_role(body_trimmed);
+
+            if let Some(ref role) = handover_role {
+                tracing::info!(
+                    channel = %self.channel_name,
+                    event = "handover",
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    target_role = %role,
+                    user = %comment.user.login,
+                    "Hand-over marker detected → routing to role"
+                );
+            } else {
+                tracing::info!(
+                    channel = %self.channel_name,
+                    event = "comment",
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    user = %comment.user.login,
+                    body_preview = %&comment.body[..comment.body.len().min(80)],
+                    "GitHub comment detected → routing to thread"
+                );
+            }
 
             // Route: build trigger message and send to on_message
-            let message = self.build_trigger_message(
-                "issue_comment",
+            let mut message = self.build_trigger_message(
+                if handover_role.is_some() { "handover" } else { "issue_comment" },
                 issue_number,
                 &title,
                 &github_type,
-                "commented",
+                if handover_role.is_some() { "handover" } else { "commented" },
                 &comment.user.login,
                 &labels,
                 &event_uid,
             );
+
+            // Set handover_role in metadata if detected
+            if let Some(role) = handover_role {
+                message.metadata.insert(
+                    "handover_role".to_string(),
+                    serde_json::Value::String(role),
+                );
+            }
+
             if let Err(e) = (options.on_message)(message) {
                 tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
             }
@@ -518,6 +570,21 @@ impl GithubInboundAdapter {
     }
 }
 
+/// Extract hand-over role from text containing `@jyc:<role>` marker.
+///
+/// Examples:
+///   "@jyc:developer Please implement this" → Some("developer")
+///   "@jyc:reviewer Ready for review" → Some("reviewer")
+///   "Normal comment without marker" → None
+///
+/// The marker is case-insensitive. Only the first match is returned.
+fn extract_handover_role(text: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)@jyc:(\w+)").ok()?;
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +632,7 @@ mod tests {
             ChannelPattern {
                 name: "planner".to_string(),
                 enabled: true,
+                role: Some("Planner".to_string()),
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["issue".to_string()]),
                     ..Default::default()
@@ -574,6 +642,7 @@ mod tests {
             ChannelPattern {
                 name: "developer".to_string(),
                 enabled: true,
+                role: Some("Developer".to_string()),
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["pull_request".to_string()]),
                     labels: Some(vec!["ready-for-dev".to_string()]),
@@ -584,6 +653,7 @@ mod tests {
             ChannelPattern {
                 name: "reviewer".to_string(),
                 enabled: true,
+                role: Some("Reviewer".to_string()),
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["pull_request".to_string()]),
                     labels: Some(vec!["ready-for-review".to_string()]),
@@ -726,5 +796,95 @@ mod tests {
         let text = msg.content.text.unwrap();
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
+    }
+
+    #[test]
+    fn test_extract_handover_role() {
+        assert_eq!(
+            extract_handover_role("@jyc:developer Please implement this"),
+            Some("developer".to_string())
+        );
+        assert_eq!(
+            extract_handover_role("@jyc:Reviewer Ready for review"),
+            Some("reviewer".to_string())
+        );
+        assert_eq!(
+            extract_handover_role("Normal comment without marker"),
+            None
+        );
+        assert_eq!(
+            extract_handover_role("Some text @jyc:planner more text"),
+            Some("planner".to_string())
+        );
+        // Role prefix [Planner] is NOT a handover marker
+        assert_eq!(
+            extract_handover_role("[Planner] This is a reply"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_match_handover_by_role() {
+        let mut msg = make_message("pull_request", 43, &[]);
+        msg.metadata.insert(
+            "handover_role".to_string(),
+            serde_json::json!("developer"),
+        );
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "developer");
+    }
+
+    #[test]
+    fn test_match_handover_case_insensitive() {
+        let mut msg = make_message("issue", 42, &[]);
+        msg.metadata.insert(
+            "handover_role".to_string(),
+            serde_json::json!("Reviewer"),
+        );
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "reviewer");
+    }
+
+    #[test]
+    fn test_match_handover_unknown_role_falls_through() {
+        let mut msg = make_message("issue", 42, &[]);
+        msg.metadata.insert(
+            "handover_role".to_string(),
+            serde_json::json!("unknown_role"),
+        );
+        let patterns = make_patterns();
+        // Falls through to normal matching → matches "planner" (github_type=issue)
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
+    }
+
+    #[test]
+    fn test_derive_thread_name_reviewer() {
+        let msg = make_message("pull_request", 43, &[]);
+        let pm = PatternMatch {
+            pattern_name: "reviewer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+        assert_eq!(name, "review-pr-43");
+    }
+
+    #[test]
+    fn test_derive_thread_name_developer() {
+        let msg = make_message("pull_request", 43, &[]);
+        let pm = PatternMatch {
+            pattern_name: "developer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+        // Developer uses pr-{N}, not review-pr-{N}
+        assert_eq!(name, "pr-43");
     }
 }

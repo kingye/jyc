@@ -16,7 +16,7 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::channels::types::{
-        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent, PatternMatch,
+        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent,
     };
     use crate::core::email_parser;
     use crate::core::message_storage::MessageStorage;

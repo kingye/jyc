@@ -114,7 +114,7 @@ pub async fn save_attachments_to_dir(
         .await
         .context("Failed to create attachment directory")?;
 
-    for (i, attachment) in message.attachments.iter_mut().enumerate() {
+    for (_i, attachment) in message.attachments.iter_mut().enumerate() {
         if attachment.content.is_none() {
             tracing::warn!("Attachment has no content: {}", attachment.filename);
             continue;

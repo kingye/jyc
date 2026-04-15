@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_formatter_creation() {
         let config = FeishuConfig::default();
-        let formatter = FeishuFormatter::new(config);
+        let _formatter = FeishuFormatter::new(config);
         // Just verify it doesn't panic
         assert!(true);
     }

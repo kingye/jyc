@@ -2,6 +2,37 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.1.9] - 2026-04-15
+
+### Added
+
+**Live Message Injection Toggle** — Per-pattern control over sequential processing
+- `live_injection` field on `ChannelPattern` (default: true)
+- When false, messages queue and process sequentially instead of being injected into active AI session
+
+**Invoice Processing Enhancements**
+- Add duplicate invoice check before adding to Excel
+- Two-level HTML download with Playwright fallback for invoice processing
+
+### Fixed
+
+**Email Processing**
+- Check attachments/ directory first before searching email body for URLs
+- Fix byte boundary panic when truncating filenames with Chinese characters
+
+**Invoice Install Script**
+- Fix install script: remove set -e, use if/elif for pip fallback
+- Fix install script: show pip output, handle --break-system-packages
+
+### Changed
+
+**PDF Extraction**
+- Reorder PDF extraction: try text extraction first, fall back to vision MCP
+- Handle two-level download: extract real PDF/image URL from intermediate HTML
+
+**Invoice Processing**
+- Clarify invoice month folder is based on receipt date, not invoice date
+
 ## [0.1.8] - 2026-04-13
 
 ### Added

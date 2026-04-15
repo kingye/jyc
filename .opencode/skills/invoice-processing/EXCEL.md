@@ -7,7 +7,7 @@ the user (Step 6), monthly summary generation (Step 7), and export (Step 8).
 
 ## Step 5: Update Excel
 
-**Only reached if Step 4 validation passes (all 3 mandatory fields present).**
+**Only reached if Step 4 validation passes (all 2 mandatory fields present).**
 
 **IMPORTANT: Check for duplicate invoice numbers before adding.**
 

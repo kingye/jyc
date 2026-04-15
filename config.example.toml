@@ -249,6 +249,7 @@ interval_hours = 3
 # [[channels.my_repo.patterns]]
 # name = "planner"
 # enabled = true
+# role = "Planner"
 # template = "github-planner"
 #
 # [channels.my_repo.patterns.rules]
@@ -258,6 +259,7 @@ interval_hours = 3
 # [[channels.my_repo.patterns]]
 # name = "developer"
 # enabled = true
+# role = "Developer"
 # template = "github-developer"
 # live_injection = false
 #
@@ -269,6 +271,7 @@ interval_hours = 3
 # [[channels.my_repo.patterns]]
 # name = "reviewer"
 # enabled = true
+# role = "Reviewer"
 # template = "github-reviewer"
 #
 # [channels.my_repo.patterns.rules]

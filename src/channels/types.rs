@@ -267,6 +267,11 @@ pub struct ChannelPattern {
     /// Channel-agnostic: works for email, Feishu, or any channel.
     #[serde(default)]
     pub thread_name: Option<String>,
+    /// Agent role name for this pattern (e.g., "Planner", "Developer", "Reviewer").
+    /// Used by GitHub OutboundAdapter to prefix comments with `[Role]`.
+    /// Also used to filter out the agent's own comments during polling.
+    #[serde(default)]
+    pub role: Option<String>,
     /// Whether to enable live message injection during AI processing.
     /// When true (default), new messages arriving while the AI is processing
     /// are injected into the active session immediately.
@@ -285,6 +290,7 @@ impl Default for ChannelPattern {
             attachments: None,
             template: None,
             thread_name: None,
+            role: None,
             live_injection: true,
         }
     }

@@ -231,3 +231,46 @@ interval_hours = 3
 # # api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"  # Volcengine/Ark
 # # api_url = "https://api.openai.com/v1/chat/completions"  # OpenAI
 # model = "kimi-k2.5"  # default
+
+# --- Channel: GitHub Repository ---
+# Enables multi-agent workflow on GitHub issues and PRs.
+# See GITHUB_CHANNEL.md for full architecture and workflow.
+
+# [channels.my_repo]
+# type = "github"
+#
+# [channels.my_repo.github]
+# owner = "myorg"
+# repo = "myrepo"
+# token = "${GITHUB_TOKEN}"           # PAT scopes: repo, read:user
+# poll_interval_secs = 60
+#
+# # Pattern: Issues → Planner agent
+# [[channels.my_repo.patterns]]
+# name = "planner"
+# enabled = true
+# template = "github-planner"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["issue"]
+#
+# # Pattern: PRs with 'ready-for-dev' label → Developer agent
+# [[channels.my_repo.patterns]]
+# name = "developer"
+# enabled = true
+# template = "github-developer"
+# live_injection = false
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-dev"]
+#
+# # Pattern: PRs with 'ready-for-review' label → Reviewer agent
+# [[channels.my_repo.patterns]]
+# name = "reviewer"
+# enabled = true
+# template = "github-reviewer"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-review"]

@@ -1,12 +1,13 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    PatternMatch,
+    MessageContent, PatternMatch,
 };
+use super::client::GithubClient;
 use super::config::GithubConfig;
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
@@ -113,6 +114,71 @@ impl GithubInboundAdapter {
             channel_name,
         }
     }
+
+    /// Build a minimal InboundMessage from a GitHub event.
+    /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
+    fn build_trigger_message(
+        &self,
+        event_type: &str,
+        number: u64,
+        title: &str,
+        github_type: &str,
+        action: &str,
+        actor: &str,
+        labels: &[String],
+        event_uid: &str,
+    ) -> InboundMessage {
+        let label_str = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("labels: {}\n", labels.join(", "))
+        };
+
+        let gh_cmd = match github_type {
+            "pull_request" => format!(
+                "Use `gh pr view {}` to read the PR.\nUse `gh pr view {} --comments` to read comments.\nUse `gh pr diff {}` to see the diff.",
+                number, number, number
+            ),
+            _ => format!(
+                "Use `gh issue view {}` to read the full issue.\nUse `gh issue view {} --comments` to read all comments.",
+                number, number
+            ),
+        };
+
+        let body = format!(
+            "github event: {}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}\n{}",
+            event_type, number, github_type, action, actor, label_str, gh_cmd
+        );
+
+        let mut metadata = HashMap::new();
+        metadata.insert("github_event".to_string(), serde_json::json!(event_type));
+        metadata.insert("github_number".to_string(), serde_json::json!(number));
+        metadata.insert("github_type".to_string(), serde_json::json!(github_type));
+        metadata.insert("github_action".to_string(), serde_json::json!(action));
+        metadata.insert("github_labels".to_string(), serde_json::json!(labels));
+
+        InboundMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel: self.channel_name.clone(),
+            channel_uid: event_uid.to_string(),
+            sender: actor.to_string(),
+            sender_address: actor.to_string(),
+            recipients: vec![],
+            topic: format!("#{} {}", number, title),
+            content: MessageContent {
+                text: Some(body),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: Some(event_uid.to_string()),
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -143,24 +209,204 @@ impl ChannelMatcher for GithubInboundAdapter {
 impl InboundAdapter for GithubInboundAdapter {
     async fn start(
         &self,
-        _options: InboundAdapterOptions,
+        options: InboundAdapterOptions,
         cancel: CancellationToken,
     ) -> Result<()> {
+        // Create GitHub API client
+        let client = GithubClient::new(&self.config)
+            .context("Failed to create GitHub client")?;
+
+        // Get bot identity for filtering own comments
+        let bot_user = client
+            .get_authenticated_user()
+            .await
+            .context("Failed to get bot identity")?;
+
         tracing::info!(
             channel = %self.channel_name,
             owner = %self.config.owner,
             repo = %self.config.repo,
+            bot_user = %bot_user.login,
             poll_interval = %self.config.poll_interval_secs,
-            "GitHub inbound adapter started (stub — no polling yet)"
+            "GitHub inbound adapter started"
         );
 
-        // Phase 1: Just wait for cancellation
-        cancel.cancelled().await;
+        // Track processed event IDs for deduplication
+        let mut processed_events: HashSet<String> = HashSet::new();
 
-        tracing::info!(
+        // Track last poll time (ISO 8601 format for GitHub API)
+        let mut last_poll = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        let poll_interval = tokio::time::Duration::from_secs(self.config.poll_interval_secs);
+
+        // Polling loop
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!(channel = %self.channel_name, "GitHub polling cancelled");
+                    break;
+                }
+                _ = tokio::time::sleep(poll_interval) => {
+                    if let Err(e) = self.poll_once(
+                        &client,
+                        &bot_user.login,
+                        &options,
+                        &mut processed_events,
+                        &mut last_poll,
+                    ).await {
+                        tracing::error!(
+                            channel = %self.channel_name,
+                            error = %e,
+                            "GitHub poll cycle failed"
+                        );
+                        (options.on_error)(e);
+                    }
+                }
+            }
+        }
+
+        tracing::info!(channel = %self.channel_name, "GitHub inbound adapter stopped");
+        Ok(())
+    }
+}
+
+impl GithubInboundAdapter {
+    /// Execute one poll cycle: fetch issues, comments, and closed items.
+    async fn poll_once(
+        &self,
+        client: &GithubClient,
+        bot_username: &str,
+        options: &InboundAdapterOptions,
+        processed_events: &mut HashSet<String>,
+        last_poll: &mut String,
+    ) -> Result<()> {
+        let poll_start = last_poll.clone();
+
+        tracing::debug!(
             channel = %self.channel_name,
-            "GitHub inbound adapter stopped"
+            since = %poll_start,
+            "GitHub poll cycle started"
         );
+
+        // 1. Fetch open issues/PRs updated since last poll
+        let issues = client.list_issues_since(&poll_start).await?;
+        tracing::debug!(
+            channel = %self.channel_name,
+            count = issues.len(),
+            "Fetched open issues/PRs"
+        );
+
+        for issue in &issues {
+            let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
+            let event_uid = format!("{}-{}-updated-{}", github_type, issue.number, issue.updated_at);
+
+            if processed_events.contains(&event_uid) {
+                continue;
+            }
+
+            let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+
+            tracing::info!(
+                channel = %self.channel_name,
+                event = "issue_updated",
+                number = issue.number,
+                title = %issue.title,
+                github_type = github_type,
+                user = %issue.user.login,
+                labels = ?labels,
+                "GitHub event detected"
+            );
+
+            processed_events.insert(event_uid);
+        }
+
+        // 2. Fetch comments since last poll
+        let comments = client.list_comments_since(&poll_start).await?;
+        tracing::debug!(
+            channel = %self.channel_name,
+            count = comments.len(),
+            "Fetched comments"
+        );
+
+        for comment in &comments {
+            // Skip bot's own comments
+            if comment.user.login == bot_username {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    comment_id = comment.id,
+                    "Skipping bot's own comment"
+                );
+                continue;
+            }
+
+            let event_uid = format!("comment-{}", comment.id);
+
+            if processed_events.contains(&event_uid) {
+                continue;
+            }
+
+            let issue_number = comment.issue_number().unwrap_or(0);
+
+            tracing::info!(
+                channel = %self.channel_name,
+                event = "comment",
+                comment_id = comment.id,
+                issue_number = issue_number,
+                user = %comment.user.login,
+                body_preview = %&comment.body[..comment.body.len().min(80)],
+                "GitHub comment detected"
+            );
+
+            processed_events.insert(event_uid);
+        }
+
+        // 3. Fetch recently closed issues/PRs
+        let closed = client.list_closed_since(&poll_start).await?;
+        tracing::debug!(
+            channel = %self.channel_name,
+            count = closed.len(),
+            "Fetched closed issues/PRs"
+        );
+
+        for item in &closed {
+            let github_type = if item.is_pull_request() { "pull_request" } else { "issue" };
+            let event_uid = format!("{}-{}-closed", github_type, item.number);
+
+            if processed_events.contains(&event_uid) {
+                continue;
+            }
+
+            let is_merged = item
+                .pull_request
+                .as_ref()
+                .and_then(|pr| pr.merged_at.as_ref())
+                .is_some();
+
+            tracing::info!(
+                channel = %self.channel_name,
+                event = "closed",
+                number = item.number,
+                github_type = github_type,
+                is_merged = is_merged,
+                "GitHub close event detected"
+            );
+
+            processed_events.insert(event_uid);
+        }
+
+        // Update last poll timestamp
+        *last_poll = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        // Prune old processed events to prevent unbounded growth
+        // Keep at most 10000 events
+        if processed_events.len() > 10000 {
+            processed_events.clear();
+            tracing::debug!(channel = %self.channel_name, "Pruned processed events cache");
+        }
 
         Ok(())
     }
@@ -169,7 +415,6 @@ impl InboundAdapter for GithubInboundAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_message(github_type: &str, number: u64, labels: &[&str]) -> InboundMessage {
         let mut metadata = HashMap::new();
@@ -194,7 +439,7 @@ mod tests {
             sender_address: "user1".to_string(),
             recipients: vec![],
             topic: format!("#{} Test issue", number),
-            content: crate::channels::types::MessageContent {
+            content: MessageContent {
                 text: Some("github event".to_string()),
                 html: None,
                 markdown: None,
@@ -289,7 +534,6 @@ mod tests {
         let msg = make_message("pull_request", 43, &["wip"]);
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
-        // No pattern matches: developer requires ready-for-dev, reviewer requires ready-for-review
         assert!(result.is_none());
     }
 
@@ -307,5 +551,74 @@ mod tests {
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_trigger_message() {
+        let config = GithubConfig {
+            owner: "kingye".to_string(),
+            repo: "jyc".to_string(),
+            token: "test".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
+
+        let msg = adapter.build_trigger_message(
+            "issue_comment",
+            42,
+            "Add dark mode",
+            "issue",
+            "created",
+            "user1",
+            &["planning".to_string()],
+            "comment-12345",
+        );
+
+        assert_eq!(msg.channel, "test_github");
+        assert_eq!(msg.sender, "user1");
+        assert_eq!(msg.topic, "#42 Add dark mode");
+        assert_eq!(msg.channel_uid, "comment-12345");
+
+        let text = msg.content.text.unwrap();
+        assert!(text.contains("github event: issue_comment"));
+        assert!(text.contains("number: 42"));
+        assert!(text.contains("type: issue"));
+        assert!(text.contains("labels: planning"));
+        assert!(text.contains("gh issue view 42"));
+
+        assert_eq!(
+            msg.metadata.get("github_type").unwrap().as_str().unwrap(),
+            "issue"
+        );
+        assert_eq!(
+            msg.metadata.get("github_number").unwrap().as_u64().unwrap(),
+            42
+        );
+    }
+
+    #[test]
+    fn test_build_trigger_message_pr() {
+        let config = GithubConfig {
+            owner: "kingye".to_string(),
+            repo: "jyc".to_string(),
+            token: "test".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
+
+        let msg = adapter.build_trigger_message(
+            "pull_request",
+            43,
+            "Fix issue #42",
+            "pull_request",
+            "opened",
+            "bot",
+            &[],
+            "pr-43-opened",
+        );
+
+        let text = msg.content.text.unwrap();
+        assert!(text.contains("gh pr view 43"));
+        assert!(text.contains("gh pr diff 43"));
     }
 }

@@ -164,18 +164,22 @@ impl GithubInboundAdapter {
 
         let gh_cmd = match github_type {
             "pull_request" => format!(
-                "Use `gh pr view {}` to read the PR.\nUse `gh pr view {} --comments` to read comments.\nUse `gh pr diff {}` to see the diff.",
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead PR:\n  gh pr view {}\n  gh pr view {} --comments\n  gh pr diff {}",
+                self.config.owner, self.config.repo,
+                self.config.owner, self.config.repo,
                 number, number, number
             ),
             _ => format!(
-                "Use `gh issue view {}` to read the full issue.\nUse `gh issue view {} --comments` to read all comments.",
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead issue:\n  gh issue view {}\n  gh issue view {} --comments",
+                self.config.owner, self.config.repo,
+                self.config.owner, self.config.repo,
                 number, number
             ),
         };
 
         let body = format!(
-            "github event: {}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}\n{}",
-            event_type, number, github_type, action, actor, label_str, gh_cmd
+            "github event: {}\nrepository: {}/{}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}\n{}",
+            event_type, self.config.owner, self.config.repo, number, github_type, action, actor, label_str, gh_cmd
         );
 
         let mut metadata = HashMap::new();

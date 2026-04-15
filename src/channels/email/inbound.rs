@@ -398,6 +398,8 @@ mod tests {
                 mentions: None,
                 keywords: None,
                 chat_name: None,
+                github_type: None,
+                labels: None,
             },
             attachments: None,
             ..Default::default()

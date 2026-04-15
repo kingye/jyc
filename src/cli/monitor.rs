@@ -13,6 +13,8 @@ use crate::services::static_agent::StaticAgentService;
 use crate::channels::email::outbound::EmailOutboundAdapter;
 use crate::channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use crate::channels::feishu::outbound::FeishuOutboundAdapter;
+use crate::channels::github::inbound::GithubMatcher;
+use crate::channels::github::outbound::GithubOutboundAdapter;
 use crate::channels::types::OutboundAdapter;
 use crate::config::types::MonitorConfig;
 use crate::config::{load_config, validation};
@@ -124,6 +126,19 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     storage.clone(),
                     outbound_attachment_config,
                 ))
+            }
+            "github" => {
+                let github_config = channel_config
+                    .github
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing github config")
+                    })?
+                    .clone();
+                Arc::new(GithubOutboundAdapter::new(
+                    github_config,
+                    storage.clone(),
+                )?)
             }
             other => {
                 tracing::warn!(
@@ -371,6 +386,64 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         tracing::error!(
                             error = %e,
                             "Feishu inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "github" => {
+                let github_config = channel_config
+                    .github
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing github config")
+                    })?
+                    .clone();
+
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+
+                let task = tokio::spawn(async move {
+                    use crate::channels::github::inbound::GithubInboundAdapter;
+                    use crate::channels::types::InboundAdapter;
+
+                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone());
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = crate::channels::types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&GithubMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "GitHub inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "GitHub inbound adapter error"
                         );
                     }
 

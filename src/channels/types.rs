@@ -267,6 +267,11 @@ pub struct ChannelPattern {
     /// Channel-agnostic: works for email, Feishu, or any channel.
     #[serde(default)]
     pub thread_name: Option<String>,
+    /// Agent role name for this pattern (e.g., "Planner", "Developer", "Reviewer").
+    /// Used by GitHub OutboundAdapter to prefix comments with `[Role]`.
+    /// Also used to filter out the agent's own comments during polling.
+    #[serde(default)]
+    pub role: Option<String>,
     /// Whether to enable live message injection during AI processing.
     /// When true (default), new messages arriving while the AI is processing
     /// are injected into the active session immediately.
@@ -285,6 +290,7 @@ impl Default for ChannelPattern {
             attachments: None,
             template: None,
             thread_name: None,
+            role: None,
             live_injection: true,
         }
     }
@@ -296,6 +302,7 @@ impl Default for ChannelPattern {
 /// Each channel's ChannelMatcher implementation only checks the fields relevant to it:
 /// - Email checks: `sender`, `subject`
 /// - Feishu checks: `mentions`, `keywords`, `sender`, `chat_name`
+/// - GitHub checks: `github_type`, `labels`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PatternRules {
     // --- Shared rules ---
@@ -314,6 +321,12 @@ pub struct PatternRules {
     /// Feishu group chat names to match (OR logic, case-insensitive)
     /// Matches against the chat name from the Feishu API (metadata["chat_name"])
     pub chat_name: Option<Vec<String>>,
+
+    // --- GitHub rules ---
+    /// GitHub entity type: "issue" or "pull_request" (OR logic within this rule)
+    pub github_type: Option<Vec<String>>,
+    /// GitHub labels to match (OR logic: match if ANY label is present on the issue/PR)
+    pub labels: Option<Vec<String>>,
 }
 
 /// Rules for matching the sender of a message.

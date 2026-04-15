@@ -2964,6 +2964,59 @@ Overseas Server (HK)                    Mainland China Server (Shanghai)
 | Mainland China (e.g., Shanghai) | No | Direct download works |
 | Overseas (e.g., Hong Kong) | Yes | Direct fails → proxy fallback |
 
+### Templates & Skills
+
+Agent templates define the role, instructions, and skills for each thread type.
+Templates live in the repo under `templates/`, skills under `.opencode/skills/`.
+A deploy script composes them at deploy time.
+
+**Repository structure:**
+```
+templates/                      ← AGENTS.md only (role + instructions)
+  invoice-processing/AGENTS.md
+  jyc-dev/AGENTS.md
+  jyc-review/AGENTS.md
+  github-planner/AGENTS.md
+  github-developer/AGENTS.md
+  github-reviewer/AGENTS.md
+
+.opencode/skills/               ← Single source of truth for all skills
+  invoice-processing/           ← Invoice extraction workflow
+  dev-workflow/                 ← Branching, commits, releases
+  incremental-dev/              ← Small-step development methodology
+  plan-solution/                ← Structured implementation planning
+  pr-review/                    ← Read-only PR review
+  jyc-deploy-bare/              ← Bare metal deployment
+  jyc-deploy-docker/            ← Docker deployment
+```
+
+**Skill → Template mapping:**
+
+| Template | Skills | Purpose |
+|----------|--------|---------|
+| invoice-processing | invoice-processing | Invoice data extraction and Excel recording |
+| jyc-dev | plan-solution, dev-workflow, incremental-dev, jyc-deploy-bare | JYC self-development |
+| jyc-review | pr-review | Code review |
+| github-planner | dev-workflow | Discuss requirements, create PRs |
+| github-developer | incremental-dev, dev-workflow | Implement code from PR spec |
+| github-reviewer | pr-review | Review PRs, approve/request changes |
+
+**Deployment:**
+```bash
+# Compose templates + skills and deploy to server data directory
+./deploy-templates.sh /home/jiny/projects/jyc-data/templates
+```
+
+The script copies each template's `AGENTS.md` and its referenced skills from
+`.opencode/skills/` into the target directory. When a thread is created with
+a template, the `AGENTS.md` and `.opencode/skills/` are copied to the thread's
+workspace directory.
+
+**Adding a new template:**
+1. Create `templates/<name>/AGENTS.md` with role instructions
+2. Add the skill mapping to `deploy-templates.sh` (`get_skills` function)
+3. Run `./deploy-templates.sh <target>` to deploy
+
 ## References
 
 - [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping

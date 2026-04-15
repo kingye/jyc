@@ -98,6 +98,12 @@ impl MessageRouter {
             message.metadata.insert("template".to_string(), serde_json::Value::String(template));
         }
 
+        // Store role in message metadata for outbound adapter (e.g., GitHub comment prefix)
+        if let Some(role) = matched_pattern.and_then(|p| p.role.clone())
+        {
+            message.metadata.insert("role".to_string(), serde_json::Value::String(role));
+        }
+
         // 4. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager

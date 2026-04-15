@@ -3,3 +3,4 @@ pub mod types;
 pub mod registry;
 pub mod email;
 pub mod feishu;
+pub mod github;

@@ -470,6 +470,8 @@ mod tests {
                 mentions,
                 keywords,
                 chat_name: None,
+                github_type: None,
+                labels: None,
             },
             attachments: None,
             ..Default::default()

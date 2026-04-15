@@ -296,6 +296,7 @@ impl Default for ChannelPattern {
 /// Each channel's ChannelMatcher implementation only checks the fields relevant to it:
 /// - Email checks: `sender`, `subject`
 /// - Feishu checks: `mentions`, `keywords`, `sender`, `chat_name`
+/// - GitHub checks: `github_type`, `labels`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PatternRules {
     // --- Shared rules ---
@@ -314,6 +315,12 @@ pub struct PatternRules {
     /// Feishu group chat names to match (OR logic, case-insensitive)
     /// Matches against the chat name from the Feishu API (metadata["chat_name"])
     pub chat_name: Option<Vec<String>>,
+
+    // --- GitHub rules ---
+    /// GitHub entity type: "issue" or "pull_request" (OR logic within this rule)
+    pub github_type: Option<Vec<String>>,
+    /// GitHub labels to match (OR logic: match if ANY label is present on the issue/PR)
+    pub labels: Option<Vec<String>>,
 }
 
 /// Rules for matching the sender of a message.

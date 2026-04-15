@@ -69,6 +69,9 @@ pub struct ChannelConfig {
     /// Feishu configuration (for feishu channels)
     pub feishu: Option<crate::channels::feishu::config::FeishuConfig>,
 
+    /// GitHub configuration (for github channels)
+    pub github: Option<crate::channels::github::config::GithubConfig>,
+
     /// Monitoring settings (IDLE vs poll, interval, etc.)
     pub monitor: Option<MonitorConfig>,
 

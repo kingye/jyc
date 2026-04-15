@@ -1,13 +1,38 @@
 # Step 2–3: Download and Extract Invoice Data
 
-This file covers the two-phase processing flow for downloading and extracting
-invoice data from emails.
+## ⚠️ CRITICAL: STRICT SEQUENTIAL ORDER — DO NOT SKIP STEPS
 
-**Key Principle:** PDF sources are processed first. Only if ALL PDF sources fail
-does the system proceed to the Image Phase.
+You MUST follow this exact order. Do NOT jump to image attachments if PDF
+attachments are empty. You MUST try PDF URLs from the email body FIRST.
 
-**Key Restriction:** PDF files use Python PdfReader (pypdf) ONLY for extraction.
-Vision MCP is ONLY for image files (JPG/PNG). Do NOT use vision on PDFs.
+**Execute these steps one by one. Stop at the FIRST success.**
+
+```
+Step 2a: PDF Attachments        → Found PDF? → Extract with PdfReader → Valid? → STOP ✅
+         No PDF attachment?     → Go to Step 2b (NOT Step 2d)
+                                  ↓
+Step 2b: PDF URLs from Email    → Download URL → Got PDF? → Extract → Valid? → STOP ✅
+         URL returns HTML?      → Use html_parser.py / playwright_extractor.py
+         URL returns Image?     → Tag for Step 2c, try next URL
+         All URLs failed?       → Go to Step 2c (NOT Step 2d)
+                                  ↓
+Step 2c: Tagged Image URLs      → Use vision MCP → Valid? → STOP ✅
+         No tagged URLs?        → Go to Step 2d
+                                  ↓
+Step 2d: Image Attachments      → Use vision MCP → Valid? → STOP ✅
+         No image attachment?   → Go to Step 2e
+                                  ↓
+Step 2e: Image URLs from Email  → Download → Use vision MCP → Valid? → STOP ✅
+         All failed?            → FINAL FAILURE ❌ → Log to errors.jsonl
+```
+
+**COMMON MISTAKE:** When no PDF attachments exist, the AI skips directly to
+image attachments (Step 2d). This is WRONG. You MUST go to Step 2b (PDF URLs)
+first, because the email body often contains a download link to the PDF invoice.
+
+**Key Restrictions:**
+- PDF files → Python PdfReader (pypdf) ONLY for extraction. NEVER use vision MCP on PDFs.
+- Image files → Vision MCP ONLY. NEVER use PdfReader on images.
 
 ---
 
@@ -164,9 +189,12 @@ For each PDF attachment found (>50KB):
 4. If ALL 3 fields present → **SUCCESS**, stop processing entirely
 5. If any field missing → try next PDF attachment
 
-If no PDF attachments found or all fail validation → proceed to Step 2b.
+If no PDF attachments found or all fail validation → **proceed to Step 2b (PDF URLs), NOT Step 2d (Image Attachments)**.
 
 ### Step 2b: PDF URLs from Email Body
+
+**⚠️ You MUST reach this step before trying any image sources.**
+**If no PDF attachments were found, this is your NEXT step — NOT image attachments.**
 
 Extract URLs from the email body and attempt to download PDFs.
 
@@ -206,7 +234,8 @@ For each URL (up to 5):
 
 ## Image Phase (LAST RESORT)
 
-Only reached when ALL PDF sources have failed. Uses vision MCP tool only.
+**⚠️ ONLY reach this phase after Step 2a (PDF Attachments) AND Step 2b (PDF URLs)
+have BOTH been tried and BOTH failed. If you skipped Step 2b, GO BACK and do it.**
 
 **IMPORTANT: Do NOT use Python PdfReader in this phase. Vision MCP ONLY.**
 

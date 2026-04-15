@@ -148,7 +148,8 @@ fi
 - ALWAYS read the Excel template headers before writing to understand column layout
 - ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers (合规凭证)
 - ALWAYS validate 3 mandatory fields (销售方税号, 校验码, 价税合计) before writing to invoices.xlsx
-- ALWAYS process PDF sources first, then image sources (see PROCESSING.md)
+- ALWAYS follow the STRICT sequential order: PDF attachments → PDF URLs → Image sources (see PROCESSING.md)
+- **NEVER skip PDF URL extraction (Step 2b) — if no PDF attachment found, you MUST try to extract URLs from the email body BEFORE processing any image sources**
 - NEVER write incomplete or failed invoices to invoices.xlsx — log to errors.jsonl instead
 - NEVER save non-PDF/non-image files to the monthly folder — they are not valid vouchers
 - NEVER use vision MCP tool on PDF files — use Python PdfReader (pypdf) only for PDFs

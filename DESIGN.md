@@ -2928,6 +2928,42 @@ let thread_manager = ThreadManager::new_with_options(
 3. **Log levels** - Adjust event log levels appropriately in production
 4. **Resource limits** - Pay attention to memory usage of event queues
 
+### Invoice Download Proxy
+
+Some invoice platforms (e.g., 51fapiao.cn) use Alibaba Cloud WAF that blocks
+requests from non-mainland China IPs. The invoice-processing skill includes a
+download proxy to handle this:
+
+**Architecture:**
+```
+Overseas Server (HK)                    Mainland China Server (Shanghai)
+┌────────────────────┐                  ┌─────────────────────────┐
+│ JYC + OpenCode     │                  │ download_proxy.py :8765 │
+│                    │  HTTP request    │                         │
+│ proxy_download.py ─┼─────────────────►│  fetch?url=<encoded>    │
+│                    │  file content    │  ↓                      │
+│ ◄──────────────────┼─────────────────┤  urllib → 51fapiao.cn   │
+│                    │                  │                         │
+└────────────────────┘                  └─────────────────────────┘
+```
+
+**Components:**
+- `scripts/download_proxy.py` — HTTP proxy service on Shanghai server (150.158.50.252:8765).
+  Whitelisted domains only. Rate limited. Auto-starts via crontab `@reboot`.
+- `scripts/proxy_download.py` — Client script on the JYC server. Tries direct download
+  first; falls back to proxy if direct fails and `INVOICE_DOWNLOAD_PROXY` env var is set.
+
+**Environment variable:**
+- `INVOICE_DOWNLOAD_PROXY` — Set on overseas servers only. Not needed on mainland China.
+  Example: `export INVOICE_DOWNLOAD_PROXY=http://150.158.50.252:8765`
+  Configured in `~/.zshrc.local` on the HK server (sourced by `deploy.sh`).
+
+**Deployment scenarios:**
+| Server Location | Env Var Needed? | Behavior |
+|-----------------|-----------------|----------|
+| Mainland China (e.g., Shanghai) | No | Direct download works |
+| Overseas (e.g., Hong Kong) | Yes | Direct fails → proxy fallback |
+
 ## References
 
 - [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping

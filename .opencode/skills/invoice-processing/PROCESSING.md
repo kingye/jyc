@@ -189,13 +189,13 @@ this works fine. On overseas servers, set this env var to enable proxy fallback.
 
 When you find a URL matching `dlj.51fapiao.cn/dlj/v7/...`:
 
-1. **Download the viewer HTML via Shanghai proxy** (MANDATORY):
+1. **Download the viewer HTML** using `proxy_download.py`:
    ```bash
    MONTH=$(date +%Y-%m)
    python3 .opencode/skills/invoice-processing/scripts/proxy_download.py \
        "<THE_dlj.51fapiao.cn_URL>" \
        "invoice_${MONTH}/temp_download"
-   # → {"success": true, "file": "invoice_.../temp_download", "size": 8790, "content_type": "..."}
+   # → {"success": true, "file": "invoice_.../temp_download", "size": 8790, "content_type": "...", "method": "direct|proxy"}
    ```
 
 2. **Run html_parser.py** — it extracts the PDF download URL from hidden inputs:
@@ -207,7 +207,7 @@ When you find a URL matching `dlj.51fapiao.cn/dlj/v7/...`:
    **If html_parser.py fails:** check that proxy_download.py succeeded (size > 5000 bytes).
    A small file (< 3000 bytes) is likely an error page. Do NOT fall back to playwright.
 
-3. **Download the real PDF** via Shanghai proxy:
+3. **Download the real PDF** using `proxy_download.py`:
    ```bash
    pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
    python3 .opencode/skills/invoice-processing/scripts/proxy_download.py \

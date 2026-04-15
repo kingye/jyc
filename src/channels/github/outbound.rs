@@ -89,8 +89,11 @@ impl OutboundAdapter for GithubOutboundAdapter {
             format!("{}\n\n{}", clean_reply, footer)
         };
 
-        // Build comment body with role prefix
+        // Build comment body with role prefix (avoid double-prefix if AI already added it)
         let comment_body = if role.is_empty() {
+            reply_with_footer
+        } else if reply_with_footer.trim_start().starts_with(&format!("[{}]", role)) {
+            // AI already included the role prefix — don't add again
             reply_with_footer
         } else {
             format!("[{}] {}", role, reply_with_footer)

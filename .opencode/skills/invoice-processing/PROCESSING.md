@@ -116,6 +116,57 @@ The switch between parsers is automatic — no user interaction needed.
 | 51发票 | dlj.51fapiao.cn | html_parser.py (Strategy 5+6) | Hidden inputs (`dlj` + `signatureString`), PDF.js viewer |
 | 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py | React SPA, button text `"PDF下载"`, no auth (code= param sufficient). **Requires Playwright** — html_parser.py automatically skips this domain and falls through to playwright_extractor.py immediately. |
 
+#### 51fapiao (51发票) — Concrete Example
+
+When you see a URL like `https://dlj.51fapiao.cn/dlj/v7/...` in the email body:
+
+1. **Download returns HTML** (not PDF) when using browser-like headers:
+   ```bash
+   curl -sL -H "User-Agent: Mozilla/5.0" \
+       -o "invoice_${MONTH}/temp_download" "https://dlj.51fapiao.cn/dlj/v7/<hash>"
+   file --brief --mime-type "invoice_${MONTH}/temp_download"
+   # → text/html (NOT application/pdf)
+   ```
+
+2. **Run html_parser.py** — it extracts the PDF download URL from hidden inputs:
+   ```bash
+   result=$(python3 .opencode/skills/invoice-processing/scripts/html_parser.py \
+       "invoice_${MONTH}/temp_download" "https://dlj.51fapiao.cn/dlj/v7/<hash>")
+   # → {"success": true, "pdf_url": "https://dlj.51fapiao.cn/dlj/v7/downloadFile/<hash>?signatureString=<sig>"}
+   ```
+
+3. **Download the real PDF** using the extracted URL:
+   ```bash
+   pdf_url=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['pdf_url'])")
+   curl -sL -o "invoice_${MONTH}/temp_download" "$pdf_url"
+   file --brief --mime-type "invoice_${MONTH}/temp_download"
+   # → application/pdf ✅
+   ```
+
+4. **Extract data** from the PDF using Python PdfReader (Step 3a)
+
+**TIP:** `curl` without browser headers may return PDF directly. But when the
+system downloads with default headers and gets HTML, the above flow handles it.
+
+#### 每刻云票 (Maycur) — Concrete Example
+
+When you see a URL like `https://pms.maycur.com/supply/#/invoice-download?code=...`:
+
+1. **Download returns HTML** (React SPA shell — no useful content in static HTML)
+
+2. **html_parser.py skips this domain automatically** (returns `{"success": false}`)
+
+3. **playwright_extractor.py handles it**:
+   ```bash
+   result=$(python3 .opencode/skills/invoice-processing/scripts/playwright_extractor.py \
+       "https://pms.maycur.com/supply/#/invoice-download?code=<code>")
+   # Playwright renders the React app, finds button "PDF下载", clicks it,
+   # captures the PDF download URL
+   # → {"success": true, "pdf_url": "https://..."}
+   ```
+
+4. **Download the real PDF** and extract with PdfReader
+
 `html_parser.py` automatically skips known Playwright-only platforms (e.g., Maycur)
 to avoid wasted processing time — it returns failure immediately so the system
 falls through to `playwright_extractor.py`.
@@ -216,9 +267,14 @@ For each URL (up to 5):
    - Continue to next URL
 
    **If HTML:**
-   - Use Two-Level HTML Extraction (see Shared Logic above)
-   - After extraction, re-download the real URL
-   - Re-classify the downloaded file:
+   - This is common for invoice platforms like 51fapiao and Maycur
+   - Use Two-Level HTML Extraction (see Shared Logic above):
+     1. Run `html_parser.py` with the downloaded HTML file and the original URL
+     2. If it returns `{"success": true, "pdf_url": "..."}` → download the `pdf_url`
+     3. If it returns `{"success": false}` → run `playwright_extractor.py` with the original URL
+     4. If Playwright also fails → log as `download_failed`, try next URL
+   - See **Known Invoice Platforms** section above for concrete examples
+   - After extraction, re-download the real URL and re-classify:
      - If PDF → extract with PdfReader, validate
      - If Image → tag for Image Phase
      - If still HTML or unknown → log as `download_failed`, try next URL

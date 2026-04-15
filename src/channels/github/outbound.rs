@@ -68,11 +68,32 @@ impl OutboundAdapter for GithubOutboundAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // Read model/mode from reply context file (if available)
+        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
+        let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
+        let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
+
+        // Read current input tokens from session state
+        let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
+
+        // Build footer with model/mode/tokens information
+        let footer = crate::core::email_parser::build_footer(model, mode, input_tokens, max_tokens);
+
+        // Clean reply text
+        let clean_reply = crate::core::email_parser::strip_trailing_separators(reply_text);
+
+        // Combine reply with footer
+        let reply_with_footer = if footer.is_empty() {
+            clean_reply
+        } else {
+            format!("{}\n\n{}", clean_reply, footer)
+        };
+
         // Build comment body with role prefix
         let comment_body = if role.is_empty() {
-            reply_text.to_string()
+            reply_with_footer
         } else {
-            format!("[{}] {}", role, reply_text)
+            format!("[{}] {}", role, reply_with_footer)
         };
 
         // Post comment via GitHub API

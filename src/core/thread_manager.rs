@@ -30,6 +30,10 @@ pub struct QueueItem {
     pub pattern_match: PatternMatch,
     pub attachment_config: Option<InboundAttachmentConfig>,
     pub template: Option<String>,
+    /// Whether live message injection is enabled for this item's pattern.
+    /// When `true`, new messages arriving during AI processing are injected
+    /// into the active session. When `false`, messages queue sequentially.
+    pub live_injection: bool,
 }
 
 /// Per-thread queue stats.
@@ -151,6 +155,7 @@ impl ThreadManager {
         thread_name: String,
         pattern_match: PatternMatch,
         attachment_config: Option<InboundAttachmentConfig>,
+        live_injection: bool,
     ) {
         let mut queues = self.thread_queues.lock().await;
 
@@ -183,6 +188,7 @@ impl ThreadManager {
             pattern_match,
             attachment_config,
             template,
+            live_injection,
         };
 
         if let Some(sender) = queues.get(&thread_name) {
@@ -837,9 +843,25 @@ async fn process_message(
         ).await;
     });
 
-    let result = agent
-        .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
-        .await?;
+    let result = if item.live_injection {
+        // Live injection enabled: pass real queue receiver so new messages
+        // arriving during AI processing get injected into the active session.
+        agent
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
+            .await?
+    } else {
+        // Live injection disabled: pass a dummy receiver that never yields.
+        // Messages stay in the real queue and are processed sequentially
+        // after the current AI call completes.
+        tracing::debug!("Live injection disabled for this pattern, using sequential processing");
+        let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
+        // Drop _dummy_tx immediately so dummy_rx.recv() returns None instantly,
+        // making the SSE select loop skip the injection arm.
+        drop(_dummy_tx);
+        agent
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx)
+            .await?
+    };
 
     // Stop the delivery watcher
     delivery_cancel.cancel();

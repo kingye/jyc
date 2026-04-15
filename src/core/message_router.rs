@@ -84,18 +84,16 @@ impl MessageRouter {
             "Routing to thread"
         );
 
-        // 3. Get attachment config and template from the matched pattern
+        // 3. Get attachment config, template, and live_injection from the matched pattern
         let matched_pattern_name = pattern_name;
-        let attachment_config = patterns
+        let matched_pattern = patterns
             .iter()
-            .find(|p| p.name == matched_pattern_name)
-            .and_then(|p| p.attachments.clone());
+            .find(|p| p.name == matched_pattern_name);
+        let attachment_config = matched_pattern.and_then(|p| p.attachments.clone());
+        let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
         
         // Store template name in message metadata for thread initialization
-        if let Some(template) = patterns
-            .iter()
-            .find(|p| p.name == matched_pattern_name)
-            .and_then(|p| p.template.clone())
+        if let Some(template) = matched_pattern.and_then(|p| p.template.clone())
         {
             message.metadata.insert("template".to_string(), serde_json::Value::String(template));
         }
@@ -103,7 +101,7 @@ impl MessageRouter {
         // 4. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager
-            .enqueue(message, thread_name, pm, attachment_config)
+            .enqueue(message, thread_name, pm, attachment_config, live_injection)
             .await;
     }
 
@@ -274,5 +272,69 @@ mod tests {
 
             assert_eq!(thread_name, "invoices", "Topic '{}' should route to 'invoices'", topic);
         }
+    }
+
+    #[test]
+    fn test_live_injection_defaults_to_true() {
+        let pattern = ChannelPattern::default();
+        assert!(pattern.live_injection, "live_injection should default to true");
+    }
+
+    #[test]
+    fn test_live_injection_extracted_from_pattern() {
+        let matcher = MockMatcher;
+        let message = test_message("Hello");
+        let patterns = vec![ChannelPattern {
+            name: "no_inject".to_string(),
+            live_injection: false,
+            ..Default::default()
+        }];
+
+        let pattern_match = matcher.match_message(&message, &patterns);
+        assert!(pattern_match.is_some());
+
+        let pattern_name = &pattern_match.as_ref().unwrap().pattern_name;
+        let matched = patterns.iter().find(|p| &p.name == pattern_name);
+        let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
+
+        assert!(!live_injection, "live_injection should be false when pattern sets it");
+    }
+
+    #[test]
+    fn test_live_injection_true_when_pattern_enables_it() {
+        let matcher = MockMatcher;
+        let message = test_message("Hello");
+        let patterns = vec![ChannelPattern {
+            name: "with_inject".to_string(),
+            live_injection: true,
+            ..Default::default()
+        }];
+
+        let pattern_match = matcher.match_message(&message, &patterns);
+        let pattern_name = &pattern_match.as_ref().unwrap().pattern_name;
+        let matched = patterns.iter().find(|p| &p.name == pattern_name);
+        let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
+
+        assert!(live_injection, "live_injection should be true when pattern enables it");
+    }
+
+    #[test]
+    fn test_live_injection_defaults_true_via_serde() {
+        // Simulate deserialization without the live_injection field
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+        "#).unwrap();
+        assert!(pattern.live_injection, "live_injection should default to true when omitted from config");
+    }
+
+    #[test]
+    fn test_live_injection_false_via_serde() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            live_injection = false
+            [rules]
+        "#).unwrap();
+        assert!(!pattern.live_injection, "live_injection should be false when explicitly set in config");
     }
 }

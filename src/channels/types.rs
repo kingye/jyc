@@ -267,6 +267,12 @@ pub struct ChannelPattern {
     /// Channel-agnostic: works for email, Feishu, or any channel.
     #[serde(default)]
     pub thread_name: Option<String>,
+    /// Whether to enable live message injection during AI processing.
+    /// When true (default), new messages arriving while the AI is processing
+    /// are injected into the active session immediately.
+    /// When false, messages queue and are processed sequentially.
+    #[serde(default = "default_true")]
+    pub live_injection: bool,
 }
 
 impl Default for ChannelPattern {
@@ -279,6 +285,7 @@ impl Default for ChannelPattern {
             attachments: None,
             template: None,
             thread_name: None,
+            live_injection: true,
         }
     }
 }

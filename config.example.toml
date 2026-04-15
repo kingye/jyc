@@ -34,6 +34,10 @@ folder = "INBOX"
 [[channels.jiny283.patterns]]
 name = "sap"
 enabled = true
+# Live message injection: when true (default), follow-up messages arriving
+# while AI is processing are injected into the active session immediately.
+# When false, messages queue and are processed sequentially (one at a time).
+# live_injection = false
 
 [channels.jiny283.patterns.rules.sender]
 exact = ["ye.jin@sap.com", "kingye@petalmail.com", "qing.cheng@roedl.com"]

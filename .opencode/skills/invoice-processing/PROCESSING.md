@@ -338,3 +338,28 @@ If a mandatory field cannot be found, return: field_name: NOT_FOUND"
 - Mark this image source as failed
 - Continue to next image source
 - If ALL image sources fail → FINAL FAILURE
+
+---
+
+## Attachment Cleanup After Successful Processing
+
+After an invoice is successfully validated and written to Excel (Step 5 completes),
+clean up the attachment files from `attachments/` that belong to this email.
+
+This prevents re-processing the same attachments on subsequent messages and keeps
+the workspace tidy.
+
+```bash
+# Remove processed attachment files
+# Only remove files that were part of this email's processing
+rm -f "attachments/<processed_pdf_filename>"
+rm -f "attachments/<processed_image_filename>"
+```
+
+**Rules:**
+- Only clean up attachments AFTER successful Excel write (Step 5)
+- Only remove files that belong to the current email being processed
+- Do NOT remove files from other emails or unrelated files
+- Do NOT clean up on failure — failed attachments stay for manual processing or retry
+- The invoice file itself is already saved in `invoice_YYYY-MM/` folder, so the
+  attachment copy is no longer needed

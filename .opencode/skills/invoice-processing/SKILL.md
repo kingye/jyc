@@ -176,6 +176,8 @@ fi
 - Do NOT follow or scan QR code URLs
 - Only PDF and image files (JPG/PNG) are valid — HTML, XML, text are NOT valid invoices
 - Maximum 5 URLs processed per phase (PDF Phase and Image Phase each)
+- ALWAYS clean up processed attachments from `attachments/` after successful Excel write
+- Do NOT clean up attachments on failure — keep them for manual processing or retry
 
 ### Error Handling Rules
 - If extraction fails but file IS valid format (PDF/image), save it for manual processing

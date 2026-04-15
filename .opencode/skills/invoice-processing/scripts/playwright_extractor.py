@@ -11,7 +11,19 @@ Usage:
 Output (JSON to stdout):
     {"success": true, "pdf_url": "https://..."}
     {"success": false, "error": "..."}
+
+Known invoice platforms requiring Playwright:
+
+  Platform          | Domain              | Strategy        | Button/Trigger
+  ------------------|---------------------|-----------------|------------------
+  每刻云票 (Maycur) | pms.maycur.com      | click_download  | Button text: "PDF下载"
+
+These platforms are React SPAs or JS-heavy pages that cannot be parsed
+with static HTML analysis. Playwright renders the page and interacts
+with it to trigger PDF downloads.
 """
+
+from __future__ import annotations
 
 import json
 import re
@@ -90,7 +102,7 @@ def _extract_with_browser(browser, url: str) -> str | None:
 
 def _click_download_button(page, captured_pdf_url: list) -> str | None:
     """Find and click buttons that look like PDF download buttons."""
-    keywords = ["PDF", "下载", "download", "下载PDF", "导出", "发票下载"]
+    keywords = ["PDF下载", "PDF", "下载", "download", "下载PDF", "导出", "发票下载"]
 
     for keyword in keywords:
         # Try button elements

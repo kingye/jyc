@@ -84,6 +84,23 @@ fi
 
 The switch between parsers is automatic — no user interaction needed.
 
+### Known Invoice Platforms
+
+| Platform | Domain | Extraction Method | Notes |
+|----------|--------|-------------------|-------|
+| 51发票 | dlj.51fapiao.cn | html_parser.py (Strategy 5+6) | Hidden inputs (`dlj` + `signatureString`), PDF.js viewer |
+| 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py | React SPA, button text `"PDF下载"`, no auth (code= param sufficient). **Requires Playwright** — html_parser.py automatically skips this domain and falls through to playwright_extractor.py immediately. |
+
+`html_parser.py` automatically skips known Playwright-only platforms (e.g., Maycur)
+to avoid wasted processing time — it returns failure immediately so the system
+falls through to `playwright_extractor.py`.
+
+**IMPORTANT: Time-limited signatures.**
+Some platforms (e.g., 51fapiao) use `signatureString` parameters that may expire.
+If a previously valid download URL returns 403/401, log as `download_failed`
+with detail `"signature_expired"`. The user may need to re-send the email or
+provide a fresh link.
+
 ### File Format Validation
 
 Only PDF (`.pdf`) and image (`.jpg`, `.jpeg`, `.png`) files are valid invoice

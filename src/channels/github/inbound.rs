@@ -216,17 +216,20 @@ impl InboundAdapter for GithubInboundAdapter {
         let client = GithubClient::new(&self.config)
             .context("Failed to create GitHub client")?;
 
-        // Get bot identity for filtering own comments
-        let bot_user = client
-            .get_authenticated_user()
-            .await
-            .context("Failed to get bot identity")?;
+        // Get bot identity (for logging — not used for comment filtering)
+        let bot_user = match client.get_authenticated_user().await {
+            Ok(user) => user.login,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get bot identity, continuing without");
+                "unknown".to_string()
+            }
+        };
 
         tracing::info!(
             channel = %self.channel_name,
             owner = %self.config.owner,
             repo = %self.config.repo,
-            bot_user = %bot_user.login,
+            bot_user = %bot_user,
             poll_interval = %self.config.poll_interval_secs,
             "GitHub inbound adapter started"
         );
@@ -252,7 +255,6 @@ impl InboundAdapter for GithubInboundAdapter {
                 _ = tokio::time::sleep(poll_interval) => {
                     if let Err(e) = self.poll_once(
                         &client,
-                        &bot_user.login,
                         &options,
                         &mut processed_events,
                         &mut last_poll,
@@ -278,7 +280,6 @@ impl GithubInboundAdapter {
     async fn poll_once(
         &self,
         client: &GithubClient,
-        bot_username: &str,
         options: &InboundAdapterOptions,
         processed_events: &mut HashSet<String>,
         last_poll: &mut String,
@@ -332,12 +333,20 @@ impl GithubInboundAdapter {
         );
 
         for comment in &comments {
-            // Skip bot's own comments
-            if comment.user.login == bot_username {
+            // Skip comments posted by JYC (identified by role prefix marker)
+            // We use role prefixes [Planner], [Developer], [Reviewer] to identify
+            // comments posted by our agents via the OutboundAdapter.
+            // We do NOT filter by username — the bot may share a GitHub account
+            // with the user (common for personal repos).
+            let body_trimmed = comment.body.trim();
+            if body_trimmed.starts_with("[Planner]")
+                || body_trimmed.starts_with("[Developer]")
+                || body_trimmed.starts_with("[Reviewer]")
+            {
                 tracing::debug!(
                     channel = %self.channel_name,
                     comment_id = comment.id,
-                    "Skipping bot's own comment"
+                    "Skipping JYC agent comment (role prefix detected)"
                 );
                 continue;
             }

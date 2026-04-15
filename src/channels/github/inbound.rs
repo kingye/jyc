@@ -234,8 +234,9 @@ impl InboundAdapter for GithubInboundAdapter {
         // Track processed event IDs for deduplication
         let mut processed_events: HashSet<String> = HashSet::new();
 
-        // Track last poll time (ISO 8601 format for GitHub API)
-        let mut last_poll = chrono::Utc::now()
+        // Start polling from 5 minutes ago to catch recent events.
+        // Deduplication ensures we don't process the same event twice.
+        let mut last_poll = (chrono::Utc::now() - chrono::Duration::minutes(5))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 
@@ -396,8 +397,9 @@ impl GithubInboundAdapter {
             processed_events.insert(event_uid);
         }
 
-        // Update last poll timestamp
-        *last_poll = chrono::Utc::now()
+        // Update last poll timestamp (subtract 30s buffer to avoid missing
+        // events that were created just before the poll started)
+        *last_poll = (chrono::Utc::now() - chrono::Duration::seconds(30))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 

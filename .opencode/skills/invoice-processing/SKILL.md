@@ -162,6 +162,7 @@ fi
 - Do NOT fall back to vision for PDFs — proceed to the next source instead
 - If ALL PDF sources fail → proceed to Image Phase
 - If ALL image sources fail → log to errors.jsonl as final failure
+- **NEVER assume an invoice URL requires login** — all known platforms (51fapiao, Maycur) use public links where the URL itself contains the access credential (hash, code, signatureString). Always try to download first.
 
 ### Validation Rules
 - 销售方税号 (Seller Tax ID): 18 characters, alphanumeric — MANDATORY

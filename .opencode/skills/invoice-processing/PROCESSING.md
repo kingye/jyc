@@ -111,12 +111,20 @@ The switch between parsers is automatic — no user interaction needed.
 
 ### Known Invoice Platforms
 
-| Platform | Domain | Extraction Method | Notes |
-|----------|--------|-------------------|-------|
-| 51发票 | dlj.51fapiao.cn | html_parser.py (Strategy 5+6) | Hidden inputs (`dlj` + `signatureString`), PDF.js viewer |
-| 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py | React SPA, button text `"PDF下载"`, no auth (code= param sufficient). **Requires Playwright** — html_parser.py automatically skips this domain and falls through to playwright_extractor.py immediately. |
+**⚠️ IMPORTANT: All known invoice platforms listed below are PUBLIC links.
+They do NOT require login or authentication. The URL itself contains all
+the credentials needed (hash, code, signatureString, etc.).
+NEVER assume an invoice URL requires login — always try to download first.**
+
+| Platform | Domain | Extraction Method | Auth Required? |
+|----------|--------|-------------------|----------------|
+| 51发票 | dlj.51fapiao.cn | html_parser.py (Strategy 5+6) | **NO** — URL hash is the credential |
+| 每刻云票 (Maycur) | pms.maycur.com | playwright_extractor.py | **NO** — `code=` param is the credential |
 
 #### 51fapiao (51发票) — Concrete Example
+
+**51fapiao does NOT require login.** The URL contains the full access hash.
+Do NOT skip this URL. Do NOT tell the user it needs login. Just download it.
 
 When you see a URL like `https://dlj.51fapiao.cn/dlj/v7/...` in the email body:
 

@@ -324,7 +324,7 @@ impl GithubInboundAdapter {
     ) -> Result<()> {
         let poll_start = last_poll.clone();
 
-        tracing::debug!(
+        tracing::trace!(
             channel = %self.channel_name,
             since = %poll_start,
             "GitHub poll cycle started"
@@ -337,7 +337,7 @@ impl GithubInboundAdapter {
 
         // 1. Fetch comments FIRST (they are more specific triggers than issue_updated)
         let comments = client.list_comments_since(&poll_start).await?;
-        tracing::debug!(
+        tracing::trace!(
             channel = %self.channel_name,
             count = comments.len(),
             "Fetched comments"
@@ -356,7 +356,7 @@ impl GithubInboundAdapter {
                 || body_trimmed.starts_with("[Developer]")
                 || body_trimmed.starts_with("[Reviewer]")
             {
-                tracing::debug!(
+                tracing::trace!(
                     channel = %self.channel_name,
                     comment_id = comment.id,
                     "Skipping JYC agent comment (role prefix detected)"
@@ -436,7 +436,7 @@ impl GithubInboundAdapter {
         // Do NOT route issue_updated — it fires every time the bot comments,
         // causing infinite loops. Existing issues are triggered by comments only.
         let issues = client.list_issues_since(&poll_start).await?;
-        tracing::debug!(
+        tracing::trace!(
             channel = %self.channel_name,
             count = issues.len(),
             "Fetched open issues/PRs"
@@ -505,7 +505,7 @@ impl GithubInboundAdapter {
 
         // 3. Fetch recently closed issues/PRs → trigger thread close
         let closed = client.list_closed_since(&poll_start).await?;
-        tracing::debug!(
+        tracing::trace!(
             channel = %self.channel_name,
             count = closed.len(),
             "Fetched closed issues/PRs"

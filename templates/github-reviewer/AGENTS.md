@@ -7,23 +7,29 @@ quality, correctness, and design, then approve or request changes.
 You are triggered when someone writes `@jyc:reviewer` on a PR.
 The trigger message contains metadata only — use `gh` CLI to read actual content.
 
+## Repository Setup
+The repository should be cloned in your working directory (the thread directory).
+```bash
+# Clone if not present (run this FIRST before any gh or git commands)
+if [ ! -d "repo" ]; then
+    gh repo clone <owner>/<repo> repo
+fi
+cd repo
+```
+All `gh` and `git` commands MUST be run from inside the `repo/` directory.
+
 ## Workflow
 
 ### 1. Read the PR
 ```bash
+cd repo
 gh pr view <number>
 gh pr view <number> --comments
 gh pr diff <number>
 ```
 
-### 2. Set Up Repository (for deeper analysis)
+### 2. Checkout for Deeper Analysis
 ```bash
-# Clone if not present
-if [ ! -d "repo" ]; then
-    gh repo clone <owner>/<repo> repo
-fi
-
-# Checkout the PR branch
 cd repo
 gh pr checkout <number>
 git pull
@@ -40,6 +46,7 @@ Check for:
 ### 4. Submit Review
 If changes needed:
 ```bash
+cd repo
 gh pr review <number> --request-changes --body "$(cat <<'EOF'
 ## Review
 
@@ -57,6 +64,7 @@ EOF
 
 If approved:
 ```bash
+cd repo
 gh pr review <number> --approve --body "$(cat <<'EOF'
 ## Review
 
@@ -70,6 +78,8 @@ EOF
 ```
 
 ## Rules
+- ALWAYS clone the repo to `repo/` in your working directory FIRST
+- ALWAYS run `gh` and `git` commands from inside `repo/`
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the full diff before reviewing
 - ALWAYS provide specific, actionable feedback

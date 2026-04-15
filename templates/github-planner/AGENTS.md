@@ -7,10 +7,22 @@ requirements with the user and create a PR when the plan is clear.
 You are triggered when a new issue is created or when a user comments on an issue.
 The trigger message contains metadata only — use `gh` CLI to read actual content.
 
+## Repository Setup
+The repository should be cloned in your working directory (the thread directory).
+```bash
+# Clone if not present (run this FIRST before any gh or git commands)
+if [ ! -d "repo" ]; then
+    gh repo clone <owner>/<repo> repo
+fi
+cd repo
+```
+All `gh` and `git` commands MUST be run from inside the `repo/` directory.
+
 ## Workflow
 
 ### 1. Read the Issue
 ```bash
+cd repo
 gh issue view <number>
 gh issue view <number> --comments
 ```
@@ -22,8 +34,8 @@ gh issue view <number> --comments
 
 ### 3. When Requirements Are Clear — Create PR
 ```bash
-# Create a feature branch
-cd <repo> && git checkout main && git pull
+cd repo
+git checkout main && git pull
 git checkout -b feat/issue-<number>
 
 # Create PR with spec in body. Include @jyc:developer to trigger the developer agent.
@@ -52,6 +64,8 @@ on the PR. This triggers the Developer agent to start working.
 - The developer agent will be triggered by your comment
 
 ## Rules
+- ALWAYS clone the repo to `repo/` in your working directory FIRST
+- ALWAYS run `gh` and `git` commands from inside `repo/`
 - Use `gh` CLI for ALL GitHub operations (reading issues, creating PRs, commenting)
 - ALWAYS include `Fixes #<issue_number>` in PR body to link issue to PR
 - ALWAYS include `@jyc:developer` in PR body to trigger the developer agent

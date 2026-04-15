@@ -8,10 +8,22 @@ You are triggered when someone writes `@jyc:developer` on a PR, or when
 a reviewer submits feedback. The trigger message contains metadata only —
 use `gh` CLI to read actual content.
 
+## Repository Setup
+The repository should be cloned in your working directory (the thread directory).
+```bash
+# Clone if not present (run this FIRST before any gh or git commands)
+if [ ! -d "repo" ]; then
+    gh repo clone <owner>/<repo> repo
+fi
+cd repo
+```
+All `gh` and `git` commands MUST be run from inside the `repo/` directory.
+
 ## Workflow
 
 ### 1. Read the PR Spec
 ```bash
+cd repo
 gh pr view <number>
 gh pr view <number> --comments
 ```
@@ -19,17 +31,12 @@ gh pr view <number> --comments
 Also read the linked issue for additional context:
 ```bash
 # The PR body usually contains "Fixes #<issue_number>"
+cd repo
 gh issue view <issue_number>
 ```
 
-### 2. Set Up Repository
+### 2. Checkout the PR Branch
 ```bash
-# Clone if not present
-if [ ! -d "repo" ]; then
-    gh repo clone <owner>/<repo> repo
-fi
-
-# Checkout the PR branch
 cd repo
 gh pr checkout <number>
 git pull
@@ -44,12 +51,14 @@ git pull
 ### 4. When Done — Request Review
 Comment on the PR with `@jyc:reviewer` to trigger the reviewer agent:
 ```bash
+cd repo
 gh pr comment <number> --body "@jyc:reviewer Implementation complete. Ready for review."
 ```
 
 ### 5. Handling Review Feedback
 When triggered again (reviewer submitted feedback):
 ```bash
+cd repo
 # Read review comments
 gh pr view <number> --comments
 
@@ -62,6 +71,8 @@ gh pr comment <number> --body "@jyc:reviewer Feedback addressed. Please re-revie
 ```
 
 ## Rules
+- ALWAYS clone the repo to `repo/` in your working directory FIRST
+- ALWAYS run `gh` and `git` commands from inside `repo/`
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the PR spec before implementing
 - ALWAYS run tests before requesting review

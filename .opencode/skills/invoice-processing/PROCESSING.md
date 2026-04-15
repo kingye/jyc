@@ -44,85 +44,27 @@ These utilities are used by both PDF Phase and Image Phase.
 ### URL Extraction from Email Body
 
 **⚠️ CRITICAL: The incoming message may be truncated — forwarded email content
-is often stripped. You MUST search the chat history file for the FULL email body.**
+is often stripped. You MUST use the bundled script to find invoice URLs.**
 
 The invoice download URL is often in the **forwarded** part of the email, which
-may not appear in the incoming message prompt. To find it:
-
-**⚠️ IMPORTANT: Only search the LATEST received message, not the entire chat
-history. The chat history contains multiple emails — you must only process
-the current one.**
+may not appear in the incoming message prompt. The full email body is saved in
+`chat_history_*.md`. Use the bundled script to extract URLs from the **latest**
+received message only:
 
 ```bash
-# Extract the LAST received message from today's chat history
-# Then search that block for invoice download URLs
-
-python3 << 'PYEOF'
-import re, glob
-
-# Find today's chat history file
-files = sorted(glob.glob("chat_history_*.md"))
-if not files:
-    print("NO_CHAT_HISTORY")
-    exit(0)
-
-content = open(files[-1], encoding="utf-8").read()
-
-# Split by --- separator and find the last "type:received" block
-blocks = content.split("\n---\n")
-last_received = None
-for block in reversed(blocks):
-    if "type:received" in block:
-        last_received = block
-        break
-
-if not last_received:
-    print("NO_RECEIVED_MESSAGE")
-    exit(0)
-
-# Extract all URLs from the last received message
-urls = re.findall(r'https?://[^\s<>"\')\]]+', last_received)
-
-# Classify URLs — prioritize actual invoice download links over platform homepages
-invoice_urls = []
-file_urls = []
-for url in urls:
-    lower = url.lower()
-    # Skip platform homepages, logos, icons, tracking pixels
-    if any(skip in lower for skip in ['www.51fapiao', 'logo', 'icon', 'favicon', 'pixel', 'track', 'unsubscribe']):
-        continue
-    # 51fapiao invoice download links: dlj.51fapiao.cn/dlj/v7/<hash>
-    if 'dlj.51fapiao.cn/dlj/' in lower:
-        invoice_urls.append(url)
-    # Maycur invoice links: pms.maycur.com/supply/#/invoice-download
-    elif 'maycur.com' in lower and 'invoice' in lower:
-        invoice_urls.append(url)
-    # Other download/invoice URLs
-    elif any(kw in lower for kw in ['download', 'fapiao', 'invoice']) and 'dlj' not in lower:
-        invoice_urls.append(url)
-    # Direct file links
-    elif lower.endswith(('.pdf', '.jpg', '.png')):
-        file_urls.append(url)
-
-# Print results — invoice URLs first (most important)
-for url in invoice_urls:
-    print(f"INVOICE_URL: {url}")
-for url in file_urls:
-    print(f"FILE_URL: {url}")
-if not invoice_urls and not file_urls:
-    print("NO_URLS_FOUND")
-PYEOF
+# ⚠️ MANDATORY: Run this script FIRST in Step 2b to find invoice URLs.
+# Do NOT use grep, do NOT search email_body.txt, do NOT invent your own approach.
+# This script reads chat_history_*.md and extracts URLs from the LATEST message only.
+python3 .opencode/skills/invoice-processing/scripts/extract_urls.py
 ```
 
-**Do NOT rely only on the incoming message text.** The URL is usually in the
-forwarded/quoted portion which is stripped from the prompt. ALWAYS run the
-script above to find invoice URLs from the **latest** received message in
-`chat_history_*.md`.
+**Output example:**
+```
+INVOICE_URL: https://dlj.51fapiao.cn/dlj/v7/740576b34c03e0c5948a07bae03c654e736270
+```
 
-Also look for:
-- URLs ending in .pdf, .PDF, .jpg, .png
-- URLs containing keywords: download, invoice, fapiao, 发票
-- URLs from known platforms: 51fapiao.cn, maycur.com, einvoice, piaozone
+Use the `INVOICE_URL` output to proceed with the platform-specific download method.
+If output is `NO_URLS_FOUND`, proceed to Image Phase.
 
 ### Download and Classify
 
@@ -366,7 +308,12 @@ If no PDF attachments found or all fail validation → **proceed to Step 2b (PDF
 **⚠️ You MUST reach this step before trying any image sources.**
 **If no PDF attachments were found, this is your NEXT step — NOT image attachments.**
 
-Extract URLs from the email body and attempt to download PDFs.
+**Step 2b-0: Extract URLs using the bundled script (MANDATORY FIRST STEP):**
+```bash
+python3 .opencode/skills/invoice-processing/scripts/extract_urls.py
+```
+This outputs `INVOICE_URL: <url>` lines. Use these URLs below.
+Do NOT search for URLs yourself — the script handles chat_history parsing.
 
 **Maximum 5 URLs per phase.**
 

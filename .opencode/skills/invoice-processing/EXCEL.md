@@ -95,8 +95,8 @@ print('Row added successfully')
 PYEOF
 ```
 
-IMPORTANT: Before writing to Excel, read the template headers first to understand
-the column layout. Adapt the column mapping to match the actual template.
+**The column mapping above is FIXED — do NOT read Excel headers to inspect the layout.**
+The template always has these 15 columns in this exact order. Just use the script above directly.
 
 ---
 

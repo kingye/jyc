@@ -145,7 +145,7 @@ fi
 ### Processing Rules
 - ALWAYS check/create the monthly folder before processing
 - ALWAYS copy template.xlsx to the new monthly folder as invoices.xlsx
-- ALWAYS read the Excel template headers before writing to understand column layout
+- The Excel column mapping is FIXED (15 columns, A-O) — do NOT read template headers each time. See EXCEL.md for the exact mapping.
 - ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers (合规凭证)
 - ALWAYS validate 3 mandatory fields (销售方税号, 校验码, 价税合计) before writing to invoices.xlsx
 - ALWAYS follow the STRICT sequential order: PDF attachments → PDF URLs → Image sources (see PROCESSING.md)

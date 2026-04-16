@@ -123,11 +123,29 @@ WorkingDirectory=$WORKDIR
 WantedBy=default.target
 EOF
 
-systemctl --user daemon-reload
-systemctl --user enable jyc.service
-systemctl --user start jyc.service
+# Enable lingering so systemd --user runs without an active login session
+sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
-echo "=== Deployment complete ==="
+# Ensure XDG_RUNTIME_DIR is set (required for systemctl --user)
+if [[ -z "$XDG_RUNTIME_DIR" ]]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
+
+if systemctl --user daemon-reload 2>/dev/null; then
+    systemctl --user enable jyc.service
+    systemctl --user start jyc.service
+    echo "=== Deployment complete ==="
+    echo "jyc service started successfully."
+else
+    echo "=== Deployment complete (manual service start required) ==="
+    echo ""
+    echo "systemctl --user is not available in this session."
+    echo "To start jyc, log out and back in, then run:"
+    echo "  systemctl --user daemon-reload"
+    echo "  systemctl --user enable --now jyc.service"
+fi
+
+echo ""
 echo "Dotfiles: $DOTFILES"
 echo "Workdir: $WORKDIR"
 echo ""

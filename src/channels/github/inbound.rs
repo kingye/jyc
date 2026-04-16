@@ -364,7 +364,66 @@ impl GithubInboundAdapter {
         // to avoid duplicate triggers in the same poll cycle.
         let mut commented_issues: HashSet<u64> = HashSet::new();
 
-        // 1. Fetch comments FIRST (they are more specific triggers than issue_updated)
+        // 1. Fetch open issues/PRs FIRST to populate the cache.
+        // Comments (step 2) need the cache to look up labels and github_type.
+        // Without this, comments after a restart would have empty labels and fail to match.
+        let issues = client.list_issues_since(&poll_start).await?;
+        tracing::trace!(
+            channel = %self.channel_name,
+            count = issues.len(),
+            "Fetched open issues/PRs"
+        );
+
+        // Pre-compute issue routing data (label changes, new issues) before processing.
+        // We store tuples of (issue_ref, github_type, labels, old_labels, is_new, new_labels_added).
+        struct IssueRouteInfo {
+            number: u64,
+            title: String,
+            github_type: String,
+            labels: Vec<String>,
+            user_login: String,
+            is_newly_created: bool,
+            new_labels_added: Vec<String>,
+        }
+
+        let mut issue_route_infos: Vec<IssueRouteInfo> = Vec::new();
+
+        for issue in &issues {
+            let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
+            let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+
+            // Detect label changes before updating cache
+            let old_labels = issue_cache
+                .get(&issue.number)
+                .map(|(_, _, l)| l.clone())
+                .unwrap_or_default();
+            let new_labels_added: Vec<String> = labels
+                .iter()
+                .filter(|l| !old_labels.iter().any(|o| o.eq_ignore_ascii_case(l)))
+                .cloned()
+                .collect();
+
+            let is_newly_created = issue.created_at > poll_start;
+
+            // Update cache (used by comment processing in step 2)
+            issue_cache.insert(
+                issue.number,
+                (issue.title.clone(), github_type.to_string(), labels.clone()),
+            );
+
+            issue_route_infos.push(IssueRouteInfo {
+                number: issue.number,
+                title: issue.title.clone(),
+                github_type: github_type.to_string(),
+                labels,
+                user_login: issue.user.login.clone(),
+                is_newly_created,
+                new_labels_added,
+            });
+        }
+
+        // 2. Fetch and process comments (they are more specific triggers than issue_updated).
+        // The issue cache is now populated, so label lookups work correctly.
         let comments = client.list_comments_since(&poll_start).await?;
         tracing::trace!(
             channel = %self.channel_name,
@@ -456,49 +515,16 @@ impl GithubInboundAdapter {
             processed_events.insert(event_uid);
         }
 
-        // 2. Fetch open issues/PRs updated since last poll.
-        // Route genuinely NEW issues (created_at within poll window) and
-        // detect label changes on existing issues to trigger re-routing.
-        let issues = client.list_issues_since(&poll_start).await?;
-        tracing::trace!(
-            channel = %self.channel_name,
-            count = issues.len(),
-            "Fetched open issues/PRs"
-        );
-
-        for issue in &issues {
-            let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
-            let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
-
-            // Detect label changes: compare current labels with cached labels.
-            // If new labels were added, this is a potential routing trigger
-            // (e.g., user adds "jyc:plan" to an existing issue).
-            let old_labels = issue_cache
-                .get(&issue.number)
-                .map(|(_, _, l)| l.clone())
-                .unwrap_or_default();
-            let new_labels_added: Vec<String> = labels
-                .iter()
-                .filter(|l| !old_labels.iter().any(|o| o.eq_ignore_ascii_case(l)))
-                .cloned()
-                .collect();
-
-            // Always update cache regardless of routing
-            issue_cache.insert(
-                issue.number,
-                (issue.title.clone(), github_type.to_string(), labels.clone()),
-            );
-
+        // 3. Route new issues/PRs and label changes (using pre-computed data from step 1).
+        for info in &issue_route_infos {
             // Skip if a comment was already routed for this issue in this cycle
-            if commented_issues.contains(&issue.number) {
+            if commented_issues.contains(&info.number) {
                 continue;
             }
 
-            let is_newly_created = issue.created_at > poll_start;
-
-            if is_newly_created {
+            if info.is_newly_created {
                 // Route new issues/PRs
-                let event_uid = format!("{}-{}-opened", github_type, issue.number);
+                let event_uid = format!("{}-{}-opened", info.github_type, info.number);
 
                 if processed_events.contains(&event_uid) {
                     continue;
@@ -507,38 +533,38 @@ impl GithubInboundAdapter {
                 tracing::info!(
                     channel = %self.channel_name,
                     event = "opened",
-                    number = issue.number,
-                    title = %issue.title,
-                    github_type = github_type,
-                    user = %issue.user.login,
-                    labels = ?labels,
+                    number = info.number,
+                    title = %info.title,
+                    github_type = %info.github_type,
+                    user = %info.user_login,
+                    labels = ?info.labels,
                     "New issue/PR detected → routing to thread"
                 );
 
                 let message = self.build_trigger_message(
-                    &format!("{}_opened", github_type),
-                    issue.number,
-                    &issue.title,
-                    github_type,
+                    &format!("{}_opened", info.github_type),
+                    info.number,
+                    &info.title,
+                    &info.github_type,
                     "opened",
-                    &issue.user.login,
-                    &labels,
+                    &info.user_login,
+                    &info.labels,
                     &event_uid,
                 );
                 if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = issue.number, "Failed to route new issue event");
+                    tracing::error!(error = %e, number = info.number, "Failed to route new issue event");
                 }
 
                 processed_events.insert(event_uid);
-            } else if !new_labels_added.is_empty() {
+            } else if !info.new_labels_added.is_empty() {
                 // Route label change on existing issues/PRs.
                 // This handles the case where a user adds a label (e.g., "jyc:plan")
                 // to an existing issue that was previously unmatched.
                 let event_uid = format!(
                     "{}-{}-labeled-{}",
-                    github_type,
-                    issue.number,
-                    new_labels_added.join(",")
+                    info.github_type,
+                    info.number,
+                    info.new_labels_added.join(",")
                 );
 
                 if processed_events.contains(&event_uid) {
@@ -548,26 +574,26 @@ impl GithubInboundAdapter {
                 tracing::info!(
                     channel = %self.channel_name,
                     event = "labeled",
-                    number = issue.number,
-                    title = %issue.title,
-                    github_type = github_type,
-                    new_labels = ?new_labels_added,
-                    all_labels = ?labels,
+                    number = info.number,
+                    title = %info.title,
+                    github_type = %info.github_type,
+                    new_labels = ?info.new_labels_added,
+                    all_labels = ?info.labels,
                     "Label change detected → routing to thread"
                 );
 
                 let message = self.build_trigger_message(
-                    &format!("{}_labeled", github_type),
-                    issue.number,
-                    &issue.title,
-                    github_type,
+                    &format!("{}_labeled", info.github_type),
+                    info.number,
+                    &info.title,
+                    &info.github_type,
                     "labeled",
-                    &issue.user.login,
-                    &labels,
+                    &info.user_login,
+                    &info.labels,
                     &event_uid,
                 );
                 if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = issue.number, "Failed to route label change event");
+                    tracing::error!(error = %e, number = info.number, "Failed to route label change event");
                 }
 
                 processed_events.insert(event_uid);

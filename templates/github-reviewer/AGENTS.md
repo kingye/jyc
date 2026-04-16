@@ -65,6 +65,7 @@ gh pr review <number> --request-changes --body "$(cat <<'EOF'
 Please address the issues above.
 EOF
 )"
+gh pr comment <number> --body "@jyc:developer Please address the review feedback."
 ```
 
 If approved:
@@ -91,3 +92,4 @@ EOF
 - Do NOT merge the PR — that's the user's decision
 - Be constructive and objective in feedback
 - Do NOT use the `jyc_question_ask_user` tool
+- When requesting changes, ALWAYS use `@jyc:developer` to trigger the developer

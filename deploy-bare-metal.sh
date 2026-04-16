@@ -35,11 +35,17 @@ echo "=== Installing system packages ==="
 sudo apt-get update
 sudo apt-get install -y git curl build-essential pkg-config libssl-dev protobuf-compiler zsh
 
+echo "=== Installing oh-my-zsh ==="
+if [ ! -d "$HOME/.oh-my-zsh" ]; then
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+fi
+
 echo "=== Installing Rust ==="
 if ! command -v rustc &> /dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    export PATH="$HOME/.cargo/bin:$PATH"
 fi
+export PATH="$HOME/.cargo/bin:$PATH"
 
 echo "=== Installing Python 3 ==="
 if ! command -v python3 &> /dev/null; then
@@ -54,12 +60,12 @@ fi
 
 echo "=== Installing Starship ==="
 if ! command -v starship &> /dev/null; then
-    curl -sS https://starship.rs/install.sh | sh
+    curl -sS https://starship.rs/install.sh | sh -s -- -y
 fi
 
 echo "=== Installing OpenCode ==="
 if ! command -v opencode &> /dev/null; then
-    curl -sL https://get.opencode.ai | sh
+    curl -fsSL https://get.opencode.ai | sh || { echo "Failed to install OpenCode"; exit 1; }
     sudo mv opencode /usr/local/bin/
 fi
 
@@ -72,7 +78,7 @@ fi
 
 if [[ -f "$DOTFILES/opencode/opencode.jsonc" ]]; then
     mkdir -p "$HOME/.config/opencode"
-    ln -sf "$DOTFILES/opencode/opencode.jsonc" "$HOME/.config/opencode/config.jsonc"
+    ln -sf "$DOTFILES/opencode/opencode.jsonc" "$HOME/.config/opencode/opencode.jsonc"
 fi
 
 if [[ -f "$DOTFILES/zsh/.zshrc.local.example" ]]; then
@@ -100,6 +106,8 @@ ln -sf "$JYC_REPO_DIR/target/release/jyc" "$HOME/.local/bin/jyc"
 echo "=== Creating systemd user service ==="
 mkdir -p "$HOME/.config/systemd/user"
 
+mkdir -p "$WORKDIR"
+
 cat > "$HOME/.config/systemd/user/jyc.service" << EOF
 [Unit]
 Description=jyc - AI-powered developer assistant
@@ -107,9 +115,10 @@ Description=jyc - AI-powered developer assistant
 [Service]
 Type=simple
 Environment="HOME=%h"
+Environment="JYC_WORKDIR=$WORKDIR"
 EnvironmentFile=%h/.zshrc.local
 ExecStart=%h/.local/bin/jyc
-WorkingDirectory=%h
+WorkingDirectory=$WORKDIR
 
 [Install]
 WantedBy=default.target

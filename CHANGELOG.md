@@ -2,6 +2,16 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+**Bare Metal Deployment** — Deploy jyc on Ubuntu/Debian servers without Docker
+- `deploy-bare-metal.sh` script for automated deployment
+- `dotfiles/zsh/` - zsh configuration and environment template
+- `dotfiles/opencode/opencode.jsonc` - OpenCode configuration
+- `docs/bare-metal-deploy.md` - Deployment guide
+
 ## [0.1.9] - 2026-04-15
 
 ### Added

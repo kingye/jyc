@@ -132,6 +132,6 @@ After deployment:
 ~/.config/systemd/user/jyc.service  # systemd service
 ~/.zshrc                      # zsh config (symlinked)
 ~/.zshrc.local                # environment variables
-~/.config/opencode/config.jsonc  # OpenCode config (symlinked)
+~/.config/opencode/opencode.jsonc  # OpenCode config (symlinked)
 /path/to/jyc-data/            # jyc data directory
 ```

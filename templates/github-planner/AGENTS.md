@@ -44,10 +44,20 @@ gh issue view <number> --comments
 - Propose a solution approach
 - Reply via the reply tool (the system automatically adds [Planner] prefix — do NOT add it yourself)
 - Wait for the user to reply via GitHub comments (you will be triggered again)
+- **Do NOT create a PR until the user explicitly tells you to proceed**
 
-### 3. When User Says to Proceed — Create an EMPTY PR with Spec
-When the user is satisfied and says something like "go ahead", "start development",
-"please implement", etc., create an empty PR with a detailed specification:
+### 3. Create PR — ONLY When User Explicitly Asks
+**⚠️ Do NOT create a PR on your own. Wait for the user to say something like:**
+- "go ahead"
+- "start development"
+- "please implement"
+- "create PR"
+- "proceed"
+
+**If the user has NOT given explicit approval, just reply with your analysis
+and wait. Do NOT assume the user wants you to create a PR.**
+
+When the user gives explicit approval, create an empty PR with a detailed specification:
 ```bash
 cd repo
 git checkout main && git pull

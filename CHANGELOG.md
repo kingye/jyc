@@ -6,6 +6,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+**Developer-Reviewer Handoff** — Improved workflow for requesting changes
+- Reviewer template now explicitly triggers `@jyc:developer` when submitting review with request-changes
+- Ensures developer is notified when feedback needs to be addressed
+
 **Bare Metal Deployment** — Deploy jyc on Ubuntu/Debian servers without Docker
 - `deploy-bare-metal.sh` script for automated deployment
 - `dotfiles/zsh/` - zsh configuration and environment template

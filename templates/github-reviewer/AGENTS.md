@@ -92,3 +92,4 @@ EOF
 - Do NOT merge the PR — that's the user's decision
 - Be constructive and objective in feedback
 - Do NOT use the `jyc_question_ask_user` tool
+- When requesting changes, ALWAYS post a comment with `@jyc:developer` to trigger the developer

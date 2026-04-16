@@ -65,8 +65,7 @@ fi
 
 echo "=== Installing OpenCode ==="
 if ! command -v opencode &> /dev/null; then
-    curl -fsSL https://get.opencode.ai | sh || { echo "Failed to install OpenCode"; exit 1; }
-    sudo mv opencode /usr/local/bin/
+    curl -fsSL https://opencode.ai/install | bash || { echo "Failed to install OpenCode"; exit 1; }
 fi
 
 echo "=== Setting up dotfiles ==="

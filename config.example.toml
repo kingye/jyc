@@ -277,3 +277,14 @@ interval_hours = 3
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-review"]
+#
+# # Pattern: PRs assigned to specific team members → Route to those assignees
+# # Assignee matching: OR logic (matches if ANY assignee is in the list)
+# [[channels.my_repo.patterns]]
+# name = "assignee_routing"
+# enabled = true
+# template = "github-developer"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# assignees = ["alice", "bob"]

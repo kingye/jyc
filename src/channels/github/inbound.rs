@@ -144,6 +144,28 @@ impl ChannelMatcher for GithubMatcher {
                 }
             }
 
+            // Check assignees rule (OR logic: match if ANY assignee matches)
+            // Case-insensitive comparison
+            if let Some(ref assignee_rules) = pattern.rules.assignees {
+                let assignees: Vec<String> = message
+                    .metadata
+                    .get("github_assignees")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if !assignee_rules
+                    .iter()
+                    .any(|rule| assignees.contains(&rule.to_lowercase()))
+                {
+                    continue;
+                }
+            }
+
             // Self-loop prevention: skip if comment is from this pattern's own role.
             // A [Developer] comment should NOT re-trigger the developer pattern,
             // but SHOULD be visible to the reviewer pattern.
@@ -196,12 +218,19 @@ impl GithubInboundAdapter {
         action: &str,
         actor: &str,
         labels: &[String],
+        assignees: &[String],
         event_uid: &str,
     ) -> InboundMessage {
         let label_str = if labels.is_empty() {
             String::new()
         } else {
             format!("labels: {}\n", labels.join(", "))
+        };
+
+        let assignee_str = if assignees.is_empty() {
+            String::new()
+        } else {
+            format!("assignees: {}\n", assignees.join(", "))
         };
 
         let gh_cmd = match github_type {
@@ -220,8 +249,8 @@ impl GithubInboundAdapter {
         };
 
         let body = format!(
-            "github event: {}\nrepository: {}/{}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}\n{}",
-            event_type, self.config.owner, self.config.repo, number, github_type, action, actor, label_str, gh_cmd
+            "github event: {}\nrepository: {}/{}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}{}{}",
+            event_type, self.config.owner, self.config.repo, number, github_type, action, actor, label_str, assignee_str, gh_cmd
         );
 
         let mut metadata = HashMap::new();
@@ -230,6 +259,7 @@ impl GithubInboundAdapter {
         metadata.insert("github_type".to_string(), serde_json::json!(github_type));
         metadata.insert("github_action".to_string(), serde_json::json!(action));
         metadata.insert("github_labels".to_string(), serde_json::json!(labels));
+        metadata.insert("github_assignees".to_string(), serde_json::json!(assignees));
 
         InboundMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -311,8 +341,8 @@ impl InboundAdapter for GithubInboundAdapter {
         // Track processed event IDs for deduplication
         let mut processed_events: HashSet<String> = HashSet::new();
 
-        // Cache issue info for comment routing (number → title, type, labels)
-        let mut issue_cache: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
+        // Cache issue info for comment routing (number → title, type, labels, assignees)
+        let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
 
         // Start polling from 5 minutes ago to catch recent events.
         // Deduplication ensures we don't process the same event twice.
@@ -361,7 +391,7 @@ impl GithubInboundAdapter {
         client: &GithubClient,
         options: &InboundAdapterOptions,
         processed_events: &mut HashSet<String>,
-        issue_cache: &mut HashMap<u64, (String, String, Vec<String>)>, // number → (title, type, labels)
+        issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
     ) -> Result<()> {
         let poll_start = last_poll.clone();
@@ -394,9 +424,11 @@ impl GithubInboundAdapter {
             title: String,
             github_type: String,
             labels: Vec<String>,
+            assignees: Vec<String>,
             user_login: String,
             is_newly_created: bool,
             new_labels_added: Vec<String>,
+            new_assignees_added: Vec<String>,
         }
 
         let mut issue_route_infos: Vec<IssueRouteInfo> = Vec::new();
@@ -404,15 +436,25 @@ impl GithubInboundAdapter {
         for issue in &issues {
             let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
             let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+            let assignees: Vec<String> = issue.assignees.iter().map(|a| a.login.clone()).collect();
 
             // Detect label changes before updating cache
-            let old_labels = issue_cache
+            let old_data = issue_cache
                 .get(&issue.number)
-                .map(|(_, _, l)| l.clone())
-                .unwrap_or_default();
+                .cloned()
+                .unwrap_or_else(|| (String::new(), String::new(), vec![], vec![]));
+            let old_labels = old_data.2;
+            let old_assignees = old_data.3;
+
             let new_labels_added: Vec<String> = labels
                 .iter()
                 .filter(|l| !old_labels.iter().any(|o| o.eq_ignore_ascii_case(l)))
+                .cloned()
+                .collect();
+
+            let new_assignees_added: Vec<String> = assignees
+                .iter()
+                .filter(|a| !old_assignees.iter().any(|o| o.eq_ignore_ascii_case(a)))
                 .cloned()
                 .collect();
 
@@ -421,7 +463,7 @@ impl GithubInboundAdapter {
             // Update cache (used by comment processing in step 2)
             issue_cache.insert(
                 issue.number,
-                (issue.title.clone(), github_type.to_string(), labels.clone()),
+                (issue.title.clone(), github_type.to_string(), labels.clone(), assignees.clone()),
             );
 
             issue_route_infos.push(IssueRouteInfo {
@@ -429,9 +471,11 @@ impl GithubInboundAdapter {
                 title: issue.title.clone(),
                 github_type: github_type.to_string(),
                 labels,
+                assignees,
                 user_login: issue.user.login.clone(),
                 is_newly_created,
                 new_labels_added,
+                new_assignees_added,
             });
         }
 
@@ -462,10 +506,10 @@ impl GithubInboundAdapter {
             let issue_number = comment.issue_number().unwrap_or(0);
 
             // Look up issue info from cache
-            let (title, github_type, labels) = issue_cache
+            let (title, github_type, labels, assignees) = issue_cache
                 .get(&issue_number)
                 .cloned()
-                .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![]));
+                .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![], vec![]));
 
             // Detect hand-over marker: @jyc:<role> (e.g., @jyc:developer, @jyc:reviewer)
             let handover_role = extract_handover_role(body_trimmed);
@@ -501,6 +545,7 @@ impl GithubInboundAdapter {
                 if handover_role.is_some() { "handover" } else { "commented" },
                 &comment.user.login,
                 &labels,
+                &assignees,
                 &event_uid,
             );
 
@@ -562,6 +607,7 @@ impl GithubInboundAdapter {
                     "opened",
                     &info.user_login,
                     &info.labels,
+                    &info.assignees,
                     &event_uid,
                 );
                 if let Err(e) = (options.on_message)(message) {
@@ -603,10 +649,53 @@ impl GithubInboundAdapter {
                     "labeled",
                     &info.user_login,
                     &info.labels,
+                    &info.assignees,
                     &event_uid,
                 );
                 if let Err(e) = (options.on_message)(message) {
                     tracing::error!(error = %e, number = info.number, "Failed to route label change event");
+                }
+
+                processed_events.insert(event_uid);
+            } else if !info.new_assignees_added.is_empty() {
+                // Route assignee change on existing issues/PRs.
+                // This handles the case where a user assigns someone (e.g., "alice")
+                // to an existing issue that was previously unassigned.
+                let event_uid = format!(
+                    "{}-{}-assigned-{}",
+                    info.github_type,
+                    info.number,
+                    info.new_assignees_added.join(",")
+                );
+
+                if processed_events.contains(&event_uid) {
+                    continue;
+                }
+
+                tracing::info!(
+                    channel = %self.channel_name,
+                    event = "assigned",
+                    number = info.number,
+                    title = %info.title,
+                    github_type = %info.github_type,
+                    new_assignees = ?info.new_assignees_added,
+                    all_assignees = ?info.assignees,
+                    "Assignee change detected → routing to thread"
+                );
+
+                let message = self.build_trigger_message(
+                    &format!("{}_assigned", info.github_type),
+                    info.number,
+                    &info.title,
+                    &info.github_type,
+                    "assigned",
+                    &info.user_login,
+                    &info.labels,
+                    &info.assignees,
+                    &event_uid,
+                );
+                if let Err(e) = (options.on_message)(message) {
+                    tracing::error!(error = %e, number = info.number, "Failed to route assignee change event");
                 }
 
                 processed_events.insert(event_uid);
@@ -747,6 +836,10 @@ mod tests {
     use super::*;
 
     fn make_message(github_type: &str, number: u64, labels: &[&str]) -> InboundMessage {
+        make_message_with_assignees(github_type, number, labels, &[])
+    }
+
+    fn make_message_with_assignees(github_type: &str, number: u64, labels: &[&str], assignees: &[&str]) -> InboundMessage {
         let mut metadata = HashMap::new();
         metadata.insert(
             "github_type".to_string(),
@@ -759,6 +852,10 @@ mod tests {
         metadata.insert(
             "github_labels".to_string(),
             serde_json::json!(labels),
+        );
+        metadata.insert(
+            "github_assignees".to_string(),
+            serde_json::json!(assignees),
         );
 
         InboundMessage {
@@ -1213,6 +1310,7 @@ mod tests {
             "created",
             "user1",
             &["planning".to_string()],
+            &["alice".to_string()],
             "comment-12345",
         );
 
@@ -1226,6 +1324,7 @@ mod tests {
         assert!(text.contains("number: 42"));
         assert!(text.contains("type: issue"));
         assert!(text.contains("labels: planning"));
+        assert!(text.contains("assignees: alice"));
         assert!(text.contains("gh issue view 42"));
 
         assert_eq!(
@@ -1256,11 +1355,168 @@ mod tests {
             "opened",
             "bot",
             &[],
+            &["alice".to_string(), "bob".to_string()],
             "pr-43-opened",
         );
 
         let text = msg.content.text.unwrap();
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
+        assert!(text.contains("assignees: alice, bob"));
+    }
+
+    #[test]
+    fn test_build_trigger_message_no_assignees() {
+        let config = GithubConfig {
+            owner: "kingye".to_string(),
+            repo: "jyc".to_string(),
+            token: "test".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
+
+        let msg = adapter.build_trigger_message(
+            "issue_comment",
+            42,
+            "Add dark mode",
+            "issue",
+            "created",
+            "user1",
+            &["planning".to_string()],
+            &[],
+            "comment-12345",
+        );
+
+        let text = msg.content.text.unwrap();
+        assert!(!text.contains("assignees:"));
+    }
+
+    // --- Assignee matching tests ---
+
+    #[test]
+    fn test_match_pr_with_assignee() {
+        let patterns = vec![ChannelPattern {
+            name: "assigned_to_alice".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let msg = make_message_with_assignees("pull_request", 43, &[], &["alice", "bob"]);
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "assigned_to_alice");
+    }
+
+    #[test]
+    fn test_match_pr_with_assignee_no_match() {
+        let patterns = vec![ChannelPattern {
+            name: "assigned_to_alice".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let msg = make_message_with_assignees("pull_request", 43, &[], &["charlie", "david"]);
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_match_pr_assignee_and_label() {
+        // Both assignee AND label must match (AND logic)
+        let patterns = vec![ChannelPattern {
+            name: "alice_develop".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["jyc:develop".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        // Both match → should match
+        let msg1 = make_message_with_assignees("pull_request", 43, &["jyc:develop"], &["alice"]);
+        let result1 = GithubMatcher.match_message(&msg1, &patterns);
+        assert!(result1.is_some());
+        assert_eq!(result1.unwrap().pattern_name, "alice_develop");
+
+        // Only assignee matches → no match
+        let msg2 = make_message_with_assignees("pull_request", 43, &["wip"], &["alice"]);
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none());
+
+        // Only label matches → no match
+        let msg3 = make_message_with_assignees("pull_request", 43, &["jyc:develop"], &["bob"]);
+        let result3 = GithubMatcher.match_message(&msg3, &patterns);
+        assert!(result3.is_none());
+    }
+
+    #[test]
+    fn test_match_pr_assignee_case_insensitive() {
+        let patterns = vec![ChannelPattern {
+            name: "assigned_to_alice".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                assignees: Some(vec!["ALICE".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        // Config uses uppercase, message uses lowercase → should match
+        let msg = make_message_with_assignees("pull_request", 43, &[], &["alice"]);
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "assigned_to_alice");
+    }
+
+    #[test]
+    fn test_match_issue_with_assignee() {
+        let patterns = vec![ChannelPattern {
+            name: "assigned_to_bob".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["bob".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let msg = make_message_with_assignees("issue", 42, &[], &["bob"]);
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "assigned_to_bob");
+    }
+
+    #[test]
+    fn test_match_issue_no_assignees() {
+        // Issue with no assignees should not match a pattern with assignee rules
+        let patterns = vec![ChannelPattern {
+            name: "assigned_to_bob".to_string(),
+            enabled: true,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["bob".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let msg = make_message_with_assignees("issue", 42, &[], &[]);
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
     }
 }

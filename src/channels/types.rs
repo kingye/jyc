@@ -302,31 +302,56 @@ impl Default for ChannelPattern {
 /// Each channel's ChannelMatcher implementation only checks the fields relevant to it:
 /// - Email checks: `sender`, `subject`
 /// - Feishu checks: `mentions`, `keywords`, `sender`, `chat_name`
-/// - GitHub checks: `github_type`, `labels`
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// - GitHub checks: `github_type`, `labels`, `assignees`
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternRules {
     // --- Shared rules ---
     /// Sender matching rules (email address, feishu user ID, etc.)
+    #[serde(default)]
     pub sender: Option<SenderRule>,
 
     // --- Email rules ---
     /// Subject matching rules (email only)
+    #[serde(default)]
     pub subject: Option<SubjectRule>,
 
     // --- Feishu rules ---
     /// Feishu @mention user/bot IDs or names to match (OR logic within this rule)
+    #[serde(default)]
     pub mentions: Option<Vec<String>>,
     /// Keywords to match in message body (OR logic, case-insensitive)
+    #[serde(default)]
     pub keywords: Option<Vec<String>>,
     /// Feishu group chat names to match (OR logic, case-insensitive)
     /// Matches against the chat name from the Feishu API (metadata["chat_name"])
+    #[serde(default)]
     pub chat_name: Option<Vec<String>>,
 
     // --- GitHub rules ---
     /// GitHub entity type: "issue" or "pull_request" (OR logic within this rule)
+    #[serde(default)]
     pub github_type: Option<Vec<String>>,
     /// GitHub labels to match (OR logic: match if ANY label is present on the issue/PR)
+    #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// GitHub assignees to match (OR logic: match if ANY assignee is assigned to the issue/PR)
+    #[serde(default)]
+    pub assignees: Option<Vec<String>>,
+}
+
+impl Default for PatternRules {
+    fn default() -> Self {
+        Self {
+            sender: None,
+            subject: None,
+            mentions: None,
+            keywords: None,
+            chat_name: None,
+            github_type: None,
+            labels: None,
+            assignees: None,
+        }
+    }
 }
 
 /// Rules for matching the sender of a message.

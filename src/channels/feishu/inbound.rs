@@ -472,6 +472,7 @@ mod tests {
                 chat_name: None,
                 github_type: None,
                 labels: None,
+                assignees: None,
             },
             attachments: None,
             ..Default::default()

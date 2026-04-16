@@ -106,7 +106,20 @@ impl ChannelMatcher for GithubMatcher {
             // Check labels rule (OR logic: match if ANY label matches).
             // Effective labels = explicit config labels + auto-label from role.
             // Auto-label is derived from pattern.role (e.g., "Developer" → "jyc:develop").
-            let auto_label = pattern.role.as_deref().and_then(role_to_routing_label);
+            //
+            // Auto-label only applies to pull_request patterns, not issue patterns.
+            // Issues are created by users (who may not add routing labels).
+            // PRs are created by agents (who add labels during hand-off).
+            let is_pr_pattern = pattern
+                .rules
+                .github_type
+                .as_ref()
+                .map_or(false, |types| types.iter().any(|t| t == "pull_request"));
+            let auto_label = if is_pr_pattern {
+                pattern.role.as_deref().and_then(role_to_routing_label)
+            } else {
+                None
+            };
             let has_label_rules = pattern.rules.labels.is_some() || auto_label.is_some();
 
             if has_label_rules {
@@ -850,20 +863,35 @@ mod tests {
 
     #[test]
     fn test_match_issue_with_plan_label() {
-        let msg = make_message("issue", 42, &["jyc:plan"]);
-        let patterns = make_patterns();
+        // Planner has role="Planner" but github_type=issue → no auto-label.
+        // Explicit labels would still work if configured.
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                labels: Some(vec!["plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let msg = make_message("issue", 42, &["plan"]);
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "planner");
     }
 
     #[test]
-    fn test_match_issue_without_plan_label_no_match() {
-        // Planner has role="Planner" → auto-label "jyc:plan" is required
+    fn test_match_issue_without_label_matches_planner() {
+        // Planner has role="Planner" + github_type=["issue"] → no auto-label required.
+        // Issues match based on github_type alone (no label check when no explicit labels).
         let msg = make_message("issue", 42, &[]);
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
     }
 
     #[test]
@@ -1003,8 +1031,8 @@ mod tests {
     #[test]
     fn test_match_handover_unknown_role_falls_through() {
         // Unknown handover role falls through to normal matching.
-        // Issue with jyc:plan label → matches planner via normal matching.
-        let mut msg = make_message("issue", 42, &["jyc:plan"]);
+        // Issue without label → matches planner (no auto-label for issue patterns).
+        let mut msg = make_message("issue", 42, &[]);
         msg.metadata.insert(
             "handover_role".to_string(),
             serde_json::json!("unknown_role"),
@@ -1016,9 +1044,10 @@ mod tests {
     }
 
     #[test]
-    fn test_match_handover_unknown_role_no_label_no_match() {
-        // Unknown handover role falls through. Issue without label → no match.
-        let mut msg = make_message("issue", 42, &[]);
+    fn test_match_handover_unknown_role_pr_no_label_no_match() {
+        // Unknown handover role on a PR without label → no match.
+        // PR patterns still require auto-label.
+        let mut msg = make_message("pull_request", 43, &[]);
         msg.metadata.insert(
             "handover_role".to_string(),
             serde_json::json!("unknown_role"),

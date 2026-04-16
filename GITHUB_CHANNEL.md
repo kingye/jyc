@@ -163,14 +163,18 @@ pub struct PatternRules {
 
 ### Auto-Label from Role
 
-Each pattern with a `role` field gets an implicit routing label derived from
-the role name:
+Each pattern with a `role` field and `github_type = ["pull_request"]` gets an
+implicit routing label derived from the role name:
 
-| Role | Auto-Label |
-|------|-----------|
-| `Planner` | `jyc:plan` |
-| `Developer` | `jyc:develop` |
-| `Reviewer` | `jyc:review` |
+| Role | Auto-Label | Applies to |
+|------|-----------|------------|
+| `Planner` | `jyc:plan` | **PR only** (not applied to issue patterns) |
+| `Developer` | `jyc:develop` | **PR only** |
+| `Reviewer` | `jyc:review` | **PR only** |
+
+**Issue patterns do not get auto-labels.** Issues are created by users who may
+not add routing labels. If you want to filter issues by label, use the explicit
+`labels` field in the pattern config.
 
 The auto-label is combined (OR) with any explicit `labels` in the pattern config.
 A pattern matches if ANY of the effective labels (explicit + auto-label) is present

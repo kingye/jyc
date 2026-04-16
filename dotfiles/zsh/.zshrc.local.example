@@ -1,0 +1,9 @@
+export ARK_API_KEY="your-ark-api-key-here"
+
+export JYC_BINARY="$HOME/.local/bin/jyc"
+
+export JYC_WORKDIR="$HOME/jyc-data"
+
+export RUST_BACKTRACE="1"
+
+export LOG_LEVEL="info"

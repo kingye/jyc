@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e
 
+# Guard: do NOT run this script with sudo.
+# The script uses sudo internally only for commands that need it.
+# Running the whole script as root poisons ~/.cargo with root-owned files.
+if [[ $EUID -eq 0 ]]; then
+    echo "ERROR: Do not run this script with sudo."
+    echo "Run as your normal user: ./deploy-bare-metal.sh -d <dotfiles> -w <workdir>"
+    echo "The script uses sudo internally where needed."
+    exit 1
+fi
+
 DOTFILES=""
 WORKDIR=""
 

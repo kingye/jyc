@@ -92,6 +92,7 @@ EOF
 - ALWAYS provide specific, actionable feedback
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
-- Be constructive and objective in feedback
+- Do NOT run `cargo build` or `cargo build --release` — use `cargo check` instead (saves memory)
 - Do NOT use the `jyc_question_ask_user` tool
+- Be constructive and objective in feedback
 - When requesting changes, ALWAYS add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer

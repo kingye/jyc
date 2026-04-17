@@ -250,12 +250,14 @@ pub async fn ensure_thread_opencode_setup(
     let question_command = get_question_tool_command();
 
     // Build MCP tools configuration
+    let thread_dir_str = thread_path.to_string_lossy().to_string();
     let mut mcp_tools = serde_json::json!({
         "jyc_reply": {
             "type": "local",
             "command": tool_command,
             "environment": {
-                "JYC_ROOT": jyc_root.to_string_lossy()
+                "JYC_ROOT": jyc_root.to_string_lossy(),
+                "JYC_THREAD_DIR": &thread_dir_str
             },
             "enabled": true,
             "timeout": 180000
@@ -263,6 +265,9 @@ pub async fn ensure_thread_opencode_setup(
         "jyc_question": {
             "type": "local",
             "command": question_command,
+            "environment": {
+                "JYC_THREAD_DIR": &thread_dir_str
+            },
             "enabled": true,
             "timeout": 360000
         }
@@ -278,7 +283,8 @@ pub async fn ensure_thread_opencode_setup(
                 "environment": {
                     "VISION_API_KEY": vision.api_key,
                     "VISION_API_URL": vision.api_url,
-                    "VISION_MODEL": vision.model
+                    "VISION_MODEL": vision.model,
+                    "JYC_THREAD_DIR": &thread_dir_str
                 },
                 "enabled": true,
                 "timeout": 300000

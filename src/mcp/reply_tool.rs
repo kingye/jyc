@@ -7,7 +7,7 @@ use rmcp::{
 };
 use std::path::{Path, PathBuf};
 
-use super::context::load_reply_context;
+use super::context::{load_reply_context, resolve_thread_dir};
 
 const EXCLUDED_DIRS: &[&str] = &[".opencode", ".jyc"];
 
@@ -73,7 +73,7 @@ impl ReplyToolHandler {
         &self,
         Parameters(params): Parameters<ReplyMessageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = resolve_thread_dir();
         let logger = McpLogger::new(&cwd);
 
         logger.log("INFO", &format!(

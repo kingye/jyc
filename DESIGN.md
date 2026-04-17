@@ -235,8 +235,8 @@ Each component has a single, clear responsibility. Data flows through the system
 
 **Reply Tool** (MCP `reply_message`)
 - Orchestrator for the reply flow
-- Decodes the minimal `reply-context.json=` to get routing info (channel name, message directory)
-- Reads ALL message metadata (sender, recipient, topic, threading headers) from chat log frontmatter — NOT from the token
+- Reads `.jyc/reply-context.json` from disk to get routing info (channel name, message timestamp)
+- Reads ALL message metadata (sender, recipient, topic, threading headers) from reply-context.json — NOT from the AI prompt
 - Builds the full reply in markdown: AI reply text + quoted history (`prepare_body_for_quoting`)
 - Delegates sending to OutboundAdapter (passes the full markdown reply)
 - Delegates storage to MessageStorage (appends to daily chat log file)
@@ -1286,7 +1286,7 @@ When a user sends a follow-up message while the AI is still processing the first
 2. The agent passes `rx` through to the SSE streaming loop (`prompt_with_sse()`)
 3. The SSE `tokio::select!` loop monitors `rx.recv()` alongside SSE events and timeout checks
 4. When a new message arrives during streaming:
-   - Store the new message as `received.md` (new message directory)
+   - Append the new message to the daily chat log (`chat_history_YYYY-MM-DD.md`)
    - Process commands from the new message (e.g., `/model` switch)
    - Strip quoted history from the body
    - Update `.jyc/reply-context.json` with the new `incomingMessageDir`
@@ -1327,7 +1327,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 
 **ThreadManager** (`src/core/thread_manager.rs`) — Orchestrator:
 - Queue management: per-thread mpsc channels, semaphore-bounded concurrency
-- Message storage: store `received.md`, save attachments
+- Message storage: append to daily chat log (`chat_history_YYYY-MM-DD.md`), save attachments
 - Command processing: parse/execute/strip email commands, send command results
 - Agent dispatch: calls `agent.process()` via `Arc<dyn AgentService>`
 - Fallback: passes raw AI text to outbound adapter if MCP tool wasn't used
@@ -1481,7 +1481,7 @@ JYC uses the following subset of the OpenCode server API:
 │  ┌──────────────────────────────────────────┐                         │
 │  │ 1. STORE                                 │                         │
 │  │    MessageStorage::store(msg, thread)     │                         │
-│  │    → messages/<ts>/received.md            │                         │
+│  │    → chat_history_YYYY-MM-DD.md (appended)  │                         │
 │  │    → save attachments (allowlisted)       │                         │
 │  └──────────────┬───────────────────────────┘                         │
 │                 │                                                     │
@@ -1569,17 +1569,16 @@ JYC uses the following subset of the OpenCode server API:
 │  OpenCode calls reply_message MCP tool
 │         ↓
 │  MCP Tool (jyc mcp-reply-tool subprocess):
-│    1. Decode reply-context.json → get channel name + message directory
+│    1. Load .jyc/reply-context.json → get channel name + message timestamp
 │    2. Load config from JYC_ROOT/config.toml
-│    3. Read received.md for full body
-│    4. Write reply.md to disk (AI reply text)
-│    5. Write .jyc/reply-sent.flag (signal file)
+│    3. Write reply text to .jyc/reply.md
+│    4. Write .jyc/reply-sent.flag (signal file)
 │         ↓
 │  Monitor detects signal file:
-│    1. Read reply.md
-│    2. Build full_reply_text = AI reply + build_full_reply_text() (quoted history)
+│    1. Read .jyc/reply.md
+│    2. Build full_reply_text = AI reply + quoted history (email only)
 │    3. Send via pre-warmed outbound adapter (eliminates cold-start timeouts)
-│    4. MessageStorage::store_reply(full_reply_text) → reply.md (updated)
+│    4. MessageStorage::store_reply() → append to chat log
 │         ↓
 │  Handle result → return GenerateReplyResult:
 │    - reply_sent_by_tool: true (SSE tool detection OR signal file) → done
@@ -1756,19 +1755,16 @@ This ensures all reply emails have the same format regardless of the send path. 
 **Building pipeline:**
 
 ```
-build_full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_dir)
+build_full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_ts)
     │
-    ├── prepare_body_for_quoting(thread_path, current_message, max_history, exclude_dir)
+    ├── prepare_body_for_quoting(thread_path, current_message, max_history)
     │       │
-    │       └── build_thread_trail(thread_path, current_message, max_entries, exclude_dir)
+    │       └── Read chat_history_*.md files for conversation context
     │               │
-    │               ├── Current received message (stripped of quoted history)
+    │               ├── Current incoming message (stripped of quoted history)
     │               │
-    │               ├── For each previous message dir (newest first):
-    │               │   ├── reply.md → parse_stored_reply() → AI response text only
-    │               │   └── received.md → parse_stored_message() → strip_quoted_history()
-    │               │
-    │               └── Truncate to MAX_HISTORY_QUOTE (6) entries
+    │               └── Previous messages and replies from chat log
+    │                   (interleaved chronologically, newest first)
     │
     ├── format_quoted_reply(sender, timestamp, subject, body) for each trail entry
     │       → "---\n### Sender (timestamp)\n> Subject\n>\n> Body quoted..."
@@ -1776,16 +1772,7 @@ build_full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, m
     └── Combine: "{reply_text}\n\n{quoted_blocks}"
 ```
 
-**Trail ordering:** Within each message directory, **reply comes before received** (the AI responded after receiving). Overall ordering is current message first, then previous directories newest-first:
-
-```
-current received.md (the message being replied to now)
-prev reply.md      (AI's previous response)
-prev received.md   (user's message that AI responded to)
-older reply.md     (AI's earlier response)
-older received.md  (user's earlier message)
-...
-```
+**Trail ordering:** Conversation history is read from `chat_history_*.md` files. Messages and replies are interleaved chronologically, with the most recent entries first.
 
 **Prompt echo stripping:** When the AI generates a fallback text response (because the MCP tool failed), it may echo parts of the prompt. `extract_text_from_parts()` strips these markers before building the full reply:
 - `## Incoming Message`
@@ -1847,7 +1834,7 @@ This replaces the old `reply-context.json=<base64>` approach where context was p
 pub struct ReplyContext {
     pub channel: String,              // Config channel name (routing key)
     pub thread_name: String,          // Thread directory name
-    pub incoming_message_dir: String, // Message subdirectory (find received.md)
+    pub incoming_message_dir: String, // Timestamp identifier (e.g., "2026-03-19_23-02-20")
     pub uid: String,                  // Channel-specific message ID
     pub model: Option<String>,        // AI model used (e.g., "ark/deepseek-v3.2")
     pub mode: Option<String>,         // AI mode used (e.g., "build", "plan")
@@ -1880,32 +1867,22 @@ pub async fn cleanup_reply_context(thread_path: &Path)
 MCP Server (rmcp, stdio transport, cwd = thread dir):
   Tool schema: message (string), attachments (string[] optional)
 
-  1. Load .jyc/reply-context.json from cwd → get channel, messageDir
+  1. Load .jyc/reply-context.json from cwd → get channel, message timestamp
   2. Load config from JYC_ROOT/config.toml
-  3. Read received.md frontmatter → sender_address, topic, external_id, thread_refs
-  4. Validate attachments (exclude .opencode/, .jyc/)
-  5. Write reply.md to disk (AI reply text)
-  6. Write .jyc/reply-sent.flag (signal file)
-  7. Return success message
-  (Monitor process reads reply.md and sends via pre-warmed outbound adapter.
+  3. Validate attachments (exclude .opencode/, .jyc/)
+  4. Write reply text to .jyc/reply.md
+  5. Write .jyc/reply-sent.flag (signal file)
+  6. Return success message
+  (Monitor process reads .jyc/reply.md and sends via pre-warmed outbound adapter.
    This eliminates cold-start timeouts for Feishu API calls.)
 ```
 
 ### Historical Message Quoting (Thread Trail)
 
-`build_thread_trail()` reads interleaved received/reply messages from the thread's `messages/` directory.
+`build_full_reply_text()` builds the reply with quoted history from the thread's `chat_history_*.md` files.
 
-- **Per-directory ordering**: Within each message directory, **reply comes before received** (the AI responded after receiving, so the reply is more recent). Overall ordering is most-recent directory first.
-- **Full trail order**:
-  ```
-  current received (folder 5)     ← the message being replied to now
-  folder 4 reply                  ← AI's previous response
-  folder 4 received               ← user's message that AI responded to
-  folder 3 reply                  ← AI's earlier response
-  folder 3 received               ← user's earlier message
-  ...
-  ```
-- **Stripped bodies**: Received messages stripped of quoted history via `strip_quoted_history()`. Reply messages parsed with `parse_stored_reply()` to extract only the AI's response text.
+- **Chronological ordering**: Messages and replies are read from chat log files, ordered newest first.
+- **Stripped bodies**: Received messages stripped of quoted history via `strip_quoted_history()`. Reply messages parsed to extract only the AI's response text.
 - **Per-entry truncation**: Each quoted history entry is capped at 1024 characters (`MAX_QUOTED_BODY_CHARS`)
 - **Limit**: `MAX_HISTORY_QUOTE = 6` entries for reply email quoted history
 - **Timestamp format**: `YYYY-MM-DD HH:MM` in both quoted history headers and prompt context
@@ -2207,14 +2184,10 @@ Each channel manages its own state independently. For email, state tracks IMAP s
 │   │   └── .processed-uids.txt         # One UID per line, append-only
 │   └── workspace/                       # Thread workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
 │       ├── <thread-dir-1>/              # OpenCode cwd for this thread
-│       │   ├── messages/
-│       │   │   ├── 2026-03-19_23-02-20/
-│       │   │   │   ├── received.md      # Incoming message
-│       │   │   │   ├── reply.md         # AI reply
-│       │   │   │   └── report.pdf       # Saved attachment
-│       │   │   └── 2026-03-19_23-10-00/
-│       │   │       ├── received.md
-│       │   │       └── reply.md
+│       │   ├── chat_history_2026-03-19.md   # Daily chat log (messages + replies)
+│       │   ├── chat_history_2026-03-20.md   # Next day's chat log
+│       │   ├── attachments/                 # Saved inbound attachments (if configured)
+│       │   │   └── report.pdf
 │       │   ├── .jyc/
 │       │   │   ├── opencode-session.json         # AI session state
 │       │   │   ├── reply-context.json   # Reply routing context (disk-based)
@@ -2369,7 +2342,7 @@ jyc/
 │       └── constants.rs              # Default configs, timeouts
 ```
 
-### Message Markdown Format (Unified)
+### Chat Log Entry Format (`chat_history_YYYY-MM-DD.md`)
 
 ```yaml
 ---
@@ -2393,18 +2366,18 @@ Message body content here (full body including quoted history preserved)
 ---
 ```
 
-### Message Directory Naming
+### Chat Log Storage
 
-Per-message directories use the message timestamp:
+Messages and replies are appended to daily chat log files:
 ```
-messages/2026-03-19_23-02-20/     # Timestamp from message
-messages/2026-03-19_23-02-20_2/   # Collision: counter suffix added
+chat_history_2026-03-19.md     # All messages and replies for this date
+chat_history_2026-03-20.md     # Next day's log (auto-rotated by date)
 ```
 
-Each directory contains:
-- `received.md` — incoming message (always present)
-- `reply.md` — AI reply (written when reply is sent)
-- `<attachment>.pdf` — saved inbound attachments (if allowlist config enabled)
+Each log file contains chronological entries:
+- Incoming messages — appended with sender, timestamp, and body
+- AI replies — appended after sending, with model and mode metadata
+- Attachments — saved in the thread directory by the inbound adapter (if allowlist config enabled)
 
 ## Logging & Tracing
 
@@ -2662,10 +2635,10 @@ Configurable per pattern via `attachments` in the pattern config.
 **Processing flow:**
 1. `mail-parser` parses MIME and provides attachment bytes
 2. Inbound adapter preserves bytes on the `MessageAttachment` object
-3. `MessageStorage::store()` calls `save_attachments()` before writing `received.md`
+3. Inbound adapter saves attachments before passing message to MessageRouter
 4. For each attachment: check extension allowlist → check size limit → check count limit → sanitize filename → resolve collisions → write to disk
 5. Bytes freed after write (`attachment.content = None`)
-6. Attachment metadata in `received.md` shows saved/skipped status
+6. Attachment metadata is logged and included in the chat log entry
 
 **Security measures:**
 - Extension allowlist (not blocklist) — only explicitly permitted types saved
@@ -2682,10 +2655,10 @@ Configurable per pattern via `attachments` in the pattern config.
 | Stage | Where | Strips history? | Cleans? | Purpose |
 |-------|-------|----|---------|---------|
 | **Inbound** | `EmailInboundAdapter` | No | Yes | Clean at boundary |
-| **Storage** | `MessageStorage::store()` | No | No | Canonical record (full frontmatter) |
+| **Storage** | `MessageStorage::store()` | No | No | Append to daily chat log |
 | **AI Prompt Body** | `PromptBuilder::build_prompt()` | Yes | No | Incoming message for AI |
 | **Reply context** | `.jyc/reply-context.json` | N/A | N/A | Saved to disk before prompt, read by reply tool |
-| **Reply Tool** | `mcp/reply_tool.rs` | No | No | Reads received.md frontmatter for all metadata |
+| **Reply Tool** | `mcp/reply_tool.rs` | No | No | Reads reply-context.json for routing metadata |
 | **Outbound** | `SmtpClient` | No | No | Dumb transport + attachments |
 
 ## Security Considerations

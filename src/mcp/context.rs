@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const REPLY_CONTEXT_FILENAME: &str = "reply-context.json";
 
@@ -21,7 +21,7 @@ pub struct ReplyContext {
     /// Thread directory name (e.g., "weather")
     #[serde(rename = "threadName")]
     pub thread_name: String,
-    /// Message subdirectory under messages/ (e.g., "2026-03-27_10-00-00")
+    /// Timestamp identifier for this message (e.g., "2026-03-27_10-00-00")
     #[serde(rename = "incomingMessageDir")]
     pub incoming_message_dir: String,
     /// Channel-specific message ID (e.g., IMAP UID)
@@ -90,6 +90,20 @@ pub async fn cleanup_reply_context(thread_path: &Path) {
     if path.exists() {
         tokio::fs::remove_file(&path).await.ok();
     }
+}
+
+/// Resolve the thread directory for MCP tools.
+///
+/// Reads `JYC_THREAD_DIR` environment variable (set by opencode.json MCP config).
+/// Falls back to `std::env::current_dir()` for backward compatibility.
+/// Returns an empty PathBuf only if both fail (should never happen in practice).
+pub fn resolve_thread_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("JYC_THREAD_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    std::env::current_dir().unwrap_or_default()
 }
 
 #[cfg(test)]

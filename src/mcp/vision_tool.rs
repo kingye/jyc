@@ -100,7 +100,7 @@ impl VisionToolHandler {
         &self,
         Parameters(params): Parameters<AnalyzeImageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = super::context::resolve_thread_dir();
         let logger = McpLogger::new(&cwd);
 
         logger.log("INFO", &format!(

@@ -124,9 +124,10 @@ EOF
 
 ## Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
-- ONLY use `gh` CLI to read issues, create branches, create PRs, and post comments
+- ALWAYS use the `jyc_reply` tool (reply_message) for ALL replies — NEVER use `gh issue comment` or `gh pr comment`
+- ONLY use `gh` CLI to read issues/PRs, create branches, and create PRs
 - ONLY use `git` to create branches and push empty branches
-- ONLY use the `bash` tool and `reply` tool — NO other tools
+- ONLY use the `bash` tool and `jyc_reply` tool — NO other tools
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body
 - ALWAYS include `--label "jyc:develop"` when creating PR

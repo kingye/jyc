@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_API_URL: &str = "https://api.github.com";
+
+fn default_api_url() -> String {
+    DEFAULT_API_URL.to_string()
+}
+
+fn default_poll_interval() -> u64 {
+    60
+}
+
 /// GitHub-specific configuration for a channel.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubConfig {
@@ -12,6 +22,11 @@ pub struct GithubConfig {
     /// GitHub Personal Access Token (scopes: repo, read:user)
     pub token: String,
 
+    /// GitHub API base URL (default: https://api.github.com)
+    /// For GitHub Enterprise, use: https://github.example.com/api/v3
+    #[serde(default = "default_api_url")]
+    pub api_url: String,
+
     /// Polling interval in seconds (default: 60)
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
@@ -23,13 +38,10 @@ impl Default for GithubConfig {
             owner: String::new(),
             repo: String::new(),
             token: String::new(),
+            api_url: default_api_url(),
             poll_interval_secs: default_poll_interval(),
         }
     }
-}
-
-fn default_poll_interval() -> u64 {
-    60
 }
 
 #[cfg(test)]
@@ -40,6 +52,7 @@ mod tests {
     fn test_default_config() {
         let config = GithubConfig::default();
         assert_eq!(config.poll_interval_secs, 60);
+        assert_eq!(config.api_url, "https://api.github.com");
         assert!(config.owner.is_empty());
     }
 
@@ -57,6 +70,7 @@ mod tests {
         assert_eq!(config.repo, "jyc");
         assert_eq!(config.token, "ghp_test123");
         assert_eq!(config.poll_interval_secs, 120);
+        assert_eq!(config.api_url, "https://api.github.com");
     }
 
     #[test]
@@ -69,5 +83,21 @@ mod tests {
 
         let config: GithubConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 60);
+        assert_eq!(config.api_url, "https://api.github.com");
+    }
+
+    #[test]
+    fn test_config_deserialize_enterprise_url() {
+        let toml_str = r#"
+            owner = "myorg"
+            repo = "myrepo"
+            token = "ghp_test123"
+            api_url = "https://github.example.com/api/v3"
+        "#;
+
+        let config: GithubConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.owner, "myorg");
+        assert_eq!(config.repo, "myrepo");
+        assert_eq!(config.api_url, "https://github.example.com/api/v3");
     }
 }

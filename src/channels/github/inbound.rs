@@ -1358,6 +1358,7 @@ mod tests {
             owner: "kingye".to_string(),
             repo: "jyc".to_string(),
             token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
@@ -1403,6 +1404,7 @@ mod tests {
             owner: "kingye".to_string(),
             repo: "jyc".to_string(),
             token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
@@ -1431,6 +1433,7 @@ mod tests {
             owner: "kingye".to_string(),
             repo: "jyc".to_string(),
             token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());

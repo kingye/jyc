@@ -15,6 +15,7 @@ pub struct GithubClient {
     client: reqwest::Client,
     owner: String,
     repo: String,
+    api_url: String,
 }
 
 /// GitHub user (minimal fields).
@@ -109,19 +110,23 @@ impl GithubClient {
             .build()
             .context("Failed to create HTTP client")?;
 
+        // Remove trailing slash from api_url if present
+        let api_url = config.api_url.trim_end_matches('/').to_string();
+
         Ok(Self {
             client,
             owner: config.owner.clone(),
             repo: config.repo.clone(),
+            api_url,
         })
     }
 
     /// Get the authenticated user (bot identity).
     pub async fn get_authenticated_user(&self) -> Result<GithubUser> {
-        let url = "https://api.github.com/user";
+        let url = format!("{}/user", self.api_url);
         let resp = self
             .client
-            .get(url)
+            .get(&url)
             .send()
             .await
             .context("Failed to fetch authenticated user")?;
@@ -151,8 +156,8 @@ impl GithubClient {
 
         for page in 1..=max_pages {
             let url = format!(
-                "https://api.github.com/repos/{}/{}/issues?state=open&sort=updated&direction=desc&per_page=100&page={}",
-                self.owner, self.repo, page
+                "{}/repos/{}/{}/issues?state=open&sort=updated&direction=desc&per_page=100&page={}",
+                self.api_url, self.owner, self.repo, page
             );
 
             let resp = self
@@ -190,8 +195,8 @@ impl GithubClient {
     /// Returns comments across all issues/PRs in the repo.
     pub async fn list_comments_since(&self, since: &str) -> Result<Vec<GithubComment>> {
         let url = format!(
-            "https://api.github.com/repos/{}/{}/issues/comments?since={}&sort=updated&direction=asc&per_page=100",
-            self.owner, self.repo, since
+            "{}/repos/{}/{}/issues/comments?since={}&sort=updated&direction=asc&per_page=100",
+            self.api_url, self.owner, self.repo, since
         );
 
         let resp = self
@@ -215,8 +220,8 @@ impl GithubClient {
     /// List recently closed issues/PRs (for close event detection).
     pub async fn list_closed_since(&self, since: &str) -> Result<Vec<GithubIssue>> {
         let url = format!(
-            "https://api.github.com/repos/{}/{}/issues?state=closed&since={}&sort=updated&direction=asc&per_page=100",
-            self.owner, self.repo, since
+            "{}/repos/{}/{}/issues?state=closed&since={}&sort=updated&direction=asc&per_page=100",
+            self.api_url, self.owner, self.repo, since
         );
 
         let resp = self
@@ -243,8 +248,8 @@ impl GithubClient {
     /// Returns the comment ID.
     pub async fn create_comment(&self, number: u64, body: &str) -> Result<u64> {
         let url = format!(
-            "https://api.github.com/repos/{}/{}/issues/{}/comments",
-            self.owner, self.repo, number
+            "{}/repos/{}/{}/issues/{}/comments",
+            self.api_url, self.owner, self.repo, number
         );
 
         let resp = self

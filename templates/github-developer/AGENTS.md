@@ -64,14 +64,18 @@ cd repo
 git add . && git commit -m "feat: <description>" && git push
 ```
 
-### 4. When Done — Request Review
-Add the `jyc:review` label and comment on the SAME PR with `@jyc:reviewer` to trigger the reviewer agent:
+### 4. When Done — Request Review (MANDATORY)
+**This is the LAST thing you do.** After all code is committed and pushed,
+you MUST hand over to the reviewer. Do NOT post a summary comment instead.
+Do NOT use the reply tool for your final message. Your final action MUST be:
 ```bash
 cd repo
 gh label create "jyc:review" --description "Route to reviewer agent" --color "1D76DB" 2>/dev/null || true
 gh pr edit <number> --add-label "jyc:review"
 gh pr comment <number> --body "@jyc:reviewer Implementation complete. Ready for review."
 ```
+**CRITICAL:** Do NOT skip this step. Do NOT replace it with a reply/summary comment.
+The reviewer agent will NOT be triggered unless you run the commands above.
 
 ### 5. Handling Review Feedback
 When triggered again (reviewer submitted feedback):
@@ -89,7 +93,8 @@ gh pr comment <number> --body "@jyc:reviewer Feedback addressed. Please re-revie
 - ALWAYS push to the existing PR branch — NEVER create a new branch or PR
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the PR spec before implementing
-- ALWAYS add label `jyc:review` and use `@jyc:reviewer` to hand over to the reviewer
+- ALWAYS add label `jyc:review` and use `@jyc:reviewer` to hand over to the reviewer when done
+- NEVER use the reply tool as your final action — your final action MUST be the hand-over (step 4)
 - Commit frequently with clear messages
 - Do NOT create new PRs — the PR already exists
 - Do NOT create new branches — the PR branch already exists

@@ -1,7 +1,7 @@
 ---
 name: dev-workflow
 description: |
-  Development workflow for jyc - branching, fix/feature flow, release process, version bump, commit conventions.
+  Development workflow - branching, fix/feature flow, release process, version bump, commit conventions.
   Use when: planning development work, creating branches, merging, preparing releases, bumping version, updating changelog.
 ---
 
@@ -16,12 +16,35 @@ main ──●──●──●──●──●──●──●──●─
    (hours)  (1-2 days)
 ```
 
+## Detect Project Type and Conventions (do this ONCE at the start)
+
+**Step 1: Read project documentation (if present)**
+
+Check for and read these files in the repository root (in order of priority):
+- `AGENTS.md` or `CLAUDE.md` — coding conventions, forbidden actions, toolchain
+- `README.md` — build/test/run commands, prerequisites
+- `.opencode/skills/` — skill files may define specific workflows and commands
+- `.claude/` — may contain project-specific instructions
+
+If these files specify build, test, or check commands, **use those** instead of
+the defaults in Step 2.
+
+**Step 2: Detect project type by config files (fallback)**
+
+| Priority | Type | Detection | Default commands | Version file |
+|----------|------|-----------|-----------------|-------------|
+| 1 | SAP CDS | `.cdsrc.json` exists, OR `package.json` has `@sap/cds` | Read `scripts` from `package.json` | `package.json` |
+| 2 | Rust | `Cargo.toml` exists | test: `cargo test` / build: `cargo build --release` | `Cargo.toml` |
+| 3 | Node.js | `package.json` exists (no `@sap/cds`) | test: `npm test` / build: `npm run build` | `package.json` |
+
+After detection, you have: `{test_command}`, `{build_command}`, `{version_file}`.
+
 ## For Fixes
 
 1. `git checkout -b fix/<description>` from main
 2. Fix the issue
-3. Run tests: `cargo test`
-4. Build clean: `cargo build --release` (zero warnings)
+3. Run tests: `{test_command}`
+4. Build clean: `{build_command}` (zero warnings)
 5. Commit with `fix:` prefix
 6. Merge to main: `git checkout main && git merge fix/<name> --no-ff`
 7. Push: `git push origin main`
@@ -41,7 +64,6 @@ main ──●──●──●──●──●──●──●──●─
 ### Step 1: Verify Prerequisites
 
 ```bash
-cd jyc
 git checkout main
 git status  # Must be clean
 LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -63,7 +85,9 @@ Categorize commits by type:
 
 ### Step 3: Determine Version Number
 
-- Parse current version from `Cargo.toml`
+- Parse current version from `{version_file}`
+  - Rust: `version = "X.Y.Z"` in `Cargo.toml`
+  - Node/CDS: `"version": "X.Y.Z"` in `package.json`
 - Bump PATCH for fixes and small features
 - Bump MINOR for significant features or breaking changes
 - Bump MAJOR for fundamental architecture changes
@@ -74,17 +98,17 @@ Present the suggested version to user for confirmation.
 
 Phase 1 — Present plan:
 - Show current version, new version, and all changes to be documented
-- List files to modify: `Cargo.toml`, `CHANGELOG.md`, optionally `DESIGN.md`
+- List files to modify: `{version_file}`, `CHANGELOG.md`, optionally `DESIGN.md`
 
 Phase 2 — After user confirms, execute ALL steps in sequence:
 
-1. Update `Cargo.toml` version field
+1. Update `{version_file}` version field
 2. Update `CHANGELOG.md`:
    - Add new version section at top (after header)
    - Group changes: Added, Fixed, Changed, Removed
    - Include date: `## [X.Y.Z] - YYYY-MM-DD`
 3. Update `DESIGN.md` if architecture changed
-4. Run `cargo test` to verify
+4. Run `{test_command}` to verify
 5. Commit ALL changes: `chore: prepare release vX.Y.Z`
 6. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z: summary of key changes"`
 7. Push with tags: `git push origin main --tags`
@@ -98,14 +122,14 @@ Do NOT stop after updating files — complete all steps through push.
 - Feature branches rebase on main regularly — don't let them diverge
 - Keep feature branches short (1-2 days) — break large features into smaller merges
 - Every commit on main must build with zero warnings
-- Run `cargo test` before every merge to main
+- Run `{test_command}` before every merge to main
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 
 ## GitHub CLI (gh)
 
 Use `gh` for ALL GitHub operations. Do NOT use `webfetch`, `curl`, or `wget` to access GitHub.
-The `gh` CLI is pre-authenticated. Always run from inside the repo directory (`cd jyc`).
+The `gh` CLI is pre-authenticated. Always run from inside the repo directory.
 
 ### Required Token Scopes
 
@@ -119,24 +143,24 @@ Setup: `gh auth login --with-token <<< "ghp_your_token"`
 
 ```bash
 # View PR details
-cd jyc && gh pr view <number>
+gh pr view <number>
 
 # View PR diff
-cd jyc && gh pr diff <number>
+gh pr diff <number>
 
 # View PR review comments
-cd jyc && gh pr view <number> --comments
-cd jyc && gh api repos/{owner}/{repo}/pulls/<number>/reviews
-cd jyc && gh api repos/{owner}/{repo}/pulls/<number>/comments
+gh pr view <number> --comments
+gh api repos/{owner}/{repo}/pulls/<number>/reviews
+gh api repos/{owner}/{repo}/pulls/<number>/comments
 
 # Create PR
-cd jyc && gh pr create --title "..." --body "..."
+gh pr create --title "..." --body "..."
 
 # List open PRs
-cd jyc && gh pr list
+gh pr list
 
 # Post review comment
-cd jyc && gh pr review <number> --comment --body "..."
+gh pr review <number> --comment --body "..."
 ```
 
 Do NOT attempt to access GitHub via HTTP URLs — the repo may be private.

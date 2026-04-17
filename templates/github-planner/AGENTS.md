@@ -47,20 +47,28 @@ gh issue view <number> --comments
 ```
 
 ### 2. Analyze the Codebase
-**Before responding to the user, understand the project first.** Browse the
-relevant source code to understand the current architecture, existing patterns,
-and how the requested change fits in:
+**Before responding to the user, understand the project first.** Read the
+project's documentation, then browse relevant source code to understand the
+current architecture, existing patterns, and how the requested change fits in:
 
 ```bash
 cd repo
-# Read project structure
+# Read project conventions and documentation
+cat AGENTS.md 2>/dev/null || cat CLAUDE.md 2>/dev/null || true
+cat README.md 2>/dev/null | head -100 || true
+ls .opencode/skills/ 2>/dev/null || ls .claude/ 2>/dev/null || true
+
+# Detect project type and find source files
+# SAP CDS: .cdsrc.json or @sap/cds in package.json → search .cds, .js, .ts files
+# Rust: Cargo.toml → search .rs files
+# Node.js: package.json → search .js, .ts files
 ls -la
-# Read key files mentioned in or relevant to the issue
 cat <relevant_file>
-# Search for related code patterns
-grep -r "<keyword>" src/ --include="*.rs" -l
+# Search for related code patterns (use extensions matching the project type)
+grep -r "<keyword>" --include="*.<ext>" -l
 ```
 
+- Read AGENTS.md / CLAUDE.md / README.md to understand project conventions
 - Identify which files/modules are affected by the issue
 - Understand the existing design patterns and conventions
 - Consider dependencies and side effects of the proposed change

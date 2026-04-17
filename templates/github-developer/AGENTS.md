@@ -32,6 +32,13 @@ cd repo
 
 ## Workflow
 
+### 0. Check Status (MANDATORY — DO THIS FIRST)
+```bash
+cd repo
+gh pr view <number> --json state,merged --jq '"state=\(.state) merged=\(.merged)"'
+```
+**If the PR is closed or merged, STOP IMMEDIATELY. Do NOT reply, do NOT comment, do NOT do any work. Just stop.**
+
 ### 1. Read the PR Spec
 ```bash
 cd repo

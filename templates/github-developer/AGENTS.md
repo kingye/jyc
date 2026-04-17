@@ -102,6 +102,7 @@ gh pr comment <number> --body "@jyc:reviewer Feedback addressed. Please re-revie
 - ALWAYS read the PR spec before implementing
 - ALWAYS add label `jyc:review` and use `@jyc:reviewer` to hand over to the reviewer when done
 - NEVER use the reply tool as your final action — your final action MUST be the hand-over (step 4)
+- When using the reply tool, put your COMPLETE response in the message — do NOT generate text after calling the reply tool (it will be lost)
 - Commit frequently with clear messages
 - Do NOT create new PRs — the PR already exists
 - Do NOT create new branches — the PR branch already exists

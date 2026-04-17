@@ -54,3 +54,6 @@ RUN cargo build --release
 FROM base AS production
 
 COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc
+
+ENTRYPOINT ["jyc"]
+CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]

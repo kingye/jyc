@@ -158,9 +158,12 @@ impl ChannelMatcher for GithubMatcher {
                     })
                     .unwrap_or_default();
 
-                if !assignee_rules
+                let rules_lower: Vec<String> = assignee_rules
                     .iter()
-                    .any(|rule| assignees.contains(&rule.to_lowercase()))
+                    .map(|r| r.to_lowercase())
+                    .collect();
+
+                if !rules_lower.iter().any(|rule| assignees.contains(rule))
                 {
                     continue;
                 }

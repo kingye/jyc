@@ -288,3 +288,16 @@ interval_hours = 3
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # assignees = ["alice", "bob"]
+#
+# # Pattern: PRs with 'needs-review' label AND assigned to 'alice' → Senior reviewer
+# # This demonstrates AND logic: BOTH labels and assignees must match
+# [[channels.my_repo.patterns]]
+# name = "senior_reviewer"
+# enabled = true
+# role = "Reviewer"
+# template = "github-reviewer"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["needs-review"]
+# assignees = ["alice"]

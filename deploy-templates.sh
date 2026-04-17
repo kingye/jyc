@@ -61,6 +61,13 @@ for template_dir in "${TEMPLATES_DIR}"/*/; do
         echo "  AGENTS.md copied"
     fi
 
+    # Copy .jyc directory (model-override, etc.)
+    if [ -d "${template_dir}/.jyc" ]; then
+        rm -rf "${target}/.jyc"
+        cp -r "${template_dir}/.jyc" "${target}/.jyc"
+        echo "  .jyc copied"
+    fi
+
     # Copy skills
     skills=$(get_skills "$template_name")
     if [ -n "$skills" ]; then

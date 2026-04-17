@@ -244,6 +244,7 @@ interval_hours = 3
 # repo = "myrepo"
 # token = "${GITHUB_TOKEN}"           # PAT scopes: repo, read:user
 # poll_interval_secs = 60
+# # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
 #
 # # Pattern: Issues → Planner agent
 # [[channels.my_repo.patterns]]

@@ -706,12 +706,57 @@ impl GithubInboundAdapter {
             }
         }
 
-        // 3. Fetch recently closed issues/PRs → trigger thread close
+        // 3. Detect closed issues/PRs by comparing with previous cache.
+        // Strategy: if an issue was in the previous cache but not in current open list,
+        // it was closed since the last poll.
+        //
+        // Build set of current open issue numbers for comparison
+        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
+
+        // Find issues that were in cache but not in current open list
+        let cached_numbers: Vec<u64> = issue_cache.keys().cloned().collect();
+        for cached_number in cached_numbers {
+            if !current_open_numbers.contains(&cached_number) {
+                // Get cached info before removing
+                if let Some((_title, github_type, _labels, _assignees)) = issue_cache.get(&cached_number) {
+                    let event_uid = format!("{}-{}-closed", github_type, cached_number);
+
+                    if !processed_events.contains(&event_uid) {
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "closed",
+                            number = cached_number,
+                            github_type = github_type,
+                            "GitHub close event detected (via cache comparison) → closing threads"
+                        );
+
+                        if let Some(ref on_close) = options.on_thread_close {
+                            match github_type.as_str() {
+                                "pull_request" => {
+                                    let _ = (on_close)(format!("pr-{}", cached_number));
+                                    let _ = (on_close)(format!("review-pr-{}", cached_number));
+                                }
+                                _ => {
+                                    let _ = (on_close)(format!("issue-{}", cached_number));
+                                }
+                            }
+                        }
+
+                        processed_events.insert(event_uid);
+                    }
+                }
+
+                issue_cache.remove(&cached_number);
+            }
+        }
+
+        // 4. Fetch recently closed issues/PRs as backup (for edge cases).
+        // This catches issues that were closed but never cached (e.g., closed before first poll).
         let closed = client.list_closed_since(&poll_start).await?;
         tracing::trace!(
             channel = %self.channel_name,
             count = closed.len(),
-            "Fetched closed issues/PRs"
+            "Fetched closed issues/PRs (backup)"
         );
 
         for item in &closed {

@@ -97,6 +97,7 @@ EOF
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the full diff before reviewing
 - ALWAYS provide specific, actionable feedback
+- When using the reply tool, put your COMPLETE response in the message — do NOT generate text after calling the reply tool (it will be lost)
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
 - Do NOT run `cargo build` or `cargo build --release` — use `cargo check` instead (saves memory)

@@ -74,6 +74,7 @@ understanding the codebase is useless.
 - Propose a concrete solution approach based on your code analysis
 - If you have questions, ask them alongside your analysis (not instead of it)
 - Reply via the reply tool (the system automatically adds [Planner] prefix — do NOT add it yourself)
+- **Put your COMPLETE response in the reply tool message — do NOT generate additional text after calling the reply tool. Any text not passed to the reply tool will be lost and the user will never see it.**
 - Wait for the user to reply via GitHub comments (you will be triggered again)
 - **Do NOT create a PR until the user explicitly tells you to proceed**
 

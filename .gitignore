@@ -2,6 +2,7 @@
 
 # Runtime data directory (contains credentials)
 .jyc/
+!templates/*/.jyc/model-override
 
 # Config files with credentials
 config.toml

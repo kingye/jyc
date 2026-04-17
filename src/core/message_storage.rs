@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use crate::channels::types::InboundMessage;
 use crate::config::types::InboundAttachmentConfig;
-use crate::utils::helpers::truncate_str;
 
 /// Result of storing a message.
 #[derive(Debug, Clone)]
@@ -137,149 +136,6 @@ impl MessageStorage {
         tracing::debug!("Reply appended to chat log");
         Ok(())
     }
-
-    /// Format a received message with YAML frontmatter (legacy format).
-    #[allow(dead_code)]
-    fn format_received_md(
-        &self,
-        message: &InboundMessage,
-        saved_attachments: &[SavedAttachment],
-    ) -> String {
-        let mut md = String::new();
-
-        // YAML frontmatter — includes all metadata needed by the MCP reply tool.
-        // The reply tool reads these fields from disk instead of trusting the AI-passed token.
-        md.push_str("---\n");
-        md.push_str(&format!("channel: {}\n", message.channel));
-        md.push_str(&format!("uid: \"{}\"\n", message.channel_uid));
-        md.push_str(&format!("sender: \"{}\"\n", message.sender));
-        md.push_str(&format!("sender_address: \"{}\"\n", message.sender_address));
-        if let Some(ref ext_id) = message.external_id {
-            md.push_str(&format!("external_id: \"{ext_id}\"\n"));
-        }
-        if let Some(ref reply_to) = message.reply_to_id {
-            md.push_str(&format!("reply_to_id: \"{reply_to}\"\n"));
-        }
-        if let Some(ref refs) = message.thread_refs {
-            if !refs.is_empty() {
-                let refs_str = refs.iter()
-                    .map(|r| format!("\"{r}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                md.push_str(&format!("thread_refs: [{refs_str}]\n"));
-            }
-        }
-        if let Some(ref pattern) = message.matched_pattern {
-            md.push_str(&format!("matched_pattern: \"{pattern}\"\n"));
-        }
-        md.push_str(&format!("topic: \"{}\"\n", message.topic));
-        md.push_str(&format!(
-            "timestamp: \"{}\"\n",
-            message.timestamp.to_rfc3339()
-        ));
-        md.push_str("---\n\n");
-
-        // Header line
-        let time_str = message.timestamp.format("%H:%M").to_string();
-        md.push_str(&format!(
-            "## {} ({})\n\n",
-            message.sender, time_str
-        ));
-
-        // Body
-        let body = message
-            .content
-            .text
-            .as_deref()
-            .or(message.content.markdown.as_deref())
-            .unwrap_or("[no text content]");
-        md.push_str(body);
-        md.push('\n');
-
-        // Attachments summary
-        if !saved_attachments.is_empty() {
-            md.push_str("\n*Attachments:*\n");
-            for att in saved_attachments {
-                md.push_str(&format!(
-                    "  - **{}** ({}, {} bytes) {}\n",
-                    att.filename, att.content_type, att.size, att.status
-                ));
-            }
-        }
-
-        md.push_str("---\n");
-        md
-    }
-}
-
-/// A saved (or skipped) attachment record.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct SavedAttachment {
-    filename: String,
-    content_type: String,
-    size: usize,
-    status: String,
-    #[allow(dead_code)]
-    path: Option<PathBuf>,
-}
-
-/// Sanitize an attachment filename: basename only, no traversal.
-#[allow(dead_code)]
-fn sanitize_attachment_filename(filename: &str) -> String {
-    let basename = Path::new(filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unnamed".to_string());
-
-    // Remove null bytes and control chars
-    let cleaned: String = basename
-        .chars()
-        .filter(|c| !c.is_control() && *c != '\0')
-        .collect();
-
-    // Limit length
-    if cleaned.len() > 200 {
-        let ext = Path::new(&cleaned)
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        let max_stem_len = 200 - ext.len().min(200);
-        let stem = truncate_str(&cleaned, max_stem_len);
-        format!("{stem}{ext}")
-    } else if cleaned.is_empty() {
-        "unnamed".to_string()
-    } else {
-        cleaned
-    }
-}
-
-/// Resolve filename collisions by appending a counter suffix.
-#[allow(dead_code)]
-async fn resolve_collision(dir: &Path, filename: &str) -> PathBuf {
-    let target = dir.join(filename);
-    if !target.exists() {
-        return target;
-    }
-
-    let stem = Path::new(filename)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-    let ext = Path::new(filename)
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-
-    for i in 2..=100 {
-        let candidate = dir.join(format!("{stem}_{i}{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-
-    // Fallback: UUID suffix
-    dir.join(format!("{stem}_{}{ext}", uuid::Uuid::new_v4()))
 }
 
 #[cfg(test)]
@@ -342,31 +198,5 @@ mod tests {
             .unwrap();
 
         // Reply is appended to chat log — verify function returns without error
-    }
-
-    #[test]
-    fn test_sanitize_filename() {
-        assert_eq!(sanitize_attachment_filename("report.pdf"), "report.pdf");
-        assert_eq!(
-            sanitize_attachment_filename("../../../etc/passwd"),
-            "passwd"
-        );
-        assert_eq!(
-            sanitize_attachment_filename("path/to/file.txt"),
-            "file.txt"
-        );
-        assert_eq!(sanitize_attachment_filename(""), "unnamed");
-    }
-
-    #[tokio::test]
-    async fn test_collision_resolution() {
-        let tmp = tempfile::tempdir().unwrap();
-        tokio::fs::write(tmp.path().join("file.txt"), "a").await.unwrap();
-
-        let resolved = resolve_collision(tmp.path(), "file.txt").await;
-        assert_eq!(
-            resolved.file_name().unwrap().to_string_lossy(),
-            "file_2.txt"
-        );
     }
 }

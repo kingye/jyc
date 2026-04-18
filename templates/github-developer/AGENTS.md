@@ -77,6 +77,7 @@ you MUST hand over to the reviewer. Do NOT post a summary comment instead.
 Do NOT use the reply tool for your final message. Your final action MUST be:
 ```bash
 cd repo
+gh issue edit <number> --remove-label "jyc:develop" 2>/dev/null || true
 gh label create "jyc:review" --description "Route to reviewer agent" --color "1D76DB" 2>/dev/null || true
 gh api repos/{owner}/{repo}/issues/<number>/labels --method POST -f 'labels[]=jyc:review'
 gh pr comment <number> --body "[Developer] @jyc:reviewer Implementation complete. Ready for review."
@@ -91,6 +92,9 @@ cd repo
 gh pr view <number> --comments
 # Fix issues on the same branch
 git add . && git commit -m "fix: address review feedback" && git push
+gh issue edit <number> --remove-label "jyc:develop" 2>/dev/null || true
+gh label create "jyc:review" --description "Route to reviewer agent" --color "1D76DB" 2>/dev/null || true
+gh api repos/{owner}/{repo}/issues/<number>/labels --method POST -f 'labels[]=jyc:review'
 gh pr comment <number> --body "[Developer] @jyc:reviewer Feedback addressed. Please re-review."
 ```
 
@@ -101,6 +105,7 @@ gh pr comment <number> --body "[Developer] @jyc:reviewer Feedback addressed. Ple
 - ALWAYS push to the existing PR branch — NEVER create a new branch or PR
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the PR spec before implementing
+- ALWAYS remove label `jyc:develop` before adding `jyc:review` when handing over to the reviewer
 - ALWAYS add label `jyc:review` and use `@jyc:reviewer` to hand over to the reviewer when done
 - NEVER use the reply tool as your final action — your final action MUST be the hand-over (step 4)
 - When using the reply tool, put your COMPLETE response in the message — do NOT generate text after calling the reply tool (it will be lost)

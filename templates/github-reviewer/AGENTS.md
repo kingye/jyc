@@ -83,6 +83,7 @@ gh pr review <number> --request-changes --body "$(cat <<'EOF'
 Please address the issues above.
 EOF
 )"
+gh issue edit <number> --remove-label "jyc:review" 2>/dev/null || true
 gh label create "jyc:develop" --description "Route to developer agent" --color "0E8A16" 2>/dev/null || true
 gh api repos/{owner}/{repo}/issues/<number>/labels --method POST -f 'labels[]=jyc:develop'
 gh pr comment <number> --body "[Reviewer] @jyc:developer Please address the review feedback."
@@ -115,4 +116,4 @@ EOF
 - Do NOT run builds or tests — this is a read-only review (prefer lightweight checks like `cargo check` for Rust, `npm run lint` for Node/CDS if needed)
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback
-- When requesting changes, ALWAYS add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer
+- When requesting changes, ALWAYS remove label `jyc:review`, then add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer

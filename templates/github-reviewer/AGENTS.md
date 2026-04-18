@@ -71,7 +71,7 @@ If changes needed:
 ```bash
 cd repo
 gh pr review <number> --request-changes --body "$(cat <<'EOF'
-## Review
+[Reviewer] ## Review
 
 ### Issues Found
 1. **<issue>**: <description>
@@ -83,16 +83,17 @@ gh pr review <number> --request-changes --body "$(cat <<'EOF'
 Please address the issues above.
 EOF
 )"
+gh issue edit <number> --remove-label "jyc:review" 2>/dev/null || true
 gh label create "jyc:develop" --description "Route to developer agent" --color "0E8A16" 2>/dev/null || true
 gh api repos/{owner}/{repo}/issues/<number>/labels --method POST -f 'labels[]=jyc:develop'
-gh pr comment <number> --body "@jyc:developer Please address the review feedback."
+gh pr comment <number> --body "[Reviewer] @jyc:developer Please address the review feedback."
 ```
 
 If approved:
 ```bash
 cd repo
 gh pr review <number> --approve --body "$(cat <<'EOF'
-## Review
+[Reviewer] ## Review
 
 Code looks good. Approved.
 
@@ -104,6 +105,7 @@ EOF
 ```
 
 ## Rules
+- ALWAYS prefix every comment or review body with `[Reviewer]` — this is how the system identifies your comments and prevents self-loops
 - ALWAYS `cd repo` before running any `gh` or `git` command
 - Use `gh` CLI for ALL GitHub operations
 - ALWAYS read the full diff before reviewing
@@ -114,4 +116,4 @@ EOF
 - Do NOT run builds or tests — this is a read-only review (prefer lightweight checks like `cargo check` for Rust, `npm run lint` for Node/CDS if needed)
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback
-- When requesting changes, ALWAYS add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer
+- When requesting changes, ALWAYS remove label `jyc:review`, then add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer

@@ -105,7 +105,7 @@ End with overall verdict:
 
 ```bash
 cd repo && gh pr review <number> --approve --body "$(cat <<'EOF'
-## PR Review
+[Reviewer] ## PR Review
 
 <findings>
 
@@ -117,7 +117,7 @@ EOF
 Use `--request-changes` for critical/high issues:
 ```bash
 cd repo && gh pr review <number> --request-changes --body "$(cat <<'EOF'
-## PR Review
+[Reviewer] ## PR Review
 
 <findings>
 
@@ -129,7 +129,7 @@ EOF
 Use `--comment` for medium/low only:
 ```bash
 cd repo && gh pr review <number> --comment --body "$(cat <<'EOF'
-## PR Review
+[Reviewer] ## PR Review
 
 <findings>
 

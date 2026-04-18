@@ -1,102 +1,80 @@
-# Step 5–8: Excel, Reply, Summary & Export
+# Step 5–8: SQLite/Excel, Reply, Summary & Export
 
-This file covers writing validated invoice data to Excel (Step 5), replying to
+This file covers writing validated invoice data to SQLite (Step 5), replying to
 the user (Step 6), monthly summary generation (Step 7), and export (Step 8).
 
 ---
 
-## Step 5: Update Excel
+## Step 5: Insert to SQLite
 
 **Only reached if Step 4 validation passes (all 2 mandatory fields present).**
 
-**IMPORTANT: Check for duplicate invoice numbers before adding.**
+**IMPORTANT: Check for duplicates before inserting.**
 
-### 校验码 Handling
+### Database Operations
 
-The 校验码 (Verification Code) is written at the end of the 备注 (Remarks)
-column (column N). Format:
-
-```
-校验码: 12345678901234567890
-```
-
-If there are other remarks, append 校验码 after them:
-```
-其他备注内容 校验码: 12345678901234567890
-```
-
-### Excel Writing
-
-Use Python with openpyxl to check and add a row:
+Use Python with the db.py module to check and insert:
 
 ```bash
 python3 << 'PYEOF'
-from openpyxl import load_workbook
+import sys
+import os
 
+sys.path.insert(0, '.opencode/skills/invoice-processing/scripts')
+from db import init_db, check_duplicate, insert_invoice
+
+# Ensure database exists
+init_db()
+
+# Invoice data (extracted from PDF/image)
 INVOICE_NO = '<发票号码>'       # May be empty if not extracted
 SELLER_TAX_ID = '<销售方税号>'  # MANDATORY — 18 chars
-VERIFY_CODE = '<校验码>'        # MANDATORY — 20 digits
+VERIFY_CODE = '<校验码>'        # Optional — 20 digits
 TOTAL = <价税合计>              # MANDATORY — positive number
 MONTH = '2026-04'
 
-wb = load_workbook(f'invoice_{MONTH}/invoices.xlsx')
-ws = wb.active
+# Build data dict
+data = {
+    'seq': None,  # Will be auto-assigned by database
+    'invoice_no': INVOICE_NO if INVOICE_NO else None,
+    'issue_date': '<开票日期>',      # e.g., "2026-04-10"
+    'invoice_type': '<发票类型>',    # e.g., "增值税普通发票"
+    'buyer_name': '<购买方名称>',
+    'buyer_tax_id': '<购买方税号>',
+    'seller_name': '<销售方名称>',
+    'seller_tax_id': SELLER_TAX_ID,
+    'service_name': '<服务项目名称>',
+    'tax_rate': '<税率>',            # e.g., "6%"
+    'amount': <金额>,                # Amount without tax
+    'tax': <税额>,                   # Tax amount
+    'total_amount': TOTAL,
+    'remarks': '',                   # Additional remarks
+    'filename': '<filename>',        # e.g., "INV-2026-0042.pdf"
+    'verify_code': VERIFY_CODE if VERIFY_CODE else None,
+    'source': 'pdf_attachment',      # or 'pdf_url', 'image_attachment', etc.
+    'month': MONTH,
+}
 
-# Check for duplicate: use 销售方税号 + 价税合计 as primary key
-# (发票号码 may not always be available)
-existing_rows = []
-for row in range(2, ws.max_row + 1):
-    existing_tax_id = str(ws.cell(row=row, column=8).value or '').strip()
-    existing_total = ws.cell(row=row, column=13).value
-    existing_inv_no = str(ws.cell(row=row, column=2).value or '').strip()
+# Check for duplicate
+existing_id = check_duplicate(
+    data['invoice_no'] or '',
+    data['seller_tax_id'],
+    data['total_amount']
+)
 
-    # Check by invoice number if available
-    if INVOICE_NO and existing_inv_no == INVOICE_NO.strip():
-        existing_rows.append(row)
-    # Also check by tax ID + total combination
-    elif existing_tax_id == SELLER_TAX_ID.strip() and existing_total == TOTAL:
-        existing_rows.append(row)
-
-if existing_rows:
-    print(f'DUPLICATE: Invoice already exists at row(s): {existing_rows}')
+if existing_id:
+    print(f'DUPLICATE: Invoice already exists with id={existing_id}')
     print('Skipping - do not add duplicate')
-    exit(0)
+    sys.exit(0)
 
-# Find next empty row
-next_row = ws.max_row + 1
-
-# Build remarks with 校验码 appended
-remarks = ''
-if VERIFY_CODE:
-    remarks = f'校验码: {VERIFY_CODE}'
-
-# Template columns:
-# A:序号 B:发票号码 C:开票日期 D:发票类型 E:购买方名称
-# F:购买方税号 G:销售方名称 H:销售方税号 I:服务项目名称
-# J:税率 K:金额 L:税额 M:价税合计 N:备注 O:文件名
-ws.cell(row=next_row, column=1, value=next_row - 1)        # 序号
-ws.cell(row=next_row, column=2, value=INVOICE_NO or '')     # 发票号码 (may be empty)
-ws.cell(row=next_row, column=3, value='<开票日期>')         # 开票日期
-ws.cell(row=next_row, column=4, value='<发票类型>')         # 发票类型
-ws.cell(row=next_row, column=5, value='<购买方名称>')       # 购买方名称
-ws.cell(row=next_row, column=6, value='<购买方税号>')       # 购买方税号
-ws.cell(row=next_row, column=7, value='<销售方名称>')       # 销售方名称
-ws.cell(row=next_row, column=8, value=SELLER_TAX_ID)       # 销售方税号 [MANDATORY]
-ws.cell(row=next_row, column=9, value='<服务项目名称>')     # 服务项目名称
-ws.cell(row=next_row, column=10, value='<税率>')            # 税率
-ws.cell(row=next_row, column=11, value='<金额>')            # 金额
-ws.cell(row=next_row, column=12, value='<税额>')            # 税额
-ws.cell(row=next_row, column=13, value=TOTAL)               # 价税合计 [MANDATORY]
-ws.cell(row=next_row, column=14, value=remarks)             # 备注 (校验码 appended)
-ws.cell(row=next_row, column=15, value='<filename>')        # 文件名
-
-wb.save(f'invoice_{MONTH}/invoices.xlsx')
-print('Row added successfully')
+# Insert to SQLite
+row_id = insert_invoice(data)
+print(f'Inserted successfully, id={row_id}')
 PYEOF
 ```
 
-**The column mapping above is FIXED — do NOT read Excel headers to inspect the layout.**
-The template always has these 15 columns in this exact order. Just use the script above directly.
+**The database schema maps directly to the Excel columns (A-O).**
+See `scripts/db.py` for the full schema and field mappings.
 
 ---
 
@@ -130,7 +108,7 @@ Send a reply confirming the processing result.
 
 来源: PDF附件 (PdfReader文本提取)
 文件: invoice_2026-04/INV-2026-0042.pdf
-Excel: invoice_2026-04/invoices.xlsx (第4行)
+数据库: invoices.db (id=4)
 ```
 
 ### Success (from Image Phase)
@@ -147,7 +125,7 @@ Excel: invoice_2026-04/invoices.xlsx (第4行)
 
 来源: 图片附件 (Vision MCP识别)
 文件: invoice_2026-04/INV-2026-0042.jpg
-Excel: invoice_2026-04/invoices.xlsx (第4行)
+数据库: invoices.db (id=4)
 
 ⚠️ 注意: PDF阶段未找到有效发票，使用图片阶段处理
 ```
@@ -167,7 +145,7 @@ Excel: invoice_2026-04/invoices.xlsx (第4行)
 (table without 发票号码 row)
 
 文件: invoice_2026-04/invoice_001.pdf
-Excel: invoice_2026-04/invoices.xlsx (第4行)
+数据库: invoices.db (id=4)
 ```
 
 ### Duplicate
@@ -175,7 +153,7 @@ Excel: invoice_2026-04/invoices.xlsx (第4行)
 ```
 ⚠️ 发票已忽略
 
-发票号码 INV-2026-0042 已存在于 invoice_2026-04/invoices.xlsx (第3行)
+发票号码 INV-2026-0042 已存在于 invoices.db (id=3)
 跳过重复记录
 ```
 
@@ -241,7 +219,7 @@ Do NOT overwrite or modify this row during summary generation.
 ### Process
 
 1. Determine the target month (from user message or default to current month)
-2. Verify the monthly folder and `invoices.xlsx` exist
+2. Verify the database `invoices.db` exists
 3. Copy `summary.xlsx` template into the monthly folder (if not already there):
    ```bash
    MONTH="2026-04"
@@ -249,7 +227,7 @@ Do NOT overwrite or modify this row during summary generation.
      cp summary.xlsx "invoice_${MONTH}/summary.xlsx"
    fi
    ```
-4. Read all invoices from `invoices.xlsx`
+4. Read all invoices from SQLite using `get_invoices_by_month()`
 5. Categorize each invoice by its 服务项目名称 (service/item name):
    - 餐饮/餐费/食品/外卖 → Food & Meals (row 12)
    - 洗衣/干洗 → Laundry (row 10)
@@ -260,13 +238,17 @@ Do NOT overwrite or modify this row during summary generation.
 
 ```bash
 python3 << 'PYEOF'
+import sys
+import os
+
+sys.path.insert(0, '.opencode/skills/invoice-processing/scripts')
+from db import get_invoices_by_month
 from openpyxl import load_workbook
 
 MONTH = "2026-04"
 
-# Read invoice data
-inv_wb = load_workbook(f'invoice_{MONTH}/invoices.xlsx')
-inv_ws = inv_wb.active
+# Read invoice data from SQLite
+invoices = get_invoices_by_month(MONTH)
 
 # Read summary template
 sum_wb = load_workbook(f'invoice_{MONTH}/summary.xlsx')
@@ -283,11 +265,11 @@ categories = {
     16: ['机票', '航空', 'airticket', 'flight'],
 }
 
-# Read invoices (skip header row)
-for row in range(2, inv_ws.max_row + 1):
-    service = str(inv_ws.cell(row=row, column=9).value or '').lower()  # 服务项目名称
-    date = inv_ws.cell(row=row, column=3).value  # 开票日期
-    amount = inv_ws.cell(row=row, column=13).value  # 价税合计
+# Process invoices from SQLite
+for inv in invoices:
+    service = str(inv.get('service_name') or '').lower()
+    date = inv.get('issue_date')
+    amount = inv.get('total_amount')
 
     if not amount:
         continue
@@ -327,16 +309,31 @@ When the user asks to download or export all invoices for a month:
 
 1. Determine the target month (from user message or default to current month)
 2. Verify the folder exists
-3. If summary has not been generated yet, run Step 7 first to create it
-4. Zip the entire monthly folder (includes invoices.xlsx, summary.xlsx, and all invoice files):
+3. If the user explicitly requests `invoices.xlsx`, generate it from SQLite:
+   ```bash
+   MONTH="2026-04"
+   python3 .opencode/skills/invoice-processing/scripts/generate_excel.py "$MONTH"
+   ```
+4. If summary has not been generated yet, run Step 7 first to create it
+5. Zip the entire monthly folder (includes invoices.xlsx if generated, summary.xlsx, and all invoice files):
    ```bash
    MONTH="2026-04"
    cd <thread_dir>
    zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/"
    ```
-5. Send the zip file as an attachment in the reply
+6. Send the zip file as an attachment in the reply
 
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash
 ls -d invoice_*/
+```
+
+Or query SQLite for months with data:
+```bash
+python3 -c "
+import sys
+sys.path.insert(0, '.opencode/skills/invoice-processing/scripts')
+from db import get_all_months
+print('Available months:', get_all_months())
+"
 ```

@@ -14,10 +14,11 @@ files — read them before processing.
 
 | Step | File | Description |
 |------|------|-------------|
+| 0 | (this file) | Initialize SQLite database (first run only) |
 | 1 | (this file) | Determine current month folder |
 | 2–3 | [PROCESSING.md](PROCESSING.md) | Download invoice → Extract data (PDF Phase → Image Phase) |
-| 4 | [VALIDATION.md](VALIDATION.md) | Validate mandatory fields before Excel write |
-| 5–6 | [EXCEL.md](EXCEL.md) | Update Excel, reply with summary |
+| 4 | [VALIDATION.md](VALIDATION.md) | Validate mandatory fields before write |
+| 5–6 | [EXCEL.md](EXCEL.md) | Insert to SQLite, reply with summary |
 | 7–8 | [EXCEL.md](EXCEL.md) | Monthly summary & export (when requested) |
 | 9 | [VALIDATION.md](VALIDATION.md) | List errors (when requested) |
 
@@ -95,6 +96,28 @@ FAILURE → Log to errors.jsonl → Reply with error details
 
 ---
 
+## Step 0: Initialize SQLite Database (First Run Only)
+
+The invoice skill now uses SQLite (`invoices.db`) as the primary storage.
+Excel files are only generated on-demand when the user requests them.
+
+**On first use (or if invoices.db doesn't exist):**
+```bash
+# Initialize SQLite database
+python3 .opencode/skills/invoice-processing/scripts/db.py
+# Or import and call init_db() from Python
+```
+
+The database file `invoices.db` will be created in the thread directory.
+It stores all invoice records across all months in a single file.
+
+**Database schema:**
+- `invoices` table: stores all invoice data (see scripts/db.py for full schema)
+- Unique index on `invoice_no` (when not empty)
+- Indexes on `month`, `seller_tax_id`, `created_at`
+
+---
+
 ## Step 1: Determine Current Month Folder
 
 **IMPORTANT: The month folder is based on when the invoice is RECEIVED/processed, NOT the invoice date (开票日期).**
@@ -119,8 +142,9 @@ Thread directory structure:
 <thread_dir>/
   template.xlsx           ← Invoice record template (copied from skill)
   summary.xlsx            ← Summary template (placed by user)
+  invoices.db             ← SQLite database (primary storage for all months)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
-    invoices.xlsx          ← Invoice records for this month
+    invoices.xlsx          ← Generated on-demand (when user requests Excel export)
     errors.jsonl           ← Failed invoice log (append-only, one JSON per line)
     summary.xlsx           ← Summary for this month (copied + filled when requested)
     INV-2026-0042.pdf      ← Downloaded invoices (named by invoice number)
@@ -128,13 +152,19 @@ Thread directory structure:
     ...
 ```
 
-Check if the current month's folder exists:
+Check if the current month's folder and database exist:
 ```bash
 MONTH=$(date +%Y-%m)
 FOLDER="invoice_${MONTH}"
+
+# Ensure SQLite database exists (initialize if needed)
+if [ ! -f "invoices.db" ]; then
+  python3 .opencode/skills/invoice-processing/scripts/db.py
+fi
+
+# Create monthly folder (if needed for invoice files)
 if [ ! -d "$FOLDER" ]; then
   mkdir -p "$FOLDER"
-  cp template.xlsx "$FOLDER/invoices.xlsx"
 fi
 ```
 
@@ -144,13 +174,13 @@ fi
 
 ### Processing Rules
 - ALWAYS check/create the monthly folder before processing
-- ALWAYS copy template.xlsx to the new monthly folder as invoices.xlsx
+- ALWAYS initialize SQLite database if not exists (Step 0)
 - The Excel column mapping is FIXED (15 columns, A-O) — do NOT read template headers each time. See EXCEL.md for the exact mapping.
 - ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers (合规凭证)
-- ALWAYS validate 2 mandatory fields (销售方税号, 价税合计) before writing to invoices.xlsx
+- ALWAYS validate 2 mandatory fields (销售方税号, 价税合计) before writing to SQLite
 - ALWAYS follow the STRICT sequential order: PDF attachments → PDF URLs → Image sources (see PROCESSING.md)
 - **NEVER skip PDF URL extraction (Step 2b) — if no PDF attachment found, you MUST try to extract URLs from the email body BEFORE processing any image sources**
-- NEVER write incomplete or failed invoices to invoices.xlsx — log to errors.jsonl instead
+- NEVER write incomplete or failed invoices to SQLite — log to errors.jsonl instead
 - NEVER save non-PDF/non-image files to the monthly folder — they are not valid vouchers
 - NEVER use vision MCP tool on PDF files — use Python PdfReader (pypdf) only for PDFs
 - Vision MCP is ONLY for image files (JPG/PNG)
@@ -168,9 +198,9 @@ fi
 ### Validation Rules
 - 销售方税号 (Seller Tax ID): 18 characters, alphanumeric — **MANDATORY**
 - 价税合计 (Total amount): positive number — **MANDATORY**
-- 校验码 (Verification Code): 20 numeric digits — OPTIONAL (some invoices don't have it)
+- 校验码 (Verification Code): 20 numeric digits — stored in dedicated `verify_code` field
 - 发票号码 (Invoice number): recommended, warn if missing, but NOT mandatory
-- If 校验码 is present, write it at the end of 备注 column in Excel (format: "校验码: XXXX")
+- If 校验码 is present, store in dedicated `verify_code` field (not just in 备注)
 
 ### File Handling Rules
 - Do NOT overwrite existing invoice files

@@ -79,7 +79,7 @@ Do NOT use the reply tool for your final message. Your final action MUST be:
 cd repo
 gh label create "jyc:review" --description "Route to reviewer agent" --color "1D76DB" 2>/dev/null || true
 gh api repos/{owner}/{repo}/issues/<number>/labels --method POST -f 'labels[]=jyc:review'
-gh pr comment <number> --body "@jyc:reviewer Implementation complete. Ready for review."
+gh pr comment <number> --body "[Developer] @jyc:reviewer Implementation complete. Ready for review."
 ```
 **CRITICAL:** Do NOT skip this step. Do NOT replace it with a reply/summary comment.
 The reviewer agent will NOT be triggered unless you run the commands above.
@@ -91,10 +91,11 @@ cd repo
 gh pr view <number> --comments
 # Fix issues on the same branch
 git add . && git commit -m "fix: address review feedback" && git push
-gh pr comment <number> --body "@jyc:reviewer Feedback addressed. Please re-review."
+gh pr comment <number> --body "[Developer] @jyc:reviewer Feedback addressed. Please re-review."
 ```
 
 ## Rules
+- ALWAYS prefix every comment posted via `gh pr comment` with `[Developer]` — this is how the system identifies your comments and prevents self-loops
 - ALWAYS `cd repo` before running any `gh` or `git` command
 - ALWAYS use `gh pr checkout <number>` to get the existing PR branch
 - ALWAYS push to the existing PR branch — NEVER create a new branch or PR

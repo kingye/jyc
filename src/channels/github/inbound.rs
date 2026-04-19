@@ -56,26 +56,10 @@ impl ChannelMatcher for GithubMatcher {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
-        // Priority 1: Hand-over marker (@jyc:<role>) — match by role name directly
-        if let Some(handover_role) = message.metadata.get("handover_role").and_then(|v| v.as_str()) {
-            for pattern in patterns {
-                if !pattern.enabled {
-                    continue;
-                }
-                if let Some(ref role) = pattern.role {
-                    if role.eq_ignore_ascii_case(handover_role) {
-                        return Some(PatternMatch {
-                            pattern_name: pattern.name.clone(),
-                            channel: "github".to_string(),
-                            matches: HashMap::new(),
-                        });
-                    }
-                }
-            }
-            // No pattern found with that role — fall through to normal matching
-        }
-
-        // Priority 2: Normal matching by github_type + labels
+        // Match by github_type + labels (+ optional assignees).
+        // Routing is label-driven: agents must add the correct label (e.g., jyc:review,
+        // jyc:develop) before handing over. The @jyc:<role> mention in comments is
+        // purely informational and does NOT affect routing.
         let github_type = message
             .metadata
             .get("github_type")
@@ -526,50 +510,46 @@ impl GithubInboundAdapter {
                 .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![], vec![]));
 
             // Detect hand-over marker: @jyc:<role> (e.g., @jyc:developer, @jyc:reviewer)
-            let handover_role = extract_handover_role(body_trimmed);
-
-            if let Some(ref role) = handover_role {
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "handover",
-                    comment_id = comment.id,
-                    issue_number = issue_number,
-                    target_role = %role,
-                    user = %comment.user.login,
-                    "Hand-over marker detected → routing to role"
-                );
-            } else {
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "comment",
-                    comment_id = comment.id,
-                    issue_number = issue_number,
-                    user = %comment.user.login,
-                    body_preview = %truncate_str(&comment.body, 80),
-                    "GitHub comment detected → routing to thread"
-                );
+            // Note: this is logged for observability but does NOT affect routing.
+            // Routing is purely label-driven (jyc:develop, jyc:review, etc.).
+            if let Some(re) = Regex::new(r"(?i)@jyc:(\w+)").ok() {
+                if let Some(caps) = re.captures(body_trimmed) {
+                    if let Some(role) = caps.get(1) {
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "handover_mention",
+                            comment_id = comment.id,
+                            issue_number = issue_number,
+                            target_role = %role.as_str(),
+                            user = %comment.user.login,
+                            "Hand-over mention detected (routing via labels, not mention)"
+                        );
+                    }
+                }
             }
+
+            tracing::info!(
+                channel = %self.channel_name,
+                event = "comment",
+                comment_id = comment.id,
+                issue_number = issue_number,
+                user = %comment.user.login,
+                body_preview = %truncate_str(&comment.body, 80),
+                "GitHub comment detected → routing to thread"
+            );
 
             // Route: build trigger message and send to on_message
             let mut message = self.build_trigger_message(
-                if handover_role.is_some() { "handover" } else { "issue_comment" },
+                "issue_comment",
                 issue_number,
                 &title,
                 &github_type,
-                if handover_role.is_some() { "handover" } else { "commented" },
+                "commented",
                 &comment.user.login,
                 &labels,
                 &assignees,
                 &event_uid,
             );
-
-            // Set handover_role in metadata if detected
-            if let Some(role) = handover_role {
-                message.metadata.insert(
-                    "handover_role".to_string(),
-                    serde_json::Value::String(role),
-                );
-            }
 
             // Set comment_role in metadata for self-loop prevention in matcher
             if let Some(ref role) = comment_role {
@@ -831,21 +811,6 @@ impl GithubInboundAdapter {
 
         Ok(())
     }
-}
-
-/// Extract hand-over role from text containing `@jyc:<role>` marker.
-///
-/// Examples:
-///   "@jyc:developer Please implement this" → Some("developer")
-///   "@jyc:reviewer Ready for review" → Some("reviewer")
-///   "Normal comment without marker" → None
-///
-/// The marker is case-insensitive. Only the first match is returned.
-fn extract_handover_role(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)@jyc:(\w+)").ok()?;
-    re.captures(text)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_lowercase())
 }
 
 /// Extract agent role from `[Role]` prefix in comment body.
@@ -1157,77 +1122,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // --- Hand-over routing ---
-
-    #[test]
-    fn test_match_handover_by_role() {
-        let mut msg = make_message("pull_request", 43, &[]);
-        msg.metadata.insert(
-            "handover_role".to_string(),
-            serde_json::json!("developer"),
-        );
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "developer");
-    }
-
-    #[test]
-    fn test_match_handover_case_insensitive() {
-        let mut msg = make_message("issue", 42, &[]);
-        msg.metadata.insert(
-            "handover_role".to_string(),
-            serde_json::json!("Reviewer"),
-        );
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
-    #[test]
-    fn test_match_handover_unknown_role_falls_through() {
-        // Unknown handover role falls through to normal matching.
-        // Issue without label → matches planner (no auto-label for issue patterns).
-        let mut msg = make_message("issue", 42, &[]);
-        msg.metadata.insert(
-            "handover_role".to_string(),
-            serde_json::json!("unknown_role"),
-        );
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "planner");
-    }
-
-    #[test]
-    fn test_match_handover_unknown_role_pr_no_label_no_match() {
-        // Unknown handover role on a PR without label → no match.
-        // PR patterns still require auto-label.
-        let mut msg = make_message("pull_request", 43, &[]);
-        msg.metadata.insert(
-            "handover_role".to_string(),
-            serde_json::json!("unknown_role"),
-        );
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_match_handover_bypasses_labels() {
-        // Hand-over should match even without the routing label on the PR
-        let mut msg = make_message("pull_request", 43, &[]);
-        msg.metadata.insert(
-            "handover_role".to_string(),
-            serde_json::json!("reviewer"),
-        );
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
     // --- Self-loop prevention ---
 
     #[test]
@@ -1301,31 +1195,6 @@ mod tests {
     }
 
     // --- Helper function tests ---
-
-    #[test]
-    fn test_extract_handover_role() {
-        assert_eq!(
-            extract_handover_role("@jyc:developer Please implement this"),
-            Some("developer".to_string())
-        );
-        assert_eq!(
-            extract_handover_role("@jyc:Reviewer Ready for review"),
-            Some("reviewer".to_string())
-        );
-        assert_eq!(
-            extract_handover_role("Normal comment without marker"),
-            None
-        );
-        assert_eq!(
-            extract_handover_role("Some text @jyc:planner more text"),
-            Some("planner".to_string())
-        );
-        // Role prefix [Planner] is NOT a handover marker
-        assert_eq!(
-            extract_handover_role("[Planner] This is a reply"),
-            None
-        );
-    }
 
     #[test]
     fn test_extract_comment_role() {

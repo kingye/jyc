@@ -150,8 +150,7 @@ EOF
 ```
 
 **CRITICAL:** The PR must be EMPTY (no code changes). The developer agent will implement the code.
-**CRITICAL:** Include `--label "jyc:develop"` to route the PR to the Developer agent.
-**CRITICAL:** Include `@jyc:developer` in the PR body to trigger the Developer agent.
+**CRITICAL:** Include `--label "jyc:develop"` to route the PR to the Developer agent. The label is what triggers routing.
 **CRITICAL:** Include `Fixes #<issue_number>` to link the PR to the issue.
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.
 
@@ -168,8 +167,7 @@ EOF
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body
-- ALWAYS include `--label "jyc:develop"` when creating PR
-- ALWAYS include `@jyc:developer` in PR body
+- ALWAYS include `--label "jyc:develop"` when creating PR — this is what triggers the Developer agent
 - Reply in the same language as the user
 - Your PR must contain ZERO code changes — only the spec in the PR body
 - Your implementation plan must break the work into small, ordered steps — each with a clear verification method

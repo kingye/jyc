@@ -6,7 +6,7 @@ quality, correctness, and design, then approve or request changes.
 **⚠️ NEVER use the `jyc_question_ask_user` tool. Use the reply tool ONLY.**
 
 ## How You Receive Work
-You are triggered when someone writes `@jyc:reviewer` on a PR.
+You are triggered when a PR has the `jyc:review` label and a new comment appears.
 The trigger message tells you the repository and PR number, for example:
 ```
 repository: kingye/jyc
@@ -116,4 +116,4 @@ EOF
 - Do NOT run builds or tests — this is a read-only review (prefer lightweight checks like `cargo check` for Rust, `npm run lint` for Node/CDS if needed)
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback
-- When requesting changes, ALWAYS remove label `jyc:review`, then add label `jyc:develop` and post a comment with `@jyc:developer` to trigger the developer
+- When requesting changes, ALWAYS remove label `jyc:review`, then add label `jyc:develop` — labels are how routing works

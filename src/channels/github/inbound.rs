@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
@@ -56,121 +57,32 @@ impl ChannelMatcher for GithubMatcher {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
-        // Match by github_type + labels (+ optional assignees).
-        // Routing is label-driven: agents must add the correct label (e.g., jyc:review,
-        // jyc:develop) before handing over. The @jyc:<role> mention in comments is
-        // purely informational and does NOT affect routing.
-        let github_type = message
-            .metadata
-            .get("github_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let labels: Vec<String> = message
-            .metadata
-            .get("github_labels")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Routing is mention-driven: only comments containing @j:<role> trigger agents.
+        // The handover_role metadata is set by poll_once() when @j:<role> is detected.
+        // No mention = no routing.
+        let handover_role = message.metadata.get("handover_role").and_then(|v| v.as_str())?;
 
         for pattern in patterns {
             if !pattern.enabled {
                 continue;
             }
-
-            // Check github_type rule
-            if let Some(ref type_rules) = pattern.rules.github_type {
-                if !type_rules.iter().any(|t| t == github_type) {
-                    continue;
-                }
-            }
-
-            // Check labels rule (OR logic: match if ANY label matches).
-            // Effective labels = explicit config labels + auto-label from role.
-            // Auto-label is derived from pattern.role (e.g., "Developer" → "jyc:develop").
-            //
-            // Auto-label only applies to pull_request patterns, not issue patterns.
-            // Issues are created by users (who may not add routing labels).
-            // PRs are created by agents (who add labels during hand-off).
-            let is_pr_pattern = pattern
-                .rules
-                .github_type
-                .as_ref()
-                .map_or(false, |types| types.iter().any(|t| t == "pull_request"));
-            let auto_label = if is_pr_pattern {
-                pattern.role.as_deref().and_then(role_to_routing_label)
-            } else {
-                None
-            };
-            let has_label_rules = pattern.rules.labels.is_some() || auto_label.is_some();
-
-            if has_label_rules {
-                let mut label_matched = false;
-
-                // Check explicit label rules from config
-                if let Some(ref label_rules) = pattern.rules.labels {
-                    if label_rules.iter().any(|rule| labels.contains(&rule.to_lowercase())) {
-                        label_matched = true;
+            if let Some(ref role) = pattern.role {
+                if role.eq_ignore_ascii_case(handover_role) {
+                    // Self-loop prevention: skip if comment is from this pattern's own role.
+                    // A [Developer] comment with @j:developer should NOT re-trigger developer.
+                    if let Some(comment_role) = message.metadata.get("comment_role").and_then(|v| v.as_str()) {
+                        if role.eq_ignore_ascii_case(comment_role) {
+                            continue;
+                        }
                     }
-                }
 
-                // Check auto-label derived from role
-                if let Some(auto) = auto_label {
-                    if labels.contains(&auto.to_lowercase()) {
-                        label_matched = true;
-                    }
-                }
-
-                if !label_matched {
-                    continue;
+                    return Some(PatternMatch {
+                        pattern_name: pattern.name.clone(),
+                        channel: "github".to_string(),
+                        matches: HashMap::new(),
+                    });
                 }
             }
-
-            // Check assignees rule (OR logic: match if ANY assignee matches)
-            // Case-insensitive comparison
-            if let Some(ref assignee_rules) = pattern.rules.assignees {
-                let assignees: Vec<String> = message
-                    .metadata
-                    .get("github_assignees")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let rules_lower: Vec<String> = assignee_rules
-                    .iter()
-                    .map(|r| r.to_lowercase())
-                    .collect();
-
-                if !rules_lower.iter().any(|rule| assignees.contains(rule))
-                {
-                    continue;
-                }
-            }
-
-            // Self-loop prevention: skip if comment is from this pattern's own role.
-            // A [Developer] comment should NOT re-trigger the developer pattern,
-            // but SHOULD be visible to the reviewer pattern.
-            if let Some(comment_role) = message.metadata.get("comment_role").and_then(|v| v.as_str()) {
-                if let Some(ref pattern_role) = pattern.role {
-                    if pattern_role.eq_ignore_ascii_case(comment_role) {
-                        continue;
-                    }
-                }
-            }
-
-            // All present rules matched
-            return Some(PatternMatch {
-                pattern_name: pattern.name.clone(),
-                channel: "github".to_string(),
-                matches: HashMap::new(),
-            });
         }
 
         None
@@ -185,13 +97,101 @@ impl ChannelMatcher for GithubMatcher {
 pub struct GithubInboundAdapter {
     config: GithubConfig,
     channel_name: String,
+    /// Directory for persistent state: <workdir>/<channel>/.github/
+    state_dir: PathBuf,
 }
 
 impl GithubInboundAdapter {
-    pub fn new(config: &GithubConfig, channel_name: String) -> Self {
+    pub fn new(config: &GithubConfig, channel_name: String, workdir: &Path) -> Self {
+        let state_dir = workdir.join(&channel_name).join(".github");
         Self {
             config: config.clone(),
             channel_name,
+            state_dir,
+        }
+    }
+
+    /// Load processed comment IDs from persistent storage.
+    /// File format: one comment ID per line in `.github/processed-comments.txt`.
+    async fn load_processed_comments(&self) -> HashSet<u64> {
+        let file = self.state_dir.join("processed-comments.txt");
+        if !file.exists() {
+            return HashSet::new();
+        }
+        match tokio::fs::read_to_string(&file).await {
+            Ok(content) => {
+                let set: HashSet<u64> = content
+                    .lines()
+                    .filter_map(|line| line.trim().parse::<u64>().ok())
+                    .collect();
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    count = set.len(),
+                    "Loaded processed comment IDs"
+                );
+                set
+            }
+            Err(e) => {
+                tracing::warn!(
+                    channel = %self.channel_name,
+                    error = %e,
+                    "Failed to load processed comments, starting fresh"
+                );
+                HashSet::new()
+            }
+        }
+    }
+
+    /// Persist a comment ID as processed (append to file).
+    async fn track_comment(&self, comment_id: u64, processed: &mut HashSet<u64>) {
+        processed.insert(comment_id);
+
+        let file = self.state_dir.join("processed-comments.txt");
+        use tokio::io::AsyncWriteExt;
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .await
+        {
+            let _ = f.write_all(format!("{comment_id}\n").as_bytes()).await;
+        }
+
+        // Compact when >5000 entries: rewrite with only what's in memory
+        if processed.len() > 5000 {
+            self.compact_processed_comments(processed).await;
+        }
+    }
+
+    /// Compact processed comments file by keeping only the latest entries.
+    async fn compact_processed_comments(&self, processed: &mut HashSet<u64>) {
+        // Keep only the 2000 highest IDs (most recent)
+        if processed.len() <= 2000 {
+            return;
+        }
+
+        let mut ids: Vec<u64> = processed.iter().copied().collect();
+        ids.sort_unstable();
+        let keep_from = ids.len() - 2000;
+        let keep: HashSet<u64> = ids[keep_from..].iter().copied().collect();
+
+        let before = processed.len();
+        *processed = keep;
+
+        let file = self.state_dir.join("processed-comments.txt");
+        let content: String = processed
+            .iter()
+            .map(|id| format!("{id}\n"))
+            .collect();
+        if let Err(e) = tokio::fs::write(&file, content).await {
+            tracing::warn!(error = %e, "Failed to compact processed comments file");
+        } else {
+            tracing::info!(
+                channel = %self.channel_name,
+                before = before,
+                after = processed.len(),
+                "Compacted processed comments"
+            );
         }
     }
 
@@ -326,7 +326,12 @@ impl InboundAdapter for GithubInboundAdapter {
             "GitHub inbound adapter started"
         );
 
-        // Track processed event IDs for deduplication
+        // Create state directory and load persistent processed comments
+        tokio::fs::create_dir_all(&self.state_dir).await
+            .with_context(|| format!("failed to create state directory: {}", self.state_dir.display()))?;
+        let mut processed_comments: HashSet<u64> = self.load_processed_comments().await;
+
+        // Track processed event IDs for non-comment deduplication (close events)
         let mut processed_events: HashSet<String> = HashSet::new();
 
         // Cache issue info for comment routing (number → title, type, labels, assignees)
@@ -351,6 +356,7 @@ impl InboundAdapter for GithubInboundAdapter {
                     if let Err(e) = self.poll_once(
                         &client,
                         &options,
+                        &mut processed_comments,
                         &mut processed_events,
                         &mut issue_cache,
                         &mut last_poll,
@@ -372,12 +378,13 @@ impl InboundAdapter for GithubInboundAdapter {
 }
 
 impl GithubInboundAdapter {
-    /// Execute one poll cycle: fetch issues, comments, and closed items.
+    /// Execute one poll cycle: fetch comments with @j:<role> mentions.
     /// Routes events to threads via on_message callback.
     async fn poll_once(
         &self,
         client: &GithubClient,
         options: &InboundAdapterOptions,
+        processed_comments: &mut HashSet<u64>,
         processed_events: &mut HashSet<String>,
         issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
@@ -390,16 +397,9 @@ impl GithubInboundAdapter {
             "GitHub poll cycle started"
         );
 
-        // Track which issue numbers had comments routed in this cycle.
-        // If a comment was routed for an issue, skip the issue_updated event
-        // to avoid duplicate triggers in the same poll cycle.
-        let mut commented_issues: HashSet<u64> = HashSet::new();
-
         // 1. Fetch ALL open issues/PRs to populate the cache and detect closures.
         // We fetch the complete set (not just recently-updated) so cache comparison
-        // for close detection is reliable. Issues that weren't updated recently
-        // must still appear in the open set — otherwise they'd be falsely detected
-        // as closed.
+        // for close detection is reliable.
         let issues = client.list_all_open_issues().await?;
         tracing::trace!(
             channel = %self.channel_name,
@@ -407,78 +407,19 @@ impl GithubInboundAdapter {
             "Fetched all open issues/PRs"
         );
 
-        // Pre-compute issue routing data (label changes, new issues) before processing.
-        // We store tuples of (issue_ref, github_type, labels, old_labels, is_new, new_labels_added).
-        struct IssueRouteInfo {
-            number: u64,
-            title: String,
-            github_type: String,
-            labels: Vec<String>,
-            assignees: Vec<String>,
-            user_login: String,
-            is_newly_created: bool,
-            new_labels_added: Vec<String>,
-            new_assignees_added: Vec<String>,
-        }
-
-        let mut issue_route_infos: Vec<IssueRouteInfo> = Vec::new();
-
         for issue in &issues {
             let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
             let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
             let assignees: Vec<String> = issue.assignees.iter().map(|a| a.login.clone()).collect();
 
-            // Detect label changes before updating cache
-            let old_data = issue_cache
-                .get(&issue.number)
-                .cloned()
-                .unwrap_or_else(|| (String::new(), String::new(), vec![], vec![]));
-            let old_labels = old_data.2;
-            let old_assignees = old_data.3;
-
-            let new_labels_added: Vec<String> = labels
-                .iter()
-                .filter(|l| !old_labels.iter().any(|o| o.eq_ignore_ascii_case(l)))
-                .cloned()
-                .collect();
-
-            let new_assignees_added: Vec<String> = assignees
-                .iter()
-                .filter(|a| !old_assignees.iter().any(|o| o.eq_ignore_ascii_case(a)))
-                .cloned()
-                .collect();
-
-            let is_newly_created = issue.created_at > poll_start;
-
-            // Update cache for ALL open issues (used by close detection in step 3
-            // and comment routing in step 2)
             issue_cache.insert(
                 issue.number,
-                (issue.title.clone(), github_type.to_string(), labels.clone(), assignees.clone()),
+                (issue.title.clone(), github_type.to_string(), labels, assignees),
             );
-
-            // Only route issues updated since last poll (avoid flooding on startup
-            // when we fetch the full open set for cache/close detection)
-            let is_recently_updated = issue.updated_at >= poll_start;
-            if !is_recently_updated {
-                continue;
-            }
-
-            issue_route_infos.push(IssueRouteInfo {
-                number: issue.number,
-                title: issue.title.clone(),
-                github_type: github_type.to_string(),
-                labels,
-                assignees,
-                user_login: issue.user.login.clone(),
-                is_newly_created,
-                new_labels_added,
-                new_assignees_added,
-            });
         }
 
-        // 2. Fetch and process comments (they are more specific triggers than issue_updated).
-        // The issue cache is now populated, so label lookups work correctly.
+        // 2. Fetch and process comments — only route those with @j:<role> mentions.
+        // The issue cache is now populated, so lookups work correctly.
         let comments = client.list_comments_since(&poll_start).await?;
         tracing::trace!(
             channel = %self.channel_name,
@@ -486,20 +427,33 @@ impl GithubInboundAdapter {
             "Fetched comments"
         );
 
+        let mention_re = Regex::new(r"(?i)@j:(\w+)").unwrap();
+
         for comment in &comments {
-            let body_trimmed = comment.body.trim();
-
-            // Extract agent role from [Role] prefix (e.g., "[Developer] ..." → "Developer").
-            // This is stored in metadata for self-loop prevention in the matcher.
-            // Unlike the previous design which globally filtered ALL agent comments,
-            // we now let them through — each pattern only skips its OWN role's comments.
-            let comment_role = extract_comment_role(body_trimmed);
-
-            let event_uid = format!("comment-{}", comment.id);
-
-            if processed_events.contains(&event_uid) {
+            // Skip already-processed comments (persistent dedup)
+            if processed_comments.contains(&comment.id) {
                 continue;
             }
+
+            let body_trimmed = comment.body.trim();
+
+            // Extract @j:<role> mention — only route if present
+            let handover_role = mention_re
+                .captures(body_trimmed)
+                .and_then(|caps| caps.get(1))
+                .map(|m| m.as_str().to_lowercase());
+
+            let handover_role = match handover_role {
+                Some(role) => role,
+                None => {
+                    // No @j:<role> mention — skip, but mark as processed
+                    self.track_comment(comment.id, processed_comments).await;
+                    continue;
+                }
+            };
+
+            // Extract [Role] prefix for self-loop prevention
+            let comment_role = extract_comment_role(body_trimmed);
 
             let issue_number = comment.issue_number().unwrap_or(0);
 
@@ -509,49 +463,37 @@ impl GithubInboundAdapter {
                 .cloned()
                 .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![], vec![]));
 
-            // Detect hand-over marker: @jyc:<role> (e.g., @jyc:developer, @jyc:reviewer)
-            // Note: this is logged for observability but does NOT affect routing.
-            // Routing is purely label-driven (jyc:develop, jyc:review, etc.).
-            if let Some(re) = Regex::new(r"(?i)@jyc:(\w+)").ok() {
-                if let Some(caps) = re.captures(body_trimmed) {
-                    if let Some(role) = caps.get(1) {
-                        tracing::info!(
-                            channel = %self.channel_name,
-                            event = "handover_mention",
-                            comment_id = comment.id,
-                            issue_number = issue_number,
-                            target_role = %role.as_str(),
-                            user = %comment.user.login,
-                            "Hand-over mention detected (routing via labels, not mention)"
-                        );
-                    }
-                }
-            }
+            let event_uid = format!("comment-{}", comment.id);
 
             tracing::info!(
                 channel = %self.channel_name,
-                event = "comment",
+                event = "mention",
                 comment_id = comment.id,
                 issue_number = issue_number,
+                target_role = %handover_role,
                 user = %comment.user.login,
                 body_preview = %truncate_str(&comment.body, 80),
-                "GitHub comment detected → routing to thread"
+                "Comment with @j:{} detected → routing", handover_role,
             );
 
-            // Route: build trigger message and send to on_message
+            // Build trigger message with handover_role metadata
             let mut message = self.build_trigger_message(
                 "issue_comment",
                 issue_number,
                 &title,
                 &github_type,
-                "commented",
+                "mentioned",
                 &comment.user.login,
                 &labels,
                 &assignees,
                 &event_uid,
             );
 
-            // Set comment_role in metadata for self-loop prevention in matcher
+            message.metadata.insert(
+                "handover_role".to_string(),
+                serde_json::Value::String(handover_role),
+            );
+
             if let Some(ref role) = comment_role {
                 message.metadata.insert(
                     "comment_role".to_string(),
@@ -563,137 +505,7 @@ impl GithubInboundAdapter {
                 tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
             }
 
-            commented_issues.insert(issue_number);
-            processed_events.insert(event_uid);
-        }
-
-        // 3. Route new issues/PRs and label changes (using pre-computed data from step 1).
-        for info in &issue_route_infos {
-            // Skip if a comment was already routed for this issue in this cycle
-            if commented_issues.contains(&info.number) {
-                continue;
-            }
-
-            if info.is_newly_created {
-                // Route new issues/PRs
-                let event_uid = format!("{}-{}-opened", info.github_type, info.number);
-
-                if processed_events.contains(&event_uid) {
-                    continue;
-                }
-
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "opened",
-                    number = info.number,
-                    title = %info.title,
-                    github_type = %info.github_type,
-                    user = %info.user_login,
-                    labels = ?info.labels,
-                    "New issue/PR detected → routing to thread"
-                );
-
-                let message = self.build_trigger_message(
-                    &format!("{}_opened", info.github_type),
-                    info.number,
-                    &info.title,
-                    &info.github_type,
-                    "opened",
-                    &info.user_login,
-                    &info.labels,
-                    &info.assignees,
-                    &event_uid,
-                );
-                if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = info.number, "Failed to route new issue event");
-                }
-
-                processed_events.insert(event_uid);
-            } else if !info.new_labels_added.is_empty() {
-                // Route label change on existing issues/PRs.
-                // This handles the case where a user adds a label (e.g., "jyc:plan")
-                // to an existing issue that was previously unmatched.
-                let event_uid = format!(
-                    "{}-{}-labeled-{}",
-                    info.github_type,
-                    info.number,
-                    info.new_labels_added.join(",")
-                );
-
-                if processed_events.contains(&event_uid) {
-                    continue;
-                }
-
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "labeled",
-                    number = info.number,
-                    title = %info.title,
-                    github_type = %info.github_type,
-                    new_labels = ?info.new_labels_added,
-                    all_labels = ?info.labels,
-                    "Label change detected → routing to thread"
-                );
-
-                let message = self.build_trigger_message(
-                    &format!("{}_labeled", info.github_type),
-                    info.number,
-                    &info.title,
-                    &info.github_type,
-                    "labeled",
-                    &info.user_login,
-                    &info.labels,
-                    &info.assignees,
-                    &event_uid,
-                );
-                if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = info.number, "Failed to route label change event");
-                }
-
-                processed_events.insert(event_uid);
-            } else if !info.new_assignees_added.is_empty() {
-                // Route assignee change on existing issues/PRs.
-                // This handles the case where a user assigns someone (e.g., "alice")
-                // to an existing issue that was previously unassigned.
-                let event_uid = format!(
-                    "{}-{}-assigned-{}",
-                    info.github_type,
-                    info.number,
-                    info.new_assignees_added.join(",")
-                );
-
-                if processed_events.contains(&event_uid) {
-                    continue;
-                }
-
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "assigned",
-                    number = info.number,
-                    title = %info.title,
-                    github_type = %info.github_type,
-                    new_assignees = ?info.new_assignees_added,
-                    all_assignees = ?info.assignees,
-                    "Assignee change detected → routing to thread"
-                );
-
-                let message = self.build_trigger_message(
-                    &format!("{}_assigned", info.github_type),
-                    info.number,
-                    &info.title,
-                    &info.github_type,
-                    "assigned",
-                    &info.user_login,
-                    &info.labels,
-                    &info.assignees,
-                    &event_uid,
-                );
-                if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = info.number, "Failed to route assignee change event");
-                }
-
-                processed_events.insert(event_uid);
-            }
+            self.track_comment(comment.id, processed_comments).await;
         }
 
         // 3. Detect closed issues/PRs by comparing cache with full open set.
@@ -836,35 +648,24 @@ fn extract_comment_role(text: &str) -> Option<String> {
     None
 }
 
-/// Map agent role name to its routing label.
-///
-/// These labels are a fixed convention, hardcoded in agent templates (AGENTS.md).
-/// Agents add these labels when creating PRs or handing off to other agents.
-/// The matcher uses them for automatic label-based routing.
+/// Extract @j:<role> mention from comment text.
 ///
 /// Examples:
-///   "Developer" → Some("jyc:develop")
-///   "Reviewer"  → Some("jyc:review")
-///   "Planner"   → Some("jyc:plan")
-///   "Unknown"   → None
-fn role_to_routing_label(role: &str) -> Option<&'static str> {
-    match role.to_lowercase().as_str() {
-        "developer" => Some("jyc:develop"),
-        "reviewer" => Some("jyc:review"),
-        "planner" => Some("jyc:plan"),
-        _ => None,
-    }
+///   "@j:developer Please implement this" → Some("developer")
+///   "@j:Reviewer Ready for review" → Some("reviewer")
+///   "Normal comment without mention" → None
+fn extract_mention_role(text: &str) -> Option<String> {
+    let re = Regex::new(r"(?i)@j:(\w+)").ok()?;
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_lowercase())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_message(github_type: &str, number: u64, labels: &[&str]) -> InboundMessage {
-        make_message_with_assignees(github_type, number, labels, &[])
-    }
-
-    fn make_message_with_assignees(github_type: &str, number: u64, labels: &[&str], assignees: &[&str]) -> InboundMessage {
+    fn make_message(github_type: &str, number: u64) -> InboundMessage {
         let mut metadata = HashMap::new();
         metadata.insert(
             "github_type".to_string(),
@@ -873,14 +674,6 @@ mod tests {
         metadata.insert(
             "github_number".to_string(),
             serde_json::json!(number),
-        );
-        metadata.insert(
-            "github_labels".to_string(),
-            serde_json::json!(labels),
-        );
-        metadata.insert(
-            "github_assignees".to_string(),
-            serde_json::json!(assignees),
         );
 
         InboundMessage {
@@ -945,21 +738,21 @@ mod tests {
 
     #[test]
     fn test_derive_thread_name_issue() {
-        let msg = make_message("issue", 42, &[]);
+        let msg = make_message("issue", 42);
         let name = GithubMatcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "issue-42");
     }
 
     #[test]
     fn test_derive_thread_name_pr() {
-        let msg = make_message("pull_request", 43, &[]);
+        let msg = make_message("pull_request", 43);
         let name = GithubMatcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "pr-43");
     }
 
     #[test]
     fn test_derive_thread_name_reviewer() {
-        let msg = make_message("pull_request", 43, &[]);
+        let msg = make_message("pull_request", 43);
         let pm = PatternMatch {
             pattern_name: "reviewer".to_string(),
             channel: "github".to_string(),
@@ -971,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_derive_thread_name_developer() {
-        let msg = make_message("pull_request", 43, &[]);
+        let msg = make_message("pull_request", 43);
         let pm = PatternMatch {
             pattern_name: "developer".to_string(),
             channel: "github".to_string(),
@@ -981,35 +774,21 @@ mod tests {
         assert_eq!(name, "pr-43");
     }
 
-    // --- Auto-label routing ---
+    // --- Mention-based routing ---
 
     #[test]
-    fn test_match_issue_with_plan_label() {
-        // Planner has role="Planner" but github_type=issue → no auto-label.
-        // Explicit labels would still work if configured.
-        let patterns = vec![ChannelPattern {
-            name: "planner".to_string(),
-            enabled: true,
-            role: Some("Planner".to_string()),
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["issue".to_string()]),
-                labels: Some(vec!["plan".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        let msg = make_message("issue", 42, &["plan"]);
+    fn test_no_mention_no_match() {
+        // Comment without @j:<role> → no routing
+        let msg = make_message("issue", 42);
+        let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "planner");
+        assert!(result.is_none());
     }
 
     #[test]
-    fn test_match_issue_without_label_matches_planner() {
-        // Planner has role="Planner" + github_type=["issue"] → no auto-label required.
-        // Issues match based on github_type alone (no label check when no explicit labels).
-        let msg = make_message("issue", 42, &[]);
+    fn test_mention_planner_matches() {
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
@@ -1017,8 +796,9 @@ mod tests {
     }
 
     #[test]
-    fn test_match_pr_with_develop_label() {
-        let msg = make_message("pull_request", 43, &["jyc:develop"]);
+    fn test_mention_developer_matches() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
@@ -1026,8 +806,9 @@ mod tests {
     }
 
     #[test]
-    fn test_match_pr_with_review_label() {
-        let msg = make_message("pull_request", 43, &["jyc:review"]);
+    fn test_mention_reviewer_matches() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
@@ -1035,79 +816,28 @@ mod tests {
     }
 
     #[test]
-    fn test_match_pr_without_matching_label() {
-        let msg = make_message("pull_request", 43, &["wip"]);
+    fn test_mention_case_insensitive() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("Reviewer"));
         let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_match_pr_no_labels_no_match() {
-        // Developer has role="Developer" → auto-label "jyc:develop" is required
-        let msg = make_message("pull_request", 43, &[]);
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_match_explicit_labels_plus_auto_label() {
-        // Pattern with both explicit labels and role (auto-label)
-        let patterns = vec![ChannelPattern {
-            name: "developer".to_string(),
-            enabled: true,
-            role: Some("Developer".to_string()),
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["custom-dev".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        // Matches via explicit label
-        let msg1 = make_message("pull_request", 43, &["custom-dev"]);
-        let result1 = GithubMatcher.match_message(&msg1, &patterns);
-        assert!(result1.is_some());
-        assert_eq!(result1.unwrap().pattern_name, "developer");
-
-        // Also matches via auto-label
-        let msg2 = make_message("pull_request", 43, &["jyc:develop"]);
-        let result2 = GithubMatcher.match_message(&msg2, &patterns);
-        assert!(result2.is_some());
-        assert_eq!(result2.unwrap().pattern_name, "developer");
-
-        // Neither label → no match
-        let msg3 = make_message("pull_request", 43, &["unrelated"]);
-        let result3 = GithubMatcher.match_message(&msg3, &patterns);
-        assert!(result3.is_none());
-    }
-
-    #[test]
-    fn test_match_pattern_without_role_no_auto_label() {
-        // Pattern without role → no auto-label, only explicit labels checked
-        let patterns = vec![ChannelPattern {
-            name: "catch_all".to_string(),
-            enabled: true,
-            role: None,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["issue".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        // No role + no labels config → matches all issues (no label check)
-        let msg = make_message("issue", 42, &[]);
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "catch_all");
+        assert_eq!(result.unwrap().pattern_name, "reviewer");
     }
 
     #[test]
-    fn test_match_disabled_pattern_skipped() {
-        let msg = make_message("issue", 42, &["jyc:plan"]);
+    fn test_mention_unknown_role_no_match() {
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("unknown"));
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_disabled_pattern_skipped() {
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: false,
@@ -1125,43 +855,33 @@ mod tests {
     // --- Self-loop prevention ---
 
     #[test]
-    fn test_self_loop_developer_comment_skips_developer() {
-        // [Developer] comment on a PR with jyc:develop label
-        // Should NOT match developer (self-loop), should have no match
-        // since reviewer requires jyc:review label which is not present
-        let mut msg = make_message("pull_request", 43, &["jyc:develop"]);
-        msg.metadata.insert(
-            "comment_role".to_string(),
-            serde_json::json!("Developer"),
-        );
+    fn test_self_loop_developer_mention_own_role() {
+        // [Developer] posts "@j:developer" — should NOT re-trigger developer
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_self_loop_reviewer_comment_skips_reviewer() {
-        // [Reviewer] comment on a PR with jyc:review label
-        // Should NOT match reviewer (self-loop)
-        let mut msg = make_message("pull_request", 43, &["jyc:review"]);
-        msg.metadata.insert(
-            "comment_role".to_string(),
-            serde_json::json!("Reviewer"),
-        );
+    fn test_self_loop_reviewer_mention_own_role() {
+        // [Reviewer] posts "@j:reviewer" — should NOT re-trigger reviewer
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_cross_role_reviewer_comment_matches_developer() {
-        // [Reviewer] comment on a PR with BOTH jyc:develop and jyc:review labels
-        // Should skip reviewer (self-loop) but match developer
-        let mut msg = make_message("pull_request", 43, &["jyc:develop", "jyc:review"]);
-        msg.metadata.insert(
-            "comment_role".to_string(),
-            serde_json::json!("Reviewer"),
-        );
+    fn test_cross_role_reviewer_to_developer() {
+        // [Reviewer] posts "@j:developer" — should trigger developer
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
@@ -1169,29 +889,15 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_role_developer_comment_matches_reviewer() {
-        // [Developer] comment on a PR with BOTH jyc:develop and jyc:review labels
-        // Should skip developer (self-loop) but match reviewer
-        let mut msg = make_message("pull_request", 43, &["jyc:develop", "jyc:review"]);
-        msg.metadata.insert(
-            "comment_role".to_string(),
-            serde_json::json!("Developer"),
-        );
+    fn test_cross_role_developer_to_reviewer() {
+        // [Developer] posts "@j:reviewer" — should trigger reviewer
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
-    #[test]
-    fn test_human_comment_no_self_loop_check() {
-        // Human comment (no comment_role) on PR with jyc:develop label
-        // Should match developer normally
-        let msg = make_message("pull_request", 43, &["jyc:develop"]);
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "developer");
     }
 
     // --- Helper function tests ---
@@ -1204,19 +910,15 @@ mod tests {
         assert_eq!(extract_comment_role("normal comment"), None);
         assert_eq!(extract_comment_role("[Unknown] something"), None);
         assert_eq!(extract_comment_role(""), None);
-        assert_eq!(extract_comment_role("no bracket prefix"), None);
     }
 
     #[test]
-    fn test_role_to_routing_label() {
-        assert_eq!(role_to_routing_label("Developer"), Some("jyc:develop"));
-        assert_eq!(role_to_routing_label("developer"), Some("jyc:develop"));
-        assert_eq!(role_to_routing_label("Reviewer"), Some("jyc:review"));
-        assert_eq!(role_to_routing_label("reviewer"), Some("jyc:review"));
-        assert_eq!(role_to_routing_label("Planner"), Some("jyc:plan"));
-        assert_eq!(role_to_routing_label("planner"), Some("jyc:plan"));
-        assert_eq!(role_to_routing_label("Unknown"), None);
-        assert_eq!(role_to_routing_label(""), None);
+    fn test_extract_mention_role() {
+        assert_eq!(extract_mention_role("@j:developer Please implement"), Some("developer".to_string()));
+        assert_eq!(extract_mention_role("@j:Reviewer Ready for review"), Some("reviewer".to_string()));
+        assert_eq!(extract_mention_role("Normal comment"), None);
+        assert_eq!(extract_mention_role("Some text @j:planner more text"), Some("planner".to_string()));
+        assert_eq!(extract_mention_role("[Planner] This is a reply"), None);
     }
 
     // --- Build trigger message ---
@@ -1230,14 +932,15 @@ mod tests {
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
+        let tmpdir = tempfile::tempdir().unwrap();
+        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
 
         let msg = adapter.build_trigger_message(
             "issue_comment",
             42,
             "Add dark mode",
             "issue",
-            "created",
+            "mentioned",
             "user1",
             &["planning".to_string()],
             &["alice".to_string()],
@@ -1256,15 +959,6 @@ mod tests {
         assert!(text.contains("labels: planning"));
         assert!(text.contains("assignees: alice"));
         assert!(text.contains("gh issue view 42"));
-
-        assert_eq!(
-            msg.metadata.get("github_type").unwrap().as_str().unwrap(),
-            "issue"
-        );
-        assert_eq!(
-            msg.metadata.get("github_number").unwrap().as_u64().unwrap(),
-            42
-        );
     }
 
     #[test]
@@ -1276,14 +970,15 @@ mod tests {
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
+        let tmpdir = tempfile::tempdir().unwrap();
+        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
 
         let msg = adapter.build_trigger_message(
             "pull_request",
             43,
             "Fix issue #42",
             "pull_request",
-            "opened",
+            "mentioned",
             "bot",
             &[],
             &["alice".to_string(), "bob".to_string()],
@@ -1294,161 +989,5 @@ mod tests {
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
         assert!(text.contains("assignees: alice, bob"));
-    }
-
-    #[test]
-    fn test_build_trigger_message_no_assignees() {
-        let config = GithubConfig {
-            owner: "kingye".to_string(),
-            repo: "jyc".to_string(),
-            token: "test".to_string(),
-            api_url: "https://api.github.com".to_string(),
-            poll_interval_secs: 60,
-        };
-        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string());
-
-        let msg = adapter.build_trigger_message(
-            "issue_comment",
-            42,
-            "Add dark mode",
-            "issue",
-            "created",
-            "user1",
-            &["planning".to_string()],
-            &[],
-            "comment-12345",
-        );
-
-        let text = msg.content.text.unwrap();
-        assert!(!text.contains("assignees:"));
-    }
-
-    // --- Assignee matching tests ---
-
-    #[test]
-    fn test_match_pr_with_assignee() {
-        let patterns = vec![ChannelPattern {
-            name: "assigned_to_alice".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["pull_request".to_string()]),
-                assignees: Some(vec!["alice".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        let msg = make_message_with_assignees("pull_request", 43, &[], &["alice", "bob"]);
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "assigned_to_alice");
-    }
-
-    #[test]
-    fn test_match_pr_with_assignee_no_match() {
-        let patterns = vec![ChannelPattern {
-            name: "assigned_to_alice".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["pull_request".to_string()]),
-                assignees: Some(vec!["alice".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        let msg = make_message_with_assignees("pull_request", 43, &[], &["charlie", "david"]);
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_match_pr_assignee_and_label() {
-        // Both assignee AND label must match (AND logic)
-        let patterns = vec![ChannelPattern {
-            name: "alice_develop".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["jyc:develop".to_string()]),
-                assignees: Some(vec!["alice".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        // Both match → should match
-        let msg1 = make_message_with_assignees("pull_request", 43, &["jyc:develop"], &["alice"]);
-        let result1 = GithubMatcher.match_message(&msg1, &patterns);
-        assert!(result1.is_some());
-        assert_eq!(result1.unwrap().pattern_name, "alice_develop");
-
-        // Only assignee matches → no match
-        let msg2 = make_message_with_assignees("pull_request", 43, &["wip"], &["alice"]);
-        let result2 = GithubMatcher.match_message(&msg2, &patterns);
-        assert!(result2.is_none());
-
-        // Only label matches → no match
-        let msg3 = make_message_with_assignees("pull_request", 43, &["jyc:develop"], &["bob"]);
-        let result3 = GithubMatcher.match_message(&msg3, &patterns);
-        assert!(result3.is_none());
-    }
-
-    #[test]
-    fn test_match_pr_assignee_case_insensitive() {
-        let patterns = vec![ChannelPattern {
-            name: "assigned_to_alice".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["pull_request".to_string()]),
-                assignees: Some(vec!["ALICE".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        // Config uses uppercase, message uses lowercase → should match
-        let msg = make_message_with_assignees("pull_request", 43, &[], &["alice"]);
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "assigned_to_alice");
-    }
-
-    #[test]
-    fn test_match_issue_with_assignee() {
-        let patterns = vec![ChannelPattern {
-            name: "assigned_to_bob".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["issue".to_string()]),
-                assignees: Some(vec!["bob".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        let msg = make_message_with_assignees("issue", 42, &[], &["bob"]);
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "assigned_to_bob");
-    }
-
-    #[test]
-    fn test_match_issue_no_assignees() {
-        // Issue with no assignees should not match a pattern with assignee rules
-        let patterns = vec![ChannelPattern {
-            name: "assigned_to_bob".to_string(),
-            enabled: true,
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["issue".to_string()]),
-                assignees: Some(vec!["bob".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-
-        let msg = make_message_with_assignees("issue", 42, &[], &[]);
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
     }
 }

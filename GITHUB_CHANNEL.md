@@ -7,11 +7,12 @@ repositories through issue discussion, PR development, and code review.
 
 1. **Channel = Lightweight Trigger + Router** — Channel only polls events and
    routes them. Agents use `gh` CLI to read/write actual content.
-2. **Label-Based Routing** — Routing is purely label-driven:
-   - **Labels** (`jyc:plan`, `jyc:develop`, `jyc:review`) for routing.
-     Agents add labels when creating PRs or handing off. Auto-labels are derived
-     from the pattern's `role` field (e.g., `role = "Developer"` → `jyc:develop`).
-   - **`@jyc:<role>` markers** in comments are informational only and do NOT affect routing.
+2. **Mention-Based Routing** — Routing is driven by `@j:<role>` mentions in comments:
+   - A comment containing `@j:planner` triggers the Planner agent
+   - A comment containing `@j:developer` triggers the Developer agent
+   - A comment containing `@j:reviewer` triggers the Reviewer agent
+   - Comments without `@j:<role>` are ignored (no routing)
+   - Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`
 3. **One Token, Role Prefix + Self-Loop Prevention** — Single GitHub PAT. Agents
    prefix comments with `[Planner]`, `[Developer]`, `[Reviewer]`. Each pattern
    only skips comments from its **own** role (self-loop prevention), but allows
@@ -182,15 +183,15 @@ on the issue/PR.
 
 **Match logic:**
 - `github_type` + labels: AND across fields, OR within each field
-- Labels = explicit `labels` config + auto-label from `role` (OR logic)
 - Self-loop check: skip if comment is from the pattern's own role
 
 ### Routing
 
-Routing is purely label-driven. The `@jyc:<role>` mentions in comments are
-informational (for human readability) and do NOT affect routing.
+Routing is mention-driven. Only comments containing `@j:<role>` trigger agents.
+Comments without mentions are ignored. Processed comment IDs are persisted to
+`<channel>/.github/processed-comments.txt` to survive restarts.
 
-Matching logic: `github_type` + labels + self-loop check
+Matching logic: `handover_role` from `@j:<role>` mention + self-loop check
 
 ### Configuration Example
 
@@ -301,13 +302,14 @@ gh pr edit 43 --add-label "jyc:develop"
 **Role**: Discuss requirements with user, create PR with spec when ready.
 
 **Workflow**:
-1. Triggered by issue (planner pattern matches issues)
+1. Triggered by `@j:planner` in an issue comment
 2. Read issue: `gh issue view {N}`
 3. Read comments: `gh issue view {N} --comments`
 4. Discuss with user (reply via jyc_reply → posts issue comment)
 5. When requirements clear:
    - Create branch: `git checkout -b feat/issue-{N}`
-   - Create PR with label: `gh pr create --label "jyc:develop" --body "...@jyc:developer"`
+   - Create PR: `gh pr create --body "..."`
+   - Post comment: `@j:developer` to trigger developer
 6. Continue monitoring issue for user feedback
 
 ### Agent B: Developer (github-developer)
@@ -316,17 +318,17 @@ gh pr edit 43 --add-label "jyc:develop"
 **Role**: Implement code based on PR spec, address review feedback.
 
 **Workflow**:
-1. Triggered by PR with `jyc:develop` label
+1. Triggered by `@j:developer` in a PR comment
 2. Read PR spec: `gh pr view {N}`
 3. Read linked issue: `gh issue view {linked_issue}`
 4. Clone repo, checkout PR branch
 5. Implement code (incremental-dev approach)
 6. Commit, push
-7. Hand over: remove `jyc:develop` label, add `jyc:review` label
-8. When review feedback received (`[Reviewer]` comment on PR with `jyc:develop` label):
+7. Hand over: post comment with `@j:reviewer`
+8. When review feedback received (triggered by `@j:developer` from reviewer):
    - Read reviews: `gh pr view {N} --comments`
    - Fix issues, commit, push
-   - Hand over: remove `jyc:develop` label, add `jyc:review` label
+   - Hand over: post comment with `@j:reviewer`
 
 ### Agent C: Reviewer (github-reviewer)
 
@@ -334,12 +336,12 @@ gh pr edit 43 --add-label "jyc:develop"
 **Role**: Review PR code quality, approve or request changes.
 
 **Workflow**:
-1. Triggered by PR with `jyc:review` label
+1. Triggered by `@j:reviewer` in a PR comment
 2. Read PR: `gh pr view {N}`
 3. Read diff: `gh pr diff {N}`
 4. Review code
 5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. If changes requested: remove `jyc:review` label, add `jyc:develop` label
+6. If changes requested: post comment with `@j:developer`
 
 ## Close & Cleanup
 
@@ -472,42 +474,41 @@ pattern, and a `[Reviewer]` comment is visible to the developer pattern.
 User1                    Agent A (Planner)        Agent B (Developer)      Agent C (Reviewer)
   │                       issue-42                  pr-43                   review-pr-43
   │                                │                      │                       │
-  ├─ Creates Issue #42 ──────────►│                      │                       │
+  ├─ Creates Issue #42             │                      │                       │
+  ├─ Comment: "@j:planner" ──────►│                      │                       │
   │                                ├─ gh issue view 42    │                       │
   │                                ├─ Analyzes req        │                       │
   │  ◄── [Planner] Questions ─────┤                      │                       │
   │                                │                      │                       │
-  ├─ Reply (answers) ────────────►│                      │                       │
+  ├─ Reply + "@j:planner" ───────►│                      │                       │
   │                                │                      │                       │
   │                                ├─ Requirements clear   │                       │
   │                                ├─ git checkout -b feat/issue-42               │
-  │                                ├─ gh pr create --label "jyc:develop"          │
+  │                                ├─ gh pr create         │                       │
+  │                                ├─ comment: @j:developer│                       │
   │                                │                      │                       │
-  │                                │   [poll: PR+label] ──►│                      │
+  │                                │   [poll: @j:dev] ───►│                      │
   │                                │                      ├─ gh pr view 43        │
   │                                │                      ├─ gh issue view 42     │
   │                                │                      ├─ Implement code       │
   │                                │                      ├─ git commit + push    │
-  │                                │                      ├─ remove jyc:develop   │
-  │                                │                      ├─ add jyc:review       │
+  │                                │                      ├─ comment: @j:reviewer │
   │                                │                      │                       │
-  │                                │                      │   [poll: label] ─────►│
+  │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr view 43
   │                                │                      │                       ├─ gh pr diff 43
   │                                │                      │                       ├─ Review code
   │                                │                      │                       ├─ gh pr review 43
   │                                │                      │                       │   --request-changes
-  │                                │                      │                       ├─ remove jyc:review
-  │                                │                      │                       ├─ add jyc:develop
+  │                                │                      │                       ├─ comment: @j:developer
   │                                │                      │                       │
-  │                                │                      │◄── [poll: label] ─────┤
+  │                                │                      │◄─ [poll: @j:dev] ─────┤
   │                                │                      ├─ gh pr view 43 --comments
   │                                │                      ├─ Fix code             │
   │                                │                      ├─ git push             │
-  │                                │                      ├─ remove jyc:develop   │
-  │                                │                      ├─ add jyc:review       │
+  │                                │                      ├─ comment: @j:reviewer │
   │                                │                      │                       │
-  │                                │                      │   [poll: label] ─────►│
+  │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr diff 43
   │                                │                      │                       ├─ gh pr review 43
   │                                │                      │                       │   --approve

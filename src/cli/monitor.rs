@@ -406,12 +406,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                 let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
+                let workdir_owned = workdir.to_path_buf();
 
                 let task = tokio::spawn(async move {
                     use crate::channels::github::inbound::GithubInboundAdapter;
                     use crate::channels::types::InboundAdapter;
 
-                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone());
+                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned);
 
                     let thread_manager_clone = thread_manager.clone();
                     let options = crate::channels::types::InboundAdapterOptions {

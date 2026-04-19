@@ -128,12 +128,15 @@ For example:
 
 The template Excel files are bundled with this skill at:
 - `.opencode/skills/invoice-processing/template.xlsx` — invoice record template
-- `summary.xlsx` — summary template (placed in thread directory by user)
+- `summary.xlsx` — summary template (copied from skill, can be customized by user)
 
 If the thread doesn't have `template.xlsx` yet, copy it from the skill:
 ```bash
 if [ ! -f template.xlsx ]; then
   cp .opencode/skills/invoice-processing/template.xlsx template.xlsx
+fi
+if [ ! -f summary.xlsx ]; then
+  cp .opencode/skills/invoice-processing/summary.xlsx summary.xlsx
 fi
 ```
 
@@ -141,7 +144,7 @@ fi
 Thread directory structure:
 <thread_dir>/
   template.xlsx           ← Invoice record template (copied from skill)
-  summary.xlsx            ← Summary template (placed by user)
+  summary.xlsx            ← Summary template (copied from skill, customizable)
   invoices.db             ← SQLite database (primary storage for all months)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
     errors.jsonl           ← Failed invoice log (append-only, one JSON per line)

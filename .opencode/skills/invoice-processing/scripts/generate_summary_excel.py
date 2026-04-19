@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from openpyxl import load_workbook
 from db import get_invoices_by_month
 
-TEMPLATE_PATH = os.environ.get('INVOICE_SUMMARY_TEMPLATE_PATH', 
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'summary.xlsx'))
+TEMPLATE_PATH = os.environ.get('INVOICE_SUMMARY_TEMPLATE_PATH', 'summary.xlsx')
+SKILL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..')
 
 MONTH_MAP = {
     '01': 'January', '02': 'February', '03': 'March', '04': 'April',
@@ -39,10 +39,15 @@ def generate_summary_excel(month: str, output_path: str = None) -> str:
         template_path = os.path.join(os.getcwd(), template_path)
 
     if not os.path.exists(template_path):
-        raise FileNotFoundError(
-            f"Summary template not found: {template_path}. "
-            "Please ensure summary.xlsx exists."
-        )
+        fallback_path = os.path.join(SKILL_DIR, 'summary.xlsx')
+        if os.path.exists(fallback_path):
+            template_path = fallback_path
+        else:
+            raise FileNotFoundError(
+                f"Summary template not found: {template_path}. "
+                "Please ensure summary.xlsx exists in the working directory "
+                "or set INVOICE_SUMMARY_TEMPLATE_PATH environment variable."
+            )
 
     if not output_path:
         output_path = f"invoice_summary_{month}.xlsx"
@@ -79,7 +84,8 @@ def generate_summary_excel(month: str, output_path: str = None) -> str:
                 ws.cell(row=target_row, column=2, value=date)
 
     for row, total in row_totals.items():
-        ws.cell(row=row, column=3, value=total)
+        if total > 0:
+            ws.cell(row=row, column=3, value=total)
 
     wb.save(output_path)
     wb.close()

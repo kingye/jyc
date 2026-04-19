@@ -258,13 +258,22 @@ When the user asks to download or export all invoices for a month:
    python3 .opencode/skills/invoice-processing/scripts/generate_summary_excel.py "$MONTH"
    ```
    This creates `invoice_summary_<month>.xlsx` in the current directory.
-5. Zip the monthly folder along with both xlsx files:
+5. Verify both files were generated:
+   ```bash
+   for f in "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"; do
+     if [ ! -f "$f" ]; then
+       echo "ERROR: $f was not generated. Check script output above for errors."
+       exit 1
+     fi
+   done
+   ```
+6. Zip the monthly folder along with both xlsx files:
    ```bash
    MONTH="2026-04"
    cd <thread_dir>
    zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/" "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"
    ```
-6. Send the zip file as an attachment in the reply
+7. Send the zip file as an attachment in the reply
 
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash

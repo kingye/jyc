@@ -919,6 +919,142 @@ mod tests {
         assert_eq!(extract_mention_role("Normal comment"), None);
         assert_eq!(extract_mention_role("Some text @j:planner more text"), Some("planner".to_string()));
         assert_eq!(extract_mention_role("[Planner] This is a reply"), None);
+        // Case insensitive — always returns lowercase
+        assert_eq!(extract_mention_role("@j:DEVELOPER"), Some("developer".to_string()));
+        // Old @jyc: format should NOT match
+        assert_eq!(extract_mention_role("@jyc:developer"), None);
+        // Empty and edge cases
+        assert_eq!(extract_mention_role(""), None);
+        assert_eq!(extract_mention_role("@j:"), None);
+        // First match wins
+        assert_eq!(extract_mention_role("@j:developer @j:reviewer"), Some("developer".to_string()));
+    }
+
+    // --- Persistent comment tracking ---
+
+    #[tokio::test]
+    async fn test_load_processed_comments_empty() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let comments = adapter.load_processed_comments().await;
+        assert!(comments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_track_and_load_comments() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut processed = HashSet::new();
+
+        // Track some comments
+        adapter.track_comment(100, &mut processed).await;
+        adapter.track_comment(200, &mut processed).await;
+        adapter.track_comment(300, &mut processed).await;
+
+        assert_eq!(processed.len(), 3);
+        assert!(processed.contains(&100));
+        assert!(processed.contains(&200));
+        assert!(processed.contains(&300));
+
+        // Reload from disk — should get same set
+        let reloaded = adapter.load_processed_comments().await;
+        assert_eq!(reloaded.len(), 3);
+        assert!(reloaded.contains(&100));
+        assert!(reloaded.contains(&200));
+        assert!(reloaded.contains(&300));
+    }
+
+    #[tokio::test]
+    async fn test_track_comment_dedup() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut processed = HashSet::new();
+
+        // Track same comment twice
+        adapter.track_comment(100, &mut processed).await;
+        adapter.track_comment(100, &mut processed).await;
+
+        // In-memory set should have exactly 1
+        assert_eq!(processed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compact_processed_comments() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        // Create a set with 3000 entries
+        let mut processed: HashSet<u64> = (1..=3000).collect();
+
+        // Compact should keep only the 2000 highest IDs (1001..=3000)
+        adapter.compact_processed_comments(&mut processed).await;
+
+        assert_eq!(processed.len(), 2000);
+        // Lowest kept should be 1001
+        assert!(!processed.contains(&1));
+        assert!(!processed.contains(&1000));
+        assert!(processed.contains(&1001));
+        assert!(processed.contains(&3000));
+
+        // Verify file was rewritten correctly
+        let reloaded = adapter.load_processed_comments().await;
+        assert_eq!(reloaded.len(), 2000);
+        assert!(reloaded.contains(&1001));
+        assert!(reloaded.contains(&3000));
+    }
+
+    #[tokio::test]
+    async fn test_compact_no_op_under_threshold() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        // Set with fewer than 2000 entries — compact should be a no-op
+        let mut processed: HashSet<u64> = (1..=100).collect();
+        adapter.compact_processed_comments(&mut processed).await;
+        assert_eq!(processed.len(), 100);
     }
 
     // --- Build trigger message ---

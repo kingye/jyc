@@ -111,23 +111,25 @@ impl GithubInboundAdapter {
         }
     }
 
-    /// Load processed comment IDs from persistent storage.
-    /// File format: one comment ID per line in `.github/processed-comments.txt`.
-    async fn load_processed_comments(&self) -> HashSet<u64> {
+    /// Load processed comment keys from persistent storage.
+    /// File format: one key per line (`{comment_id}:{updated_at}`).
+    /// Using `id:updated_at` ensures edited comments are re-processed.
+    async fn load_processed_comments(&self) -> HashSet<String> {
         let file = self.state_dir.join("processed-comments.txt");
         if !file.exists() {
             return HashSet::new();
         }
         match tokio::fs::read_to_string(&file).await {
             Ok(content) => {
-                let set: HashSet<u64> = content
+                let set: HashSet<String> = content
                     .lines()
-                    .filter_map(|line| line.trim().parse::<u64>().ok())
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
                     .collect();
                 tracing::debug!(
                     channel = %self.channel_name,
                     count = set.len(),
-                    "Loaded processed comment IDs"
+                    "Loaded processed comment keys"
                 );
                 set
             }
@@ -142,9 +144,10 @@ impl GithubInboundAdapter {
         }
     }
 
-    /// Persist a comment ID as processed (append to file).
-    async fn track_comment(&self, comment_id: u64, processed: &mut HashSet<u64>) {
-        processed.insert(comment_id);
+    /// Persist a comment key as processed (append to file).
+    /// Key format: `{comment_id}:{updated_at}`
+    async fn track_comment(&self, key: &str, processed: &mut HashSet<String>) {
+        processed.insert(key.to_string());
 
         let file = self.state_dir.join("processed-comments.txt");
         use tokio::io::AsyncWriteExt;
@@ -154,7 +157,7 @@ impl GithubInboundAdapter {
             .open(&file)
             .await
         {
-            let _ = f.write_all(format!("{comment_id}\n").as_bytes()).await;
+            let _ = f.write_all(format!("{key}\n").as_bytes()).await;
         }
 
         // Compact when >5000 entries: rewrite with only what's in memory
@@ -164,16 +167,28 @@ impl GithubInboundAdapter {
     }
 
     /// Compact processed comments file by keeping only the latest entries.
-    async fn compact_processed_comments(&self, processed: &mut HashSet<u64>) {
-        // Keep only the 2000 highest IDs (most recent)
+    async fn compact_processed_comments(&self, processed: &mut HashSet<String>) {
         if processed.len() <= 2000 {
             return;
         }
 
-        let mut ids: Vec<u64> = processed.iter().copied().collect();
-        ids.sort_unstable();
-        let keep_from = ids.len() - 2000;
-        let keep: HashSet<u64> = ids[keep_from..].iter().copied().collect();
+        // Keep only the 2000 most recent entries.
+        // Sort by the comment ID prefix (numeric) to determine recency.
+        let mut entries: Vec<(u64, String)> = processed
+            .iter()
+            .map(|key| {
+                let id = key.split(':').next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                (id, key.clone())
+            })
+            .collect();
+        entries.sort_unstable_by_key(|(id, _)| *id);
+        let keep_from = entries.len() - 2000;
+        let keep: HashSet<String> = entries[keep_from..]
+            .iter()
+            .map(|(_, key)| key.clone())
+            .collect();
 
         let before = processed.len();
         *processed = keep;
@@ -181,7 +196,7 @@ impl GithubInboundAdapter {
         let file = self.state_dir.join("processed-comments.txt");
         let content: String = processed
             .iter()
-            .map(|id| format!("{id}\n"))
+            .map(|key| format!("{key}\n"))
             .collect();
         if let Err(e) = tokio::fs::write(&file, content).await {
             tracing::warn!(error = %e, "Failed to compact processed comments file");
@@ -329,7 +344,7 @@ impl InboundAdapter for GithubInboundAdapter {
         // Create state directory and load persistent processed comments
         tokio::fs::create_dir_all(&self.state_dir).await
             .with_context(|| format!("failed to create state directory: {}", self.state_dir.display()))?;
-        let mut processed_comments: HashSet<u64> = self.load_processed_comments().await;
+        let mut processed_comments: HashSet<String> = self.load_processed_comments().await;
 
         // Track processed event IDs for non-comment deduplication (close events)
         let mut processed_events: HashSet<String> = HashSet::new();
@@ -384,7 +399,7 @@ impl GithubInboundAdapter {
         &self,
         client: &GithubClient,
         options: &InboundAdapterOptions,
-        processed_comments: &mut HashSet<u64>,
+        processed_comments: &mut HashSet<String>,
         processed_events: &mut HashSet<String>,
         issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
@@ -430,8 +445,11 @@ impl GithubInboundAdapter {
         let mention_re = Regex::new(r"(?i)@j:(\w+)").unwrap();
 
         for comment in &comments {
+            // Build dedup key: id:updated_at — re-processes edited comments
+            let comment_key = format!("{}:{}", comment.id, comment.updated_at);
+
             // Skip already-processed comments (persistent dedup)
-            if processed_comments.contains(&comment.id) {
+            if processed_comments.contains(&comment_key) {
                 continue;
             }
 
@@ -446,8 +464,8 @@ impl GithubInboundAdapter {
             let handover_role = match handover_role {
                 Some(role) => role,
                 None => {
-                    // No @j:<role> mention — skip, but mark as processed
-                    self.track_comment(comment.id, processed_comments).await;
+                    // No @j:<role> mention — skip routing, but mark as processed
+                    self.track_comment(&comment_key, processed_comments).await;
                     continue;
                 }
             };
@@ -505,7 +523,7 @@ impl GithubInboundAdapter {
                 tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
             }
 
-            self.track_comment(comment.id, processed_comments).await;
+            self.track_comment(&comment_key, processed_comments).await;
         }
 
         // 3. Detect closed issues/PRs by comparing cache with full open set.
@@ -964,26 +982,24 @@ mod tests {
 
         let mut processed = HashSet::new();
 
-        // Track some comments
-        adapter.track_comment(100, &mut processed).await;
-        adapter.track_comment(200, &mut processed).await;
-        adapter.track_comment(300, &mut processed).await;
+        // Track comments with id:updated_at keys
+        adapter.track_comment("100:2024-01-01T00:00:00Z", &mut processed).await;
+        adapter.track_comment("200:2024-01-02T00:00:00Z", &mut processed).await;
+        adapter.track_comment("300:2024-01-03T00:00:00Z", &mut processed).await;
 
         assert_eq!(processed.len(), 3);
-        assert!(processed.contains(&100));
-        assert!(processed.contains(&200));
-        assert!(processed.contains(&300));
+        assert!(processed.contains("100:2024-01-01T00:00:00Z"));
+        assert!(processed.contains("200:2024-01-02T00:00:00Z"));
+        assert!(processed.contains("300:2024-01-03T00:00:00Z"));
 
         // Reload from disk — should get same set
         let reloaded = adapter.load_processed_comments().await;
         assert_eq!(reloaded.len(), 3);
-        assert!(reloaded.contains(&100));
-        assert!(reloaded.contains(&200));
-        assert!(reloaded.contains(&300));
+        assert!(reloaded.contains("100:2024-01-01T00:00:00Z"));
     }
 
     #[tokio::test]
-    async fn test_track_comment_dedup() {
+    async fn test_edited_comment_reprocessed() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = GithubConfig {
             owner: "test".to_string(),
@@ -997,12 +1013,20 @@ mod tests {
 
         let mut processed = HashSet::new();
 
-        // Track same comment twice
-        adapter.track_comment(100, &mut processed).await;
-        adapter.track_comment(100, &mut processed).await;
+        // Track comment with original updated_at
+        adapter.track_comment("100:2024-01-01T00:00:00Z", &mut processed).await;
+        assert!(processed.contains("100:2024-01-01T00:00:00Z"));
 
-        // In-memory set should have exactly 1
-        assert_eq!(processed.len(), 1);
+        // Same comment ID but different updated_at (edited) — should NOT be in set
+        assert!(!processed.contains("100:2024-01-01T12:00:00Z"));
+
+        // Track the edited version
+        adapter.track_comment("100:2024-01-01T12:00:00Z", &mut processed).await;
+
+        // Now both versions are tracked
+        assert_eq!(processed.len(), 2);
+        assert!(processed.contains("100:2024-01-01T00:00:00Z"));
+        assert!(processed.contains("100:2024-01-01T12:00:00Z"));
     }
 
     #[tokio::test]
@@ -1018,24 +1042,26 @@ mod tests {
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
-        // Create a set with 3000 entries
-        let mut processed: HashSet<u64> = (1..=3000).collect();
+        // Create a set with 3000 entries (key format: "id:timestamp")
+        let mut processed: HashSet<String> = (1u64..=3000)
+            .map(|id| format!("{id}:2024-01-01T00:00:00Z"))
+            .collect();
 
-        // Compact should keep only the 2000 highest IDs (1001..=3000)
+        // Compact should keep only the 2000 highest IDs
         adapter.compact_processed_comments(&mut processed).await;
 
         assert_eq!(processed.len(), 2000);
         // Lowest kept should be 1001
-        assert!(!processed.contains(&1));
-        assert!(!processed.contains(&1000));
-        assert!(processed.contains(&1001));
-        assert!(processed.contains(&3000));
+        assert!(!processed.contains("1:2024-01-01T00:00:00Z"));
+        assert!(!processed.contains("1000:2024-01-01T00:00:00Z"));
+        assert!(processed.contains("1001:2024-01-01T00:00:00Z"));
+        assert!(processed.contains("3000:2024-01-01T00:00:00Z"));
 
         // Verify file was rewritten correctly
         let reloaded = adapter.load_processed_comments().await;
         assert_eq!(reloaded.len(), 2000);
-        assert!(reloaded.contains(&1001));
-        assert!(reloaded.contains(&3000));
+        assert!(reloaded.contains("1001:2024-01-01T00:00:00Z"));
+        assert!(reloaded.contains("3000:2024-01-01T00:00:00Z"));
     }
 
     #[tokio::test]
@@ -1052,7 +1078,9 @@ mod tests {
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         // Set with fewer than 2000 entries — compact should be a no-op
-        let mut processed: HashSet<u64> = (1..=100).collect();
+        let mut processed: HashSet<String> = (1u64..=100)
+            .map(|id| format!("{id}:2024-01-01T00:00:00Z"))
+            .collect();
         adapter.compact_processed_comments(&mut processed).await;
         assert_eq!(processed.len(), 100);
     }

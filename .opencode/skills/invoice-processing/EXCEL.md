@@ -246,25 +246,42 @@ The template may have been customized — adapt the category mapping accordingly
 When the user asks to download or export all invoices for a month:
 
 1. Determine the target month (from user message or default to current month)
+   - Example: `MONTH="2026-04"` or `MONTH="2026-05"`
 2. Verify the folder exists
-3. Generate the invoice list Excel:
+3. Copy template files to the thread directory (if not already present):
    ```bash
-   MONTH="2026-04"
+   if [ ! -f template.xlsx ]; then
+     cp .opencode/skills/invoice-processing/template.xlsx template.xlsx
+   fi
+   if [ ! -f summary.xlsx ]; then
+     cp .opencode/skills/invoice-processing/summary.xlsx summary.xlsx
+   fi
+   ```
+4. Generate the invoice list Excel:
+   ```bash
    python3 .opencode/skills/invoice-processing/scripts/generate_excel.py "$MONTH"
    ```
    This creates `invoice_list_<month>.xlsx` in the current directory.
-4. Generate the monthly summary Excel:
+5. Generate the monthly summary Excel:
    ```bash
    python3 .opencode/skills/invoice-processing/scripts/generate_summary_excel.py "$MONTH"
    ```
    This creates `invoice_summary_<month>.xlsx` in the current directory.
-5. Zip the monthly folder along with both xlsx files:
+6. Verify both files were generated:
    ```bash
-   MONTH="2026-04"
+   for f in "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"; do
+     if [ ! -f "$f" ]; then
+       echo "ERROR: $f was not generated. Check script output above for errors."
+       exit 1
+     fi
+   done
+   ```
+7. Zip the monthly folder along with both xlsx files:
+   ```bash
    cd <thread_dir>
    zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/" "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"
    ```
-6. Send the zip file as an attachment in the reply
+8. Send the zip file as an attachment in the reply
 
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash

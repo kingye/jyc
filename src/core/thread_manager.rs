@@ -410,7 +410,7 @@ impl ThreadManager {
                     tm.clone(),
                 ).await {
                     tracing::error!(
-                        error = %e,
+                        error = %format!("{:#}", e),
                         "Failed to process message"
                     );
                 }

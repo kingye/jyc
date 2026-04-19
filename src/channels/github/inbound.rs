@@ -342,6 +342,8 @@ impl InboundAdapter for GithubInboundAdapter {
         );
 
         // Create state directory and load persistent processed comments
+        let state_file = self.state_dir.join("processed-comments.txt");
+        let is_fresh_start = !state_file.exists();
         tokio::fs::create_dir_all(&self.state_dir).await
             .with_context(|| format!("failed to create state directory: {}", self.state_dir.display()))?;
         let mut processed_comments: HashSet<String> = self.load_processed_comments().await;
@@ -352,11 +354,30 @@ impl InboundAdapter for GithubInboundAdapter {
         // Cache issue info for comment routing (number → title, type, labels, assignees)
         let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
 
-        // Start polling from 5 minutes ago to catch recent events.
-        // Deduplication ensures we don't process the same event twice.
-        let mut last_poll = (chrono::Utc::now() - chrono::Duration::minutes(5))
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        // Determine poll start time:
+        // - Fresh start (no processed-comments.txt): start from "now" to avoid
+        //   replaying old comments that already have @j:<role> mentions.
+        // - Restart (file exists): go back 5 minutes to catch events missed
+        //   during downtime. Deduplication via processed-comments.txt prevents
+        //   re-processing.
+        let mut last_poll = if is_fresh_start {
+            tracing::info!(
+                channel = %self.channel_name,
+                "Fresh start detected — polling from now (no backfill)"
+            );
+            chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        } else {
+            tracing::info!(
+                channel = %self.channel_name,
+                processed_count = processed_comments.len(),
+                "Restart detected — polling from 5 minutes ago"
+            );
+            (chrono::Utc::now() - chrono::Duration::minutes(5))
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
 
         let poll_interval = tokio::time::Duration::from_secs(self.config.poll_interval_secs);
 

@@ -469,8 +469,11 @@ impl GithubInboundAdapter {
             // Build dedup key: id:updated_at — re-processes edited comments
             let comment_key = format!("{}:{}", comment.id, comment.updated_at);
 
-            // Skip already-processed comments (persistent dedup)
-            if processed_comments.contains(&comment_key) {
+            // Skip already-processed comments (persistent dedup).
+            // Also check for old format (plain ID) for backward compatibility
+            // with processed-comments.txt files created before the id:updated_at change.
+            let id_only = comment.id.to_string();
+            if processed_comments.contains(&comment_key) || processed_comments.contains(&id_only) {
                 continue;
             }
 

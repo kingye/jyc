@@ -26,6 +26,7 @@ then `cd repo` before running any command:
 if [ ! -d "repo" ]; then
     gh repo clone <repository_from_trigger> repo
 fi
+cp -rn repo/.opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 cd repo
 ```
 

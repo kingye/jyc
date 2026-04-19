@@ -144,12 +144,12 @@ Thread directory structure:
   summary.xlsx            ← Summary template (placed by user)
   invoices.db             ← SQLite database (primary storage for all months)
   invoice_YYYY-MM/        ← Monthly folder (e.g., invoice_2026-04)
-    invoices.xlsx          ← Generated on-demand (when user requests Excel export)
     errors.jsonl           ← Failed invoice log (append-only, one JSON per line)
-    summary.xlsx           ← Summary for this month (copied + filled when requested)
     INV-2026-0042.pdf      ← Downloaded invoices (named by invoice number)
     INV-2026-0043.jpg
     ...
+  invoice_list_YYYY-MM.xlsx  ← Generated on-demand (when user requests export)
+  invoice_summary_YYYY-MM.xlsx ← Generated on-demand (when user requests summary)
 ```
 
 Check if the current month's folder and database exist:

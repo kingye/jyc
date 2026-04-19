@@ -23,9 +23,9 @@ def generate_excel(month: str, output_path: str = None) -> str:
         )
 
     if not output_path:
-        output_path = f"invoice_{month}/invoices.xlsx"
+        output_path = f"invoice_list_{month}.xlsx"
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     shutil.copy(template_path, output_path)
 
     wb = load_workbook(output_path)
@@ -62,4 +62,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     output = generate_excel(month)
-    print(f"Generated: {output}")
+    print(f"Generated: {output} (invoice list)")

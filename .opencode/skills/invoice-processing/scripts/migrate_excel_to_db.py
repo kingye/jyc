@@ -84,15 +84,15 @@ def main():
     init_db()
     print("=== Invoice Migration Tool ===\n")
 
-    excel_files = glob.glob("invoice_*/invoices.xlsx")
+    excel_files = glob.glob("invoice_list_*.xlsx")
     if not excel_files:
-        print("No invoices.xlsx files found.")
+        print("No invoice_list_*.xlsx files found.")
         return
 
     total = {'success': 0, 'skipped': 0, 'failed': 0}
 
     for excel_path in sorted(excel_files):
-        month = excel_path.split('/')[0].replace('invoice_', '')
+        month = excel_path.replace('invoice_list_', '').replace('.xlsx', '')
         print(f"\nProcessing {excel_path} (month: {month})...")
 
         result = migrate_excel_to_db(excel_path, month)

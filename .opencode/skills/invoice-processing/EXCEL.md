@@ -220,81 +220,19 @@ Do NOT overwrite or modify this row during summary generation.
 
 1. Determine the target month (from user message or default to current month)
 2. Verify the database `invoices.db` exists
-3. Copy `summary.xlsx` template into the monthly folder (if not already there):
-   ```bash
-   MONTH="2026-04"
-   if [ ! -f "invoice_${MONTH}/summary.xlsx" ]; then
-     cp summary.xlsx "invoice_${MONTH}/summary.xlsx"
-   fi
-   ```
-4. Read all invoices from SQLite using `get_invoices_by_month()`
-5. Categorize each invoice by its 服务项目名称 (service/item name):
+3. Read all invoices from SQLite using `get_invoices_by_month()`
+4. Categorize each invoice by its 服务项目名称 (service/item name):
    - 餐饮/餐费/食品/外卖 → Food & Meals (row 12)
    - 洗衣/干洗 → Laundry (row 10)
    - 房租/租金/租赁 → Rental fee (row 14)
    - 机票/航空 → Airticket (row 16)
    - Other categories → use available rows (17-37)
-6. Fill the summary:
-
-```bash
-python3 << 'PYEOF'
-import sys
-import os
-
-sys.path.insert(0, '.opencode/skills/invoice-processing/scripts')
-from db import get_invoices_by_month
-from openpyxl import load_workbook
-
-MONTH = "2026-04"
-
-# Read invoice data from SQLite
-invoices = get_invoices_by_month(MONTH)
-
-# Read summary template
-sum_wb = load_workbook(f'invoice_{MONTH}/summary.xlsx')
-sum_ws = sum_wb.active
-
-# Update month
-sum_ws['B6'] = 'April of 2026'  # Adjust month name
-
-# Category mapping: row number → category keywords
-# NOTE: Row 14 (Rental fee) is a FIXED value — do NOT include it here
-categories = {
-    10: ['洗衣', '干洗', 'laundry'],
-    12: ['餐饮', '餐费', '食品', '外卖', 'food', 'meal'],
-    16: ['机票', '航空', 'airticket', 'flight'],
-}
-
-# Process invoices from SQLite
-for inv in invoices:
-    service = str(inv.get('service_name') or '').lower()
-    date = inv.get('issue_date')
-    amount = inv.get('total_amount')
-
-    if not amount:
-        continue
-
-    # Find matching category
-    target_row = None
-    for cat_row, keywords in categories.items():
-        if any(kw in service for kw in keywords):
-            target_row = cat_row
-            break
-
-    if target_row:
-        # Append amount to existing value
-        existing = sum_ws.cell(row=target_row, column=3).value or 0
-        if isinstance(existing, str):
-            existing = 0
-        sum_ws.cell(row=target_row, column=3, value=existing + float(amount))
-        # Set date if empty
-        if not sum_ws.cell(row=target_row, column=2).value:
-            sum_ws.cell(row=target_row, column=2, value=date)
-
-sum_wb.save(f'invoice_{MONTH}/summary.xlsx')
-print('Summary updated')
-PYEOF
-```
+6. Generate the summary using the script:
+   ```bash
+   MONTH="2026-04"
+   python3 .opencode/skills/invoice-processing/scripts/generate_summary_excel.py "$MONTH"
+   ```
+   This creates `invoice_summary_<month>.xlsx` in the current directory.
 
 7. Reply with a summary of categorized amounts
 
@@ -309,17 +247,22 @@ When the user asks to download or export all invoices for a month:
 
 1. Determine the target month (from user message or default to current month)
 2. Verify the folder exists
-3. If the user explicitly requests `invoices.xlsx`, generate it from SQLite:
+3. Generate the invoice list Excel:
    ```bash
    MONTH="2026-04"
    python3 .opencode/skills/invoice-processing/scripts/generate_excel.py "$MONTH"
    ```
-4. If summary has not been generated yet, run Step 7 first to create it
-5. Zip the entire monthly folder (includes invoices.xlsx if generated, summary.xlsx, and all invoice files):
+   This creates `invoice_list_<month>.xlsx` in the current directory.
+4. Generate the monthly summary Excel:
+   ```bash
+   python3 .opencode/skills/invoice-processing/scripts/generate_summary_excel.py "$MONTH"
+   ```
+   This creates `invoice_summary_<month>.xlsx` in the current directory.
+5. Zip the monthly folder along with both xlsx files:
    ```bash
    MONTH="2026-04"
    cd <thread_dir>
-   zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/"
+   zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/" "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"
    ```
 6. Send the zip file as an attachment in the reply
 

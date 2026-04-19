@@ -9,7 +9,8 @@ from openpyxl import load_workbook
 from db import get_invoices_by_month
 
 TEMPLATE_PATH = os.environ.get('INVOICE_SUMMARY_TEMPLATE_PATH', 'summary.xlsx')
-SKILL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SKILL_DIR = os.path.dirname(SCRIPT_DIR)
 
 MONTH_MAP = {
     '01': 'January', '02': 'February', '03': 'March', '04': 'April',

@@ -69,10 +69,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // 3. Start metrics collector
     let metrics_collector = MetricsCollector::new(cancel.clone());
-    let (_metrics_handle, _shared_stats, metrics_task) = metrics_collector.start();
+    let (_metrics_handle, shared_stats, metrics_task) = metrics_collector.start();
 
     // 4. Process each configured channel
     let mut tasks = Vec::new();
+    let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
+    let mut all_channels: Vec<crate::inspect::types::ChannelInfo> = Vec::new();
     let agent_config = Arc::new(config.agent.clone());
     let opencode_server = Arc::new(OpenCodeServer::new());
 
@@ -197,6 +199,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             channel_name.clone(),
             workspace_dir.clone(),
         ));
+
+        // Collect for inspect server
+        all_thread_managers.push(thread_manager.clone());
+        all_channels.push(crate::inspect::types::ChannelInfo {
+            name: channel_name.clone(),
+            channel_type: channel_type.to_string(),
+        });
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
@@ -423,6 +432,26 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
+    // 5. Start inspect server (if configured)
+    let inspect_task = if config.inspect.as_ref().map_or(false, |i| i.enabled) {
+        let inspect_config = config.inspect.as_ref().unwrap();
+        let context = Arc::new(crate::inspect::server::InspectContext {
+            thread_managers: all_thread_managers,
+            channels: all_channels,
+            health_stats: shared_stats,
+            max_concurrent: config.general.max_concurrent_threads,
+            start_time: std::time::Instant::now(),
+        });
+        let server = crate::inspect::server::InspectServer::new(
+            inspect_config.bind.clone(),
+            context,
+            cancel.clone(),
+        );
+        Some(server.start())
+    } else {
+        None
+    };
+
     tracing::info!(
         channels = tasks.len(),
         "Monitor started, press Ctrl+C to stop"
@@ -436,7 +465,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // Stop the OpenCode server
     opencode_server.stop().await.ok();
 
-    // Wait for alert service to flush final errors
+    // Wait for inspect server to stop
+    if let Some(task) = inspect_task {
+        task.await.ok();
+    }
+
+    // Wait for metrics collector to stop
     metrics_task.await.ok();
 
     tracing::info!("Monitor stopped");

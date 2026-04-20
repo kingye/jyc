@@ -2,6 +2,7 @@ mod channels;
 mod cli;
 mod config;
 mod core;
+mod inspect;
 mod mcp;
 mod security;
 mod services;

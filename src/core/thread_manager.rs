@@ -556,6 +556,7 @@ impl ThreadManager {
                 mode,
                 input_tokens,
                 max_tokens,
+                activity: vec![],  // Filled by InspectServer from event bus
             });
         }
 

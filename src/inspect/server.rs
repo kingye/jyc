@@ -1,12 +1,21 @@
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::metrics::SharedHealthStats;
+use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_manager::ThreadManager;
 use crate::inspect::types::*;
+
+/// Max activity entries kept per thread.
+const MAX_ACTIVITY_ENTRIES: usize = 20;
+
+/// Per-thread activity buffer, shared between the activity tracker and the server.
+pub type SharedActivityMap = Arc<Mutex<HashMap<String, VecDeque<ActivityEntry>>>>;
 
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
@@ -16,6 +25,8 @@ pub struct InspectContext {
     pub channels: Vec<ChannelInfo>,
     /// Shared health stats from MetricsCollector
     pub health_stats: SharedHealthStats,
+    /// Per-thread activity logs from SSE events
+    pub activity_map: SharedActivityMap,
     /// Max concurrent threads per channel
     pub max_concurrent: usize,
     /// When the monitor started
@@ -153,6 +164,15 @@ impl InspectServer {
             threads.extend(tm_threads);
         }
 
+        // Merge activity logs into threads
+        let activity_map = context.activity_map.lock().await;
+        for thread in &mut threads {
+            if let Some(entries) = activity_map.get(&thread.name) {
+                thread.activity = entries.iter().cloned().collect();
+            }
+        }
+        drop(activity_map);
+
         // Read metrics
         let health = context.health_stats.lock().await;
         let stats = GlobalStats {
@@ -175,6 +195,118 @@ impl InspectServer {
     }
 }
 
+/// Background task that subscribes to thread event buses and buffers
+/// activity entries for the inspect server.
+pub struct ActivityTracker;
+
+impl ActivityTracker {
+    /// Start tracking activity for all thread managers.
+    /// Periodically discovers new threads and subscribes to their event buses.
+    pub fn start(
+        thread_managers: Vec<Arc<ThreadManager>>,
+        activity_map: SharedActivityMap,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut subscribed: HashSet<String> = HashSet::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Discover new threads and subscribe to their event buses
+                        for tm in &thread_managers {
+                            let threads = tm.list_threads().await;
+                            for thread in threads {
+                                if subscribed.contains(&thread.name) {
+                                    continue;
+                                }
+                                if let Some(bus) = tm.get_event_bus(&thread.name).await {
+                                    if let Ok(mut rx) = bus.subscribe().await {
+                                        subscribed.insert(thread.name.clone());
+                                        let map = activity_map.clone();
+                                        let name = thread.name.clone();
+                                        let cancel_inner = cancel.clone();
+                                        tokio::spawn(async move {
+                                            loop {
+                                                tokio::select! {
+                                                    event = rx.recv() => {
+                                                        match event {
+                                                            Some(event) => {
+                                                                let entry = event_to_activity(&event);
+                                                                let mut map = map.lock().await;
+                                                                let buf = map.entry(name.clone()).or_insert_with(VecDeque::new);
+                                                                buf.push_back(entry);
+                                                                if buf.len() > MAX_ACTIVITY_ENTRIES {
+                                                                    buf.pop_front();
+                                                                }
+                                                            }
+                                                            None => break,
+                                                        }
+                                                    }
+                                                    _ = cancel_inner.cancelled() => break,
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ = cancel.cancelled() => break,
+                }
+            }
+        })
+    }
+}
+
+/// Convert a ThreadEvent into a human-readable ActivityEntry.
+fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
+    let time = event.timestamp().format("%H:%M:%S").to_string();
+    let text = match event {
+        ThreadEvent::ProcessingStarted { .. } => "Processing started".to_string(),
+        ThreadEvent::ProcessingProgress {
+            elapsed_secs,
+            activity,
+            output_length,
+            ..
+        } => {
+            format!("{activity} ({elapsed_secs}s, {output_length} chars)")
+        }
+        ThreadEvent::ProcessingCompleted {
+            success,
+            duration_secs,
+            ..
+        } => {
+            if *success {
+                format!("Completed ({duration_secs}s)")
+            } else {
+                format!("Failed ({duration_secs}s)")
+            }
+        }
+        ThreadEvent::ToolStarted { tool_name, .. } => {
+            format!("Tool: {tool_name} (running)")
+        }
+        ThreadEvent::ToolCompleted {
+            tool_name,
+            success,
+            duration_secs,
+            ..
+        } => {
+            let status = if *success { "done" } else { "failed" };
+            format!("Tool: {tool_name} ({status}, {duration_secs}s)")
+        }
+        ThreadEvent::Heartbeat {
+            elapsed_secs,
+            activity,
+            ..
+        } => {
+            format!("Heartbeat: {activity} ({elapsed_secs}s)")
+        }
+    };
+    ActivityEntry { time, text }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +327,7 @@ mod tests {
             health_stats: Arc::new(Mutex::new(
                 crate::core::metrics::HealthStats::default(),
             )),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent: 3,
             start_time: Instant::now(),
         })

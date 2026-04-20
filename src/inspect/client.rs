@@ -92,6 +92,7 @@ impl InspectClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::sync::Mutex;
@@ -110,6 +111,7 @@ mod tests {
             health_stats: Arc::new(Mutex::new(
                 crate::core::metrics::HealthStats::default(),
             )),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent: 5,
             start_time: Instant::now(),
         })

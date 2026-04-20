@@ -61,6 +61,18 @@ pub struct ThreadInfo {
     pub input_tokens: Option<u64>,
     /// Max input tokens for this session
     pub max_tokens: Option<u64>,
+    /// Recent activity events (newest first, max ~20)
+    #[serde(default)]
+    pub activity: Vec<ActivityEntry>,
+}
+
+/// A single activity event from the thread's SSE stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityEntry {
+    /// Timestamp (HH:MM:SS)
+    pub time: String,
+    /// Human-readable description
+    pub text: String,
 }
 
 /// Thread processing status.
@@ -153,6 +165,7 @@ mod tests {
                 mode: Some("build".to_string()),
                 input_tokens: Some(45000),
                 max_tokens: Some(120000),
+                activity: vec![],
             }],
             stats: GlobalStats {
                 active_workers: 2,

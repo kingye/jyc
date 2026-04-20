@@ -158,10 +158,10 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Channels bar
-            Constraint::Min(8),   // Threads table
-            Constraint::Length(8), // Detail panel
-            Constraint::Length(1), // Status bar
+            Constraint::Length(3),  // Channels bar
+            Constraint::Percentage(40), // Threads table
+            Constraint::Percentage(60), // Detail panel + activity log
+            Constraint::Length(1),  // Status bar
         ])
         .split(area);
 
@@ -306,58 +306,104 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .selected()
         .and_then(|i| state.threads.get(i));
 
-    let block = Block::default()
-        .title(match selected {
-            Some(t) => format!(" Details: {} ", t.name),
-            None => " Details ".to_string(),
-        })
+    let selected = match selected {
+        Some(t) => t,
+        None => {
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL);
+            let text = Paragraph::new("Select a thread with ↑/↓").block(block);
+            frame.render_widget(text, area);
+            return;
+        }
+    };
+
+    // Split detail area: info (4 lines) + activity log (remaining)
+    let detail_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Thread info
+            Constraint::Min(4),   // Activity log
+        ])
+        .split(area);
+
+    // Thread info panel
+    let info_block = Block::default()
+        .title(format!(" {} ", selected.name))
         .borders(Borders::ALL);
 
-    let text = match selected {
-        Some(t) => {
-            let mut lines = vec![];
+    let mut info_lines = vec![];
 
-            lines.push(Line::from(vec![
-                Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&t.channel),
-                Span::raw("  "),
-                Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(t.pattern.as_deref().unwrap_or("-")),
-            ]));
+    info_lines.push(Line::from(vec![
+        Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(&selected.channel),
+        Span::raw("  "),
+        Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.pattern.as_deref().unwrap_or("-")),
+    ]));
 
-            lines.push(Line::from(vec![
-                Span::styled("Model: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(t.model.as_deref().unwrap_or("(default)")),
-                Span::raw("  "),
-                Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(t.mode.as_deref().unwrap_or("build")),
-            ]));
+    info_lines.push(Line::from(vec![
+        Span::styled("Model: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.model.as_deref().unwrap_or("(default)")),
+        Span::raw("  "),
+        Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.mode.as_deref().unwrap_or("build")),
+    ]));
 
-            if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
-                let pct = if max > 0 { cur * 100 / max } else { 0 };
-                lines.push(Line::from(vec![
-                    Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("{cur} / {max} ({pct}%)")),
-                ]));
-            }
-
-            let status_style = match t.status {
+    let mut status_line = vec![
+        Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{}", selected.status),
+            match selected.status {
                 ThreadStatus::Processing => Style::default().fg(Color::Green),
                 ThreadStatus::Queued => Style::default().fg(Color::Yellow),
                 ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
-            };
-            lines.push(Line::from(vec![
-                Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(format!("{}", t.status), status_style),
-            ]));
+            },
+        ),
+    ];
 
-            Paragraph::new(lines).block(block)
-        }
-        None => Paragraph::new("Select a thread with ↑/↓").block(block),
-    };
+    if let (Some(cur), Some(max)) = (selected.input_tokens, selected.max_tokens) {
+        let pct = if max > 0 { cur * 100 / max } else { 0 };
+        status_line.push(Span::raw("  "));
+        status_line.push(Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)));
+        status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+    }
+    info_lines.push(Line::from(status_line));
 
-    frame.render_widget(text, area);
+    let info = Paragraph::new(info_lines).block(info_block);
+    frame.render_widget(info, detail_chunks[0]);
+
+    // Activity log panel
+    let activity_block = Block::default()
+        .title(" Activity ")
+        .borders(Borders::ALL);
+
+    if selected.activity.is_empty() {
+        let text = Paragraph::new(Span::styled(
+            "  No activity",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(activity_block);
+        frame.render_widget(text, detail_chunks[1]);
+    } else {
+        let activity_lines: Vec<Line> = selected
+            .activity
+            .iter()
+            .map(|entry| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", entry.time),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(&entry.text),
+                ])
+            })
+            .collect();
+
+        let text = Paragraph::new(activity_lines).block(activity_block);
+        frame.render_widget(text, detail_chunks[1]);
+    }
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {

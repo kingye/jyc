@@ -436,13 +436,25 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // 5. Start inspect server (if configured)
     let inspect_task = if config.inspect.as_ref().map_or(false, |i| i.enabled) {
         let inspect_config = config.inspect.as_ref().unwrap();
+        let activity_map: crate::inspect::server::SharedActivityMap =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
         let context = Arc::new(crate::inspect::server::InspectContext {
-            thread_managers: all_thread_managers,
+            thread_managers: all_thread_managers.clone(),
             channels: all_channels,
             health_stats: shared_stats,
+            activity_map: activity_map.clone(),
             max_concurrent: config.general.max_concurrent_threads,
             start_time: std::time::Instant::now(),
         });
+
+        // Start activity tracker (subscribes to thread event buses)
+        let _activity_task = crate::inspect::server::ActivityTracker::start(
+            all_thread_managers,
+            activity_map,
+            cancel.clone(),
+        );
+
         let server = crate::inspect::server::InspectServer::new(
             inspect_config.bind.clone(),
             context,

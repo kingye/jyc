@@ -4,29 +4,65 @@ set -e
 # Deploy templates by composing AGENTS.md + referenced skills from .opencode/skills/
 #
 # Usage:
-#   ./deploy-templates.sh <target_dir>
+#   ./deploy-templates.sh <target_dir> [template_name] [--model <model-id>]
 #
-# Example:
-#   ./deploy-templates.sh /home/jiny/projects/jyc-data/templates
-#
-# This script:
-# 1. Reads templates/ directory for AGENTS.md files
-# 2. Reads the skill mapping below
-# 3. Copies AGENTS.md + skills into target/<template_name>/
+# Examples:
+#   ./deploy-templates.sh /path/to/templates
+#   ./deploy-templates.sh /path/to/templates github-planner
+#   ./deploy-templates.sh /path/to/templates --model tencent/glm-5.1
+#   ./deploy-templates.sh /path/to/templates github-planner --model ark/minimax-m2.5
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 SKILLS_DIR="${SCRIPT_DIR}/.opencode/skills"
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 <target_dir>"
-    echo "Example: $0 /home/jiny/projects/jyc-data/templates"
+TARGET_DIR=""
+TEMPLATE_NAME=""
+MODEL_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model)
+            MODEL_OVERRIDE="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            if [ -z "$TARGET_DIR" ]; then
+                TARGET_DIR="$1"
+            elif [ -z "$TEMPLATE_NAME" ]; then
+                TEMPLATE_NAME="$1"
+            else
+                echo "Unexpected argument: $1" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$TARGET_DIR" ]; then
+    echo "Usage: $0 <target_dir> [template_name] [--model <model-id>]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 /path/to/templates"
+    echo "  $0 /path/to/templates github-planner"
+    echo "  $0 /path/to/templates --model tencent/glm-5.1"
+    echo "  $0 /path/to/templates github-planner --model ark/minimax-m2.5"
     exit 1
 fi
 
-TARGET_DIR="$1"
+if [ -n "$TEMPLATE_NAME" ]; then
+    template_path="${TEMPLATES_DIR}/${TEMPLATE_NAME}"
+    if [ ! -d "$template_path" ]; then
+        echo "Error: template '${TEMPLATE_NAME}' not found at ${template_path}" >&2
+        exit 1
+    fi
+fi
 
-# Return the skills for a given template name
 get_skills() {
     case "$1" in
         invoice-processing)   echo "invoice-processing" ;;
@@ -43,32 +79,38 @@ echo "=== Template Deployment ==="
 echo "Source templates: ${TEMPLATES_DIR}"
 echo "Source skills:    ${SKILLS_DIR}"
 echo "Target:           ${TARGET_DIR}"
+if [ -n "$TEMPLATE_NAME" ]; then
+    echo "Template filter: ${TEMPLATE_NAME}"
+fi
+if [ -n "$MODEL_OVERRIDE" ]; then
+    echo "Model override:  ${MODEL_OVERRIDE}"
+fi
 echo ""
 
-# Deploy each template
 for template_dir in "${TEMPLATES_DIR}"/*/; do
     template_name=$(basename "$template_dir")
+
+    if [ -n "$TEMPLATE_NAME" ] && [ "$template_name" != "$TEMPLATE_NAME" ]; then
+        continue
+    fi
+
     target="${TARGET_DIR}/${template_name}"
 
     echo "--- ${template_name} ---"
 
-    # Create target directory
     mkdir -p "${target}"
 
-    # Copy AGENTS.md
     if [ -f "${template_dir}/AGENTS.md" ]; then
         cp "${template_dir}/AGENTS.md" "${target}/AGENTS.md"
         echo "  AGENTS.md copied"
     fi
 
-    # Copy .jyc directory (model-override, etc.)
     if [ -d "${template_dir}/.jyc" ]; then
         rm -rf "${target}/.jyc"
         cp -r "${template_dir}/.jyc" "${target}/.jyc"
         echo "  .jyc copied"
     fi
 
-    # Copy skills
     skills=$(get_skills "$template_name")
     if [ -n "$skills" ]; then
         mkdir -p "${target}/.opencode/skills"
@@ -84,6 +126,12 @@ for template_dir in "${TEMPLATES_DIR}"/*/; do
         done
     else
         echo "  (no skills)"
+    fi
+
+    if [ -n "$MODEL_OVERRIDE" ]; then
+        mkdir -p "${target}/.jyc"
+        echo -n "${MODEL_OVERRIDE}" > "${target}/.jyc/model-override"
+        echo "  model-override: ${MODEL_OVERRIDE}"
     fi
 done
 

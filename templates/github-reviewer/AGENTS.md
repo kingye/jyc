@@ -65,6 +65,9 @@ ls .opencode/skills/ 2>/dev/null || ls .claude/ 2>/dev/null || true
 Use the conventions found in these files as the basis for your review.
 
 ### 4. Review the Code
+
+**Lightweight verification only** — use `cargo check` (Rust) or `npm run lint` (Node/CDS) if needed. **NEVER run `cargo build`, `cargo build --release`, or `npm run build`** — full builds are the developer's responsibility.
+
 Check for:
 - **Correctness**: Does the code do what the spec says?
 - **Design**: Is the approach reasonable? Any simpler alternatives?
@@ -119,6 +122,6 @@ EOF
 - When using the reply tool, put your COMPLETE response in the message — do NOT generate text after calling the reply tool (it will be lost)
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
-- Do NOT run builds or tests — this is a read-only review (prefer lightweight checks like `cargo check` for Rust, `npm run lint` for Node/CDS if needed)
+- Do NOT run `cargo build` or `npm run build` — use `cargo check` or `npm run lint` for lightweight verification. Full builds are the developer's responsibility, not the reviewer's.
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback

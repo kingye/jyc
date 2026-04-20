@@ -129,8 +129,9 @@ if [ -n "$LABELS" ]; then
   LABEL_FLAG="--label $LABELS"
 fi
 
-# Create PR with spec in body, copying assignees and labels from the issue
-gh pr create --title "feat: <description>" $ASSIGNEE_FLAG $LABEL_FLAG --body "$(cat <<'EOF'
+# Create DRAFT PR with spec in body, copying assignees and labels from the issue
+# Draft status signals that the PR is not ready for merge — the developer will implement the code.
+gh pr create --draft --title "feat: <description>" $ASSIGNEE_FLAG $LABEL_FLAG --body "$(cat <<'EOF'
 ## Spec
 
 <one-paragraph summary of what this PR achieves>
@@ -162,7 +163,7 @@ EOF
 gh pr comment <pr_number> --body "[Planner] @j:developer Please implement according to the plan above."
 ```
 
-**CRITICAL:** The PR must be EMPTY (no code changes). The developer agent will implement the code.
+**CRITICAL:** The PR must be EMPTY (no code changes) and created as a **draft**. The developer agent will implement the code.
 **CRITICAL:** You MUST copy assignees and labels from the issue to the PR — this ensures correct routing to developer/reviewer agents.
 **CRITICAL:** You MUST post a separate comment with `@j:developer` after creating the PR — this is what triggers the developer.
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.

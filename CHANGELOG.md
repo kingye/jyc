@@ -4,6 +4,8 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-04-20
+
 ### Added
 
 **GitHub Label-Based Routing** — Auto-label matching for GitHub channel patterns
@@ -15,27 +17,86 @@ All notable changes to JYC will be documented in this file.
 - When labels are added to an existing issue/PR, the change is detected by comparing against cached labels
 - This allows users to add a label (e.g., `jyc:plan`) to an existing issue and have it routed to the planner
 
-### Changed
+**@j:<role> Mention-Driven Routing** — Refactored hand-off mechanism
+- Patterns match on `@j:<role>` mentions in comments (e.g., `@j:developer`, `@j:reviewer`, `@j:planner`)
+- Replaces earlier `[Role]` prefix filter approach
+- Agent templates updated to use `@j:<role>` for hand-offs
 
-**GitHub Self-Loop Prevention** — Replaces global `[Role]` prefix filter
-- Previously: ALL comments prefixed with `[Planner]`, `[Developer]`, or `[Reviewer]` were globally filtered (invisible to all patterns)
-- Now: each pattern only skips comments from its **own** role. `[Developer]` comments are visible to the reviewer pattern, and vice versa
-- Enables cross-agent feedback visibility (reviewer feedback triggers developer)
+**Persistent Comment Tracking** — Re-process edited comments
+- Track comment ID + `updated_at` to detect edits
+- Edited comments are re-processed through the routing pipeline
+- Backward-compatible with old `processed-comments.txt` format
 
-**GitHub Agent Templates** — Updated hand-off workflow with routing labels
-- Planner: adds `--label "jyc:develop"` when creating PRs
-- Developer: adds `jyc:review` label when handing off to reviewer
-- Reviewer: adds `jyc:develop` label when requesting changes from developer
+**SQLite Storage for Invoice Processing** — Persistent invoice database
+- SQLite database for invoice records
+- Enables duplicate checking and query capabilities
+- Schema: invoice_number, receipt_date, amount, seller, buyer, status, etc.
 
-**Developer-Reviewer Handoff** — Improved workflow for requesting changes
-- Reviewer template now explicitly triggers `@jyc:developer` when submitting review with request-changes
-- Ensures developer is notified when feedback needs to be addressed
+**GitHub Enterprise Support** — Configurable API endpoint
+- `api_url` config option for GitHub Enterprise instances
+- Default: `https://api.github.com` for public GitHub
+
+**Assignee Matching** — Route issues/PRs by assignee
+- `assignees` field on `ChannelPattern` for GitHub channel
+- Match issues/PRs where any of the specified users are assigned
+
+**Close Event Detection** — Improved event handling
+- Fetch all open issues instead of `list_closed_since` for detecting close events
+- Compare cached state to detect actual closes
 
 **Bare Metal Deployment** — Deploy jyc on Ubuntu/Debian servers without Docker
 - `deploy-bare-metal.sh` script for automated deployment
 - `dotfiles/zsh/` - zsh configuration and environment template
 - `dotfiles/opencode/opencode.jsonc` - OpenCode configuration
 - `docs/bare-metal-deploy.md` - Deployment guide
+
+**nohup Fallback** — Run on servers without systemd
+- Detect systemd user session availability
+- Fall back to `nohup` + redirect for process supervision
+
+### Fixed
+
+**Worker Semaphore Permit Release** — Fix resource leak on thread close
+- Workers now properly release semaphore permits when closing threads
+- Prevents thread pool exhaustion
+
+**GitHub Self-Loop Prevention** — Replaces global `[Role]` prefix filter
+- Previously: ALL comments prefixed with `[Planner]`, `[Developer]`, or `[Reviewer]` were globally filtered (invisible to all patterns)
+- Now: each pattern only skips comments from its **own** role. `[Developer]` comments are visible to the reviewer pattern, and vice versa
+- Enables cross-agent feedback visibility (reviewer feedback triggers developer)
+
+**Developer-Reviewer Handoff** — Improved workflow for requesting changes
+- Reviewer template now explicitly triggers `@jyc:developer` when submitting review with request-changes
+- Ensures developer is notified when feedback needs to be addressed
+
+**Invoice Processing Fixes**
+- Add duplicate invoice check before adding to Excel
+- Fix EXCEL.md with template copy step, clarify MONTH variable usage
+- Template lookup logic fixes, zero amount handling, template cleanup
+
+**Template Generalization** — Multi-language support
+- Templates generalized for multi-language workflows
+- Repository name included in trigger messages
+
+**Model Override in Templates** — Per-template model configuration
+- Support `model-override` in templates while ignoring `.jyc` elsewhere
+- Updated GitHub developer template with model override support
+
+### Changed
+
+**GitHub Agent Templates** — Updated hand-off workflow with routing labels
+- Planner: adds `--label "jyc:develop"` when creating PRs
+- Developer: adds `jyc:review` label when handing off to reviewer
+- Reviewer: adds `jyc:develop` label when requesting changes from developer
+
+**Invoice Summary Export** — Generate summary xlsx
+- Summary xlsx with correct naming (`summary_YYYY-MM.xlsx`)
+- Template-based generation with proper file handling
+
+**Docker Simplification** — Removed s6-overlay
+- Removed s6-overlay from Docker setup
+- Simplified entrypoint/CMD in Dockerfile
+- Removed jyc-deploy-docker skill (no longer self-bootstrapping)
 
 ## [0.1.9] - 2026-04-15
 

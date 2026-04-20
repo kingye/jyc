@@ -65,6 +65,10 @@ rmcp = { version = "1.3", features = ["server", "transport-io", "schemars"] }
 # Feishu/Lark SDK (Phase 6)
 openlark = { version = "0.15.0-rc.2", default-features = false, features = ["auth", "communication", "websocket"] }
 
+# TUI (Dashboard)
+ratatui = "0.29"
+crossterm = "0.28"
+
 [dev-dependencies]
 tempfile = "3"
 

@@ -15,7 +15,14 @@ use crate::inspect::types::*;
 const MAX_ACTIVITY_ENTRIES: usize = 20;
 
 /// Per-thread activity buffer, shared between the activity tracker and the server.
-pub type SharedActivityMap = Arc<Mutex<HashMap<String, VecDeque<ActivityEntry>>>>;
+pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;
+
+/// Per-thread activity state: bounded event log + processing flag.
+#[derive(Debug, Default)]
+pub struct ThreadActivityState {
+    pub entries: VecDeque<ActivityEntry>,
+    pub is_processing: bool,
+}
 
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
@@ -164,11 +171,14 @@ impl InspectServer {
             threads.extend(tm_threads);
         }
 
-        // Merge activity logs into threads
+        // Merge activity logs and status into threads
         let activity_map = context.activity_map.lock().await;
         for thread in &mut threads {
-            if let Some(entries) = activity_map.get(&thread.name) {
-                thread.activity = entries.iter().cloned().collect();
+            if let Some(state) = activity_map.get(&thread.name) {
+                thread.activity = state.entries.iter().cloned().collect();
+                if state.is_processing {
+                    thread.status = ThreadStatus::Processing;
+                }
             }
         }
         drop(activity_map);
@@ -233,12 +243,28 @@ impl ActivityTracker {
                                                     event = rx.recv() => {
                                                         match event {
                                                             Some(event) => {
+                                                                let is_processing = matches!(
+                                                                    &event,
+                                                                    ThreadEvent::ProcessingStarted { .. }
+                                                                    | ThreadEvent::ProcessingProgress { .. }
+                                                                    | ThreadEvent::ToolStarted { .. }
+                                                                    | ThreadEvent::Heartbeat { .. }
+                                                                );
+                                                                let is_completed = matches!(
+                                                                    &event,
+                                                                    ThreadEvent::ProcessingCompleted { .. }
+                                                                );
                                                                 let entry = event_to_activity(&event);
                                                                 let mut map = map.lock().await;
-                                                                let buf = map.entry(name.clone()).or_insert_with(VecDeque::new);
-                                                                buf.push_back(entry);
-                                                                if buf.len() > MAX_ACTIVITY_ENTRIES {
-                                                                    buf.pop_front();
+                                                                let state = map.entry(name.clone()).or_default();
+                                                                state.entries.push_back(entry);
+                                                                if state.entries.len() > MAX_ACTIVITY_ENTRIES {
+                                                                    state.entries.pop_front();
+                                                                }
+                                                                if is_processing {
+                                                                    state.is_processing = true;
+                                                                } else if is_completed {
+                                                                    state.is_processing = false;
                                                                 }
                                                             }
                                                             None => break,
@@ -284,8 +310,11 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Failed ({duration_secs}s)")
             }
         }
-        ThreadEvent::ToolStarted { tool_name, .. } => {
-            format!("Tool: {tool_name} (running)")
+        ThreadEvent::ToolStarted { tool_name, input, .. } => {
+            match input {
+                Some(inp) => format!("Tool: {tool_name} — {inp}"),
+                None => format!("Tool: {tool_name} (running)"),
+            }
         }
         ThreadEvent::ToolCompleted {
             tool_name,

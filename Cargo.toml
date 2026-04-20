@@ -59,6 +59,13 @@ htmd = "0.5"
 # SSE (Phase 4)
 reqwest-eventsource = "0.6"
 
+# Monitor API (Phase 8)
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
+tokio-stream = "0.1"
+async-stream = "0.3"
+
 # MCP (Phase 5)
 rmcp = { version = "1.3", features = ["server", "transport-io", "schemars"] }
 

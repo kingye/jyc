@@ -87,6 +87,10 @@ pub struct ThreadManager {
 
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
+
+    // Optional monitor state for JycEvent publishing
+    #[allow(dead_code)]
+    monitor_state: Option<crate::core::monitor_state::MonitorState>,
 }
 
 #[allow(dead_code)]
@@ -120,6 +124,7 @@ impl ThreadManager {
     }
     
     /// Create a new ThreadManager with configurable event support.
+    #[allow(dead_code)]
     pub fn new_with_options(
         max_concurrent: usize,
         max_queue_size: usize,
@@ -132,6 +137,67 @@ impl ThreadManager {
         heartbeat_template: String,
         template_dir: PathBuf,
         config: Arc<crate::config::types::AppConfig>,
+    ) -> Self {
+        Self::new_with_options_and_monitor(
+            max_concurrent,
+            max_queue_size,
+            storage,
+            outbound,
+            agent,
+            cancel,
+            enable_events,
+            heartbeat_config,
+            heartbeat_template,
+            template_dir,
+            config,
+            None,
+        )
+    }
+
+    /// Create a new ThreadManager with monitor state for JycEvent publishing.
+    pub fn new_with_monitor_state(
+        max_concurrent: usize,
+        max_queue_size: usize,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<dyn OutboundAdapter>,
+        agent: Arc<dyn AgentService>,
+        cancel: CancellationToken,
+        heartbeat_config: HeartbeatConfig,
+        heartbeat_template: String,
+        template_dir: PathBuf,
+        config: Arc<crate::config::types::AppConfig>,
+        monitor_state: crate::core::monitor_state::MonitorState,
+    ) -> Self {
+        Self::new_with_options_and_monitor(
+            max_concurrent,
+            max_queue_size,
+            storage,
+            outbound,
+            agent,
+            cancel,
+            true,
+            heartbeat_config,
+            heartbeat_template,
+            template_dir,
+            config,
+            Some(monitor_state),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn new_with_options_and_monitor(
+        max_concurrent: usize,
+        max_queue_size: usize,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<dyn OutboundAdapter>,
+        agent: Arc<dyn AgentService>,
+        cancel: CancellationToken,
+        enable_events: bool,
+        heartbeat_config: HeartbeatConfig,
+        heartbeat_template: String,
+        template_dir: PathBuf,
+        config: Arc<crate::config::types::AppConfig>,
+        monitor_state: Option<crate::core::monitor_state::MonitorState>,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -149,6 +215,7 @@ impl ThreadManager {
             config,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
+            monitor_state,
         }
     }
 
@@ -262,6 +329,7 @@ impl ThreadManager {
             config: self.config.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
+            monitor_state: self.monitor_state.clone(),
         });
         let handle = ThreadManager::spawn_worker(tm, thread_name, rx, event_bus, thread_cancel);
 

@@ -30,6 +30,10 @@ pub struct AppConfig {
 
     /// Vision API configuration (image analysis via OpenAI-compatible API)
     pub vision: Option<VisionConfig>,
+
+    /// Monitor API configuration (HTTP server for runtime monitoring)
+    #[serde(default)]
+    pub monitor_api: Option<MonitorApiConfig>,
 }
 
 /// General application settings.
@@ -350,6 +354,31 @@ fn default_1_0() -> f64 {
 
 fn default_120_0() -> f64 {
     120.0
+}
+
+/// Monitor API configuration — HTTP server for runtime monitoring.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MonitorApiConfig {
+    /// Whether the monitor API server is enabled
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Bind address (default: "127.0.0.1:9090")
+    #[serde(default = "default_monitor_bind")]
+    pub bind: String,
+}
+
+impl Default for MonitorApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1:9090".to_string(),
+        }
+    }
+}
+
+fn default_monitor_bind() -> String {
+    "127.0.0.1:9090".to_string()
 }
 
 /// Unified attachment configuration with inbound and outbound sections.

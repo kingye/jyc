@@ -21,6 +21,7 @@ use crate::config::{load_config, validation};
 use crate::core::alert_service::{AppLogger, AlertService};
 use crate::core::message_router::MessageRouter;
 use crate::core::message_storage::MessageStorage;
+use crate::core::monitor_state::MonitorState;
 use crate::core::state_manager::StateManager;
 use crate::core::thread_manager::ThreadManager;
 use crate::services::imap::monitor::ImapMonitor;
@@ -67,7 +68,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // 3. Start alert service (if configured)
+    // 3. Initialize MonitorState if monitor_api is enabled
+    let monitor_api_config = config.monitor_api.clone();
+    let monitor_state = if monitor_api_config.as_ref().map(|c| c.enabled).unwrap_or(false) {
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        let state = MonitorState::new(version);
+        tracing::info!(bind = %monitor_api_config.as_ref().unwrap().bind, "Monitor API enabled");
+        Some(state)
+    } else {
+        None
+    };
+
+    // 4. Start alert service (if configured)
     // We need a reference outbound adapter for alerts — we'll create it from the first channel's config
     // For now, alert service is started per-channel below (using that channel's outbound)
     let mut _alert_handle = AppLogger::noop();
@@ -222,20 +234,36 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .unwrap_or_else(|| "Still working on your request... ({elapsed} elapsed)".to_string());
 
         let template_dir = workdir.join("templates");
-        
-        let thread_manager = Arc::new(ThreadManager::new_with_options(
-            config.general.max_concurrent_threads,
-            config.general.max_queue_size_per_thread,
-            storage.clone(),
-            outbound.clone(),
-            agent,
-            cancel.clone(),
-            true, // enable_events: true for Thread Event system
-            config.heartbeat.clone(),
-            heartbeat_template,
-            template_dir,
-            config.clone(),
-        ));
+
+        let thread_manager = if let Some(ref ms) = monitor_state {
+            Arc::new(ThreadManager::new_with_monitor_state(
+                config.general.max_concurrent_threads,
+                config.general.max_queue_size_per_thread,
+                storage.clone(),
+                outbound.clone(),
+                agent,
+                cancel.clone(),
+                config.heartbeat.clone(),
+                heartbeat_template,
+                template_dir,
+                config.clone(),
+                ms.clone(),
+            ))
+        } else {
+            Arc::new(ThreadManager::new_with_options(
+                config.general.max_concurrent_threads,
+                config.general.max_queue_size_per_thread,
+                storage.clone(),
+                outbound.clone(),
+                agent,
+                cancel.clone(),
+                true,
+                config.heartbeat.clone(),
+                heartbeat_template,
+                template_dir,
+                config.clone(),
+            ))
+        };
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
@@ -462,6 +490,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
+    // Start Monitor API server if enabled
+    let monitor_api_task = if let (Some(api_config), Some(state)) = (&monitor_api_config, &monitor_state) {
+        let bind = api_config.bind.clone();
+        let api_state = crate::monitor_api::create_api_state(state.clone());
+        
+        let channel_names: Vec<String> = config.channels.keys().cloned().collect();
+        state.publish_system_started(channel_names).await;
+        
+        Some(tokio::spawn(async move {
+            crate::monitor_api::start_api_server(bind, api_state).await;
+        }))
+    } else {
+        None
+    };
+
     tracing::info!(
         channels = tasks.len(),
         "Monitor started, press Ctrl+C to stop"
@@ -470,6 +513,16 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // Wait for all channel tasks to complete
     for task in tasks {
         task.await.ok();
+    }
+
+    // Stop Monitor API server
+    if let Some(task) = monitor_api_task {
+        task.abort();
+    }
+
+    // Publish system stopping event
+    if let Some(ref state) = monitor_state {
+        state.publish_system_stopping();
     }
 
     // Stop the OpenCode server

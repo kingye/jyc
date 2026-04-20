@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod core;
 mod mcp;
+mod monitor_api;
 mod security;
 mod services;
 mod utils;
@@ -51,6 +52,9 @@ enum Commands {
 
     /// Show current monitoring state
     State,
+
+    /// Start the monitoring dashboard (web UI)
+    Dashboard(cli::dashboard::DashboardArgs),
 
     /// MCP reply tool server (internal — spawned by OpenCode)
     #[command(hide = true)]
@@ -142,6 +146,9 @@ async fn main() -> Result<()> {
         }
         Commands::McpVisionTool => {
             cli::mcp_vision::run().await
+        }
+        Commands::Dashboard(args) => {
+            cli::dashboard::run(args).await
         }
     }
 }

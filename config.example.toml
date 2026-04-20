@@ -302,3 +302,10 @@ interval_hours = 3
 # github_type = ["pull_request"]
 # labels = ["needs-review"]
 # assignees = ["alice"]
+
+# --- Monitor API (optional) ---
+# HTTP server for runtime monitoring and dashboard
+
+# [monitor_api]
+# enabled = true
+# bind = "127.0.0.1:9090"

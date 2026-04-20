@@ -63,11 +63,11 @@ impl InspectServer {
                 accept = listener.accept() => {
                     match accept {
                         Ok((stream, addr)) => {
-                            tracing::trace!(addr = %addr, "Inspect client connected");
+                            tracing::debug!(addr = %addr, "Inspect client connected");
                             let ctx = self.context.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = Self::handle_client(stream, ctx).await {
-                                    tracing::trace!(error = %e, "Inspect client disconnected");
+                                    tracing::debug!(error = %e, "Inspect client disconnected");
                                 }
                             });
                         }

@@ -605,6 +605,22 @@ impl GithubInboundAdapter {
                 &event_uid,
             );
 
+            // Include the triggering comment body so the agent knows what was asked
+            message.metadata.insert(
+                "comment_body".to_string(),
+                serde_json::Value::String(comment.body.clone()),
+            );
+
+            // Append the comment body to the message content
+            let comment_section = format!(
+                "\n\n---\nTriggering comment by {}:\n\n{}",
+                comment.user.login, comment.body
+            );
+            match &mut message.content.text {
+                Some(text) => text.push_str(&comment_section),
+                None => message.content.text = Some(comment_section),
+            }
+
             message.metadata.insert(
                 "handover_role".to_string(),
                 serde_json::Value::String(handover_role),

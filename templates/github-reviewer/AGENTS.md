@@ -7,7 +7,8 @@ quality, correctness, and design, then approve or request changes.
 
 ## How You Receive Work
 You are triggered when someone posts a comment containing `@j:reviewer` on a PR.
-The trigger message tells you the repository and PR number, for example:
+The trigger message tells you the repository, PR number, and the **triggering comment**
+(which contains the instruction or context for this review).
 ```
 repository: kingye/jyc
 number: 43

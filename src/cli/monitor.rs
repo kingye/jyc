@@ -18,7 +18,7 @@ use crate::channels::github::outbound::GithubOutboundAdapter;
 use crate::channels::types::OutboundAdapter;
 use crate::config::types::MonitorConfig;
 use crate::config::{load_config, validation};
-use crate::core::alert_service::{AppLogger, AlertService};
+use crate::core::metrics::MetricsCollector;
 use crate::core::message_router::MessageRouter;
 use crate::core::message_storage::MessageStorage;
 use crate::core::state_manager::StateManager;
@@ -67,14 +67,14 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // 3. Start alert service (if configured)
-    // We need a reference outbound adapter for alerts — we'll create it from the first channel's config
-    // For now, alert service is started per-channel below (using that channel's outbound)
-    let mut _alert_handle = AppLogger::noop();
-    let mut alert_task: Option<tokio::task::JoinHandle<()>> = None;
+    // 3. Start metrics collector
+    let metrics_collector = MetricsCollector::new(cancel.clone());
+    let (_metrics_handle, shared_stats, metrics_task) = metrics_collector.start();
 
     // 4. Process each configured channel
     let mut tasks = Vec::new();
+    let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
+    let mut all_channels: Vec<crate::inspect::types::ChannelInfo> = Vec::new();
     let agent_config = Arc::new(config.agent.clone());
     let opencode_server = Arc::new(OpenCodeServer::new());
 
@@ -156,45 +156,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         })?;
         tracing::info!(channel = %channel_name, channel_type = %channel_type, "Outbound connected");
 
-        // Start alert service on first channel (uses that channel's outbound for alerts)
-        if alert_task.is_none() {
-            if let Some(ref alerting_config) = config.alerting {
-                if alerting_config.enabled {
-                    let alert_service = AlertService::new(
-                        alerting_config.clone(),
-                        outbound.clone(),
-                        cancel.clone(),
-                    );
-                    let (handle, task) = alert_service.start();
-                    _alert_handle = handle;
-                    alert_task = Some(task);
-                    tracing::info!("Alert service started");
-
-                    // Send startup notification
-                    let startup_msg = format!(
-                        "**JYC Monitor Started**\n\n\
-                         Version: {}\n\
-                         Time: {}\n\
-                         Channels: {}\n\
-                         Agent mode: {}",
-                        env!("CARGO_PKG_VERSION"),
-                        chrono::Utc::now().to_rfc3339(),
-                        config.channels.len(),
-                        config.agent.mode,
-                    );
-                    let prefix = alerting_config.subject_prefix.as_deref().unwrap_or("JYC");
-                    let _ = outbound
-                        .send_alert(
-                            &alerting_config.recipient,
-                            &format!("{prefix}: Monitor Started"),
-                            &startup_msg,
-                        )
-                        .await;
-                    tracing::info!("Startup notification sent");
-                }
-            }
-        }
-
         // Create agent based on configured mode
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
             "opencode" => {
@@ -235,7 +196,16 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             heartbeat_template,
             template_dir,
             config.clone(),
+            channel_name.clone(),
+            workspace_dir.clone(),
         ));
+
+        // Collect for inspect server
+        all_thread_managers.push(thread_manager.clone());
+        all_channels.push(crate::inspect::types::ChannelInfo {
+            name: channel_name.clone(),
+            channel_type: channel_type.to_string(),
+        });
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
@@ -462,6 +432,26 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
+    // 5. Start inspect server (if configured)
+    let inspect_task = if config.inspect.as_ref().map_or(false, |i| i.enabled) {
+        let inspect_config = config.inspect.as_ref().unwrap();
+        let context = Arc::new(crate::inspect::server::InspectContext {
+            thread_managers: all_thread_managers,
+            channels: all_channels,
+            health_stats: shared_stats,
+            max_concurrent: config.general.max_concurrent_threads,
+            start_time: std::time::Instant::now(),
+        });
+        let server = crate::inspect::server::InspectServer::new(
+            inspect_config.bind.clone(),
+            context,
+            cancel.clone(),
+        );
+        Some(server.start())
+    } else {
+        None
+    };
+
     tracing::info!(
         channels = tasks.len(),
         "Monitor started, press Ctrl+C to stop"
@@ -475,10 +465,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // Stop the OpenCode server
     opencode_server.stop().await.ok();
 
-    // Wait for alert service to flush final errors
-    if let Some(task) = alert_task {
+    // Wait for inspect server to stop
+    if let Some(task) = inspect_task {
         task.await.ok();
     }
+
+    // Wait for metrics collector to stop
+    metrics_task.await.ok();
 
     tracing::info!("Monitor stopped");
     Ok(())

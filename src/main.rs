@@ -2,6 +2,7 @@ mod channels;
 mod cli;
 mod config;
 mod core;
+mod inspect;
 mod mcp;
 mod security;
 mod services;
@@ -36,6 +37,9 @@ struct Cli {
 enum Commands {
     /// Monitor inbound channels and process messages with AI
     Monitor(cli::monitor::MonitorArgs),
+
+    /// Live TUI dashboard — connects to a running jyc monitor
+    Dashboard(cli::dashboard::DashboardArgs),
 
     /// Manage configuration
     Config {
@@ -124,6 +128,9 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::Monitor(args) => {
             cli::monitor::run(args, &workdir).await
+        }
+        Commands::Dashboard(args) => {
+            cli::dashboard::run(args).await
         }
         Commands::Config { action } => {
             cli::config::run(action, &workdir).await

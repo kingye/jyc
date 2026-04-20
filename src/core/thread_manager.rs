@@ -21,6 +21,7 @@ use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
 use crate::core::pending_delivery::watch_pending_deliveries;
 use crate::core::template_utils::copy_template_files;
+use crate::inspect::types::{ThreadInfo, ThreadStatus};
 use crate::services::agent::AgentService;
 
 /// An item in a thread's message queue.
@@ -82,6 +83,12 @@ pub struct ThreadManager {
     // Template directory for thread initialization
     template_dir: PathBuf,
 
+    // Channel name this ThreadManager belongs to
+    channel_name: String,
+
+    // Workspace directory for this channel (<workdir>/<channel>/workspace/)
+    workspace_dir: PathBuf,
+
     // Application config (for command handlers that need channel/pattern info)
     config: Arc<crate::config::types::AppConfig>,
 
@@ -103,6 +110,8 @@ impl ThreadManager {
         heartbeat_template: String,
         template_dir: PathBuf,
         config: Arc<crate::config::types::AppConfig>,
+        channel_name: String,
+        workspace_dir: PathBuf,
     ) -> Self {
         Self::new_with_options(
             max_concurrent,
@@ -116,6 +125,8 @@ impl ThreadManager {
             heartbeat_template,
             template_dir,
             config,
+            channel_name,
+            workspace_dir,
         )
     }
     
@@ -132,6 +143,8 @@ impl ThreadManager {
         heartbeat_template: String,
         template_dir: PathBuf,
         config: Arc<crate::config::types::AppConfig>,
+        channel_name: String,
+        workspace_dir: PathBuf,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -146,6 +159,8 @@ impl ThreadManager {
             heartbeat_config,
             heartbeat_template,
             template_dir,
+            channel_name,
+            workspace_dir,
             config,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
@@ -259,6 +274,8 @@ impl ThreadManager {
             heartbeat_config: self.heartbeat_config.clone(),
             heartbeat_template: self.heartbeat_template.clone(),
             template_dir: self.template_dir.clone(),
+            channel_name: self.channel_name.clone(),
+            workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
@@ -439,6 +456,76 @@ impl ThreadManager {
             total_threads,
             pending_messages: 0,
         }
+    }
+
+    /// Return the channel name this ThreadManager belongs to.
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    /// Return the max concurrent threads (semaphore capacity).
+    pub fn max_concurrent(&self) -> usize {
+        self.semaphore.available_permits() + self.active_worker_count()
+    }
+
+    /// Number of active workers (holding semaphore permits).
+    fn active_worker_count(&self) -> usize {
+        // This is an approximation: semaphore total - available = active
+        // We stored the capacity in the constructor but Semaphore doesn't expose it.
+        // We use config's max_concurrent_threads as the total.
+        self.config.general.max_concurrent_threads
+            .saturating_sub(self.semaphore.available_permits())
+    }
+
+    /// List all open threads with their info, reading state from disk.
+    pub async fn list_threads(&self) -> Vec<ThreadInfo> {
+        use crate::services::opencode::session::{
+            read_input_tokens, read_model_override, read_mode_override,
+        };
+
+        let queues = self.thread_queues.lock().await;
+        let thread_names: Vec<String> = queues.keys().cloned().collect();
+        drop(queues);
+
+        let mut threads = Vec::with_capacity(thread_names.len());
+
+        for name in thread_names {
+            let thread_path = self.workspace_dir.join(&name);
+
+            // Read pattern from .jyc/pattern
+            let pattern = tokio::fs::read_to_string(thread_path.join(".jyc").join("pattern"))
+                .await
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            // Read session state
+            let (input_tokens, max_tokens) = read_input_tokens(&thread_path).await;
+            let model = read_model_override(&thread_path).await;
+            let mode = read_mode_override(&thread_path).await;
+
+            // Determine status
+            let status = if thread_path.join(".jyc").join("question-sent.flag").exists() {
+                ThreadStatus::WaitingForAnswer
+            } else {
+                // Simple heuristic: if we can't acquire a permit, the thread might be processing.
+                // Threads with open queues are either processing or idle.
+                ThreadStatus::Idle
+            };
+
+            threads.push(ThreadInfo {
+                name,
+                channel: self.channel_name.clone(),
+                pattern,
+                status,
+                model,
+                mode,
+                input_tokens,
+                max_tokens,
+            });
+        }
+
+        threads
     }
     
     /// Event listener that controls heartbeat timing based on HeartbeatConfig.

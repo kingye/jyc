@@ -1,10 +1,10 @@
-pub mod alert_service;
 pub mod attachment_storage;
 pub mod chat_log_store;
 pub mod command;
 pub mod email_parser;
 pub mod message_router;
 pub mod message_storage;
+pub mod metrics;
 pub mod pending_delivery;
 pub mod state_manager;
 pub mod template_utils;

@@ -57,6 +57,36 @@ async fn run_list(workdir: &Path, config_file: &str) -> Result<()> {
                         println!("  subject.regex: {regex}");
                     }
                 }
+
+                // GitHub rules
+                if let Some(ref github_type) = pattern.rules.github_type {
+                    println!("  github_type: {}", github_type.join(", "));
+                }
+                if let Some(ref labels) = pattern.rules.labels {
+                    println!("  labels: {}", labels.join(", "));
+                }
+                if let Some(ref assignees) = pattern.rules.assignees {
+                    println!("  assignees: {}", assignees.join(", "));
+                }
+
+                // Feishu rules
+                if let Some(ref mentions) = pattern.rules.mentions {
+                    println!("  mentions: {}", mentions.join(", "));
+                }
+                if let Some(ref keywords) = pattern.rules.keywords {
+                    println!("  keywords: {}", keywords.join(", "));
+                }
+                if let Some(ref chat_name) = pattern.rules.chat_name {
+                    println!("  chat_name: {}", chat_name.join(", "));
+                }
+
+                // Role and template
+                if let Some(ref role) = pattern.role {
+                    println!("  role: {role}");
+                }
+                if let Some(ref template) = pattern.template {
+                    println!("  template: {template}");
+                }
             }
         }
     }

@@ -6,6 +6,10 @@ services:
       dockerfile: docker/Dockerfile
       target: production
     network_mode: host
+    env_file:
+      - .env
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       # JYC data directory (config.toml, .env, channels, workspace)
       - ${JYC_DATA_DIR:-./}:/opt/jyc

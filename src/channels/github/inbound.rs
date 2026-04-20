@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    MessageContent, PatternMatch,
+    MessageContent, PatternMatch, PatternRules,
 };
 use crate::utils::helpers::truncate_str;
 use super::client::GithubClient;
@@ -76,6 +76,17 @@ impl ChannelMatcher for GithubMatcher {
                         }
                     }
 
+                    // Rule filtering: all present rules must match (AND logic).
+                    // Each individual rule uses OR logic (any value in the list suffices).
+                    if !self.rules_match(&pattern.rules, message) {
+                        tracing::debug!(
+                            pattern = %pattern.name,
+                            role = %role,
+                            "Pattern rules did not match, skipping"
+                        );
+                        continue;
+                    }
+
                     return Some(PatternMatch {
                         pattern_name: pattern.name.clone(),
                         channel: "github".to_string(),
@@ -90,6 +101,69 @@ impl ChannelMatcher for GithubMatcher {
 
     fn store_unmatched_messages(&self) -> bool {
         false
+    }
+}
+
+impl GithubMatcher {
+    /// Check whether the GitHub-specific rules (github_type, labels, assignees) all match.
+    ///
+    /// All present rules use AND logic (all must pass).
+    /// Within each rule, OR logic applies (any value in the list suffices).
+    /// Rules that are `None` are considered matched (no constraint).
+    fn rules_match(&self, rules: &PatternRules, message: &InboundMessage) -> bool {
+        // Check github_type rule
+        if let Some(ref allowed_types) = rules.github_type {
+            let msg_type = message
+                .metadata
+                .get("github_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !allowed_types.iter().any(|t| t.eq_ignore_ascii_case(msg_type)) {
+                return false;
+            }
+        }
+
+        // Check labels rule (OR logic: match if ANY label on the issue/PR is in the rule list)
+        if let Some(ref allowed_labels) = rules.labels {
+            let msg_labels: Vec<String> = message
+                .metadata
+                .get("github_labels")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let has_match = allowed_labels
+                .iter()
+                .any(|l| msg_labels.contains(&l.to_lowercase()));
+            if !has_match {
+                return false;
+            }
+        }
+
+        // Check assignees rule (OR logic: match if ANY assignee on the issue/PR is in the rule list)
+        if let Some(ref allowed_assignees) = rules.assignees {
+            let msg_assignees: Vec<String> = message
+                .metadata
+                .get("github_assignees")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let has_match = allowed_assignees
+                .iter()
+                .any(|a| msg_assignees.contains(&a.to_lowercase()));
+            if !has_match {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -940,6 +1014,305 @@ mod tests {
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "reviewer");
+    }
+
+    // --- Rule filtering (github_type, labels, assignees) ---
+
+    /// Helper: create a message with labels and assignees metadata
+    fn make_message_with_rules(
+        github_type: &str,
+        number: u64,
+        labels: &[&str],
+        assignees: &[&str],
+    ) -> InboundMessage {
+        let mut msg = make_message(github_type, number);
+        msg.metadata.insert(
+            "github_labels".to_string(),
+            serde_json::json!(labels),
+        );
+        msg.metadata.insert(
+            "github_assignees".to_string(),
+            serde_json::json!(assignees),
+        );
+        msg
+    }
+
+    #[test]
+    fn test_github_type_rule_blocks_wrong_type() {
+        // Developer pattern requires pull_request, but message is an issue
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "developer pattern should not match issue type");
+    }
+
+    #[test]
+    fn test_github_type_rule_allows_correct_type() {
+        // Planner pattern requires issue, message is an issue
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
+    }
+
+    #[test]
+    fn test_assignees_rule_blocks_wrong_assignee() {
+        // Pattern requires assignee "alice", but issue is assigned to "bob"
+        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "should not match when assignee doesn't match");
+    }
+
+    #[test]
+    fn test_assignees_rule_allows_matching_assignee() {
+        // Pattern requires assignee "alice", issue is assigned to "alice"
+        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
+    }
+
+    #[test]
+    fn test_assignees_rule_or_logic() {
+        // Pattern allows "alice" or "bob", issue assigned to "bob"
+        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["alice".to_string(), "bob".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when any assignee in the list matches");
+    }
+
+    #[test]
+    fn test_assignees_rule_case_insensitive() {
+        // Pattern has "Alice", issue has "alice"
+        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["Alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "assignee matching should be case-insensitive");
+    }
+
+    #[test]
+    fn test_labels_rule_blocks_wrong_label() {
+        // Pattern requires label "bug", but issue has "enhancement"
+        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["bug".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "should not match when label doesn't match");
+    }
+
+    #[test]
+    fn test_labels_rule_allows_matching_label() {
+        // Pattern requires label "bug", issue has "bug"
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["bug".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_labels_rule_case_insensitive() {
+        // Pattern has "Bug", issue has "bug"
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["Bug".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "label matching should be case-insensitive");
+    }
+
+    #[test]
+    fn test_all_rules_and_logic() {
+        // Pattern requires: pull_request AND label "needs-review" AND assignee "alice"
+        // Message has all three — should match
+        let mut msg = make_message_with_rules("pull_request", 43, &["needs-review"], &["alice"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["needs-review".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when all rules pass");
+    }
+
+    #[test]
+    fn test_and_logic_partial_fail() {
+        // Pattern requires: pull_request AND label "needs-review" AND assignee "alice"
+        // Message has correct type and label but wrong assignee — should NOT match
+        let mut msg = make_message_with_rules("pull_request", 43, &["needs-review"], &["bob"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(vec!["needs-review".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "should not match when any AND rule fails");
+    }
+
+    #[test]
+    fn test_no_rules_always_matches() {
+        // Pattern with no rules (all None) — should match purely on role
+        let mut msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules::default(),
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "no rules means match on role alone");
+    }
+
+    #[test]
+    fn test_no_assignees_on_issue_fails_assignee_rule() {
+        // Pattern requires assignee "alice", but issue has no assignees
+        let mut msg = make_message_with_rules("issue", 42, &[], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                assignees: Some(vec!["alice".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "no assignees on issue should fail assignee rule");
+    }
+
+    #[test]
+    fn test_fallback_to_second_pattern_when_first_rules_fail() {
+        // Two patterns with same role but different rules.
+        // First requires assignee "alice", second has no assignee rule.
+        // Message has assignee "bob" — should skip first, match second.
+        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![
+            ChannelPattern {
+                name: "planner-alice".to_string(),
+                enabled: true,
+                role: Some("Planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    assignees: Some(vec!["alice".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "planner-default".to_string(),
+                enabled: true,
+                role: Some("Planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner-default",
+            "should fall through to second pattern when first pattern's rules don't match");
     }
 
     // --- Helper function tests ---

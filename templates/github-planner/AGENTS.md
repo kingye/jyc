@@ -115,8 +115,22 @@ git checkout -b feat/issue-<number>
 # Push the empty branch (NO code changes, NO file creation)
 git push -u origin feat/issue-<number>
 
-# Create PR with spec in body
-gh pr create --title "feat: <description>" --body "$(cat <<'EOF'
+# Read issue assignees and labels to copy to PR
+ASSIGNEES=$(gh issue view <number> --json assignees --jq '[.assignees[].login] | join(",")')
+LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")')
+
+# Build optional flags for assignees and labels
+ASSIGNEE_FLAG=""
+LABEL_FLAG=""
+if [ -n "$ASSIGNEES" ]; then
+  ASSIGNEE_FLAG="--assignee $ASSIGNEES"
+fi
+if [ -n "$LABELS" ]; then
+  LABEL_FLAG="--label $LABELS"
+fi
+
+# Create PR with spec in body, copying assignees and labels from the issue
+gh pr create --title "feat: <description>" $ASSIGNEE_FLAG $LABEL_FLAG --body "$(cat <<'EOF'
 ## Spec
 
 <one-paragraph summary of what this PR achieves>
@@ -149,6 +163,7 @@ gh pr comment <pr_number> --body "[Planner] @j:developer Please implement accord
 ```
 
 **CRITICAL:** The PR must be EMPTY (no code changes). The developer agent will implement the code.
+**CRITICAL:** You MUST copy assignees and labels from the issue to the PR — this ensures correct routing to developer/reviewer agents.
 **CRITICAL:** You MUST post a separate comment with `@j:developer` after creating the PR — this is what triggers the developer.
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.

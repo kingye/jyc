@@ -505,12 +505,12 @@ impl ThreadManager {
         let active_names: std::collections::HashSet<String> = queues.keys().cloned().collect();
         drop(queues);
 
-        // Scan workspace for all thread directories with .jyc/pattern
+        // Scan workspace for all thread directories with .jyc/ subdirectory
         let mut thread_names: Vec<String> = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if path.is_dir() && path.join(".jyc").join("pattern").exists() {
+                if path.is_dir() && path.join(".jyc").is_dir() {
                     if let Some(name) = entry.file_name().to_str() {
                         thread_names.push(name.to_string());
                     }

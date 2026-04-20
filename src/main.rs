@@ -38,6 +38,9 @@ enum Commands {
     /// Monitor inbound channels and process messages with AI
     Monitor(cli::monitor::MonitorArgs),
 
+    /// Live TUI dashboard — connects to a running jyc monitor
+    Dashboard(cli::dashboard::DashboardArgs),
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -125,6 +128,9 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::Monitor(args) => {
             cli::monitor::run(args, &workdir).await
+        }
+        Commands::Dashboard(args) => {
+            cli::dashboard::run(args).await
         }
         Commands::Config { action } => {
             cli::config::run(action, &workdir).await

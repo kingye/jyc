@@ -4,6 +4,39 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+**Inspect Server + TUI Dashboard** — Live monitoring of running jyc processes
+- `[inspect]` config section: `enabled`, `bind` (default `127.0.0.1:9876`)
+- TCP-based JSON line protocol for querying runtime state
+- `jyc dashboard` CLI command with ratatui TUI
+- Panels: channels bar, threads table (selectable), detail panel, status bar
+- Shows: thread name, channel, pattern, status, model, mode, token usage, uptime, version
+- Key bindings: q/Esc quit, Up/Down/j/k select, r refresh
+- Auto-polls every 500ms, handles disconnected state gracefully
+- Works across Docker (via `network_mode: host`) and bare metal
+
+**MetricsCollector** — Lightweight replacement for AlertService
+- Accumulates health stats (messages received/processed, errors, per-thread) in `Arc<Mutex<>>`
+- Queryable by the inspect server — no email dependency
+- `MetricsHandle` for components to report events (same API as old `AppLogger`)
+
+### Removed
+
+**AlertService** — Removed email-based alerting
+- Startup notification email removed
+- Error digest email removed
+- Health report email removed
+- `[alerting]` and `[alerting.health_check]` config sections deprecated (ignored if present)
+- `AlertingConfig`, `HealthCheckConfig` structs kept for backward compatibility but unused
+
+### Changed
+
+**ThreadManager** — Added introspection for dashboard
+- `channel_name` and `workspace_dir` fields for identifying channel ownership
+- `list_threads()` method: returns thread info by reading `.jyc/` state files
+- `channel_name()`, `max_concurrent()` accessor methods
+
 ## [0.1.10] - 2026-04-20
 
 ### Added

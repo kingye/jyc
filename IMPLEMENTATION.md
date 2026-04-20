@@ -4,7 +4,7 @@
 
 This document outlines the phased implementation plan for building JYC, the Rust rewrite of jiny-m. Each phase produces a testable, functional increment. Phases are ordered by dependency — later phases build on earlier ones.
 
-**Estimated total: ~50+ implementation tasks across 10 phases.**
+**Estimated total: ~60+ implementation tasks across 11 phases.**
 
 ---
 
@@ -326,7 +326,7 @@ websocket.reconnect_delay_ms = 5000
 
 ✅ **Completed** - All Feishu channel features are implemented and tested
 ✅ **Integrated** - Fully integrated with core JYC architecture
-✅ **Production Ready** - Passes all 265 tests in the test suite
+✅ **Production Ready** - Passes all 283 tests in the test suite
 ✅ **Documented** - Comprehensive documentation in DESIGN.md
 
 The Feishu channel implementation demonstrates the extensibility of JYC's channel-agnostic architecture and provides a blueprint for adding additional messaging platforms in the future.
@@ -384,7 +384,7 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 ### Status
 
 ✅ **Completed** — GitHub channel fully operational with multi-agent workflow
-✅ **Tested** — 265 tests pass (14 new tests for rule filtering)
+✅ **Tested** — 283 tests pass
 ✅ **Documented** — DESIGN.md updated with GitHub channel section
 
 ---
@@ -405,3 +405,28 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 ### Status
 
 ✅ **Completed** — Bare metal deployment tested on Ubuntu/Debian
+
+---
+
+## Phase 11: Inspect Server & TUI Dashboard (v0.1.11)
+
+**Goal:** Live monitoring of running jyc processes via a TUI dashboard.
+
+### Tasks
+
+| # | Task | Files | Description |
+|---|------|-------|-------------|
+| 11.1 | Inspect types | `inspect/types.rs` | `InspectState`, `ChannelInfo`, `ThreadInfo`, `ThreadStatus`, `GlobalStats`, JSON protocol types |
+| 11.2 | MetricsCollector | `core/metrics.rs` | Replace AlertService with lightweight stats accumulator. `MetricsHandle` for event reporting, `SharedHealthStats` for querying. |
+| 11.3 | Remove AlertService | `core/alert_service.rs` (deleted) | Remove startup email, error digest, health report. Remove `[alerting]` config. |
+| 11.4 | InspectConfig | `config/types.rs` | `[inspect]` section: `enabled`, `bind` (default `127.0.0.1:9876`) |
+| 11.5 | Thread introspection | `core/thread_manager.rs` | `list_threads()`, `channel_name()`, `max_concurrent()`. Reads `.jyc/` files for session/model/token info. |
+| 11.6 | TCP inspect server | `inspect/server.rs` | `TcpListener`, JSON line protocol, queries ThreadManagers + MetricsCollector. Multi-client support. |
+| 11.7 | TCP inspect client | `inspect/client.rs` | Persistent TCP connection, auto-reconnect on disconnect. |
+| 11.8 | TUI dashboard | `cli/dashboard.rs` | `jyc dashboard` command. ratatui TUI: channels bar, threads table (selectable), detail panel, status bar. |
+| 11.9 | Podman tunnel | `jyc-podman-tunnel.sh` | SSH tunnel script for macOS Podman Machine port forwarding. |
+
+### Status
+
+✅ **Completed** — Tested with Docker (Podman) and bare metal
+✅ **Tested** — 283 tests pass (18 new: 6 types + 4 metrics + 4 server + 4 client)

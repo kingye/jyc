@@ -63,11 +63,11 @@ async fn run_validate(workdir: &Path, config_file: &str) -> Result<()> {
                 .join(", ")
         );
         println!("  Agent mode: {}", config.agent.mode);
-        if let Some(ref alerting) = config.alerting {
+        if let Some(ref inspect) = config.inspect {
             println!(
-                "  Alerting: {} (→ {})",
-                if alerting.enabled { "enabled" } else { "disabled" },
-                alerting.recipient
+                "  Inspect: {} (bind: {})",
+                if inspect.enabled { "enabled" } else { "disabled" },
+                inspect.bind
             );
         }
         Ok(())

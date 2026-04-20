@@ -17,9 +17,6 @@ pub struct AppConfig {
     /// Agent configuration (AI model, prompts, attachments)
     pub agent: AgentConfig,
 
-    /// Alerting configuration (error digests, health checks) — DEPRECATED, will be removed
-    pub alerting: Option<AlertingConfig>,
-
     /// Inspect server configuration (exposes runtime state for dashboard)
     pub inspect: Option<InspectConfig>,
 
@@ -188,50 +185,6 @@ pub struct OpenCodeConfig {
     pub max_input_tokens: Option<u64>,
 }
 
-/// Alerting configuration — error digests and health checks.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AlertingConfig {
-    pub enabled: bool,
-
-    /// Email address to send alerts to
-    pub recipient: String,
-
-    /// How often to flush error buffer (minutes)
-    #[serde(default = "default_5_u64")]
-    pub batch_interval_minutes: u64,
-
-    /// Max errors per digest email
-    #[serde(default = "default_50")]
-    pub max_errors_per_batch: usize,
-
-    /// Subject line prefix for alert emails
-    pub subject_prefix: Option<String>,
-
-    /// Whether to include reply-tool.log tail in error digests
-    #[serde(default = "default_true")]
-    pub include_reply_tool_log: bool,
-
-    /// Number of lines to include from reply-tool.log
-    #[serde(default = "default_50")]
-    pub reply_tool_log_tail_lines: usize,
-
-    /// Health check report configuration
-    pub health_check: Option<HealthCheckConfig>,
-}
-
-/// Health check report configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct HealthCheckConfig {
-    pub enabled: bool,
-
-    /// How often to send health check reports (hours, supports decimals)
-    #[serde(default = "default_24f")]
-    pub interval_hours: f64,
-
-    /// Override recipient (falls back to alerting.recipient)
-    pub recipient: Option<String>,
-}
-
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.
 #[derive(Debug, Clone, Deserialize)]
 pub struct InspectConfig {
@@ -333,26 +286,17 @@ fn default_3() -> usize {
 fn default_5() -> usize {
     5
 }
-fn default_5_u64() -> u64 {
-    5
-}
 fn default_10() -> usize {
     10
 }
 fn default_30() -> u64 {
     30
 }
-fn default_50() -> usize {
-    50
-}
 fn default_993() -> u16 {
     993
 }
 fn default_465() -> u16 {
     465
-}
-fn default_24f() -> f64 {
-    24.0
 }
 fn default_idle() -> String {
     "idle".to_string()

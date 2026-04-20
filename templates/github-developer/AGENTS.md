@@ -17,7 +17,9 @@ The trigger message tells you the repository and PR number, for example:
 repository: kingye/jyc
 number: 43
 ```
-The PR already exists. You implement code on its branch.
+The PR already exists as a **draft** with an empty branch — this is expected.
+The planner created it with only the spec in the PR body. Your job is to
+implement the code on this branch. The empty initial state is normal.
 
 ## Repository Setup
 Clone the repository from the trigger message to `repo/` if not already present,
@@ -133,6 +135,12 @@ cd repo
 ```
 
 **If build or tests fail, fix and commit before proceeding.**
+
+**Mark the PR as ready for review (it was created as a draft by the planner):**
+```bash
+cd repo
+gh pr ready <number>
+```
 
 **Then hand over to the reviewer. This is the LAST thing you do.**
 Do NOT post a summary comment instead.

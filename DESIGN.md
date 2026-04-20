@@ -569,7 +569,7 @@ Comprehensive unit tests cover:
 - Error handling and recovery
 - Message formatting and parsing
 
-All Feishu channel tests pass as part of the 265 total tests in the test suite.
+All Feishu channel tests pass as part of the 283 total tests in the test suite.
 
 ## GitHub Channel Implementation
 
@@ -2016,6 +2016,7 @@ jyc binary
 ├── jyc config validate
 ├── jyc state              ← show monitoring state
 ├── jyc patterns list      ← list patterns (shows all rule fields)
+├── jyc dashboard          ← live TUI dashboard (connects to running monitor)
 ├── jyc mcp-reply-tool     ← hidden subcommand (MCP stdio server)
 ├── jyc mcp-vision-tool    ← hidden subcommand (vision analysis MCP server)
 └── jyc mcp-question-tool  ← hidden subcommand (ask_user MCP server)
@@ -2226,7 +2227,7 @@ pub struct AppConfig {
     pub channels: HashMap<String, ChannelConfig>,
     pub agent: AgentConfig,
     pub heartbeat: Option<HeartbeatConfig>,
-    pub alerting: Option<AlertingConfig>,
+    pub inspect: Option<InspectConfig>,                   // Inspect server config
     pub attachments: Option<UnifiedAttachmentConfig>,  // Global attachment config
     pub vision: Option<VisionConfig>,                  // Vision API config
 }
@@ -2461,6 +2462,89 @@ Template directory structure (in workdir):
 - Directories are created as needed
 - Existing files are **not** overwritten (safe to re-run)
 
+## Inspect Server & TUI Dashboard
+
+### Architecture
+
+```
+┌──────────────────────┐         TCP (127.0.0.1:9876)  ┌──────────────────────┐
+│   jyc monitor        │  ◄──────────────────────────► │   jyc dashboard      │
+│                       │    JSON line protocol          │   (ratatui TUI)      │
+│  ┌─────────────────┐ │                                │                      │
+│  │ InspectServer    │ │   {"method":"get_state"}      │  polls every 500ms   │
+│  │ [inspect] config │ │  ◄──────────────────────────  │  persistent TCP conn │
+│  │                  │ │   {channels, threads, stats}   │  auto-reconnect      │
+│  │ queries:         │ │  ──────────────────────────►  │                      │
+│  │  ThreadManagers  │ │                                └──────────────────────┘
+│  │  MetricsCollector│ │
+│  └─────────────────┘ │
+└──────────────────────┘
+```
+
+### Configuration
+
+```toml
+[inspect]
+enabled = true                      # Default: false
+bind = "127.0.0.1:9876"            # Default: 127.0.0.1:9876
+```
+
+For Docker (Podman Machine on macOS), use `bind = "0.0.0.0:9876"` and the SSH tunnel script `jyc-podman-tunnel.sh`.
+
+### Protocol
+
+JSON line protocol over TCP. Client sends one JSON object per line, server responds with one JSON object per line.
+
+```json
+// Request
+{"method": "get_state"}
+
+// Response
+{
+  "uptime_secs": 3600,
+  "version": "0.1.11",
+  "channels": [{"name": "emf", "channel_type": "github"}],
+  "threads": [{"name": "issue-42", "channel": "emf", "pattern": "planner", "status": "processing", ...}],
+  "stats": {"active_workers": 2, "total_threads": 3, "max_concurrent": 3, ...}
+}
+```
+
+### TUI Dashboard Layout
+
+```
+┌─ JYC Dashboard ──────────────────────────────────────────────────┐
+│ ┌─ Channels ──────────────────────────────────────────────────┐  │
+│ │ ● emf (github)     ● networkcalc (github)                   │  │
+│ └─────────────────────────────────────────────────────────────┘  │
+│ ┌─ Threads (4) ───────────────────────────────────────────────┐  │
+│ │ Thread          Channel     Pattern     Status     Tokens   │  │
+│ │ issue-42        emf         planner     Processing 45K/120K │  │
+│ │ pr-43           emf         developer   Idle       12K/120K │  │
+│ │ review-pr-43    emf         reviewer    Queued     -        │  │
+│ │ issue-55        networkcalc planner     Processing 89K/120K │  │
+│ └─────────────────────────────────────────────────────────────┘  │
+│ ┌─ Details: issue-42 ─────────────────────────────────────────┐  │
+│ │ Channel: emf  Pattern: planner                               │  │
+│ │ Model: anthropic/claude-opus-4-6  Mode: build                    │  │
+│ │ Tokens: 45231 / 120000 (37%)                                 │  │
+│ │ Status: Processing                                           │  │
+│ └─────────────────────────────────────────────────────────────┘  │
+│ 2 active / 4 threads │ 156 recv │ 2 err │ up 1h03m │ v0.1.11   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refresh.
+
+### MetricsCollector
+
+Replaces the old `AlertService`. Components report events via `MetricsHandle`:
+
+- `message_received(thread)`, `message_matched(thread)`
+- `reply_by_tool(thread)`, `reply_by_fallback(thread)`
+- `processing_error(thread, error)`, `queue_dropped(thread)`
+
+Stats are accumulated in `Arc<Mutex<HealthStats>>`, queryable by the inspect server. No email dependency.
+
 ### Source Tree
 
 ```
@@ -2473,6 +2557,7 @@ jyc/
 │   ├── cli/
 │   │   ├── mod.rs
 │   │   ├── monitor.rs                   # `jyc monitor` — wiring
+│   │   ├── dashboard.rs                 # `jyc dashboard` — ratatui TUI
 │   │   ├── config.rs                    # `jyc config init/validate`
 │   │   ├── patterns.rs                  # `jyc patterns list` (all rule fields)
 │   │   ├── state.rs                     # `jyc state`
@@ -2519,7 +2604,7 @@ jyc/
 │   │   ├── chat_log_store.rs           # Chat log storage (daily log files)
 │   │   ├── email_parser.rs             # Stripping, quoting, thread trail
 │   │   ├── state_manager.rs            # UID tracking, state persistence
-│   │   ├── alert_service.rs            # Error digests + health reports
+│   │   ├── metrics.rs                   # MetricsCollector (replaces AlertService)
 │   │   ├── attachment_storage.rs       # Channel-agnostic attachment saving
 │   │   ├── template_utils.rs           # Template file copying
 │   │   ├── pending_delivery.rs         # Background reply delivery watcher
@@ -2556,6 +2641,11 @@ jyc/
 │   │   ├── vision_tool.rs            # rmcp MCP server (analyze_image tool)
 │   │   ├── question_tool.rs          # rmcp MCP server (ask_user tool)
 │   │   └── context.rs                # ReplyContext serialization + validation
+│   ├── inspect/
+│   │   ├── mod.rs
+│   │   ├── types.rs                  # InspectState, ChannelInfo, ThreadInfo, protocol
+│   │   ├── server.rs                 # TCP inspect server (JSON line protocol)
+│   │   └── client.rs                 # TCP client (persistent connection, auto-reconnect)
 │   ├── security/
 │   │   └── mod.rs                     # Path validation, file size/extension checks
 │   └── utils/
@@ -2633,7 +2723,7 @@ Layer 1: component     (always present — identifies the subsystem)
 |-----------|-------|--------|---------------|-------------|
 | `inbound` | L1+L2 | `channel` | `cli/monitor.rs` — per IMAP task | `tokio::spawn().instrument()` |
 | `worker` | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
-| `alert` | L1 | — | `alert_service.rs` — background task | `tokio::spawn().instrument()` |
+| `metrics` | L1 | — | `metrics.rs` — background task | `tokio::spawn().instrument()` |
 
 Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `opencode/service.rs` called from within a `worker` span shows:
 

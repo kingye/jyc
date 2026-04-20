@@ -4,6 +4,8 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-04-20
+
 ### Added
 
 **Inspect Server + TUI Dashboard** — Live monitoring of running jyc processes

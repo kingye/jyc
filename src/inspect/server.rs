@@ -12,7 +12,7 @@ use crate::core::thread_manager::ThreadManager;
 use crate::inspect::types::*;
 
 /// Max activity entries kept per thread.
-const MAX_ACTIVITY_ENTRIES: usize = 20;
+const MAX_ACTIVITY_ENTRIES: usize = 60;
 
 /// Per-thread activity buffer, shared between the activity tracker and the server.
 pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;

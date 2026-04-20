@@ -742,13 +742,12 @@ impl OpenCodeClient {
                                     "running" => {
                                         *last_tool_name = Some(tool_name.clone());
                                         if logged_tools.insert(dedup_key) {
-                                            // Extract tool input preview
+                                            // Extract tool input
                                             let input_preview = state.input.as_ref()
                                                 .and_then(|v| {
                                                     v.as_str().map(|s| s.to_string())
                                                         .or_else(|| Some(v.to_string()))
                                                 })
-                                                .map(|s| if s.len() > 120 { format!("{}...", &s[..s.floor_char_boundary(120)]) } else { s })
                                                 .unwrap_or_default();
                                             
                                             // Save for progress logging

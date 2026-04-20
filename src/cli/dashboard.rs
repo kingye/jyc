@@ -387,9 +387,14 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .block(activity_block);
         frame.render_widget(text, detail_chunks[1]);
     } else {
+        // Auto-scroll: show only the last N entries that fit the panel height
+        let inner_height = detail_chunks[1].height.saturating_sub(2) as usize; // subtract borders
+        let skip = selected.activity.len().saturating_sub(inner_height);
+
         let activity_lines: Vec<Line> = selected
             .activity
             .iter()
+            .skip(skip)
             .map(|entry| {
                 Line::from(vec![
                     Span::styled(

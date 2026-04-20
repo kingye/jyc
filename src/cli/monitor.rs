@@ -194,6 +194,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             heartbeat_template,
             template_dir,
             config.clone(),
+            channel_name.clone(),
+            workspace_dir.clone(),
         ));
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));

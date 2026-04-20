@@ -478,14 +478,33 @@ impl ThreadManager {
     }
 
     /// List all open threads with their info, reading state from disk.
+    ///
+    /// Scans the workspace directory for thread directories containing `.jyc/pattern`.
+    /// This includes both actively queued threads and idle threads that have been
+    /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
         use crate::services::opencode::session::{
             read_input_tokens, read_model_override, read_mode_override,
         };
 
+        // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
-        let thread_names: Vec<String> = queues.keys().cloned().collect();
+        let active_names: std::collections::HashSet<String> = queues.keys().cloned().collect();
         drop(queues);
+
+        // Scan workspace for all thread directories with .jyc/pattern
+        let mut thread_names: Vec<String> = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.is_dir() && path.join(".jyc").join("pattern").exists() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        thread_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+        thread_names.sort();
 
         let mut threads = Vec::with_capacity(thread_names.len());
 
@@ -507,9 +526,11 @@ impl ThreadManager {
             // Determine status
             let status = if thread_path.join(".jyc").join("question-sent.flag").exists() {
                 ThreadStatus::WaitingForAnswer
+            } else if active_names.contains(&name) {
+                // Thread has an active queue — it's either processing or waiting for messages
+                ThreadStatus::Idle
             } else {
-                // Simple heuristic: if we can't acquire a permit, the thread might be processing.
-                // Threads with open queues are either processing or idle.
+                // Thread exists on disk but has no active queue — it's dormant
                 ThreadStatus::Idle
             };
 

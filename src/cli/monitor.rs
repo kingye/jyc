@@ -69,7 +69,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // 3. Start metrics collector
     let metrics_collector = MetricsCollector::new(cancel.clone());
-    let (_metrics_handle, shared_stats, metrics_task) = metrics_collector.start();
+    let (metrics_handle, shared_stats, metrics_task) = metrics_collector.start();
 
     // 4. Process each configured channel
     let mut tasks = Vec::new();
@@ -198,6 +198,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             config.clone(),
             channel_name.clone(),
             workspace_dir.clone(),
+            metrics_handle.clone(),
         ));
 
         // Collect for inspect server

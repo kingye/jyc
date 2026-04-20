@@ -66,6 +66,7 @@ mode = "opencode"
             test_config(),
             "test".to_string(),
             workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
         );
 
         let result = thread_manager.close_thread("test_thread").await;
@@ -105,6 +106,7 @@ mode = "opencode"
             test_config(),
             "test".to_string(),
             workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
         );
 
         let result = thread_manager.close_thread("test_thread").await;
@@ -149,6 +151,7 @@ mode = "opencode"
             test_config(),
             "test".to_string(),
             workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
         );
 
         let result = thread_manager.close_thread("test_thread").await;

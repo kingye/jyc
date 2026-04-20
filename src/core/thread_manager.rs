@@ -19,6 +19,7 @@ use crate::core::command::close_handler::CloseCommandHandler;
 use crate::core::command::reset_handler::ResetCommandHandler;
 use crate::core::command::template_handler::TemplateCommandHandler;
 use crate::core::message_storage::{MessageStorage, StoreResult};
+use crate::core::metrics::MetricsHandle;
 use crate::core::pending_delivery::watch_pending_deliveries;
 use crate::core::template_utils::copy_template_files;
 use crate::inspect::types::{ThreadInfo, ThreadStatus};
@@ -92,6 +93,9 @@ pub struct ThreadManager {
     // Application config (for command handlers that need channel/pattern info)
     config: Arc<crate::config::types::AppConfig>,
 
+    // Metrics handle for reporting events to the inspect server
+    pub(crate) metrics: MetricsHandle,
+
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -112,6 +116,7 @@ impl ThreadManager {
         config: Arc<crate::config::types::AppConfig>,
         channel_name: String,
         workspace_dir: PathBuf,
+        metrics: MetricsHandle,
     ) -> Self {
         Self::new_with_options(
             max_concurrent,
@@ -127,6 +132,7 @@ impl ThreadManager {
             config,
             channel_name,
             workspace_dir,
+            metrics,
         )
     }
     
@@ -145,6 +151,7 @@ impl ThreadManager {
         config: Arc<crate::config::types::AppConfig>,
         channel_name: String,
         workspace_dir: PathBuf,
+        metrics: MetricsHandle,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -162,6 +169,7 @@ impl ThreadManager {
             channel_name,
             workspace_dir,
             config,
+            metrics,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
         }
@@ -210,6 +218,8 @@ impl ThreadManager {
             live_injection,
         };
 
+        self.metrics.message_received(&thread_name);
+
         if let Some(sender) = queues.get(&thread_name) {
             match sender.try_send(item) {
                 Ok(()) => {
@@ -218,6 +228,7 @@ impl ThreadManager {
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!(thread = %thread_name, "Queue full, dropping message");
+                    self.metrics.queue_dropped(&thread_name);
                     return;
                 }
                 Err(mpsc::error::TrySendError::Closed(item)) => {
@@ -277,6 +288,7 @@ impl ThreadManager {
             channel_name: self.channel_name.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
         });
@@ -430,6 +442,7 @@ impl ThreadManager {
                         error = %format!("{:#}", e),
                         "Failed to process message"
                     );
+                    tm.metrics.processing_error(&thread_name, &format!("{:#}", e));
                 }
                 
                 // Clear current message after processing
@@ -1062,6 +1075,7 @@ async fn process_message(
                 )
                 .await?;
             tracing::info!("Reply delivered via outbound adapter");
+            thread_manager.metrics.reply_by_tool(thread_name);
         } else {
             tracing::warn!("MCP tool signaled reply but no reply text available");
         }
@@ -1077,6 +1091,7 @@ async fn process_message(
             )
             .await?;
         tracing::info!("Fallback reply sent");
+        thread_manager.metrics.reply_by_fallback(thread_name);
     } else {
         tracing::warn!("No reply text from AI");
     }

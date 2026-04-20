@@ -40,6 +40,7 @@ impl MessageRouter {
                     topic = %message.topic,
                     "Pattern matched"
                 );
+                self.thread_manager.metrics.message_matched(&m.pattern_name);
                 message.matched_pattern = Some(m.pattern_name.clone());
                 Some(m)
             }

@@ -243,12 +243,18 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // Alerting
-    if let Some(ref alerting) = config.alerting {
-        if alerting.enabled && alerting.recipient.is_empty() {
+    // Inspect server
+    if let Some(ref inspect) = config.inspect {
+        if inspect.enabled && inspect.bind.is_empty() {
             errors.push(ValidationError {
-                path: "alerting.recipient".into(),
-                message: "required when alerting is enabled".into(),
+                path: "inspect.bind".into(),
+                message: "required when inspect is enabled".into(),
+            });
+        }
+        if inspect.enabled && inspect.bind.parse::<std::net::SocketAddr>().is_err() {
+            errors.push(ValidationError {
+                path: "inspect.bind".into(),
+                message: "must be a valid socket address (e.g., 127.0.0.1:9876)".into(),
             });
         }
     }

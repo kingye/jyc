@@ -204,19 +204,13 @@ allowed_extensions = [
 max_file_size = "10mb"
 max_per_message = 5
 
-# --- Alerting ---
+# --- Inspect Server ---
+# Exposes runtime state via TCP for the TUI dashboard.
+# Run `jyc dashboard` to connect.
 
-[alerting]
+[inspect]
 enabled = true
-recipient = "kingye@petalmail.com"
-batch_interval_minutes = 5
-subject_prefix = "JYC Alert"
-include_reply_tool_log = true
-reply_tool_log_tail_lines = 50
-
-[alerting.health_check]
-enabled = true
-interval_hours = 3
+bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Vision API ---
 # OpenAI-compatible vision API for image analysis.

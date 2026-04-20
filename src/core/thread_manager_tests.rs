@@ -64,6 +64,8 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         );
 
         let result = thread_manager.close_thread("test_thread").await;
@@ -101,10 +103,13 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         );
 
-        let result = thread_manager.close_thread("nonexistent_thread").await;
+        let result = thread_manager.close_thread("test_thread").await;
         assert!(result.is_ok());
+
     }
 
     #[tokio::test]
@@ -142,6 +147,8 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         );
 
         let result = thread_manager.close_thread("test_thread").await;

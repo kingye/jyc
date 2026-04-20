@@ -17,8 +17,11 @@ pub struct AppConfig {
     /// Agent configuration (AI model, prompts, attachments)
     pub agent: AgentConfig,
 
-    /// Alerting configuration (error digests, health checks)
+    /// Alerting configuration (error digests, health checks) — DEPRECATED, will be removed
     pub alerting: Option<AlertingConfig>,
+
+    /// Inspect server configuration (exposes runtime state for dashboard)
+    pub inspect: Option<InspectConfig>,
 
     /// Heartbeat configuration (progress updates during long AI processing)
     #[serde(default)]
@@ -227,6 +230,31 @@ pub struct HealthCheckConfig {
 
     /// Override recipient (falls back to alerting.recipient)
     pub recipient: Option<String>,
+}
+
+/// Inspect server configuration — exposes runtime state via TCP for the dashboard.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InspectConfig {
+    /// Whether the inspect server is enabled (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// TCP bind address (default: "127.0.0.1:9876")
+    #[serde(default = "default_inspect_bind")]
+    pub bind: String,
+}
+
+impl Default for InspectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_inspect_bind(),
+        }
+    }
+}
+
+fn default_inspect_bind() -> String {
+    "127.0.0.1:9876".to_string()
 }
 
 /// Heartbeat configuration — controls progress updates sent during long-running AI processing.

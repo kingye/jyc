@@ -148,6 +148,8 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         ));
 
         let handler = CloseCommandHandler::new(thread_manager);
@@ -190,6 +192,8 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         ));
 
         let handler = CloseCommandHandler::new(thread_manager);
@@ -229,6 +233,8 @@ mode = "opencode"
             "".into(),
             PathBuf::from("/tmp/templates"),
             test_config(),
+            "test".to_string(),
+            workspace.clone(),
         ));
 
         let handler = CloseCommandHandler::new(thread_manager);

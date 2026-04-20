@@ -73,7 +73,7 @@ gh pr view <number> --json state,merged --jq '"state=\(.state) merged=\(.merged)
 ```
 **If the PR is closed or merged, STOP IMMEDIATELY. Do NOT reply, do NOT comment, do NOT do any work. Just stop.**
 
-### 1. Read the PR Spec
+### 1. Read the Triggering Comment and PR Context
 ```bash
 cd repo
 gh pr view <number>
@@ -87,10 +87,25 @@ cd repo
 gh issue view <issue_number>
 ```
 
-**Extract the Implementation Plan** from the PR body. You will execute it step by step.
-Each step in the plan becomes exactly one commit.
+### 2. Determine What To Do
 
-### 2. Checkout the EXISTING PR Branch
+**Read the triggering comment carefully.** It determines your next action:
+
+| Triggering comment | Action |
+|-------------------|--------|
+| `[Planner] @j:developer Please implement...` | First implementation → Go to Section 4 (Implement the Plan) |
+| `@j:developer <specific task>` (from any user) | Do that specific task → Go to Section 5 (Specific Task) |
+| `[Reviewer] @j:developer <feedback>` | Fix reviewer issues → Go to Section 5 (Specific Task) |
+| `@j:developer` (bare mention, no instruction) | Read PR comments for context, do what makes sense |
+
+**IMPORTANT:**
+- If the triggering comment asks for a specific task (e.g., "add comments",
+"fix typo", "update README"), do ONLY that task. Do NOT re-run the full
+implementation workflow. Do NOT automatically request review.
+- **Every `@j:developer` comment is an instruction**, regardless of who posted it
+(planner, reviewer agent, human reviewer, author, or anyone else).
+
+### 3. Checkout the EXISTING PR Branch
 **The PR branch already exists. Do NOT create a new branch.**
 ```bash
 cd repo
@@ -98,7 +113,7 @@ gh pr checkout <number>
 git pull
 ```
 
-### 3. Implement — One Step at a Time
+### 4. Implement the Plan — One Step at a Time
 
 **⚠️ CRITICAL: You MUST commit and push after EACH step. Do NOT implement
 multiple steps before committing. Do NOT implement the entire plan in one go.
@@ -141,7 +156,48 @@ step's code before committing and pushing the current step.
 **If check or tests fail:** Fix the issue within the same step before committing.
 Do NOT move to the next step with failing tests.
 
-### 4. When Done — Verify and Request Review (MANDATORY)
+### 5. Specific Task (user request, reviewer feedback, or any follow-up)
+
+**Use this section when the triggering comment asks for a specific task.**
+This includes requests from:
+- A **human reviewer** (you, a colleague) — e.g., `@j:developer add code comments`
+- The **reviewer agent** — e.g., `[Reviewer] @j:developer fix error handling in X`
+- The **author** — e.g., `@j:developer please refactor the config loading`
+- Anyone else with access to the PR
+
+**All `@j:developer` comments are instructions. Do NOT ignore them.**
+
+```bash
+cd repo
+gh pr checkout <number>
+git pull
+```
+
+1. **Read the triggering comment** — it tells you exactly what to do
+2. **Read PR comments** for additional context if needed: `gh pr view <number> --comments`
+3. **Do the specific task** described in the triggering comment
+4. **Verify:** run `{check_command}` and `{test_command}`
+5. **Commit and push:**
+```bash
+cd repo
+git add -A
+git commit -m "fix: <description of what was done>"
+git push
+```
+6. **Reply** on the PR with what you did:
+```bash
+cd repo
+gh pr comment <number> --body "[Developer] Done: <brief summary of what was changed>"
+```
+
+**Do NOT automatically request review (`@j:reviewer`).** Only hand off to the
+reviewer agent when the triggering comment explicitly asks for review, or when
+you've completed a full implementation (Section 4).
+
+### 6. When Done with Full Implementation — Verify and Request Review
+
+**This section is ONLY for the initial implementation** (triggered by the planner).
+Do NOT use this section for specific tasks or feedback fixes.
 
 **Before requesting review, verify everything passes:**
 ```bash
@@ -174,53 +230,19 @@ $(git log main..HEAD --oneline)
 **CRITICAL:** Do NOT skip this step. Do NOT replace it with a reply/summary comment.
 The reviewer agent will NOT be triggered unless you post the `@j:reviewer` comment.
 
-### 5. Handling Subsequent Triggers
-
-When triggered again (by reviewer feedback, user request, or any `@j:developer` comment):
-
-**Read the triggering comment in your trigger message** — it tells you exactly what to do.
-Then read the full PR comments for additional context:
-
-```bash
-cd repo
-git pull
-gh pr view <number> --comments
-```
-
-**Fix each distinct issue in its own commit:**
-```bash
-cd repo
-# Fix issue 1
-git add -A && git commit -m "fix: <specific issue description>" && git push
-# Fix issue 2
-git add -A && git commit -m "fix: <specific issue description>" && git push
-```
-
-**After all fixes, verify and re-request review:**
-```bash
-cd repo
-{test_command}
-gh pr comment <number> --body "[Developer] @j:reviewer Feedback addressed. Please re-review.
-
-Fixes:
-$(git log main..HEAD --oneline | head -5)
-"
-```
-
 ## Rules
-- ALWAYS prefix every comment posted via `gh pr comment` with `[Developer]` — this is how the system identifies your comments and prevents self-loops
-- ALWAYS include `@j:reviewer` in your comment to trigger the reviewer — this is the ONLY way to hand over
+- ALWAYS read the triggering comment first — it IS your instruction
+- ALWAYS prefix every comment posted via `gh pr comment` with `[Developer]`
 - ALWAYS `cd repo` before running any `gh` or `git` command
 - ALWAYS use `gh pr checkout <number>` to get the existing PR branch
 - ALWAYS push to the existing PR branch — NEVER create a new branch or PR
 - ALWAYS run `{check_command}` and `{test_command}` before each commit
 - ALWAYS commit and push after EACH plan step — implement step → commit → push → next step
-- NEVER implement multiple steps before committing — this is the most important rule
-- NEVER create one big commit with all changes — each step MUST be a separate commit
 - ALWAYS push immediately after each commit
+- NEVER implement multiple steps before committing
+- NEVER create one big commit with all changes — each step MUST be a separate commit
+- NEVER request review (`@j:reviewer`) for small tasks — only after full implementation or reviewer feedback fixes
 - Use `gh` CLI for ALL GitHub operations
-- ALWAYS read the PR spec before implementing
-- NEVER use the reply tool as your final action — your final action MUST be the hand-over (step 4)
 - When using the reply tool, put your COMPLETE response in the message — do NOT generate text after calling the reply tool (it will be lost)
 - Do NOT create new PRs — the PR already exists
 - Do NOT create new branches — the PR branch already exists

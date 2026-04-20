@@ -766,6 +766,7 @@ impl OpenCodeClient {
                                             self.publish_event_async(ThreadEvent::ToolStarted {
                                                 thread_name: thread_name.to_string(),
                                                 tool_name: tool_name.clone(),
+                                                input: if input_preview.is_empty() { None } else { Some(input_preview.clone()) },
                                                 timestamp: Utc::now(),
                                             });
                                         }

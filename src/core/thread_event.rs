@@ -80,6 +80,8 @@ pub enum ThreadEvent {
         thread_name: String,
         /// Name of the tool being executed
         tool_name: String,
+        /// Preview of the tool input (truncated)
+        input: Option<String>,
         /// When the tool started
         timestamp: DateTime<Utc>,
     },

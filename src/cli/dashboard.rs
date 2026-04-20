@@ -84,7 +84,7 @@ impl App {
 }
 
 pub async fn run(args: &DashboardArgs) -> Result<()> {
-    let client = InspectClient::new(&args.addr);
+    let mut client = InspectClient::new(&args.addr);
 
     // Setup terminal
     enable_raw_mode()?;

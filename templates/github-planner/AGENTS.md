@@ -187,3 +187,7 @@ gh pr comment <pr_number> --body "[Planner] @j:developer Please implement accord
 - Your PR must contain ZERO code changes — only the spec in the PR body
 - Your implementation plan must break the work into small, ordered steps — each with a clear verification method
 - NEVER write vague steps like "implement the feature" — always reference specific files, functions, and types
+
+## Behavioral Guidelines
+
+Follow the `coding-principles` skill — especially Principle 1 (Think Before Coding) and Principle 4 (Goal-Driven Execution).

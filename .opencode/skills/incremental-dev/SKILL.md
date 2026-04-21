@@ -49,6 +49,13 @@ After detection, you have three commands for the rest of this workflow:
 - `{test_command}` — run tests
 - `{build_command}` — full production build (run only once at the end)
 
+### Coding Principles
+
+Follow the `coding-principles` skill for behavioral guidelines, especially:
+- **Principle 2 (Simplicity First)**: Write minimum code that solves the problem
+- **Principle 3 (Surgical Changes)**: Touch only what you must; every changed line should trace to user's request
+- **Principle 4 (Goal-Driven Execution)**: Define verifiable success criteria per step
+
 ### Principle
 
 Break every task into the smallest possible steps. Each step must be:

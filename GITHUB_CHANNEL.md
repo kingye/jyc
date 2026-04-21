@@ -7,12 +7,13 @@ repositories through issue discussion, PR development, and code review.
 
 1. **Channel = Lightweight Trigger + Router** — Channel only polls events and
    routes them. Agents use `gh` CLI to read/write actual content.
-2. **Mention-Based Routing** — Routing is driven by `@j:<role>` mentions in comments:
-   - A comment containing `@j:planner` triggers the Planner agent
-   - A comment containing `@j:developer` triggers the Developer agent
-   - A comment containing `@j:reviewer` triggers the Reviewer agent
-   - Comments without `@j:<role>` are ignored (no routing)
-   - Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`
+2. **Flexible Trigger Modes** — Routing can be triggered by:
+   - **Pattern mode** (default for Planner/Developer): Pattern rules alone trigger (labels, github_type, assignees). No `@j:<role>` mention required.
+   - **Mention mode**: Requires `@j:<role>` mention in comment. Pattern rules are optional.
+   - **Both mode**: Requires both pattern rules match AND `@j:<role>` mention.
+   - Configure via `trigger_mode` field in pattern config (default: `mention` for backward compatibility)
+   - Processed comment IDs persisted to `<channel>/.github/processed-comments.txt`
+   - Seen issues persisted to `<channel>/.github/seen-issues.txt` to prevent re-trigger after restart
 3. **One Token, Role Prefix + Self-Loop Prevention** — Single GitHub PAT. Agents
    prefix comments with `[Planner]`, `[Developer]`, `[Reviewer]`. Each pattern
    only skips comments from its **own** role (self-loop prevention), but allows
@@ -159,8 +160,23 @@ pub struct PatternRules {
     // GitHub-specific
     pub github_type: Option<Vec<String>>,    // ["issue"] or ["pull_request"]
     pub labels: Option<Vec<String>>,          // ["bug", "custom-label"]
+    pub assignees: Option<Vec<String>>,       // ["alice", "bob"]
 }
 ```
+
+### Trigger Mode
+
+Each pattern has a `trigger_mode` field controlling when it matches:
+
+| Mode | Description |
+|------|-------------|
+| `pattern` | Only pattern rules (github_type, labels, assignees) need to match. No `@j:<role>` mention required. |
+| `mention` | Only `@j:<role>` mention triggers. Pattern rules are optional. (default for backward compatibility) |
+| `both` | Both pattern rules match AND `@j:<role>` mention required. |
+
+**Recommended configuration:**
+- Planner/Developer patterns: `trigger_mode = "pattern"` (auto-trigger on new issues/PRs)
+- Reviewer pattern: `trigger_mode = "both"` (require both label + explicit @j:reviewer)
 
 ### Auto-Label from Role
 
@@ -187,11 +203,17 @@ on the issue/PR.
 
 ### Routing
 
-Routing is mention-driven. Only comments containing `@j:<role>` trigger agents.
-Comments without mentions are ignored. Processed comment IDs are persisted to
-`<channel>/.github/processed-comments.txt` to survive restarts.
+Routing behavior depends on the pattern's `trigger_mode`:
 
-Matching logic: `handover_role` from `@j:<role>` mention + self-loop check
+- **Pattern mode**: Messages matching github_type/labels/assignees rules trigger immediately. No `@j:<role>` mention needed.
+- **Mention mode**: Requires `@j:<role>` mention in comment. Pattern rules are optional filters.
+- **Both mode**: Requires both pattern rules match AND `@j:<role>` mention.
+
+All comments are routed (not just those with mentions) to enable Pattern mode matching.
+Self-loop prevention still applies: an agent's own comments (identified by `[Role]` prefix) don't re-trigger that same agent.
+
+Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`.
+Seen issues are persisted to `<channel>/.github/seen-issues.txt` to prevent re-triggering after restart.
 
 ### Configuration Example
 
@@ -300,48 +322,51 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `issue-{N}`
 **Role**: Discuss requirements with user, create PR with spec when ready.
+**Trigger**: `trigger_mode = "pattern"` (auto-triggered on new issues via labels)
 
 **Workflow**:
-1. Triggered by `@j:planner` in an issue comment
+1. Triggered automatically when issue matches pattern rules (e.g., label `planning`)
 2. Read issue: `gh issue view {N}`
 3. Read comments: `gh issue view {N} --comments`
 4. Discuss with user (reply via jyc_reply → posts issue comment)
 5. When requirements clear:
    - Create branch: `git checkout -b feat/issue-{N}`
    - Create PR: `gh pr create --body "..."`
-   - Post comment: `@j:developer` to trigger developer
+   - Hand over to developer via pattern matching (no @j:developer needed)
 6. Continue monitoring issue for user feedback
 
 ### Agent B: Developer (github-developer)
 
 **Thread**: `pr-{N}`
 **Role**: Implement code based on PR spec, address review feedback.
+**Trigger**: `trigger_mode = "pattern"` (auto-triggered on new PRs via labels)
 
 **Workflow**:
-1. Triggered by `@j:developer` in a PR comment
+1. Triggered automatically when PR matches pattern rules (e.g., label `jyc:develop`)
 2. Read PR spec: `gh pr view {N}`
 3. Read linked issue: `gh issue view {linked_issue}`
 4. Clone repo, checkout PR branch
 5. Implement code (incremental-dev approach)
 6. Commit, push
-7. Hand over: post comment with `@j:reviewer`
-8. When review feedback received (triggered by `@j:developer` from reviewer):
+7. Hand over to reviewer (auto-trigger via pattern rules, no @j:reviewer needed)
+8. When review feedback received:
    - Read reviews: `gh pr view {N} --comments`
    - Fix issues, commit, push
-   - Hand over: post comment with `@j:reviewer`
+   - Hand over to reviewer again
 
 ### Agent C: Reviewer (github-reviewer)
 
 **Thread**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
+**Trigger**: `trigger_mode = "both"` (requires both label + @j:reviewer mention)
 
 **Workflow**:
-1. Triggered by `@j:reviewer` in a PR comment
+1. Triggered when PR has review label AND `@j:reviewer` mention
 2. Read PR: `gh pr view {N}`
 3. Read diff: `gh pr diff {N}`
 4. Review code
 5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. If changes requested: post comment with `@j:developer`
+6. If changes requested: hand over to developer (auto-trigger via pattern)
 
 ## Close & Cleanup
 

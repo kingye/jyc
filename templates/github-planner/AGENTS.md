@@ -119,19 +119,9 @@ git push -u origin feat/issue-<number>
 ASSIGNEES=$(gh issue view <number> --json assignees --jq '[.assignees[].login] | join(",")')
 LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")')
 
-# Build optional flags for assignees and labels
-ASSIGNEE_FLAG=""
-LABEL_FLAG=""
-if [ -n "$ASSIGNEES" ]; then
-  ASSIGNEE_FLAG="--assignee $ASSIGNEES"
-fi
-if [ -n "$LABELS" ]; then
-  LABEL_FLAG="--label $LABELS"
-fi
-
-# Create DRAFT PR with spec in body, copying assignees and labels from the issue
+# Create DRAFT PR with spec in body
 # Draft status signals that the PR is not ready for merge — the developer will implement the code.
-gh pr create --draft --title "feat: <description>" $ASSIGNEE_FLAG $LABEL_FLAG --body "$(cat <<'EOF'
+gh pr create --draft --title "feat: <description>" --body "$(cat <<'EOF'
 ## Spec
 
 <one-paragraph summary of what this PR achieves>
@@ -159,12 +149,32 @@ Fixes #<issue_number>
 EOF
 )"
 
+# Copy assignees from issue to PR
+if [ -n "$ASSIGNEES" ]; then
+  for assignee in $(echo "$ASSIGNEES" | tr ',' '\n'); do
+    gh pr edit <pr_number> --add-assignee "$assignee"
+  done
+fi
+
+# Copy labels from issue to PR
+if [ -n "$LABELS" ]; then
+  for label in $(echo "$LABELS" | tr ',' '\n'); do
+    gh pr edit <pr_number> --add-label "$label"
+  done
+fi
+
+# Verify assignees and labels were copied
+PR_ASSIGNEES=$(gh pr view <pr_number> --json assignees --jq '[.assignees[].login] | join(",")')
+PR_LABELS=$(gh pr view <pr_number> --json labels --jq '[.labels[].name] | join(",")')
+echo "PR assignees: $PR_ASSIGNEES (expected: $ASSIGNEES)"
+echo "PR labels: $PR_LABELS (expected: $LABELS)"
+
 # Trigger the developer agent by posting a comment with @j:developer
 gh pr comment <pr_number> --body "[Planner] @j:developer Please implement according to the plan above."
 ```
 
 **CRITICAL:** The PR must be EMPTY (no code changes) and created as a **draft**. The developer agent will implement the code.
-**CRITICAL:** You MUST copy assignees and labels from the issue to the PR — this ensures correct routing to developer/reviewer agents.
+**CRITICAL:** You MUST copy ALL assignees and labels from the issue to the PR using `gh pr edit --add-assignee` and `gh pr edit --add-label` AFTER creating the PR. This ensures correct routing to developer/reviewer agents. DO NOT rely on `gh pr create --assignee/--label` flags alone.
 **CRITICAL:** You MUST post a separate comment with `@j:developer` after creating the PR — this is what triggers the developer.
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.

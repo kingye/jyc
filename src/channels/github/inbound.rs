@@ -891,6 +891,7 @@ mod tests {
                 name: "planner".to_string(),
                 enabled: true,
                 role: Some("Planner".to_string()),
+                trigger_mode: TriggerMode::Pattern,
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["issue".to_string()]),
                     ..Default::default()
@@ -901,6 +902,7 @@ mod tests {
                 name: "developer".to_string(),
                 enabled: true,
                 role: Some("Developer".to_string()),
+                trigger_mode: TriggerMode::Pattern,
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["pull_request".to_string()]),
                     ..Default::default()
@@ -911,6 +913,45 @@ mod tests {
                 name: "reviewer".to_string(),
                 enabled: true,
                 role: Some("Reviewer".to_string()),
+                trigger_mode: TriggerMode::Both,
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["pull_request".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ]
+    }
+
+    fn make_patterns_mention_mode() -> Vec<ChannelPattern> {
+        vec![
+            ChannelPattern {
+                name: "planner".to_string(),
+                enabled: true,
+                role: Some("Planner".to_string()),
+                trigger_mode: TriggerMode::Mention,
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "developer".to_string(),
+                enabled: true,
+                role: Some("Developer".to_string()),
+                trigger_mode: TriggerMode::Mention,
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["pull_request".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "reviewer".to_string(),
+                enabled: true,
+                role: Some("Reviewer".to_string()),
+                trigger_mode: TriggerMode::Mention,
                 rules: crate::channels::types::PatternRules {
                     github_type: Some(vec!["pull_request".to_string()]),
                     ..Default::default()
@@ -964,9 +1005,8 @@ mod tests {
 
     #[test]
     fn test_no_mention_no_match() {
-        // Comment without @j:<role> → no routing
         let msg = make_message("issue", 42);
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
@@ -975,7 +1015,7 @@ mod tests {
     fn test_mention_planner_matches() {
         let mut msg = make_message("issue", 42);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "planner");
@@ -985,7 +1025,7 @@ mod tests {
     fn test_mention_developer_matches() {
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "developer");
@@ -995,7 +1035,7 @@ mod tests {
     fn test_mention_reviewer_matches() {
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "reviewer");
@@ -1005,7 +1045,7 @@ mod tests {
     fn test_mention_case_insensitive() {
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "reviewer");
@@ -1015,7 +1055,7 @@ mod tests {
     fn test_mention_unknown_role_no_match() {
         let mut msg = make_message("issue", 42);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("unknown"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
@@ -1042,33 +1082,30 @@ mod tests {
 
     #[test]
     fn test_self_loop_developer_mention_own_role() {
-        // [Developer] posts "@j:developer" — should NOT re-trigger developer
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
         msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_self_loop_reviewer_mention_own_role() {
-        // [Reviewer] posts "@j:reviewer" — should NOT re-trigger reviewer
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_cross_role_reviewer_to_developer() {
-        // [Reviewer] posts "@j:developer" — should trigger developer
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
         msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "developer");
@@ -1076,11 +1113,10 @@ mod tests {
 
     #[test]
     fn test_cross_role_developer_to_reviewer() {
-        // [Developer] posts "@j:reviewer" — should trigger reviewer
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "reviewer");
@@ -1109,20 +1145,18 @@ mod tests {
 
     #[test]
     fn test_github_type_rule_blocks_wrong_type() {
-        // Developer pattern requires pull_request, but message is an issue
         let mut msg = make_message("issue", 42);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none(), "developer pattern should not match issue type");
     }
 
     #[test]
     fn test_github_type_rule_allows_correct_type() {
-        // Planner pattern requires issue, message is an issue
         let mut msg = make_message("issue", 42);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
-        let patterns = make_patterns();
+        let patterns = make_patterns_mention_mode();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "planner");
@@ -1620,5 +1654,117 @@ mod tests {
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
         assert!(text.contains("assignees: alice, bob"));
+    }
+
+    // --- Trigger mode tests ---
+
+    #[test]
+    fn test_trigger_mode_pattern_issue_matches() {
+        let msg = make_message("issue", 42);
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
+    }
+
+    #[test]
+    fn test_trigger_mode_pattern_pr_matches() {
+        let msg = make_message("pull_request", 43);
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "developer");
+    }
+
+    #[test]
+    fn test_trigger_mode_pattern_self_loop_prevention() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_trigger_mode_pattern_blocks_wrong_type() {
+        let msg = make_message("issue", 42);
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            trigger_mode: TriggerMode::Pattern,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_trigger_mode_mention_requires_handover() {
+        let msg = make_message("issue", 42);
+        let patterns = make_patterns_mention_mode();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_trigger_mode_both_requires_handover_and_rules() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            trigger_mode: TriggerMode::Both,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "reviewer");
+    }
+
+    #[test]
+    fn test_trigger_mode_both_without_handover_fails() {
+        let msg = make_message("pull_request", 43);
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            trigger_mode: TriggerMode::Both,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_trigger_mode_both_without_rules_fails() {
+        let mut msg = make_message("issue", 42);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            trigger_mode: TriggerMode::Both,
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
     }
 }

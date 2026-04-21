@@ -76,6 +76,11 @@ cd repo && git diff main..<branch>
 - Consistent naming conventions
 - Dead code cleaned up
 
+**Coding principles** (check against `coding-principles` skill):
+- **Principle 2 (Simplicity First)**: Flag overcomplication — code beyond what was asked, unnecessary abstractions
+- **Principle 3 (Surgical Changes)**: Flag unnecessary changes — "improvements" to unrelated code, style changes
+- **Principle 4 (Goal-Driven Execution)**: Check goal traceability — every changed line should trace to user's request
+
 **Documentation:**
 - CHANGELOG.md updated for user-facing changes
 - DESIGN.md updated for architecture changes (if the project has one)

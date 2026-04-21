@@ -18,6 +18,9 @@ When asked to plan a solution, follow this structure:
   - `.opencode/skills/` or `.claude/` — project-specific workflows
 - Read relevant source code (use `read`, `glob`, `grep` — NOT `task` tool)
 - Summarize your understanding in 2-3 sentences
+- Follow the `coding-principles` skill:
+  - **Principle 1 (Think Before Coding)**: State assumptions explicitly; if uncertain, ask
+  - **Principle 4 (Goal-Driven Execution)**: Define verifiable success criteria for each step
 
 ### 2. Create Implementation Plan
 Break the solution into the smallest possible steps. Each step must:

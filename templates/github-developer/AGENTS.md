@@ -65,6 +65,13 @@ gh pr view <number> --json state,merged --jq '"state=\(.state) merged=\(.merged)
 cd repo
 gh pr checkout <number>
 git pull
+# Verify we are NOT on main
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+  echo "FATAL: Still on main/master branch after checkout! Refusing to proceed."
+  echo "Current branch: $CURRENT_BRANCH"
+  exit 1
+fi
 gh pr view <number>
 gh pr view <number> --comments
 ```

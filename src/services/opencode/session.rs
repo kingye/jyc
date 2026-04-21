@@ -316,6 +316,7 @@ pub async fn ensure_thread_opencode_setup(
         },
         agent: Some(serde_json::json!({
             "build": {
+                "temperature": 0.1,
                 "permission": {
                     "*": "allow",
                     "question": "deny"

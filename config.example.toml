@@ -240,34 +240,37 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # poll_interval_secs = 60
 # # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
 #
-# # Pattern: Issues → Planner agent
+# # Pattern: Issues → Planner agent (auto-trigger via pattern matching)
 # [[channels.my_repo.patterns]]
 # name = "planner"
 # enabled = true
 # role = "Planner"
 # template = "github-planner"
+# trigger_mode = "pattern"            # Auto-trigger when issue matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
 #
-# # Pattern: PRs with 'ready-for-dev' label → Developer agent
+# # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
 # [[channels.my_repo.patterns]]
 # name = "developer"
 # enabled = true
 # role = "Developer"
 # template = "github-developer"
 # live_injection = false
+# trigger_mode = "pattern"            # Auto-trigger when PR matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
 #
-# # Pattern: PRs with 'ready-for-review' label → Reviewer agent
+# # Pattern: PRs with 'ready-for-review' label → Reviewer agent (require mention)
 # [[channels.my_repo.patterns]]
 # name = "reviewer"
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
+# trigger_mode = "both"               # Requires both label + @j:reviewer mention
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]

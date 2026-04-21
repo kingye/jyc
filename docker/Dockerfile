@@ -51,6 +51,7 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
 RUN rm -rf src target/release/deps/jyc* target/release/jyc* target/release/.fingerprint/jyc*
 
 COPY src/ src/
+COPY config.example.toml ./
 RUN cargo build --release
 
 # ── Stage 3: Production image ────────────────────────────────────────

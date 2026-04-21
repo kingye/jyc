@@ -88,13 +88,26 @@ Read the triggering comment at the bottom of the incoming message.
    - If implementing full plan: iterate through each step
      - Implement the step
      - Run `{check_command}` and `{test_command}` to verify
-     - Commit: `git add -A && git commit -m "feat: step N - <title>" && git push`
+      - Commit: 
+        ```bash
+        # Guard: never commit on main
+        if [ "$(git branch --show-current)" = "main" ] || [ "$(git branch --show-current)" = "master" ]; then
+          echo "FATAL: Refusing to commit on main/master branch. Run 'gh pr checkout <number>' first."
+          exit 1
+        fi
+        git add -A && git commit -m "feat: step N - <title>" && git push
+        ```
      - **Push after each step — do NOT batch**
    - If specific task: do what the comment asks
      - Run `{check_command}` to verify
 
 3. **Commit and push**:
    ```bash
+   # Guard: never commit on main
+   if [ "$(git branch --show-current)" = "main" ] || [ "$(git branch --show-current)" = "master" ]; then
+     echo "FATAL: Refusing to commit on main/master branch. Run 'gh pr checkout <number>' first."
+     exit 1
+   fi
    git add -A && git commit -m "<type>: <what>" && git push
    ```
    Where `<type>` is:

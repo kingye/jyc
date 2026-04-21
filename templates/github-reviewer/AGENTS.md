@@ -77,6 +77,7 @@ Check for:
 - **Edge cases**: Missing error handling, boundary conditions
 - **Project conventions**: Does the code follow the project's own rules (from AGENTS.md etc.)?
 - **Commit structure**: Does each commit correspond to one step from the Implementation Plan? Are commit messages clear and descriptive? Flag commits that combine unrelated changes or skip steps.
+- **Coding principles**: Check against the `coding-principles` skill — flag overcomplication (P2) and unnecessary changes (P3)
 
 ### 5. Submit Review
 If changes needed:

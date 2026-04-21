@@ -8,6 +8,7 @@ You are developing the JYC project itself (self-bootstrapping).
 
 ## Environment
 This is a bare metal deployment using systemd for process supervision.
+- Use the `coding-principles` skill for behavioral guidelines
 - Use the plan-solution skill for plan solution
 - Use the dev-workflow skill for development
 - Use the `incremental-dev` skill for implementation

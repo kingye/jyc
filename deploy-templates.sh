@@ -66,11 +66,11 @@ fi
 get_skills() {
     case "$1" in
         invoice-processing)   echo "invoice-processing" ;;
-        jyc-dev)              echo "plan-solution dev-workflow incremental-dev jyc-deploy-bare" ;;
-        jyc-review)           echo "pr-review" ;;
-        github-planner)       echo "dev-workflow" ;;
-        github-developer)     echo "incremental-dev dev-workflow" ;;
-        github-reviewer)      echo "pr-review" ;;
+        jyc-dev)              echo "coding-principles plan-solution dev-workflow incremental-dev jyc-deploy-bare" ;;
+        jyc-review)           echo "coding-principles pr-review" ;;
+        github-planner)       echo "coding-principles dev-workflow" ;;
+        github-developer)     echo "coding-principles incremental-dev dev-workflow" ;;
+        github-reviewer)      echo "coding-principles pr-review" ;;
         *)                    echo "" ;;
     esac
 }

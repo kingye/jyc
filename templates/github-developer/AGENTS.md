@@ -133,3 +133,7 @@ When to trigger `@j:reviewer` after fixing reviewer feedback:
 - Do NOT create new PRs or branches
 - Do NOT merge the PR
 - Do NOT use the `jyc_question_ask_user` tool
+
+## Behavioral Guidelines
+
+Follow the `coding-principles` skill for behavioral guidelines when writing code.

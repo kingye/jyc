@@ -77,7 +77,7 @@ Check for:
 - **Edge cases**: Missing error handling, boundary conditions
 - **Project conventions**: Does the code follow the project's own rules (from AGENTS.md etc.)?
 - **Commit structure**: Does each commit correspond to one step from the Implementation Plan? Are commit messages clear and descriptive? Flag commits that combine unrelated changes or skip steps.
-- **Initialize commits**: Ignore commits with message matching `chore: initialize PR for issue #` — these are created by the Planner agent to enable PR creation on GitHub and contain no code changes. Do not flag them as unnecessary or request their removal.
+- **Initialize commits**: Ignore commits with message matching `^chore: initialize PR for issue #\d+$` — these are created by the Planner agent to enable PR creation on GitHub and contain no code changes. Do not flag them as unnecessary or request their removal.
 - **Coding principles**: Check against the `coding-principles` skill — flag overcomplication (P2) and unnecessary changes (P3)
 
 ### 5. Submit Review

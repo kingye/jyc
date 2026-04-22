@@ -53,9 +53,6 @@ enum Commands {
         action: cli::patterns::PatternsAction,
     },
 
-    /// Show current monitoring state
-    State,
-
     /// Manage agent templates
     Templates {
         #[command(subcommand)]
@@ -143,9 +140,6 @@ async fn main() -> Result<()> {
         }
         Commands::Patterns { action } => {
             cli::patterns::run(action, &workdir).await
-        }
-        Commands::State => {
-            cli::state::run(&workdir).await
         }
         Commands::Templates { action } => {
             cli::templates::run(action, &workdir).await

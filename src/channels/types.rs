@@ -331,9 +331,11 @@ pub struct PatternRules {
     /// GitHub entity type: "issue" or "pull_request" (OR logic within this rule)
     #[serde(default)]
     pub github_type: Option<Vec<String>>,
-    /// GitHub labels to match (OR logic: match if ANY label is present on the issue/PR)
+    /// GitHub labels to match.
+    /// - Flat list `["bug", "enhancement"]` → OR logic (backward compatible)
+    /// - Nested list `[["bug", "enhancement"], ["test"]]` → outer AND, inner OR
     #[serde(default)]
-    pub labels: Option<Vec<String>>,
+    pub labels: Option<LabelRule>,
     /// GitHub assignees to match (OR logic: match if ANY assignee is assigned to the issue/PR)
     #[serde(default)]
     pub assignees: Option<Vec<String>>,
@@ -372,6 +374,39 @@ pub struct SubjectRule {
     pub prefix: Option<Vec<String>>,
     /// Regex pattern to match against subject
     pub regex: Option<String>,
+}
+
+/// Label matching rule supporting both flat (OR) and nested (AND/OR) logic.
+///
+/// - `Flat(vec)` → OR logic: match if ANY label in the list is present (backward compatible)
+/// - `Nested(vec_of_vecs)` → CNF: outer AND, inner OR — each group must have at least one match
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LabelRule {
+    /// Flat list: `["bug", "enhancement"]` → OR logic (backward compatible)
+    Flat(Vec<String>),
+    /// Nested list: `[["bug", "enhancement"], ["test"]]` → outer AND, inner OR
+    Nested(Vec<Vec<String>>),
+}
+
+impl LabelRule {
+    /// Check if the given message labels satisfy this rule.
+    ///
+    /// - Flat: OR logic — at least one label in the list matches
+    /// - Nested: outer AND, inner OR — each group must have at least one match
+    pub fn matches(&self, msg_labels: &[String]) -> bool {
+        match self {
+            LabelRule::Flat(labels) => {
+                labels.iter().any(|l| msg_labels.contains(&l.to_lowercase()))
+            }
+            LabelRule::Nested(groups) => {
+                groups.iter().all(|group| {
+                    group.is_empty()
+                        || group.iter().any(|l| msg_labels.contains(&l.to_lowercase()))
+                })
+            }
+        }
+    }
 }
 
 fn default_true() -> bool {

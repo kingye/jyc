@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use std::path::Path;
 
+use crate::channels::types::LabelRule;
 use crate::config::load_config;
 use crate::utils::constants::DEFAULT_CONFIG_FILENAME;
 
@@ -63,7 +64,18 @@ async fn run_list(workdir: &Path, config_file: &str) -> Result<()> {
                     println!("  github_type: {}", github_type.join(", "));
                 }
                 if let Some(ref labels) = pattern.rules.labels {
-                    println!("  labels: {}", labels.join(", "));
+                    match labels {
+                        LabelRule::Flat(list) => {
+                            println!("  labels: {}", list.join(", "));
+                        }
+                        LabelRule::Nested(groups) => {
+                            let display: Vec<String> = groups
+                                .iter()
+                                .map(|group| format!("({})", group.join(" OR ")))
+                                .collect();
+                            println!("  labels: {}", display.join(" AND "));
+                        }
+                    }
                 }
                 if let Some(ref assignees) = pattern.rules.assignees {
                     println!("  assignees: {}", assignees.join(", "));

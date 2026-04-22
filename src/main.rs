@@ -56,6 +56,12 @@ enum Commands {
     /// Show current monitoring state
     State,
 
+    /// Manage agent templates
+    Templates {
+        #[command(subcommand)]
+        action: cli::templates::TemplatesAction,
+    },
+
     /// MCP reply tool server (internal — spawned by OpenCode)
     #[command(hide = true)]
     McpReplyTool,
@@ -140,6 +146,9 @@ async fn main() -> Result<()> {
         }
         Commands::State => {
             cli::state::run(&workdir).await
+        }
+        Commands::Templates { action } => {
+            cli::templates::run(action, &workdir).await
         }
         Commands::McpReplyTool => {
             cli::mcp_reply::run().await

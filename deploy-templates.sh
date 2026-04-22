@@ -4,11 +4,12 @@ set -e
 # Deploy templates by composing AGENTS.md + referenced skills from .opencode/skills/
 #
 # Usage:
-#   ./deploy-templates.sh <target_dir> [template_name] [--model <model-id>]
+#   ./deploy-templates.sh <target_dir> [template_name] [--as <new_name>] [--model <model-id>]
 #
 # Examples:
 #   ./deploy-templates.sh /path/to/templates
 #   ./deploy-templates.sh /path/to/templates github-planner
+#   ./deploy-templates.sh /path/to/templates github-planner --as my-custom-planner
 #   ./deploy-templates.sh /path/to/templates --model tencent/glm-5.1
 #   ./deploy-templates.sh /path/to/templates github-planner --model ark/minimax-m2.5
 
@@ -18,12 +19,17 @@ SKILLS_DIR="${SCRIPT_DIR}/.opencode/skills"
 
 TARGET_DIR=""
 TEMPLATE_NAME=""
+AS_NAME=""
 MODEL_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model)
             MODEL_OVERRIDE="$2"
+            shift 2
+            ;;
+        --as)
+            AS_NAME="$2"
             shift 2
             ;;
         -*)
@@ -45,13 +51,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$TARGET_DIR" ]; then
-    echo "Usage: $0 <target_dir> [template_name] [--model <model-id>]"
+    echo "Usage: $0 <target_dir> [template_name] [--as <new_name>] [--model <model-id>]"
     echo ""
     echo "Examples:"
     echo "  $0 /path/to/templates"
     echo "  $0 /path/to/templates github-planner"
+    echo "  $0 /path/to/templates github-planner --as my-custom-planner"
     echo "  $0 /path/to/templates --model tencent/glm-5.1"
     echo "  $0 /path/to/templates github-planner --model ark/minimax-m2.5"
+    exit 1
+fi
+
+if [ -n "$AS_NAME" ] && [ -z "$TEMPLATE_NAME" ]; then
+    echo "Error: --as requires a template name to be specified" >&2
     exit 1
 fi
 
@@ -82,6 +94,9 @@ echo "Target:           ${TARGET_DIR}"
 if [ -n "$TEMPLATE_NAME" ]; then
     echo "Template filter: ${TEMPLATE_NAME}"
 fi
+if [ -n "$AS_NAME" ]; then
+    echo "Deploying as:    ${AS_NAME}"
+fi
 if [ -n "$MODEL_OVERRIDE" ]; then
     echo "Model override:  ${MODEL_OVERRIDE}"
 fi
@@ -94,9 +109,16 @@ for template_dir in "${TEMPLATES_DIR}"/*/; do
         continue
     fi
 
-    target="${TARGET_DIR}/${template_name}"
+    if [ -n "$AS_NAME" ]; then
+        target="${TARGET_DIR}/${AS_NAME}"
+    else
+        target="${TARGET_DIR}/${template_name}"
+    fi
 
     echo "--- ${template_name} ---"
+    if [ -n "$AS_NAME" ]; then
+        echo "  deploying as: ${AS_NAME}"
+    fi
 
     mkdir -p "${target}"
 

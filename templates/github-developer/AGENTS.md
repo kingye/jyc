@@ -93,7 +93,7 @@ Read the triggering comment at the bottom of the incoming message.
         fi
         git add -A && git commit -m "feat: step N - <title>" && git push
         ```
-     - **Push after each step — do NOT batch**
+      - **Push after each step — do NOT batch**
    - If specific task: do what the comment asks
      - Run `{check_command}` to verify
 
@@ -113,30 +113,28 @@ Read the triggering comment at the bottom of the incoming message.
    - `docs: <what>` for documentation tasks
    - Other semantic commit types as appropriate
 
-4. **Reply on the PR**:
+4. **Hand off to reviewer if needed**:
+   Only hand off after completing the FULL implementation plan from a planner-created PR.
+   Skip handoff after fixing reviewer feedback, adding comments, refactoring, or any task from a non-planner comment.
+   ```bash
+   # Add ready-to-review label to trigger reviewer agent
+   gh pr edit <number> --add-label ready-to-review
+   gh pr ready <number>
+   ```
+
+5. **Reply on the PR**:
    ```bash
    gh pr comment <number> --body "[Developer] Done: <summary of what was done>"
    ```
 
-   5. **Wait for the next trigger** (new issues matching pattern rules or labeled for review)
+   6. **Wait for the next trigger** (new issues matching pattern rules or labeled for review)
 
-## Hand-off Rules
+## Hand-off Rules (Reference)
 
-When to hand off to Reviewer:
-- ONLY after completing the FULL implementation plan from a planner-created PR
-- Add the `ready-to-review` label — the reviewer pattern is auto-triggered by the label alone
-- Mark PR ready: `gh pr ready <number>`
-- Add label: `gh pr edit <number> --add-label ready-to-review`
-
-When NOT to hand off:
-- After fixing reviewer feedback (reviewer already knows — they will re-review)
-- After adding comments, refactoring, or any task requested by a non-planner comment
-- In these cases, just reply "[Developer] Done: ..." and wait
-
-When to hand off again after fixing reviewer feedback:
-- If the reviewer explicitly asks you to re-submit for review
-- Add `ready-to-review` label again: `gh pr edit <number> --add-label ready-to-review`
-- Otherwise, just reply "[Developer] Done: ..." — the reviewer will re-review when ready
+See Step 4 above for the handoff workflow. Key points:
+- **Hand off** after completing the FULL implementation plan from a planner-created PR
+- **Do NOT hand off** after fixing reviewer feedback, adding comments, refactoring, or non-planner tasks
+- To re-submit for review: `gh pr edit <number> --add-label ready-to-review`
 
 ## Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

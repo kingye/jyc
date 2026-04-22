@@ -118,6 +118,24 @@ pub enum ThreadEvent {
         /// When the thinking was received
         timestamp: DateTime<Utc>,
     },
+
+    /// Session status change event.
+    ///
+    /// Sent when the AI session status changes (e.g., retry on overload,
+    /// error, rate limit). Surfaces transient issues in the Activity panel
+    /// so operators can see what's happening without checking journalctl.
+    SessionStatus {
+        /// Name of the thread
+        thread_name: String,
+        /// Status type (e.g., "retry", "error", "rate_limit")
+        status_type: String,
+        /// Retry attempt number (if applicable)
+        attempt: Option<u32>,
+        /// Human-readable message (e.g., "server overload, please retry later")
+        message: Option<String>,
+        /// When the status change occurred
+        timestamp: DateTime<Utc>,
+    },
 }
 
 impl ThreadEvent {
@@ -131,6 +149,7 @@ impl ThreadEvent {
             ThreadEvent::ToolStarted { thread_name, .. } => thread_name,
             ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
             ThreadEvent::Thinking { thread_name, .. } => thread_name,
+            ThreadEvent::SessionStatus { thread_name, .. } => thread_name,
         }
     }
 
@@ -145,6 +164,7 @@ impl ThreadEvent {
             ThreadEvent::ToolStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
             ThreadEvent::Thinking { timestamp, .. } => *timestamp,
+            ThreadEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -350,6 +350,24 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Thinking: {oneline}")
             }
         }
+        ThreadEvent::SessionStatus { status_type, attempt, message, .. } => {
+            let label = match status_type.as_str() {
+                "retry" => "RETRY",
+                "error" => "ERROR",
+                "rate_limit" => "RATE LIMITED",
+                "timeout" => "TIMEOUT",
+                other => other,
+            };
+            let mut text = match attempt {
+                Some(n) => format!("{label} (attempt #{n})"),
+                None => label.to_string(),
+            };
+            if let Some(msg) = message {
+                let oneline = msg.replace('\n', " ");
+                text.push_str(&format!(": {oneline}"));
+            }
+            text
+        }
     };
     ActivityEntry { time, text }
 }

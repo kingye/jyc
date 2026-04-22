@@ -92,6 +92,7 @@ impl OpenCodeClient {
                 ThreadEvent::ToolStarted { .. } => "ToolStarted",
                 ThreadEvent::ToolCompleted { .. } => "ToolCompleted",
                 ThreadEvent::Thinking { .. } => "Thinking",
+                ThreadEvent::SessionStatus { .. } => "SessionStatus",
             };
             let thread_name = event.thread_name();
             
@@ -1006,6 +1007,24 @@ impl OpenCodeClient {
                                 "Session status"
                             );
                             *last_status_type = Some(new_type.clone());
+
+                            // Publish notable status changes to Activity panel
+                            // (retries, errors, rate limits — not routine status like "started")
+                            if matches!(new_type.as_str(), "retry" | "error" | "rate_limit" | "timeout") {
+                                self.publish_event_async(ThreadEvent::SessionStatus {
+                                    thread_name: thread_name.to_string(),
+                                    status_type: new_type.clone(),
+                                    attempt: status.status.attempt,
+                                    message: status.status.message.as_ref().map(|m| {
+                                        if m.len() > 200 {
+                                            format!("{}...", &m[..m.floor_char_boundary(200)])
+                                        } else {
+                                            m.clone()
+                                        }
+                                    }),
+                                    timestamp: Utc::now(),
+                                });
+                            }
                         }
                         // Clear tool dedup on retry so retried tool calls are logged
                         if new_type == "retry" {

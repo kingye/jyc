@@ -96,8 +96,9 @@ gh pr review <number> --request-changes --body "$(cat <<'EOF'
 Please address the issues above.
 EOF
 )"
-gh pr comment <number> --body "[Reviewer] @j:developer Please address the review feedback."
+gh pr comment <number> --body "[Reviewer] Please address the review feedback."
 gh pr edit <number> --remove-label ready-to-review
+gh pr edit <number> --add-label "ready-for-dev"
 ```
 
 If approved:

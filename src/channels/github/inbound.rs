@@ -10,7 +10,7 @@ use crate::channels::types::{
     LabelRule, MessageContent, PatternMatch, PatternRules,
 };
 use crate::utils::helpers::truncate_str;
-use super::client::GithubClient;
+use super::client::{GithubClient, GithubComment};
 use super::config::GithubConfig;
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
@@ -659,6 +659,10 @@ impl GithubInboundAdapter {
             }
         }
 
+        // Build set of current open issue numbers — needed in step 2 (comment
+        // filtering) and step 3 (close detection).
+        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
+
         // 2. Fetch and process comments.
         // The issue cache is now populated, so lookups work correctly.
         let comments = client.list_comments_since(&poll_start).await?;
@@ -694,6 +698,20 @@ impl GithubInboundAdapter {
             let comment_role = extract_comment_role(body_trimmed);
 
             let issue_number = comment.issue_number().unwrap_or(0);
+
+            // Skip comments on closed issues/PRs — prevents triggering agents
+            // for PRs/issues that were closed between poll cycles.
+            if !should_process_comment(comment, &current_open_numbers) {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    "Skipping comment on closed issue/PR"
+                );
+                // Still track as processed to avoid re-processing on next cycle
+                self.track_comment(&comment_key, processed_comments).await;
+                continue;
+            }
 
             // Look up issue info from cache
             let (title, github_type, labels, assignees) = issue_cache
@@ -778,9 +796,6 @@ impl GithubInboundAdapter {
         // Since we fetched ALL open issues (not just recently-updated ones),
         // the comparison is reliable: if an issue was in the cache but is not
         // in the current open set, it was genuinely closed.
-        //
-        // Build set of current open issue numbers for comparison
-        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
 
         // Find issues that were in cache but not in current open list
         let cached_numbers: Vec<u64> = issue_cache.keys().cloned().collect();
@@ -925,6 +940,17 @@ fn extract_mention_role(text: &str) -> Option<String> {
     re.captures(text)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().to_lowercase())
+}
+
+/// Check whether a comment should be processed based on whether its
+/// parent issue/PR is still open.
+///
+/// Returns `true` if the comment's issue is in the open set and should
+/// be routed to agents. Returns `false` if the issue is closed (not in
+/// the open set) or if the issue number could not be parsed from the URL.
+fn should_process_comment(comment: &GithubComment, open_numbers: &HashSet<u64>) -> bool {
+    let issue_number = comment.issue_number().unwrap_or(0);
+    open_numbers.contains(&issue_number)
 }
 
 #[cfg(test)]
@@ -1803,5 +1829,74 @@ mod tests {
             assert_eq!(groups[0], vec!["bug", "enhancement"]);
             assert_eq!(groups[1], vec!["test"]);
         }
+    }
+
+    // --- Closed issue/PR comment filtering (issue #89) ---
+
+    /// Tests `should_process_comment` — the helper that decides whether a
+    /// comment should be routed to agents based on whether its parent
+    /// issue/PR is still open.
+    #[test]
+    fn test_should_process_comment_open_issue() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment on open issue #10 → should be processed
+        let comment = GithubComment {
+            id: 1,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "https://api.github.com/repos/owner/repo/issues/10".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            should_process_comment(&comment, &open_numbers),
+            "comment on open issue #10 should be processed"
+        );
+    }
+
+    #[test]
+    fn test_should_process_comment_closed_issue() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment on closed issue #30 → should be skipped
+        let comment = GithubComment {
+            id: 2,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "https://api.github.com/repos/owner/repo/issues/30".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            !should_process_comment(&comment, &open_numbers),
+            "comment on closed issue #30 should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_should_process_comment_malformed_url() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment with malformed issue_url → issue_number() returns None,
+        // unwrap_or(0) yields 0, which is not in open set → should be skipped
+        let comment = GithubComment {
+            id: 3,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "not-a-valid-url".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            !should_process_comment(&comment, &open_numbers),
+            "comment with malformed URL should be skipped (issue_number falls back to 0)"
+        );
     }
 }

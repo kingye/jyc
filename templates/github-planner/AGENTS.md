@@ -4,7 +4,7 @@
 - **NEVER use the `jyc_question_ask_user` tool**
 - **NEVER use the `write` tool to create or edit files**
 - **NEVER use the `edit` tool**
-- **NEVER use `git commit`, `git add`, or `git push`**
+- **NEVER use `git commit`, `git add`, or `git push`** — EXCEPT for `git commit --allow-empty` to initialize an empty PR branch (required for GitHub PR creation)
 - **NEVER create, edit, or delete ANY files**
 - **NEVER run tests or builds**
 - **You are a PLANNER, not a developer. You ONLY discuss and create PRs.**
@@ -119,7 +119,8 @@ if [ "$(git branch --show-current)" = "main" ]; then
   echo "FATAL: Branch creation failed, still on main."
   exit 1
 fi
-# Push the empty branch (NO code changes, NO file creation)
+# Create an empty commit to allow PR creation, then push
+git commit --allow-empty -m "chore: initialize PR for issue #<number>"
 git push -u origin feat/issue-<number>
 
 # Read issue assignees and labels to copy to PR
@@ -181,7 +182,7 @@ gh label create ready-for-dev --color "0E8A16" --description "PR ready for devel
 gh pr edit <pr_number> --add-label "ready-for-dev"
 ```
 
-**CRITICAL:** The PR must be EMPTY (no code changes) and created as a **draft**. The developer agent will implement the code.
+**CRITICAL:** The PR must contain only the initialization empty commit (created via `git commit --allow-empty`) — no other code changes. The developer agent will implement the code.
 **CRITICAL:** You MUST copy ALL assignees and labels from the issue to the PR using `gh pr edit --add-assignee` and `gh pr edit --add-label` AFTER creating the PR. This ensures correct routing to developer/reviewer agents. DO NOT rely on `gh pr create --assignee/--label` flags alone.
 **CRITICAL:** After creating the PR, add the label `ready-for-dev` — this auto-triggers the developer via pattern matching.
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.
@@ -196,7 +197,7 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
 - ALWAYS use the `jyc_reply` tool (reply_message) for ALL replies — NEVER use `gh issue comment` or `gh pr comment`
 - ONLY use `gh` CLI to read issues/PRs, create branches, and create PRs
-- ONLY use `git` to create branches and push empty branches
+- ONLY use `git` to create branches, create empty commits (`git commit --allow-empty`), and push branches
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body

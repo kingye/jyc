@@ -7,11 +7,8 @@ repositories through issue discussion, PR development, and code review.
 
 1. **Channel = Lightweight Trigger + Router** — Channel only polls events and
    routes them. Agents use `gh` CLI to read/write actual content.
-2. **Flexible Trigger Modes** — Routing can be triggered by:
-   - **Pattern mode** (default for Planner/Developer): Pattern rules alone trigger (labels, github_type, assignees). No `@j:<role>` mention required.
-   - **Mention mode**: Requires `@j:<role>` mention in comment. Pattern rules are optional.
-   - **Both mode**: Requires both pattern rules match AND `@j:<role>` mention.
-   - Configure via `trigger_mode` field in pattern config (default: `mention` for backward compatibility)
+2. **Pattern-Based Routing** — Routing is triggered by pattern rules (labels, github_type, assignees).
+   No `@j:<role>` mention required. All triggering is pattern-based.
    - Processed comment IDs persisted to `<channel>/.github/processed-comments.txt`
    - Seen issues persisted to `<channel>/.github/seen-issues.txt` to prevent re-trigger after restart (tracked by number:labels:updated_at)
 3. **One Token, Role Prefix + Self-Loop Prevention** — Single GitHub PAT. Agents
@@ -164,21 +161,11 @@ pub struct PatternRules {
 }
 ```
 
-### Trigger Mode
+### Routing
 
-Each pattern has a `trigger_mode` field controlling when it matches:
-
-| Mode | Description |
-|------|-------------|
-| `pattern` | Only pattern rules (github_type, labels, assignees) need to match. No `@j:<role>` mention required. |
-| `mention` | Only `@j:<role>` mention triggers. Pattern rules are optional. (default for backward compatibility) |
-| `both` | Both pattern rules match AND `@j:<role>` mention required. |
-
-**Recommended configuration:**
-- Planner/Developer patterns: `trigger_mode = "pattern"` (auto-trigger on new issues/PRs)
-- Reviewer pattern: `trigger_mode = "pattern"` (auto-trigger when PR has `ready-to-review` label)
-
-### Auto-Label from Role
+Messages matching github_type/labels/assignees rules trigger immediately.
+No `@j:<role>` mention required. Self-loop prevention still applies:
+an agent's own comments (identified by `[Role]` prefix) don't re-trigger that same agent.
 
 Each pattern with a `role` field and `github_type = ["pull_request"]` gets an
 implicit routing label derived from the role name:
@@ -200,17 +187,6 @@ on the issue/PR.
 **Match logic:**
 - `github_type` + labels: AND across fields, OR within each field
 - Self-loop check: skip if comment is from the pattern's own role
-
-### Routing
-
-Routing behavior depends on the pattern's `trigger_mode`:
-
-- **Pattern mode**: Messages matching github_type/labels/assignees rules trigger immediately. No `@j:<role>` mention needed.
-- **Mention mode**: Requires `@j:<role>` mention in comment. Pattern rules are optional filters.
-- **Both mode**: Requires both pattern rules match AND `@j:<role>` mention.
-
-All comments are routed (not just those with mentions) to enable Pattern mode matching.
-Self-loop prevention still applies: an agent's own comments (identified by `[Role]` prefix) don't re-trigger that same agent.
 
 Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`.
 Seen issues are persisted to `<channel>/.github/seen-issues.txt` to prevent re-triggering after restart. Issues are tracked by `{number}:{labels}:{updated_at}` — note that if labels change without updating the issue's `updated_at`, re-triggering may not occur.
@@ -322,7 +298,7 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `issue-{N}`
 **Role**: Discuss requirements with user, create PR with spec when ready.
-**Trigger**: `trigger_mode = "pattern"` (auto-triggered on new issues via labels)
+**Trigger**: Auto-triggered on new issues via pattern matching (github_type, labels)
 
 **Workflow**:
 1. Triggered automatically when issue matches pattern rules (e.g., label `planning`)
@@ -339,7 +315,7 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `pr-{N}`
 **Role**: Implement code based on PR spec, address review feedback.
-**Trigger**: `trigger_mode = "pattern"` (auto-triggered on new PRs via labels)
+**Trigger**: Auto-triggered on new PRs via pattern matching (github_type, labels)
 
 **Workflow**:
 1. Triggered automatically when PR matches pattern rules (e.g., label `jyc:develop`)
@@ -358,7 +334,7 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
-**Trigger**: `trigger_mode = "pattern"` (auto-triggered when PR has `ready-to-review` label)
+**Trigger**: Auto-triggered when PR has `ready-to-review` label via pattern matching
 
 **Workflow**:
 1. Triggered automatically when PR has `ready-to-review` label

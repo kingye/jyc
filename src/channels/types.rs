@@ -278,13 +278,6 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
-    /// Trigger mode for this pattern.
-    /// - `Pattern`: Only pattern rules need to match (no mention required)
-    /// - `Mention`: Only @j:role mention triggers (pattern rules optional)
-    /// - `Both`: Both pattern rules AND @j:role mention required
-    /// Defaults to `Mention` for backward compatibility.
-    #[serde(default)]
-    pub trigger_mode: TriggerMode,
 }
 
 impl Default for ChannelPattern {
@@ -299,7 +292,6 @@ impl Default for ChannelPattern {
             thread_name: None,
             role: None,
             live_injection: true,
-            trigger_mode: TriggerMode::default(),
         }
     }
 }
@@ -345,25 +337,6 @@ pub struct PatternRules {
     /// GitHub assignees to match (OR logic: match if ANY assignee is assigned to the issue/PR)
     #[serde(default)]
     pub assignees: Option<Vec<String>>,
-}
-
-/// Trigger mode for pattern matching.
-///
-/// - `Pattern`: Only pattern rules need to match (no mention required)
-/// - `Mention`: Only @j:role mention triggers (pattern rules optional)
-/// - `Both`: Both pattern rules AND @j:role mention required
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TriggerMode {
-    Pattern,
-    Mention,
-    Both,
-}
-
-impl Default for TriggerMode {
-    fn default() -> Self {
-        Self::Mention
-    }
 }
 
 impl Default for PatternRules {

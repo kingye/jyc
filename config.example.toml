@@ -246,7 +246,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Planner"
 # template = "github-planner"
-# trigger_mode = "pattern"            # Auto-trigger when issue matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
@@ -258,7 +257,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # role = "Developer"
 # template = "github-developer"
 # live_injection = false
-# trigger_mode = "pattern"            # Auto-trigger when PR matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
@@ -270,7 +268,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
-# trigger_mode = "pattern"            # Auto-trigger when PR matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]

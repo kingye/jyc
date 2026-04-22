@@ -4,6 +4,10 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **AND/OR logic for labels in pattern matching** — Labels rule now supports nested arrays for boolean combinations. Flat arrays `["bug", "enhancement"]` retain backward-compatible OR logic. Nested arrays `[["bug", "enhancement"], ["test"]]` use CNF: outer AND, inner OR — each group must have at least one matching label. (#83)
+
 ## [0.1.11] - 2026-04-20
 
 ### Added

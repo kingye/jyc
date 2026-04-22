@@ -1,6 +1,6 @@
 # JYC
 
-Channel-agnostic AI agent that operates through messaging channels. Users interact by sending messages (email, FeiShu, Slack, etc.), and the agent responds autonomously using OpenCode AI.
+Channel-agnostic AI agent that operates through messaging channels. Users interact by sending messages (Email, GitHub, FeiShu, etc.), and the agent responds autonomously using OpenCode AI.
 
 **Why Rust:** Single static binary, zero runtime dependencies, memory safety without GC, and predictable low-latency performance for long-running server processes.
 

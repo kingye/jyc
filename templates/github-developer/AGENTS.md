@@ -117,9 +117,8 @@ Read the triggering comment at the bottom of the incoming message.
    - `docs: <what>` for documentation tasks
    - Other semantic commit types as appropriate
 
-4. **Hand off to Reviewer (if needed)**:
-   Only hand off after completing the FULL implementation plan from a planner-created PR.
-   Do NOT hand off after fixing reviewer feedback (they will re-review) unless explicitly asked.
+4. **Hand off to Reviewer**:
+   Always hand off to Reviewer after completing any task (initial implementation or reviewer feedback fix).
    ```bash
    gh label create ready-for-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
    gh pr edit <number> --add-label ready-for-review
@@ -136,8 +135,7 @@ Read the triggering comment at the bottom of the incoming message.
 ## Hand-off Quick Reference
 
 - **After full plan**: Hand off → add `ready-for-review` label + `gh pr ready`
-- **After reviewer feedback fix**: Do NOT hand off — reviewer will re-review. Just reply "[Developer] Step completed: ..."
-- **Reviewer explicitly asks to re-submit**: Hand off again → add `ready-for-review` label
+- **After reviewer feedback fix**: Hand off → add `ready-for-review` label (reviewer needs the label to be re-triggered)
 
 ## Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

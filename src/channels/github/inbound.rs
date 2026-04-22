@@ -659,6 +659,10 @@ impl GithubInboundAdapter {
             }
         }
 
+        // Build set of current open issue numbers — needed in step 2 (comment
+        // filtering) and step 3 (close detection).
+        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
+
         // 2. Fetch and process comments.
         // The issue cache is now populated, so lookups work correctly.
         let comments = client.list_comments_since(&poll_start).await?;
@@ -778,9 +782,6 @@ impl GithubInboundAdapter {
         // Since we fetched ALL open issues (not just recently-updated ones),
         // the comparison is reliable: if an issue was in the cache but is not
         // in the current open set, it was genuinely closed.
-        //
-        // Build set of current open issue numbers for comparison
-        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
 
         // Find issues that were in cache but not in current open list
         let cached_numbers: Vec<u64> = issue_cache.keys().cloned().collect();

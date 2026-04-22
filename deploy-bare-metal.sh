@@ -70,14 +70,18 @@ if ! command -v node &> /dev/null; then
 fi
 
 echo "=== Installing GitHub CLI ==="
-if ! command -v gh &> /dev/null; then
+# Always ensure the official GitHub CLI APT repo is configured.
+# Debian's own repos ship a very old version (e.g., 2.23.0) that has
+# broken GraphQL queries (projectCards deprecation). We need 2.62.0+.
+if [ ! -f /usr/share/keyrings/githubcli-archive-keyring.gpg ] || ! grep -q "cli.github.com" /etc/apt/sources.list.d/github-cli.list 2>/dev/null; then
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
     sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-    sudo apt-get update && sudo apt-get install -y gh
+    sudo apt-get update
 fi
+sudo apt-get install -y gh
 
 echo "=== Installing Starship ==="
 if ! command -v starship &> /dev/null; then

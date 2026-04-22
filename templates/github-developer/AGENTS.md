@@ -17,7 +17,7 @@ comment is at the bottom of the incoming message after "Triggering comment by".
 That comment IS your task. Do what it says — nothing more, nothing less.
 
 You are triggered automatically when a PR matches the pattern rules (e.g., label `ready-for-dev`).
-The pattern has `trigger_mode = "pattern"` so no `@j:developer` mention is required.
+The pattern has `trigger_mode = "pattern"` so the developer is triggered automatically by matching labels — no special mentions required.
 
 ## Repository Setup
 Clone the repository from the trigger message to `repo/` if not already present,

@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    MessageContent, PatternMatch, PatternRules,
+    LabelRule, MessageContent, PatternMatch, PatternRules,
 };
 use crate::utils::helpers::truncate_str;
 use super::client::GithubClient;
@@ -114,8 +114,8 @@ impl GithubMatcher {
             }
         }
 
-        // Check labels rule (OR logic: match if ANY label on the issue/PR is in the rule list)
-        if let Some(ref allowed_labels) = rules.labels {
+        // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
+        if let Some(ref label_rule) = rules.labels {
             let msg_labels: Vec<String> = message
                 .metadata
                 .get("github_labels")
@@ -126,10 +126,7 @@ impl GithubMatcher {
                         .collect()
                 })
                 .unwrap_or_default();
-            let has_match = allowed_labels
-                .iter()
-                .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if !has_match {
+            if !label_rule.matches(&msg_labels) {
                 return false;
             }
         }

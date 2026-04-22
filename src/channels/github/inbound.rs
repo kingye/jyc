@@ -1635,4 +1635,137 @@ mod tests {
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
+
+    // --- Nested AND/OR label logic tests ---
+
+    #[test]
+    fn test_labels_nested_and_or() {
+        // Nested: [["bug", "enhancement"], ["test"]] → (bug OR enhancement) AND test
+        // Message has ["bug", "test"] → should match
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string(), "enhancement".to_string()],
+                    vec!["test".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when both AND groups are satisfied");
+
+        // Message has ["bug", "other"] → should NOT match (missing "test" group)
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "should not match when second AND group is not satisfied");
+    }
+
+    #[test]
+    fn test_labels_nested_single_group() {
+        // Nested with single group: [["bug"]] behaves same as flat ["bug"]
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "single nested group should behave like flat");
+    }
+
+    #[test]
+    fn test_labels_nested_all_and() {
+        // Nested: [["bug"], ["test"], ["v2"]] → requires all three labels
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                    vec!["test".to_string()],
+                    vec!["v2".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when all three labels are present");
+
+        // Missing one label → should NOT match
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "should not match when one required label is missing");
+    }
+
+    #[test]
+    fn test_labels_nested_empty_group() {
+        // Edge case: empty inner group [[]] should not block matching
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                    vec![],  // empty group — should be treated as always-match
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "empty inner group should not block matching");
+    }
+
+    #[test]
+    fn test_labels_flat_backward_compat() {
+        // Verify Flat(vec!["bug", "enhancement"]) still uses OR logic
+        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string(), "enhancement".to_string()])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "flat labels should use OR logic — enhancement matches");
+
+        // Neither label present → should NOT match
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "flat labels OR logic — no matching label");
+    }
 }

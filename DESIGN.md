@@ -169,46 +169,38 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Outbound Channels (Reply)                            │
 │  context.channel → ChannelRegistry → OutboundAdapter                     │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐               │
-│  │ Email Outbound│  │FeiShu Outbound│  │ Slack Outbound│ (future)      │
-│  │  (SMTP/TLS)   │  │  (API)        │  │  (API)        │               │
-│  │ markdown→HTML │  │ format for    │  │ format for    │               │
-│  │ threading hdrs│  │ feishu msg    │  │ slack blocks  │               │
-│  └───────────────┘  └───────────────┘  └───────────────┘               │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────┐│
+│  │ Email Outbound│  │FeiShu Outbound│  │GitHub Outbound│  │Slack(Fut) ││
+│  │  (SMTP/TLS)   │  │  (API)        │  │  (API)        │  │  (API)    ││
+│  │ markdown→HTML │  │ format for    │  │ Issue/PR comms│  │ format    ││
+│  │ threading hdrs│  │ feishu msg    │  │ [Role] prefix │  │ for slack ││
+│  └───────────────┘  └───────────────┘  └───────────────┘  └───────────┘│
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Components
 
-1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, etc.)
- 2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API)
-
-### Supported Channels
-
-| Channel | Inbound | Outbound | Docs |
-|---------|---------|----------|------|
-| Email | IMAP polling/IDLE | SMTP | DESIGN.md |
-| Feishu | WebSocket events | Feishu API | FEISHU.md |
-| GitHub | REST API polling | Issue/PR comments | DESIGN.md |
- 7. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion).
- 8. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section) via `send_heartbeat()`.
- 9. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
-  9. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. The monitor process (ThreadManager) reads from chat log and sends via the pre-warmed outbound adapter. This eliminates cold-start timeouts for Feishu integration.
- 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using an OpenAI-compatible vision API. Accepts absolute file paths (e.g., saved attachments) or HTTP(S) URLs. Configuration in `[vision]` section of `config.toml` (api_key, api_url, model). Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc. Only registered when `vision.enabled = true`.
- 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends a question to the user and waits for their reply (up to 5 minutes). The question is delivered immediately via the background delivery watcher (`pending_delivery.rs`). The user's next message is routed as the answer via `question-sent.flag` / `question-answer.json`. Channel-agnostic.
- 12. **Pending Delivery Watcher** — Background task (`core/pending_delivery.rs`) that runs alongside the SSE stream. Watches for `reply-sent.flag` + `reply.md` written by MCP tools and delivers messages immediately via the outbound adapter, without waiting for SSE completion. Channel-agnostic: uses `OutboundAdapter` trait.
-  11. **Message Storage** — Unified chat log storage system
-     - **Chat Log Storage**: Messages and replies are appended to daily log files (`chat_history_YYYY-MM-DD.md`)
-     - **HTML Comment Metadata**: Each entry includes timestamp, message type, sender, channel, and external ID metadata
-     - **Dual-write Integration**: During migration, messages are written to both legacy directory format and new log format
-     - **AI Access**: Chat logs are accessible to AI via system prompt instructions using `glob`, `read`, and `grep` tools
-     - **Backward Compatibility**: Email parser reads from logs first, falls back to directory storage if needed
-11. **State Manager** — Track processed UIDs per channel, handle migrations
-12. **Security Module** — Path validation, file size/extension checks for attachments
-13. **Attachment Storage** — Channel-agnostic attachment saving (`core/attachment_storage.rs`). Shared by email and Feishu adapters. Includes path traversal protection at ingestion, unified filename generation, and configurable save paths.
-14. **Alert Service** — Error alert digests + periodic health check reports via email
-15. **Command System** — Email and Feishu `/command` parsing and execution (e.g., `/model` for model switching, `/plan`, `/build`, `/reset`, `/close`)
-16. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback. Triggers on `/close` command or Feishu `chat.disbanded` events. Deletes thread directory and cleans up in-memory state.
+1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling)
+2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST)
+3. **Message Router** — Receives messages from all channels, delegates matching to adapters, routes to ThreadManager
+4. **Thread Manager** — Per-thread queues with semaphore concurrency control, worker spawn/manage
+5. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion)
+6. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section)
+7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
+8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
+9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[vision]` section
+10. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
+11. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
+12. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
+13. **State Manager** — Track processed UIDs per channel, handle migrations
+14. **Security Module** — Path validation, file size/extension checks for attachments
+15. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
+16. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
+17. **MetricsCollector** — Lightweight stats accumulation for monitoring thread/channel activity
+18. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
+19. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
+20. **Template System** — Initialize new threads with predefined files from `templates/` directory
+21. **AgentService** — Unified agent dispatch trait for static and OpenCode modes
 
 ### Design Principles: Component Responsibilities
 
@@ -910,8 +902,25 @@ pub struct ChannelPattern {
     pub template: Option<String>,             // Thread template name
     pub thread_name: Option<String>,          // Fixed thread name override
     pub role: Option<String>,                 // Agent role (e.g., "Planner", "Developer", "Reviewer")
+    pub trigger_mode: Option<TriggerMode>,    // Trigger mode: Pattern, Mention, or Both
     #[serde(default = "default_true")]
     pub live_injection: bool,                 // Inject into active AI session (default: true)
+}
+
+/// Controls when a pattern triggers on incoming messages.
+///
+/// - **Pattern** (default for GitHub): Only pattern rules (github_type, labels, assignees) need to match.
+///   No `@j:<role>` mention required. Used for auto-trigger on new issues/PRs.
+/// - **Mention** (default for backward compatibility): Requires `@j:<role>` mention in comment.
+///   Pattern rules are optional filters.
+/// - **Both**: Both pattern rules match AND `@j:<role>` mention required. Used for reviewer patterns
+///   that should only trigger when explicitly requested AND the PR is in review state.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TriggerMode {
+    Pattern,
+    Mention,
+    Both,
 }
 
 /// Channel-agnostic pattern matching rules.

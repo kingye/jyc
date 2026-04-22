@@ -94,6 +94,13 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Protocols:** IMAP for inbound, SMTP for outbound
 - **Authentication:** TLS/SSL with username/password or OAuth2
 
+### ✅ GitHub
+- **Status:** Production ready (implemented in v0.1.10)
+- **Features:** Issue/PR comments, label routing, @j:role mention routing, multi-agent workflow
+- **Protocols:** REST API polling (inbound), REST API (outbound)
+- **Authentication:** Personal Access Token (PAT)
+- **Agents:** Planner, Developer, Reviewer templates for full PR workflow
+
 ### ✅ Feishu (飞书/Lark)
 - **Status:** Production ready (implemented in Phase 7)
 - **Features:** Real-time messaging via WebSocket, rich message formatting
@@ -113,7 +120,7 @@ The channel-agnostic architecture makes it easy to add new channels by implement
 
 ### Email Commands
 
-Send commands at the top of an email body:
+Send commands at the top of an email body. These commands work across all channels (Email, Feishu, GitHub).
 
 | Command | Description |
 |---------|-------------|
@@ -123,6 +130,9 @@ Send commands at the top of an email body:
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (start fresh conversation) |
+| `/close` | Close thread and delete directory |
+| `/template` | Apply template files to thread (skip existing) |
+| `/template update` | Re-apply template, overwrite existing files |
 
 ### Thread-Specific Customization
 
@@ -136,7 +146,22 @@ jyc config init      # Generate config template
 jyc config validate  # Validate config file
 jyc patterns list    # List configured patterns
 jyc state            # Show monitoring state (processed UIDs, etc.)
+jyc dashboard        # Live TUI dashboard (connects via inspect server)
 ```
+
+The `dashboard` command requires the `[inspect]` section to be enabled in config. Use `--addr` flag to connect to a different address (default: `127.0.0.1:9876`).
+
+## MCP Tools
+
+JYC provides several MCP (Model Context Protocol) tools that the AI agent uses internally:
+
+| Tool | Description |
+|------|-------------|
+| `reply_message` | Send reply via the channel's outbound adapter. Reads routing info from `reply-context.json`, appends to chat log, writes signal file for delivery. |
+| `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[vision]` section. |
+| `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. |
+
+These are internal tools used by the AI, not user-facing commands.
 
 ## Configuration
 
@@ -145,9 +170,16 @@ JYC uses TOML configuration with environment variable substitution (`${VAR}`).
 Key sections:
 
 - **`[general]`** -- Concurrency settings (max threads, queue size)
-- **`[channels.<name>]`** -- Per-channel config (IMAP inbound, SMTP outbound, patterns)
+- **`[channels.<name>]`** -- Per-channel config (type, patterns)
+- **`[channels.<name>.email]`** -- IMAP/SMTP settings (host, port, credentials)
+- **`[channels.<name>.feishu]`** -- Feishu app credentials (app_id, app_secret, websocket)
+- **`[channels.<name>.github]`** -- GitHub settings (owner, repo, token, poll_interval)
+- **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
-- **`[alerting]`** -- Error digest emails and health check reports
+- **`[inspect]`** -- Inspect server settings (enabled, bind address)
+- **`[vision]`** -- Vision API settings (enabled, api_key, api_url, model)
+- **`[heartbeat]`** -- Heartbeat settings (enabled, interval_secs, min_elapsed_secs)
+- **`[attachments]`** -- Inbound/outbound attachment settings
 
 See [DESIGN.md](DESIGN.md) for full configuration reference and architecture details.
 

@@ -699,6 +699,20 @@ impl GithubInboundAdapter {
 
             let issue_number = comment.issue_number().unwrap_or(0);
 
+            // Skip comments on closed issues/PRs — prevents triggering agents
+            // for PRs/issues that were closed between poll cycles.
+            if !current_open_numbers.contains(&issue_number) {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    "Skipping comment on closed issue/PR"
+                );
+                // Still track as processed to avoid re-processing on next cycle
+                self.track_comment(&comment_key, processed_comments).await;
+                continue;
+            }
+
             // Look up issue info from cache
             let (title, github_type, labels, assignees) = issue_cache
                 .get(&issue_number)

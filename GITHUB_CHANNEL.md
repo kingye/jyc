@@ -176,7 +176,7 @@ Each pattern has a `trigger_mode` field controlling when it matches:
 
 **Recommended configuration:**
 - Planner/Developer patterns: `trigger_mode = "pattern"` (auto-trigger on new issues/PRs)
-- Reviewer pattern: `trigger_mode = "both"` (require both label + explicit @j:reviewer)
+- Reviewer pattern: `trigger_mode = "pattern"` (auto-trigger when PR has `ready-to-review` label)
 
 ### Auto-Label from Role
 
@@ -348,7 +348,7 @@ gh pr edit 43 --add-label "jyc:develop"
 4. Clone repo, checkout PR branch
 5. Implement code (incremental-dev approach)
 6. Commit, push
-7. Hand over to reviewer (auto-trigger via pattern rules, no @j:reviewer needed)
+7. Hand over to reviewer (add `ready-to-review` label to trigger reviewer)
 8. When review feedback received:
    - Read reviews: `gh pr view {N} --comments`
    - Fix issues, commit, push
@@ -358,15 +358,16 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
-**Trigger**: `trigger_mode = "both"` (requires both label + @j:reviewer mention)
+**Trigger**: `trigger_mode = "pattern"` (auto-triggered when PR has `ready-to-review` label)
 
 **Workflow**:
-1. Triggered when PR has review label AND `@j:reviewer` mention
+1. Triggered automatically when PR has `ready-to-review` label
 2. Read PR: `gh pr view {N}`
 3. Read diff: `gh pr diff {N}`
 4. Review code
 5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. If changes requested: hand over to developer (auto-trigger via pattern)
+6. Remove `ready-to-review` label: `gh pr edit {N} --remove-label ready-to-review`
+7. If changes requested: hand over to developer (auto-trigger via pattern)
 
 ## Close & Cleanup
 
@@ -454,7 +455,7 @@ Every poll_interval_secs:
 3. Fetch recently closed issues/PRs (for close events)
    GET /repos/{o}/{r}/issues?state=closed&since={last_poll}&sort=updated
 
-4. For each open PR with 'ready-for-review' label: fetch reviews
+4. For each open PR with 'ready-to-review' label: fetch reviews
    GET /repos/{o}/{r}/pulls/{n}/reviews?since={last_poll}
 ```
 
@@ -517,7 +518,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh issue view 42     │
   │                                │                      ├─ Implement code       │
   │                                │                      ├─ git commit + push    │
-  │                                │                      ├─ comment: @j:reviewer │
+   │                                │                      ├─ add-label "ready-to-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr view 43
@@ -531,7 +532,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh pr view 43 --comments
   │                                │                      ├─ Fix code             │
   │                                │                      ├─ git push             │
-  │                                │                      ├─ comment: @j:reviewer │
+   │                                │                      ├─ add-label "ready-to-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr diff 43

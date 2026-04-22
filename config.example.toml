@@ -264,17 +264,17 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
 #
-# # Pattern: PRs with 'ready-for-review' label → Reviewer agent (require mention)
+# # Pattern: PRs with 'ready-to-review' label → Reviewer agent (auto-trigger)
 # [[channels.my_repo.patterns]]
 # name = "reviewer"
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
-# trigger_mode = "both"               # Requires both label + @j:reviewer mention
+# trigger_mode = "pattern"            # Auto-trigger when PR matches rules
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
-# labels = ["ready-for-review"]
+# labels = ["ready-to-review"]
 #
 # # Pattern: PRs assigned to specific team members → Route to those assignees
 # # Assignee matching: OR logic (matches if ANY assignee is in the list)
@@ -287,7 +287,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # github_type = ["pull_request"]
 # assignees = ["alice", "bob"]
 #
-# # Pattern: PRs with 'needs-review' label AND assigned to 'alice' → Senior reviewer
+# # Pattern: PRs with 'ready-to-review' label AND assigned to 'alice' → Senior reviewer
 # # This demonstrates AND logic: BOTH labels and assignees must match
 # [[channels.my_repo.patterns]]
 # name = "senior_reviewer"
@@ -297,5 +297,5 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
-# labels = ["needs-review"]
+# labels = ["ready-to-review"]
 # assignees = ["alice"]

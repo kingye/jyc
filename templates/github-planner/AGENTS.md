@@ -177,6 +177,7 @@ echo "PR assignees: $PR_ASSIGNEES (expected: $ASSIGNEES)"
 echo "PR labels: $PR_LABELS (expected: $LABELS)"
 
 # Trigger the developer agent by adding the developer label
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
 gh pr edit <pr_number> --add-label "ready-for-dev"
 ```
 

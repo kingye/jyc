@@ -1233,9 +1233,9 @@ mod tests {
 
     #[test]
     fn test_all_rules_and_logic() {
-        // Pattern requires: pull_request AND label "ready-to-review" AND assignee "alice"
+        // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
-        let mut msg = make_message_with_rules("pull_request", 43, &["ready-to-review"], &["alice"]);
+        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -1243,7 +1243,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["ready-to-review".to_string()]),
+                labels: Some(vec!["ready-for-review".to_string()]),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },
@@ -1255,9 +1255,9 @@ mod tests {
 
     #[test]
     fn test_and_logic_partial_fail() {
-        // Pattern requires: pull_request AND label "ready-to-review" AND assignee "alice"
+        // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has correct type and label but wrong assignee — should NOT match
-        let mut msg = make_message_with_rules("pull_request", 43, &["ready-to-review"], &["bob"]);
+        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -1265,7 +1265,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["ready-to-review".to_string()]),
+                labels: Some(vec!["ready-for-review".to_string()]),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },

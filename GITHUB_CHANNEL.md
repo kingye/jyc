@@ -275,21 +275,25 @@ Labels are a fixed convention hardcoded in agent templates.
 
 | Label | Purpose | Added By |
 |-------|---------|----------|
-| `jyc:plan` | Issue needs planning | User (or auto from config) |
-| `jyc:develop` | PR needs development | Planner (when creating PR) |
-| `jyc:review` | PR needs code review | Developer (when done implementing) |
+| `ready-for-dev` | PR ready for development | Planner (when creating PR) |
+| `ready-for-review` | PR ready for code review | Developer (when done implementing) |
 
 ### Label Usage by Agents
 
+**All label additions should include a creation tolerance** to handle cases where the label doesn't exist yet:
+
 ```bash
 # Planner: create PR with develop label
-gh pr create --title "feat: ..." --label "jyc:develop" --body "..."
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
+gh pr create --title "feat: ..." --label "ready-for-dev" --body "..."
 
 # Developer: add review label when done
-gh pr edit 43 --add-label "jyc:review"
+gh label create ready-for-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
+gh pr edit 43 --add-label "ready-for-review"
 
 # Reviewer: re-add develop label when requesting changes
-gh pr edit 43 --add-label "jyc:develop"
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
+gh pr edit 43 --add-label "ready-for-dev"
 ```
 
 ## Agent Roles & Skills
@@ -318,13 +322,13 @@ gh pr edit 43 --add-label "jyc:develop"
 **Trigger**: Auto-triggered on new PRs via pattern matching (github_type, labels)
 
 **Workflow**:
-1. Triggered automatically when PR matches pattern rules (e.g., label `jyc:develop`)
+1. Triggered automatically when PR matches pattern rules (e.g., label `ready-for-dev`)
 2. Read PR spec: `gh pr view {N}`
 3. Read linked issue: `gh issue view {linked_issue}`
 4. Clone repo, checkout PR branch
 5. Implement code (incremental-dev approach)
 6. Commit, push
-7. Hand over to reviewer (add `ready-to-review` label to trigger reviewer)
+7. Hand over to reviewer (create `ready-for-review` label + add to PR + `gh pr ready`)
 8. When review feedback received:
    - Read reviews: `gh pr view {N} --comments`
    - Fix issues, commit, push
@@ -334,15 +338,15 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
-**Trigger**: Auto-triggered when PR has `ready-to-review` label via pattern matching
+**Trigger**: Auto-triggered when PR has `ready-for-review` label via pattern matching
 
 **Workflow**:
-1. Triggered automatically when PR has `ready-to-review` label
+1. Triggered automatically when PR has `ready-for-review` label
 2. Read PR: `gh pr view {N}`
 3. Read diff: `gh pr diff {N}`
 4. Review code
 5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. Remove `ready-to-review` label: `gh pr edit {N} --remove-label ready-to-review`
+6. Remove `ready-for-review` label: `gh pr edit {N} --remove-label ready-for-review`
 7. If changes requested: hand over to developer (auto-trigger via pattern)
 
 ## Close & Cleanup
@@ -431,7 +435,7 @@ Every poll_interval_secs:
 3. Fetch recently closed issues/PRs (for close events)
    GET /repos/{o}/{r}/issues?state=closed&since={last_poll}&sort=updated
 
-4. For each open PR with 'ready-to-review' label: fetch reviews
+4. For each open PR with 'ready-for-review' label: fetch reviews
    GET /repos/{o}/{r}/pulls/{n}/reviews?since={last_poll}
 ```
 
@@ -494,7 +498,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh issue view 42     │
   │                                │                      ├─ Implement code       │
   │                                │                      ├─ git commit + push    │
-   │                                │                      ├─ add-label "ready-to-review" │
+   │                                │                      ├─ add-label "ready-for-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr view 43
@@ -508,7 +512,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh pr view 43 --comments
   │                                │                      ├─ Fix code             │
   │                                │                      ├─ git push             │
-   │                                │                      ├─ add-label "ready-to-review" │
+   │                                │                      ├─ add-label "ready-for-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr diff 43

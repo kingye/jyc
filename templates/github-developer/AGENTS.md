@@ -135,8 +135,7 @@ Read the triggering comment at the bottom of the incoming message.
 ## Hand-off Quick Reference
 
 - **After full plan**: Hand off → add `ready-for-review` label + `gh pr ready`
-- **After reviewer feedback fix**: Do NOT hand off — reviewer will re-review. Just reply "[Developer] Step completed: ..."
-- **Reviewer explicitly asks to re-submit**: Hand off again → add `ready-for-review` label
+- **After reviewer feedback fix**: Hand off → add `ready-for-review` label (reviewer needs the label to be re-triggered)
 
 ## Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

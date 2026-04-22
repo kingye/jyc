@@ -801,12 +801,28 @@ impl OpenCodeClient {
                                                 .map(|start_time| start_time.elapsed().as_secs())
                                                 .unwrap_or(0);
                                             
+                                            // Detect tool errors from output
+                                            let has_error = state.output.as_ref()
+                                                .is_some_and(|o| o.starts_with("Error:"));
+                                            let error_preview = if has_error {
+                                                state.output.as_ref().map(|o| {
+                                                    if o.len() > 200 {
+                                                        format!("{}...", &o[..o.floor_char_boundary(200)])
+                                                    } else {
+                                                        o.clone()
+                                                    }
+                                                })
+                                            } else {
+                                                None
+                                            };
+
                                             // Publish ToolCompleted event asynchronously
                                             self.publish_event_async(ThreadEvent::ToolCompleted {
                                                 thread_name: thread_name.to_string(),
                                                 tool_name: tool_name.clone(),
-                                                success: true,
+                                                success: !has_error,
                                                 duration_secs,
+                                                output: error_preview,
                                                 timestamp: Utc::now(),
                                             });
 
@@ -839,11 +855,20 @@ impl OpenCodeClient {
                                             .unwrap_or(0);
                                         
                                         // Publish ToolCompleted event asynchronously with success=false
+                                        let error_preview = state.error.as_ref().map(|e| {
+                                            let s = format!("{e}");
+                                            if s.len() > 200 {
+                                                format!("{}...", &s[..s.floor_char_boundary(200)])
+                                            } else {
+                                                s
+                                            }
+                                        });
                                         self.publish_event_async(ThreadEvent::ToolCompleted {
                                             thread_name: thread_name.to_string(),
                                             tool_name: tool_name.clone(),
                                             success: false,
                                             duration_secs,
+                                            output: error_preview,
                                             timestamp: Utc::now(),
                                         });
                                     }

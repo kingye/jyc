@@ -98,6 +98,8 @@ pub enum ThreadEvent {
         success: bool,
         /// How long the tool took to execute (in seconds)
         duration_secs: u64,
+        /// Error output preview (only set when tool failed, truncated)
+        output: Option<String>,
         /// When the tool completed
         timestamp: DateTime<Utc>,
     },

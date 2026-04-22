@@ -320,10 +320,20 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             tool_name,
             success,
             duration_secs,
+            output,
             ..
         } => {
-            let status = if *success { "done" } else { "failed" };
-            format!("Tool: {tool_name} ({status}, {duration_secs}s)")
+            if *success {
+                format!("Tool: {tool_name} (done, {duration_secs}s)")
+            } else {
+                match output {
+                    Some(err) => {
+                        let oneline = err.replace('\n', " ");
+                        format!("Tool: {tool_name} (FAILED, {duration_secs}s) {oneline}")
+                    }
+                    None => format!("Tool: {tool_name} (FAILED, {duration_secs}s)"),
+                }
+            }
         }
         ThreadEvent::Heartbeat {
             elapsed_secs,

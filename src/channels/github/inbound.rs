@@ -1768,4 +1768,40 @@ mod tests {
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_none(), "flat labels OR logic — no matching label");
     }
+
+    // --- TOML deserialization tests for LabelRule ---
+
+    #[test]
+    fn test_labels_toml_flat_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            labels = ["bug", "enhancement"]
+        "#).unwrap();
+        assert!(
+            matches!(pattern.rules.labels, Some(LabelRule::Flat(_))),
+            "flat TOML array should deserialize as LabelRule::Flat"
+        );
+        if let Some(LabelRule::Flat(labels)) = &pattern.rules.labels {
+            assert_eq!(labels, &["bug", "enhancement"]);
+        }
+    }
+
+    #[test]
+    fn test_labels_toml_nested_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            labels = [["bug", "enhancement"], ["test"]]
+        "#).unwrap();
+        assert!(
+            matches!(pattern.rules.labels, Some(LabelRule::Nested(_))),
+            "nested TOML array should deserialize as LabelRule::Nested"
+        );
+        if let Some(LabelRule::Nested(groups)) = &pattern.rules.labels {
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0], vec!["bug", "enhancement"]);
+            assert_eq!(groups[1], vec!["test"]);
+        }
+    }
 }

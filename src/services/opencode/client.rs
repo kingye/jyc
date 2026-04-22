@@ -934,11 +934,13 @@ impl OpenCodeClient {
                             );
                         }
 
-                        // Reply tool completed: mark for result tracking but do NOT exit early.
-                        // The AI may have additional steps after reply (e.g., deploy command).
-                        // Let OpenCode finish all steps naturally.
+                        // Exit SSE loop after the reply tool has completed and the
+                        // current step finishes. Without this, the AI may continue
+                        // running tools indefinitely after the reply is sent, holding
+                        // a semaphore slot and blocking other threads from starting.
                         if *reply_tool_completed {
-                            tracing::info!("Reply tool completed — continuing to process remaining steps");
+                            tracing::info!("Reply tool completed — exiting SSE loop after step finish");
+                            return SseAction::Done;
                         }
                     }
 

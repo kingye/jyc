@@ -117,7 +117,8 @@ Read the triggering comment at the bottom of the incoming message.
    Only hand off after completing the FULL implementation plan from a planner-created PR.
    Skip handoff after fixing reviewer feedback, adding comments, refactoring, or any task from a non-planner comment.
    ```bash
-   # Add ready-to-review label to trigger reviewer agent
+   # Ensure label exists, then add to PR to trigger reviewer agent
+   gh label create ready-to-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
    gh pr edit <number> --add-label ready-to-review
    gh pr ready <number>
    ```
@@ -134,7 +135,7 @@ Read the triggering comment at the bottom of the incoming message.
 See Step 4 above for the handoff workflow. Key points:
 - **Hand off** after completing the FULL implementation plan from a planner-created PR
 - **Do NOT hand off** after fixing reviewer feedback, adding comments, refactoring, or non-planner tasks
-- To re-submit for review: `gh pr edit <number> --add-label ready-to-review`
+- To re-submit for review: `gh label create ready-to-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true && gh pr edit <number> --add-label ready-to-review`
 
 ## Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

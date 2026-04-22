@@ -177,6 +177,7 @@ echo "PR assignees: $PR_ASSIGNEES (expected: $ASSIGNEES)"
 echo "PR labels: $PR_LABELS (expected: $LABELS)"
 
 # Trigger the developer agent by adding the developer label
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
 gh pr edit <pr_number> --add-label "ready-for-dev"
 ```
 
@@ -199,7 +200,7 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body
-- ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching
+- ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching (label is created with fallback if missing)
 - Reply in the same language as the user
 - Your PR must contain ZERO code changes — only the spec in the PR body
 - Your implementation plan must break the work into small, ordered steps — each with a clear verification method

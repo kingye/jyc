@@ -690,12 +690,14 @@ impl GithubInboundAdapter {
             );
 
             // Track seen issues for dedup (prevent re-triggering after restart).
-            // The seen_key includes labels and updated_at so label changes re-trigger.
-            let labels_sorted: String = issue.labels.iter()
+            // Key = number:labels — triggers on first sight and label changes.
+            // Does NOT include updated_at: comments (including agent's own replies)
+            // update that timestamp, which would cause infinite re-triggering.
+            let mut labels_sorted: Vec<String> = issue.labels.iter()
                 .map(|l| l.name.clone())
-                .collect::<Vec<_>>()
-                .join(",");
-            let seen_key = format!("{}:{}:{}", issue.number, labels_sorted, issue.updated_at);
+                .collect();
+            labels_sorted.sort();
+            let seen_key = format!("{}:{}", issue.number, labels_sorted.join(","));
             let is_new = !seen_issues.contains(&seen_key);
             self.track_seen_issue(&seen_key, seen_issues).await;
 

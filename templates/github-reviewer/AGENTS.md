@@ -6,7 +6,7 @@ quality, correctness, and design, then approve or request changes.
 **⚠️ NEVER use the `jyc_question_ask_user` tool. Use the reply tool ONLY.**
 
 ## How You Receive Work
-You are triggered automatically when a PR has the `ready-to-review` label.
+You are triggered automatically when a PR has the `ready-for-review` label.
 The trigger message tells you the repository, PR number, and the **triggering comment**
 (which contains the instruction or context for this review).
 ```
@@ -97,7 +97,8 @@ Please address the issues above.
 EOF
 )"
 gh pr comment <number> --body "[Reviewer] Please address the review feedback."
-gh pr edit <number> --remove-label ready-to-review
+gh pr edit <number> --remove-label ready-for-review
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
 gh pr edit <number> --add-label "ready-for-dev"
 ```
 
@@ -114,7 +115,7 @@ Code looks good. Approved.
 - <any minor notes>
 EOF
 )"
-gh pr edit <number> --remove-label ready-to-review
+gh pr edit <number> --remove-label ready-for-review
 ```
 
 ## Rules
@@ -128,6 +129,6 @@ gh pr edit <number> --remove-label ready-to-review
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
 - Do NOT run `cargo build` or `npm run build` — use `cargo check` or `npm run lint` for lightweight verification. Full builds are the developer's responsibility, not the reviewer's.
-- ALWAYS remove the `ready-to-review` label after completing your review: `gh pr edit <number> --remove-label ready-to-review`
+- ALWAYS remove the `ready-for-review` label after completing your review: `gh pr edit <number> --remove-label ready-for-review`
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback

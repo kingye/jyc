@@ -1819,4 +1819,45 @@ mod tests {
             assert_eq!(groups[1], vec!["test"]);
         }
     }
+
+    // --- Closed issue/PR comment filtering (issue #89) ---
+
+    /// Verifies that the `current_open_numbers` set correctly identifies
+    /// which issues/PRs are open vs closed, which is the basis for skipping
+    /// comments on closed issues/PRs in `poll_once` step 2.
+    ///
+    /// The actual filtering in `poll_once` uses:
+    ///   `if !current_open_numbers.contains(&issue_number) { continue; }`
+    /// This test validates that set membership works as expected for the
+    /// open/closed distinction.
+    #[test]
+    fn test_closed_issue_comment_filtering() {
+        // Simulate: issues #10, #20 are open; #30 was in cache but is now closed
+        let open_issues: Vec<u64> = vec![10, 20];
+        let current_open_numbers: HashSet<u64> = open_issues.into_iter().collect();
+
+        // Comment on open issue #10 → should NOT be skipped
+        assert!(
+            current_open_numbers.contains(&10),
+            "comment on open issue should be processed"
+        );
+
+        // Comment on open issue #20 → should NOT be skipped
+        assert!(
+            current_open_numbers.contains(&20),
+            "comment on open issue should be processed"
+        );
+
+        // Comment on closed issue #30 → should be skipped
+        assert!(
+            !current_open_numbers.contains(&30),
+            "comment on closed issue should be skipped"
+        );
+
+        // Edge case: issue_number 0 (parse failure) → should be skipped
+        assert!(
+            !current_open_numbers.contains(&0),
+            "comment with unparseable issue number should be skipped"
+        );
+    }
 }

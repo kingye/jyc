@@ -902,25 +902,8 @@ pub struct ChannelPattern {
     pub template: Option<String>,             // Thread template name
     pub thread_name: Option<String>,          // Fixed thread name override
     pub role: Option<String>,                 // Agent role (e.g., "Planner", "Developer", "Reviewer")
-    pub trigger_mode: Option<TriggerMode>,    // Trigger mode: Pattern, Mention, or Both
     #[serde(default = "default_true")]
     pub live_injection: bool,                 // Inject into active AI session (default: true)
-}
-
-/// Controls when a pattern triggers on incoming messages.
-///
-/// - **Pattern** (default for GitHub): Only pattern rules (github_type, labels, assignees) need to match.
-///   No `@j:<role>` mention required. Used for auto-trigger on new issues/PRs.
-/// - **Mention** (default for backward compatibility): Requires `@j:<role>` mention in comment.
-///   Pattern rules are optional filters.
-/// - **Both**: Both pattern rules match AND `@j:<role>` mention required. Used for reviewer patterns
-///   that should only trigger when explicitly requested AND the PR is in review state.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TriggerMode {
-    Pattern,
-    Mention,
-    Both,
 }
 
 /// Channel-agnostic pattern matching rules.

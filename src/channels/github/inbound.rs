@@ -1179,7 +1179,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1199,7 +1199,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1219,7 +1219,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["Bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["Bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1240,7 +1240,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["ready-for-review".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["ready-for-review".to_string()])),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },
@@ -1262,7 +1262,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["ready-for-review".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["ready-for-review".to_string()])),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },

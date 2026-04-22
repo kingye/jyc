@@ -475,13 +475,13 @@ fn format_last_active(value: Option<&str>) -> String {
     };
     let now = chrono::Utc::now();
     let diff = now.signed_duration_since(dt);
-    if diff.num_minutes() < 60 {
+    if diff.num_minutes() <= 60 {
         let mins = diff.num_minutes();
         return format!("{}m ago", mins.max(0));
     }
-    let dt_local = dt.format("%H:%M").to_string();
+    let dt_utc = dt.format("%H:%M").to_string();
     if dt.date_naive() == now.date_naive() {
-        return dt_local;
+        return dt_utc;
     }
     dt.format("%b %d").to_string()
 }

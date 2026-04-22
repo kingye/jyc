@@ -22,6 +22,7 @@ pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;
 pub struct ThreadActivityState {
     pub entries: VecDeque<ActivityEntry>,
     pub is_processing: bool,
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Shared state accessible by the inspect server.
@@ -179,6 +180,9 @@ impl InspectServer {
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
                 }
+                if let Some(last_active) = state.last_active_at {
+                    thread.last_active_at = Some(last_active.to_rfc3339());
+                }
             }
         }
         drop(activity_map);
@@ -258,6 +262,7 @@ impl ActivityTracker {
                                                                 let mut map = map.lock().await;
                                                                 let state = map.entry(name.clone()).or_default();
                                                                 state.entries.push_back(entry);
+                                                                state.last_active_at = Some(event.timestamp());
                                                                 if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                     state.entries.pop_front();
                                                                 }

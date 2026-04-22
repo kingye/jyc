@@ -547,6 +547,18 @@ impl ThreadManager {
                 ThreadStatus::Idle
             };
 
+            // Fallback: read .jyc directory mtime if no activity tracker data
+            let last_active_at = match tokio::fs::metadata(thread_path.join(".jyc")).await {
+                Ok(meta) => match meta.modified() {
+                    Ok(mtime) => {
+                        let dt: chrono::DateTime<chrono::Utc> = mtime.into();
+                        Some(dt.to_rfc3339())
+                    }
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            };
+
             threads.push(ThreadInfo {
                 name,
                 channel: self.channel_name.clone(),
@@ -557,6 +569,7 @@ impl ThreadManager {
                 input_tokens,
                 max_tokens,
                 activity: vec![],  // Filled by InspectServer from event bus
+                last_active_at,  // Filled by activity tracker; falls back to .jyc mtime
             });
         }
 

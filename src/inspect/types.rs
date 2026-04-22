@@ -64,6 +64,9 @@ pub struct ThreadInfo {
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
+    /// Last activity timestamp (RFC 3339), if known
+    #[serde(default)]
+    pub last_active_at: Option<String>,
 }
 
 /// A single activity event from the thread's SSE stream.
@@ -166,6 +169,7 @@ mod tests {
                 input_tokens: Some(45000),
                 max_tokens: Some(120000),
                 activity: vec![],
+                last_active_at: None,
             }],
             stats: GlobalStats {
                 active_workers: 2,

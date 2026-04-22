@@ -235,6 +235,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
         Cell::from("Pattern"),
         Cell::from("Status"),
         Cell::from("Tokens"),
+        Cell::from("Last Active"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .height(1);
@@ -262,12 +263,14 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(t.pattern.clone().unwrap_or("-".into())),
                 Cell::from(Span::styled(format!("{}", t.status), status_style)),
                 Cell::from(tokens),
+                Cell::from(format_last_active(t.last_active_at.as_deref())),
             ])
         })
         .collect();
 
     let widths = [
         Constraint::Min(20),
+        Constraint::Length(12),
         Constraint::Length(12),
         Constraint::Length(12),
         Constraint::Length(12),
@@ -322,7 +325,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6), // Thread info
+            Constraint::Length(7), // Thread info
             Constraint::Min(4),   // Activity log
         ])
         .split(area);
@@ -370,6 +373,11 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
     }
     info_lines.push(Line::from(status_line));
+
+    info_lines.push(Line::from(vec![
+        Span::styled("Last Active: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(format_last_active(selected.last_active_at.as_deref())),
+    ]));
 
     let info = Paragraph::new(info_lines).block(info_block);
     frame.render_widget(info, detail_chunks[0]);
@@ -454,4 +462,26 @@ fn format_duration(secs: u64) -> String {
     } else {
         format!("{mins}m")
     }
+}
+
+fn format_last_active(value: Option<&str>) -> String {
+    let value = match value {
+        Some(v) => v,
+        None => return "-".to_string(),
+    };
+    let dt = match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return "-".to_string(),
+    };
+    let now = chrono::Utc::now();
+    let diff = now.signed_duration_since(dt);
+    if diff.num_minutes() <= 60 {
+        let mins = diff.num_minutes();
+        return format!("{}m ago", mins.max(0));
+    }
+    let dt_utc = dt.format("%H:%M").to_string();
+    if dt.date_naive() == now.date_naive() {
+        return dt_utc;
+    }
+    dt.format("%b %d").to_string()
 }

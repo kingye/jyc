@@ -1587,7 +1587,7 @@ mod tests {
     // --- Trigger mode tests ---
 
     #[test]
-    fn test_trigger_mode_pattern_issue_matches() {
+    fn test_pattern_issue_matches() {
         let msg = make_message("issue", 42);
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
@@ -1596,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trigger_mode_pattern_pr_matches() {
+    fn test_pattern_pr_matches() {
         let msg = make_message("pull_request", 43);
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
@@ -1605,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trigger_mode_pattern_self_loop_prevention() {
+    fn test_pattern_self_loop_prevention() {
         let mut msg = make_message("pull_request", 43);
         msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
         let patterns = vec![ChannelPattern {

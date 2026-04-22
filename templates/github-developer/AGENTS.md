@@ -17,7 +17,7 @@ comment is at the bottom of the incoming message after "Triggering comment by".
 That comment IS your task. Do what it says — nothing more, nothing less.
 
 You are triggered automatically when a PR matches the pattern rules (e.g., label `ready-for-dev`).
-The pattern has `trigger_mode = "pattern"` so no `@j:developer` mention is required.
+No `@j:developer` mention is required.
 
 ## Repository Setup
 Clone the repository from the trigger message to `repo/` if not already present,
@@ -124,7 +124,7 @@ Read the triggering comment at the bottom of the incoming message.
 
 When to hand off to Reviewer:
 - ONLY after completing the FULL implementation plan from a planner-created PR
-- Add the `ready-to-review` label — the reviewer pattern uses `trigger_mode = "pattern"` and is auto-triggered by the label alone
+- Add the `ready-to-review` label — the reviewer pattern is auto-triggered by the label alone
 - Mark PR ready: `gh pr ready <number>`
 - Add label: `gh pr edit <number> --add-label ready-to-review`
 

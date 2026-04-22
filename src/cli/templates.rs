@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+use crate::core::template_utils::overwrite_template_files;
+
 /// Actions for the `templates` subcommand.
 #[derive(Debug, Subcommand)]
 pub enum TemplatesAction {
@@ -102,9 +104,10 @@ fn resolve_source_dir(explicit: Option<&Path>) -> Result<PathBuf> {
 }
 
 /// Load and parse `templates/templates.toml` from the source directory.
-fn load_templates_config(source_dir: &Path) -> Result<TemplatesConfig> {
+async fn load_templates_config(source_dir: &Path) -> Result<TemplatesConfig> {
     let config_path = source_dir.join("templates").join("templates.toml");
-    let content = std::fs::read_to_string(&config_path)
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
         .with_context(|| format!("failed to read {}", config_path.display()))?;
     let config: TemplatesConfig =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", config_path.display()))?;
@@ -114,7 +117,7 @@ fn load_templates_config(source_dir: &Path) -> Result<TemplatesConfig> {
 /// List all available templates and their configured skills.
 async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
     let source_dir = resolve_source_dir(source_dir_arg)?;
-    let config = load_templates_config(&source_dir)?;
+    let config = load_templates_config(&source_dir).await?;
     let templates_dir = source_dir.join("templates");
 
     let mut entries = tokio::fs::read_dir(&templates_dir)
@@ -154,7 +157,7 @@ async fn run_deploy(
     source_dir_arg: Option<&Path>,
 ) -> Result<()> {
     let source_dir = resolve_source_dir(source_dir_arg)?;
-    let config = load_templates_config(&source_dir)?;
+    let config = load_templates_config(&source_dir).await?;
     let templates_dir = source_dir.join("templates");
     let skills_dir = source_dir.join(".opencode").join("skills");
 
@@ -244,7 +247,7 @@ async fn run_deploy(
             if jyc_dst.exists() {
                 tokio::fs::remove_dir_all(&jyc_dst).await.ok();
             }
-            copy_dir_recursive(&jyc_src, &jyc_dst).await?;
+            overwrite_template_files(&jyc_src, &jyc_dst).await?;
             println!("  .jyc copied");
         }
 
@@ -271,7 +274,7 @@ async fn run_deploy(
                     if skill_dst.exists() {
                         tokio::fs::remove_dir_all(&skill_dst).await.ok();
                     }
-                    copy_dir_recursive(&skill_src, &skill_dst).await?;
+                    overwrite_template_files(&skill_src, &skill_dst).await?;
                     println!("  skill: {skill}");
                 } else {
                     println!("  WARNING: skill '{skill}' not found at {}", skill_src.display());
@@ -295,39 +298,5 @@ async fn run_deploy(
     println!();
     println!("=== Deployment complete ===");
     println!("Templates deployed to: {}", target_dir.display());
-    Ok(())
-}
-
-/// Recursively copy a directory tree from `src` to `dst`.
-async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    tokio::fs::create_dir_all(dst)
-        .await
-        .with_context(|| format!("failed to create directory {}", dst.display()))?;
-
-    let mut entries = tokio::fs::read_dir(src)
-        .await
-        .with_context(|| format!("failed to read directory {}", src.display()))?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let src_path = entry.path();
-        let file_name = entry.file_name();
-        let dst_path = dst.join(&file_name);
-
-        let file_type = entry.file_type().await?;
-        if file_type.is_dir() {
-            Box::pin(copy_dir_recursive(&src_path, &dst_path)).await?;
-        } else {
-            tokio::fs::copy(&src_path, &dst_path)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to copy {} -> {}",
-                        src_path.display(),
-                        dst_path.display()
-                    )
-                })?;
-        }
-    }
-
     Ok(())
 }

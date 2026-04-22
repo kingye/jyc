@@ -5,4 +5,4 @@ pub mod mcp_reply;
 pub mod mcp_vision;
 pub mod monitor;
 pub mod patterns;
-pub mod state;
+pub mod templates;

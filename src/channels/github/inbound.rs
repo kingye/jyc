@@ -44,6 +44,9 @@ impl ChannelMatcher for GithubMatcher {
             if pm.pattern_name == "reviewer" {
                 return format!("review-pr-{}", number);
             }
+            if pm.pattern_name == "designer" {
+                return format!("design-{}-{}", github_type.replace("pull_request", "pr"), number);
+            }
         }
 
         match github_type {
@@ -772,7 +775,7 @@ fn extract_comment_role(text: &str) -> Option<String> {
         if let Some(end) = text.find(']') {
             let role = &text[1..end];
             match role {
-                "Planner" | "Developer" | "Reviewer" => return Some(role.to_string()),
+                "Planner" | "Developer" | "Reviewer" | "Designer" => return Some(role.to_string()),
                 _ => {}
             }
         }

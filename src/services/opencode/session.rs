@@ -223,8 +223,8 @@ struct OpencodeConfig {
 
 /// Ensure the thread has a properly configured `opencode.json`.
 ///
-/// Returns `true` if the config was written (i.e., changed or new).
-/// The caller should restart the OpenCode server if this returns true.
+/// Writes the config only if content has changed (staleness check).
+/// Returns `true` if the file was (re)written.
 pub async fn ensure_thread_opencode_setup(
     thread_path: &Path,
     agent_config: &AgentConfig,
@@ -249,28 +249,29 @@ pub async fn ensure_thread_opencode_setup(
     let tool_command = get_reply_tool_command();
     let question_command = get_question_tool_command();
 
-    // Build MCP tools configuration
+    // Start with user's global MCP tools (from ~/.config/opencode/ and workdir opencode.json)
+    let mut mcp_tools = load_user_mcp_configs(jyc_root).await;
+
+    // Add JYC's own MCP tools (these always take precedence over user tools)
     let thread_dir_str = thread_path.to_string_lossy().to_string();
-    let mut mcp_tools = serde_json::json!({
-        "jyc_reply": {
-            "type": "local",
-            "command": tool_command,
-            "environment": {
-                "JYC_ROOT": jyc_root.to_string_lossy(),
-                "JYC_THREAD_DIR": &thread_dir_str
-            },
-            "enabled": true,
-            "timeout": 180000
+    mcp_tools["jyc_reply"] = serde_json::json!({
+        "type": "local",
+        "command": tool_command,
+        "environment": {
+            "JYC_ROOT": jyc_root.to_string_lossy(),
+            "JYC_THREAD_DIR": &thread_dir_str
         },
-        "jyc_question": {
-            "type": "local",
-            "command": question_command,
-            "environment": {
-                "JYC_THREAD_DIR": &thread_dir_str
-            },
-            "enabled": true,
-            "timeout": 360000
-        }
+        "enabled": true,
+        "timeout": 180000
+    });
+    mcp_tools["jyc_question"] = serde_json::json!({
+        "type": "local",
+        "command": question_command,
+        "environment": {
+            "JYC_THREAD_DIR": &thread_dir_str
+        },
+        "enabled": true,
+        "timeout": 360000
     });
 
     // Register vision MCP tool if configured and enabled
@@ -348,6 +349,103 @@ pub async fn ensure_thread_opencode_setup(
     );
 
     Ok(true)
+}
+
+/// Load MCP tool configurations from the user's global OpenCode config.
+///
+/// Reads MCP entries from two locations (in order, later entries override earlier):
+/// 1. `~/.config/opencode/opencode.json` (or `opencode.jsonc`) — user's global config
+/// 2. `<jyc_root>/opencode.json` — workdir-level config
+///
+/// Returns a merged JSON object of all discovered MCP tools.
+/// JYC's own tools (jyc_reply, jyc_question, jyc_vision) should be added AFTER
+/// calling this function so they always take precedence.
+async fn load_user_mcp_configs(jyc_root: &Path) -> serde_json::Value {
+    let mut merged = serde_json::json!({});
+
+    // 1. Try global config: ~/.config/opencode/opencode.json or opencode.jsonc
+    if let Some(config_dir) = dirs_next_config_dir() {
+        for filename in &["opencode.json", "opencode.jsonc"] {
+            let global_path = config_dir.join("opencode").join(filename);
+            if let Some(mcp) = read_mcp_from_config(&global_path).await {
+                merge_mcp(&mut merged, &mcp);
+                tracing::debug!(
+                    path = %global_path.display(),
+                    count = mcp.as_object().map(|m| m.len()).unwrap_or(0),
+                    "Loaded user MCP tools from global config"
+                );
+                break; // Use first found
+            }
+        }
+    }
+
+    // 2. Try workdir-level config: <jyc_root>/opencode.json
+    let workdir_path = jyc_root.join("opencode.json");
+    if let Some(mcp) = read_mcp_from_config(&workdir_path).await {
+        merge_mcp(&mut merged, &mcp);
+        tracing::debug!(
+            path = %workdir_path.display(),
+            count = mcp.as_object().map(|m| m.len()).unwrap_or(0),
+            "Loaded user MCP tools from workdir config"
+        );
+    }
+
+    merged
+}
+
+/// Read the `mcp` field from an OpenCode config file.
+/// Supports both JSON and JSONC (strips // comments and trailing commas).
+async fn read_mcp_from_config(path: &Path) -> Option<serde_json::Value> {
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+
+    // Strip single-line comments (// ...) and trailing commas for JSONC support
+    let cleaned: String = content
+        .lines()
+        .map(|line| {
+            // Remove // comments (but not inside strings — simple heuristic)
+            if let Some(idx) = line.find("//") {
+                // Only strip if the // is not inside a quoted string
+                let before = &line[..idx];
+                let quote_count = before.matches('"').count();
+                if quote_count % 2 == 0 {
+                    return before.to_string();
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Remove trailing commas before } or ]
+    let re_trailing_comma = regex::Regex::new(r",\s*([}\]])").ok()?;
+    let cleaned = re_trailing_comma.replace_all(&cleaned, "$1");
+
+    let config: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
+    config.get("mcp").cloned()
+}
+
+/// Merge source MCP entries into target. Source entries override target on key conflict.
+fn merge_mcp(target: &mut serde_json::Value, source: &serde_json::Value) {
+    if let (Some(target_obj), Some(source_obj)) = (target.as_object_mut(), source.as_object()) {
+        for (key, value) in source_obj {
+            target_obj.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Get the user's config directory (~/.config on macOS/Linux).
+fn dirs_next_config_dir() -> Option<std::path::PathBuf> {
+    // Use XDG_CONFIG_HOME if set, otherwise ~/.config
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let path = std::path::PathBuf::from(xdg);
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    // Fall back to $HOME/.config
+    std::env::var("HOME")
+        .ok()
+        .map(|home| std::path::PathBuf::from(home).join(".config"))
 }
 
 /// Read the current and max input tokens from session state.

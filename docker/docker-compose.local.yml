@@ -1,0 +1,10 @@
+# Local macOS Podman override
+# Usage: podman compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
+services:
+  jyc:
+    # Remove host networking (doesn't work on macOS Podman)
+    network_mode: bridge
+    ports:
+      - "9876:9876"  # Inspect server for TUI dashboard
+    extra_hosts:
+      - "host.containers.internal:host-gateway"

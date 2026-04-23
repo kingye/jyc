@@ -226,6 +226,24 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # api_url = "https://api.openai.com/v1/chat/completions"  # OpenAI
 # model = "kimi-k2.5"  # default
 
+# --- MCP Servers ---
+# Named MCP server definitions. Templates reference these by name
+# in their `mcps` list (see templates/templates.toml).
+# Each MCP can be `local` (subprocess) or `remote` (HTTP).
+
+# [[mcps]]
+# name = "jyc_vision"
+# type = "local"
+# command = ["jyc", "mcp-vision-tool"]
+# environment = { "VISION_API_KEY" = "your-api-key", "VISION_API_URL" = "https://api.moonshot.cn/v1/chat/completions" }
+# timeout = 300000
+
+# [[mcps]]
+# name = "remote_mcp"
+# type = "remote"
+# url = "https://mcp.example.com/handler"
+# enabled = true
+
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.
 # See GITHUB_CHANNEL.md for full architecture and workflow.

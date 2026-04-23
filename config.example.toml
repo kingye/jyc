@@ -240,15 +240,28 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # poll_interval_secs = 60
 # # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
 #
-# # Pattern: Issues → Planner agent (auto-trigger via pattern matching)
+# # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
 # [[channels.my_repo.patterns]]
-# name = "planner"
+# name = "high-level-planner"
+# enabled = true
+# role = "High-Level Planner"
+# template = "github-high-level-planner"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["issue"]
+# labels = ["feature-plan"]
+#
+# # Pattern: Issues without 'feature-plan' label → Detail-Level Planner (technical architect)
+# # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active
+# [[channels.my_repo.patterns]]
+# name = "detail-planner"
 # enabled = true
 # role = "Planner"
 # template = "github-planner"
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
+# exclude_labels = ["feature-plan"]
 #
 # # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
 # [[channels.my_repo.patterns]]

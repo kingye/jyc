@@ -114,19 +114,31 @@ impl GithubMatcher {
             }
         }
 
+        // Extract github_labels once for labels and exclude_labels checks
+        let msg_labels: Vec<String> = message
+            .metadata
+            .get("github_labels")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
         if let Some(ref label_rule) = rules.labels {
-            let msg_labels: Vec<String> = message
-                .metadata
-                .get("github_labels")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
             if !label_rule.matches(&msg_labels) {
+                return false;
+            }
+        }
+
+        // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
+        if let Some(ref exclude_labels) = rules.exclude_labels {
+            let has_excluded = exclude_labels
+                .iter()
+                .any(|l| msg_labels.contains(&l.to_lowercase()));
+            if has_excluded {
                 return false;
             }
         }
@@ -912,6 +924,7 @@ impl GithubInboundAdapter {
 ///   "[Developer] some text" → Some("Developer")
 ///   "[Reviewer] code looks good" → Some("Reviewer")
 ///   "[Planner] questions about requirements" → Some("Planner")
+///   "[High-Level Planner] planning" → Some("High-Level Planner")
 ///   "normal comment" → None
 ///   "[Unknown] something" → None
 ///
@@ -921,7 +934,7 @@ fn extract_comment_role(text: &str) -> Option<String> {
         if let Some(end) = text.find(']') {
             let role = &text[1..end];
             match role {
-                "Planner" | "Developer" | "Reviewer" => return Some(role.to_string()),
+                "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => return Some(role.to_string()),
                 _ => {}
             }
         }
@@ -1377,6 +1390,7 @@ mod tests {
         assert_eq!(extract_comment_role("[Developer] some text"), Some("Developer".to_string()));
         assert_eq!(extract_comment_role("[Reviewer] code looks good"), Some("Reviewer".to_string()));
         assert_eq!(extract_comment_role("[Planner] questions"), Some("Planner".to_string()));
+        assert_eq!(extract_comment_role("[High-Level Planner] planning"), Some("High-Level Planner".to_string()));
         assert_eq!(extract_comment_role("normal comment"), None);
         assert_eq!(extract_comment_role("[Unknown] something"), None);
         assert_eq!(extract_comment_role(""), None);
@@ -1898,5 +1912,167 @@ mod tests {
             !should_process_comment(&comment, &open_numbers),
             "comment with malformed URL should be skipped (issue_number falls back to 0)"
         );
+    }
+
+    // --- exclude_labels tests ---
+
+    #[test]
+    fn test_exclude_labels_blocks_matching_label() {
+        // Message has "feature-plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels should block matching when label is present");
+    }
+
+    #[test]
+    fn test_exclude_labels_allows_non_matching_label() {
+        // Message has "bug", pattern has exclude_labels = ["feature-plan"] → should match
+        let mut msg = make_message_with_rules("issue", 42, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "exclude_labels should not block when excluded label is absent");
+    }
+
+    #[test]
+    fn test_exclude_labels_multiple() {
+        // Message has "feature-plan", pattern has exclude_labels = ["feature-plan", "wip"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string(), "wip".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels should block when any exclude label matches");
+    }
+
+    #[test]
+    fn test_exclude_labels_case_insensitive() {
+        // Message has "Feature-Plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels matching should be case-insensitive");
+    }
+
+    #[test]
+    fn test_exclude_labels_toml_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            github_type = ["issue"]
+            exclude_labels = ["feature-plan", "wip"]
+        "#).unwrap();
+        assert!(pattern.rules.exclude_labels.is_some(), "exclude_labels should deserialize");
+        let excl = pattern.rules.exclude_labels.unwrap();
+        assert_eq!(excl.len(), 2);
+        assert!(excl.contains(&"feature-plan".to_string()));
+        assert!(excl.contains(&"wip".to_string()));
+    }
+
+    #[test]
+    fn test_high_level_planner_with_feature_plan_label() {
+        // High-level planner pattern: labels = ["feature-plan"]
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "high-level-planner".to_string(),
+            enabled: true,
+            role: Some("High-Level Planner".to_string()),
+            template: Some("github-high-level-planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "high-level planner should match issue with feature-plan label");
+        assert_eq!(result.unwrap().pattern_name, "high-level-planner");
+    }
+
+    #[test]
+    fn test_two_level_routing() {
+        // Issue with feature-plan → high-level planner
+        let mut msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg1.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![
+            ChannelPattern {
+                name: "high-level-planner".to_string(),
+                enabled: true,
+                role: Some("High-Level Planner".to_string()),
+                template: Some("github-high-level-planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "detail-planner".to_string(),
+                enabled: true,
+                role: Some("Planner".to_string()),
+                template: Some("github-planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    exclude_labels: Some(vec!["feature-plan".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let result1 = GithubMatcher.match_message(&msg1, &patterns);
+        assert!(result1.is_some());
+        assert_eq!(result1.unwrap().pattern_name, "high-level-planner");
+
+        // Issue with bug → detail planner (no feature-plan)
+        let mut msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap().pattern_name, "detail-planner");
     }
 }

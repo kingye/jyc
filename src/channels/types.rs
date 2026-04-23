@@ -339,6 +339,10 @@ pub struct PatternRules {
     /// GitHub assignees to match (OR logic: match if ANY assignee is assigned to the issue/PR)
     #[serde(default)]
     pub assignees: Option<Vec<String>>,
+    /// GitHub labels that must NOT be present for the pattern to match.
+    /// OR logic: if ANY exclude label is found in the message labels, the pattern does not match.
+    #[serde(default)]
+    pub exclude_labels: Option<Vec<String>>,
 }
 
 impl Default for PatternRules {
@@ -352,6 +356,7 @@ impl Default for PatternRules {
             github_type: None,
             labels: None,
             assignees: None,
+            exclude_labels: None,
         }
     }
 }

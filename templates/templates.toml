@@ -15,3 +15,6 @@ skills = ["coding-principles", "incremental-dev", "dev-workflow"]
 
 [templates.github-reviewer]
 skills = ["coding-principles", "pr-review"]
+
+[templates.github-high-level-planner]
+skills = ["coding-principles", "dev-workflow"]

@@ -303,6 +303,25 @@ async fn run_deploy(
                 .with_context(|| format!("failed to write model-override for {tpl_name}"))?;
             println!("  model-override: {m}");
         }
+
+        // Write mcps.json for template
+        let mcps = config
+            .templates
+            .get(tpl_name.as_str())
+            .map(|e| e.mcps.clone())
+            .unwrap_or_default();
+
+        if !mcps.is_empty() {
+            let jyc_dir = target.join(".jyc");
+            tokio::fs::create_dir_all(&jyc_dir)
+                .await
+                .with_context(|| format!("failed to create .jyc dir for {tpl_name}"))?;
+            let mcps_json = serde_json::to_string_pretty(&mcps)?;
+            tokio::fs::write(jyc_dir.join("mcps.json"), mcps_json)
+                .await
+                .with_context(|| format!("failed to write mcps.json for {tpl_name}"))?;
+            println!("  mcps.json: {:?}", mcps);
+        }
     }
 
     println!();

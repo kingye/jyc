@@ -309,9 +309,28 @@ pub async fn ensure_thread_opencode_setup(
         .chain(extra_mcps)
         .collect();
 
-    // Build a map of MCP name -> McpServerConfig for quick lookup
-    let mcp_config_map: std::collections::HashMap<&str, &McpServerConfig> =
+    // Read deploy-time MCP definitions from .jyc/mcp-defs.json
+    let mcp_defs_path = thread_path.join(".jyc").join("mcp-defs.json");
+    let deploy_mcp_defs: Vec<McpServerConfig> = if mcp_defs_path.exists() {
+        let content = tokio::fs::read_to_string(&mcp_defs_path)
+            .await
+            .context("failed to read mcp-defs.json")?;
+        serde_json::from_str(&content)
+            .inspect_err(|_| {
+                tracing::warn!("Failed to parse {}", mcp_defs_path.display());
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Build a map of MCP name -> McpServerConfig for quick lookup.
+    // Deploy-time definitions (mcp-defs.json) take precedence over app config.
+    let mut mcp_config_map: std::collections::HashMap<&str, &McpServerConfig> =
         app_config.mcps.iter().map(|m| (m.name.as_str(), m)).collect();
+    for def in &deploy_mcp_defs {
+        mcp_config_map.insert(def.name.as_str(), def);
+    }
 
     // Add template/extra MCPs to opencode.json
     for mcp_name in &all_mcp_names {

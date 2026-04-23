@@ -164,13 +164,12 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Extra MCPs config: per-template MCP mappings loaded from a TOML file.
+/// Extra MCPs config: MCP definitions + per-template mappings from a TOML file.
 #[derive(Debug, Deserialize, Default)]
 struct ExtraMcpsConfig {
-    /// MCP server definitions (informational — not used during deploy, but
-    /// allows the file to be self-contained with both definitions and mappings).
+    /// MCP server definitions to be written into deployed templates.
     #[serde(default)]
-    mcps: Vec<toml::Value>,
+    mcps: Vec<crate::config::types::McpServerConfig>,
     #[serde(default)]
     templates: HashMap<String, ExtraMcpsEntry>,
 }
@@ -385,6 +384,31 @@ async fn run_deploy(
         } else {
             // Remove stale mcps.json from previous deploys
             let stale = target.join(".jyc").join("mcps.json");
+            if stale.exists() {
+                tokio::fs::remove_file(&stale).await.ok();
+            }
+        }
+
+        // Write MCP definitions from --mcps file into .jyc/mcp-defs.json
+        // Only include definitions referenced by this template's MCP names.
+        let extra_defs: Vec<_> = extra_mcps.mcps.iter()
+            .filter(|def| mcps.contains(&def.name))
+            .collect();
+
+        if !extra_defs.is_empty() {
+            let jyc_dir = target.join(".jyc");
+            tokio::fs::create_dir_all(&jyc_dir)
+                .await
+                .with_context(|| format!("failed to create .jyc dir for {tpl_name}"))?;
+            let defs_json = serde_json::to_string_pretty(&extra_defs)?;
+            tokio::fs::write(jyc_dir.join("mcp-defs.json"), defs_json)
+                .await
+                .with_context(|| format!("failed to write mcp-defs.json for {tpl_name}"))?;
+            let def_names: Vec<_> = extra_defs.iter().map(|d| d.name.as_str()).collect();
+            println!("  mcp-defs: {}", def_names.join(", "));
+        } else {
+            // Remove stale mcp-defs.json from previous deploys
+            let stale = target.join(".jyc").join("mcp-defs.json");
             if stale.exists() {
                 tokio::fs::remove_file(&stale).await.ok();
             }

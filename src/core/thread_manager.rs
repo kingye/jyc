@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1220,6 +1220,8 @@ async fn initialize_thread_from_template(
                     "Wrote mcps.json"
                 );
             }
+        } else {
+            tracing::warn!("Failed to parse {}", templates_config_path.display());
         }
     }
 

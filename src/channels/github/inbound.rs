@@ -114,19 +114,31 @@ impl GithubMatcher {
             }
         }
 
+        // Extract github_labels once for labels and exclude_labels checks
+        let msg_labels: Vec<String> = message
+            .metadata
+            .get("github_labels")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
         if let Some(ref label_rule) = rules.labels {
-            let msg_labels: Vec<String> = message
-                .metadata
-                .get("github_labels")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
             if !label_rule.matches(&msg_labels) {
+                return false;
+            }
+        }
+
+        // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
+        if let Some(ref exclude_labels) = rules.exclude_labels {
+            let has_excluded = exclude_labels
+                .iter()
+                .any(|l| msg_labels.contains(&l.to_lowercase()));
+            if has_excluded {
                 return false;
             }
         }
@@ -147,26 +159,6 @@ impl GithubMatcher {
                 .iter()
                 .any(|a| msg_assignees.contains(&a.to_lowercase()));
             if !has_match {
-                return false;
-            }
-        }
-
-        // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
-        if let Some(ref exclude_labels) = rules.exclude_labels {
-            let msg_labels: Vec<String> = message
-                .metadata
-                .get("github_labels")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let has_excluded = exclude_labels
-                .iter()
-                .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if has_excluded {
                 return false;
             }
         }
@@ -932,6 +924,7 @@ impl GithubInboundAdapter {
 ///   "[Developer] some text" → Some("Developer")
 ///   "[Reviewer] code looks good" → Some("Reviewer")
 ///   "[Planner] questions about requirements" → Some("Planner")
+///   "[High-Level Planner] planning" → Some("High-Level Planner")
 ///   "normal comment" → None
 ///   "[Unknown] something" → None
 ///

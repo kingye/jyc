@@ -10,6 +10,9 @@ services:
       - .env
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OAUTH2_FORWARDER_PORT=${OAUTH2_FORWARDER_PORT:-9191}
+      - OAUTH2_FORWARDER_SERVER=${OAUTH2_FORWARDER_SERVER:-localhost}:${OAUTH2_FORWARDER_PORT:-9191}
+      - BROWSER=${OAUTH2_FORWARDER_BROWSER:-o2f-browser}
     volumes:
       # JYC data directory (config.toml, .env, channels, workspace)
       - ${JYC_DATA_DIR:-./}:/opt/jyc

@@ -32,9 +32,9 @@ pub enum TemplatesAction {
         #[arg(long)]
         model: Option<String>,
 
-        /// Override MCPs for the deployed template (comma-separated)
-        #[arg(long, value_delimiter = ',')]
-        mcps: Option<Vec<String>>,
+        /// Extra MCPs config file (TOML) with per-template MCP mappings
+        #[arg(long)]
+        mcps: Option<PathBuf>,
 
         /// Path to the source directory containing templates/ and .opencode/skills/
         #[arg(long)]
@@ -164,13 +164,52 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Extra MCPs config: per-template MCP mappings loaded from a TOML file.
+#[derive(Debug, Deserialize, Default)]
+struct ExtraMcpsConfig {
+    /// MCP server definitions (informational — not used during deploy, but
+    /// allows the file to be self-contained with both definitions and mappings).
+    #[serde(default)]
+    mcps: Vec<toml::Value>,
+    #[serde(default)]
+    templates: HashMap<String, ExtraMcpsEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtraMcpsEntry {
+    #[serde(default)]
+    mcps: Vec<String>,
+}
+
+/// Load extra MCPs config from a TOML file.
+///
+/// The file format:
+/// ```toml
+/// [[mcps]]
+/// name = "sap-jira"
+/// type = "remote"
+/// url = "https://mcp.jira.tools.sap/mcp"
+/// enabled = true
+///
+/// [templates.github-planner]
+/// mcps = ["sap-jira"]
+/// ```
+async fn load_extra_mcps_config(path: &Path) -> Result<ExtraMcpsConfig> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config: ExtraMcpsConfig =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(config)
+}
+
 /// Deploy one or all templates to the target directory.
 async fn run_deploy(
     target_dir: &Path,
     template_name: Option<&str>,
     as_name: Option<&str>,
     model: Option<&str>,
-    mcps_override: Option<&[String]>,
+    mcps_file: Option<&Path>,
     source_dir_arg: Option<&Path>,
 ) -> Result<()> {
     let source_dir = resolve_source_dir(source_dir_arg)?;
@@ -208,9 +247,12 @@ async fn run_deploy(
     if let Some(m) = model {
         println!("Model override:  {m}");
     }
-    if let Some(m) = mcps_override {
-        println!("MCPs override:   {}", m.join(", "));
-    }
+    let extra_mcps = if let Some(path) = mcps_file {
+        println!("MCPs file:       {}", path.display());
+        load_extra_mcps_config(path).await?
+    } else {
+        ExtraMcpsConfig::default()
+    };
     println!();
 
     // Collect and sort template directories
@@ -314,16 +356,21 @@ async fn run_deploy(
             println!("  model-override: {m}");
         }
 
-        // Write mcps.json for template
-        let mcps = mcps_override
-            .map(|m| m.to_vec())
-            .unwrap_or_else(|| {
-                config
-                    .templates
-                    .get(tpl_name.as_str())
-                    .map(|e| e.mcps.clone())
-                    .unwrap_or_default()
-            });
+        // Write mcps.json for template (merge templates.toml + extra mcps file)
+        let mut mcps: Vec<String> = config
+            .templates
+            .get(tpl_name.as_str())
+            .map(|e| e.mcps.clone())
+            .unwrap_or_default();
+
+        // Merge extra MCPs from --mcps file (per-template)
+        if let Some(extra) = extra_mcps.templates.get(tpl_name.as_str()) {
+            for name in &extra.mcps {
+                if !mcps.contains(name) {
+                    mcps.push(name.clone());
+                }
+            }
+        }
 
         if !mcps.is_empty() {
             let jyc_dir = target.join(".jyc");
@@ -335,6 +382,12 @@ async fn run_deploy(
                 .await
                 .with_context(|| format!("failed to write mcps.json for {tpl_name}"))?;
             println!("  mcps: {}", mcps.join(", "));
+        } else {
+            // Remove stale mcps.json from previous deploys
+            let stale = target.join(".jyc").join("mcps.json");
+            if stale.exists() {
+                tokio::fs::remove_file(&stale).await.ok();
+            }
         }
     }
 

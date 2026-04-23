@@ -279,7 +279,11 @@ pub async fn ensure_thread_opencode_setup(
         let content = tokio::fs::read_to_string(&mcps_path)
             .await
             .context("failed to read mcps.json")?;
-        serde_json::from_str(&content).unwrap_or_default()
+        serde_json::from_str(&content)
+            .inspect_err(|_| {
+                tracing::warn!("Failed to parse {}", mcps_path.display());
+            })
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -290,7 +294,11 @@ pub async fn ensure_thread_opencode_setup(
         let content = tokio::fs::read_to_string(&extra_mcps_path)
             .await
             .context("failed to read extra-mcps.json")?;
-        serde_json::from_str(&content).unwrap_or_default()
+        serde_json::from_str(&content)
+            .inspect_err(|_| {
+                tracing::warn!("Failed to parse {}", extra_mcps_path.display());
+            })
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -298,7 +306,7 @@ pub async fn ensure_thread_opencode_setup(
     // Combine template MCPs and extra MCPs (extra takes precedence via later override)
     let all_mcp_names: Vec<String> = template_mcps
         .into_iter()
-        .chain(extra_mcps.clone())
+        .chain(extra_mcps)
         .collect();
 
     // Build a map of MCP name -> McpServerConfig for quick lookup
@@ -481,10 +489,6 @@ fn has_external_symlinks(thread_path: &Path) -> bool {
 
 fn get_question_tool_command() -> Vec<String> {
     get_mcp_tool_command("mcp-question-tool")
-}
-
-fn get_vision_tool_command() -> Vec<String> {
-    get_mcp_tool_command("mcp-vision-tool")
 }
 
 /// Resolve the command to invoke a jyc MCP tool subcommand.

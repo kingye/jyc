@@ -1171,7 +1171,7 @@ async fn initialize_thread_from_template(
     if thread_path.exists() {
         return Ok(());
     }
-    
+
     let template_src = template_dir.join(template_name);
     if !template_src.exists() {
         tracing::warn!(
@@ -1181,10 +1181,17 @@ async fn initialize_thread_from_template(
         );
         return Ok(());
     }
-    
+
     copy_template_files(&template_src, thread_path).await?;
-    
+
+    let jyc_dir = thread_path.join(".jyc");
+    tokio::fs::create_dir_all(&jyc_dir).await?;
+
+    tokio::fs::write(jyc_dir.join("template"), template_name)
+        .await
+        .context("failed to write template name")?;
+
     tracing::info!(template = %template_name, "Thread initialized from template");
-    
+
     Ok(())
 }

@@ -162,8 +162,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 Arc::new(OpenCodeService::new(
                     opencode_server.clone(),
                     agent_config.clone(),
+                    config.clone(),
                     workdir.to_path_buf(),
-                ).with_vision_config(config.vision.clone()))
+                ))
             }
             "static" => {
                 let text = agent_config

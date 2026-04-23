@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use super::client::OpenCodeClient;
-use crate::config::types::AgentConfig;
+use crate::config::types::{AgentConfig, AppConfig, McpServerConfig, McpServerKind};
 
 /// Default maximum input tokens per session before resetting
 pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 120K tokens
@@ -228,8 +228,8 @@ struct OpencodeConfig {
 pub async fn ensure_thread_opencode_setup(
     thread_path: &Path,
     agent_config: &AgentConfig,
+    app_config: &AppConfig,
     jyc_root: &Path,
-    vision_config: Option<&crate::config::types::VisionConfig>,
 ) -> Result<bool> {
     // Read model override
     let model = read_model_override(thread_path)
@@ -273,23 +273,46 @@ pub async fn ensure_thread_opencode_setup(
         }
     });
 
-    // Register vision MCP tool if configured and enabled
-    if let Some(vision) = vision_config {
-        if vision.enabled {
-            let vision_command = get_vision_tool_command();
-            mcp_tools["jyc_vision"] = serde_json::json!({
-                "type": "local",
-                "command": vision_command,
-                "environment": {
-                    "VISION_API_KEY": vision.api_key,
-                    "VISION_API_URL": vision.api_url,
-                    "VISION_MODEL": vision.model,
-                    "JYC_THREAD_DIR": &thread_dir_str
-                },
-                "enabled": true,
-                "timeout": 300000
-            });
-            tracing::debug!("Vision MCP tool registered in opencode.json");
+    // Read template MCPs from .jyc/mcps.json
+    let mcps_path = thread_path.join(".jyc").join("mcps.json");
+    let template_mcps: Vec<String> = if mcps_path.exists() {
+        let content = tokio::fs::read_to_string(&mcps_path)
+            .await
+            .context("failed to read mcps.json")?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Read extra MCPs from .jyc/extra-mcps.json (runtime-injected)
+    let extra_mcps_path = thread_path.join(".jyc").join("extra-mcps.json");
+    let extra_mcps: Vec<String> = if extra_mcps_path.exists() {
+        let content = tokio::fs::read_to_string(&extra_mcps_path)
+            .await
+            .context("failed to read extra-mcps.json")?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Combine template MCPs and extra MCPs (extra takes precedence via later override)
+    let all_mcp_names: Vec<String> = template_mcps
+        .into_iter()
+        .chain(extra_mcps.clone())
+        .collect();
+
+    // Build a map of MCP name -> McpServerConfig for quick lookup
+    let mcp_config_map: std::collections::HashMap<&str, &McpServerConfig> =
+        app_config.mcps.iter().map(|m| (m.name.as_str(), m)).collect();
+
+    // Add template/extra MCPs to opencode.json
+    for mcp_name in &all_mcp_names {
+        if let Some(mcp_config) = mcp_config_map.get(mcp_name.as_str()) {
+            let mcp_json = mcp_config_to_json(mcp_config, &thread_dir_str);
+            mcp_tools[mcp_name] = mcp_json;
+            tracing::debug!(mcp = %mcp_name, "Added MCP to opencode.json");
+        } else {
+            tracing::warn!(mcp = %mcp_name, "MCP not found in config, skipping");
         }
     }
 
@@ -349,6 +372,30 @@ pub async fn ensure_thread_opencode_setup(
     );
 
     Ok(true)
+}
+
+/// Convert an McpServerConfig into its opencode.json JSON representation.
+fn mcp_config_to_json(config: &McpServerConfig, thread_dir: &str) -> serde_json::Value {
+    match &config.kind {
+        McpServerKind::Local { command, environment, timeout } => {
+            let mut env_with_thread = environment.clone();
+            env_with_thread.insert("JYC_THREAD_DIR".to_string(), thread_dir.to_string());
+            serde_json::json!({
+                "type": "local",
+                "command": command,
+                "environment": env_with_thread,
+                "enabled": true,
+                "timeout": timeout
+            })
+        }
+        McpServerKind::Remote { url, enabled } => {
+            serde_json::json!({
+                "type": "remote",
+                "url": url,
+                "enabled": enabled
+            })
+        }
+    }
 }
 
 /// Read the current and max input tokens from session state.

@@ -1,0 +1,11 @@
+[[mcps]]
+type = "remote"
+url = "https://mcp.jira.tools.sap/mcp"
+name = "sap.tools.jira.mcp/mcp"
+enabled = true
+
+[templates.github-planner]
+mcps = ["sap.tools.jira.mcp/mcp"]
+
+[templates.github-high-level-planner]
+mcps = ["sap.tools.jira.mcp/mcp"]

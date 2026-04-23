@@ -2,11 +2,12 @@
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use arc_swap::ArcSwap;
     use tempfile::TempDir;
     use crate::services::static_agent::StaticAgentService;
 
-    fn test_config() -> Arc<crate::config::types::AppConfig> {
-        Arc::new(
+    fn test_config() -> Arc<ArcSwap<crate::config::types::AppConfig>> {
+        Arc::new(ArcSwap::from_pointee(
             crate::config::load_config_from_str(
                 r#"
 [general]
@@ -28,7 +29,7 @@ mode = "opencode"
 "#,
             )
             .unwrap(),
-        )
+        ))
     }
 
     #[tokio::test]

@@ -1,0 +1,4 @@
+services:
+  jyc:
+    env_file:
+      - .env.proxy

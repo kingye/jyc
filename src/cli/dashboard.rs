@@ -196,7 +196,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Constraint::Length(3),  // Channels bar
             Constraint::Percentage(40), // Threads table
             Constraint::Percentage(60), // Detail panel + activity log
-            Constraint::Length(2),  // Status bar (2 lines: stats + help)
+            Constraint::Length(1),  // Status bar
         ])
         .split(area);
 
@@ -455,7 +455,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = "[q] quit  [↑↓] select  [r] refresh  [R] reload config";
+    let help_text = "[q]quit [↑↓]select [r]refresh [R]reload";
 
     let state = match &app.state {
         Some(s) => s,
@@ -470,27 +470,25 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let uptime = format_duration(state.uptime_secs);
     let stats = &state.stats;
 
-    let stats_line = Line::from(Span::raw(format!(
-        " {} active / {} threads │ {} recv │ {} err │ up {} │ v{}",
-        stats.active_workers,
-        stats.total_threads,
-        stats.messages_received,
-        stats.errors,
-        uptime,
-        state.version,
-    )));
-
-    let help_line = if let Some((msg, _)) = &app.status_message {
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(msg.as_str(), Style::default().fg(Color::Yellow)),
-        ])
+    let status_part = if let Some((msg, _)) = &app.status_message {
+        Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
     } else {
-        Line::from(Span::raw(format!(" {help_text}")))
+        Span::raw(format!(
+            "{} active / {} thr │ {} recv │ {} err │ up {} │ v{}",
+            stats.active_workers,
+            stats.total_threads,
+            stats.messages_received,
+            stats.errors,
+            uptime,
+            state.version,
+        ))
     };
 
-    let bar = Paragraph::new(vec![stats_line, help_line])
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let bar = Paragraph::new(Line::from(vec![
+        Span::raw(format!(" {help_text}  ")),
+        status_part,
+    ]))
+    .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     frame.render_widget(bar, area);
 }

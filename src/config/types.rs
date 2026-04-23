@@ -22,16 +22,16 @@ pub struct McpServerConfig {
 #[serde(rename_all = "lowercase")]
 pub enum McpServerKind {
     Local {
-        pub command: Vec<String>,
+        command: Vec<String>,
         #[serde(default)]
-        pub environment: HashMap<String, String>,
+        environment: HashMap<String, String>,
         #[serde(default = "default_mcp_timeout")]
-        pub timeout: u64,
+        timeout: u64,
     },
     Remote {
-        pub url: String,
+        url: String,
         #[serde(default = "default_true")]
-        pub enabled: bool,
+        enabled: bool,
     },
 }
 

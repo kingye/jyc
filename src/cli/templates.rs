@@ -320,7 +320,7 @@ async fn run_deploy(
             tokio::fs::write(jyc_dir.join("mcps.json"), mcps_json)
                 .await
                 .with_context(|| format!("failed to write mcps.json for {tpl_name}"))?;
-            println!("  mcps.json: {:?}", mcps);
+            println!("  mcps: {}", mcps.join(", "));
         }
     }
 

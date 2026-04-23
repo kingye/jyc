@@ -4,11 +4,11 @@ mcps = []
 
 [templates.jyc-dev]
 skills = ["coding-principles", "plan-solution", "dev-workflow", "incremental-dev", "jyc-deploy-bare"]
-mcps = []
+mcps = ["jyc_vision"]
 
 [templates.jyc-review]
 skills = ["coding-principles", "pr-review"]
-mcps = []
+mcps = ["jyc_vision"]
 
 [templates.github-planner]
 skills = ["coding-principles", "dev-workflow"]

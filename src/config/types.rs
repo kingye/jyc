@@ -17,20 +17,21 @@ pub struct McpServerConfig {
     pub kind: McpServerKind,
 }
 
+/// Kind of MCP server — either `local` (subprocess) or `remote` (HTTP).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpServerKind {
     Local {
-        command: Vec<String>,
+        pub command: Vec<String>,
         #[serde(default)]
-        environment: HashMap<String, String>,
+        pub environment: HashMap<String, String>,
         #[serde(default = "default_mcp_timeout")]
-        timeout: u64,
+        pub timeout: u64,
     },
     Remote {
-        url: String,
+        pub url: String,
         #[serde(default = "default_true")]
-        enabled: bool,
+        pub enabled: bool,
     },
 }
 

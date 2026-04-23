@@ -218,6 +218,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # (e.g., attachments saved to thread directories).
 # Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc.
 
+# DEPRECATED: Vision is now configured via [[mcps]] and template mcps lists.
+# See "MCP Servers" section below. This section will be removed in a future release.
 # [vision]
 # enabled = true
 # api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

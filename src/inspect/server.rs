@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use arc_swap::ArcSwap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::types::AppConfig;
 use crate::core::metrics::SharedHealthStats;
 use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_manager::ThreadManager;
@@ -39,6 +42,10 @@ pub struct InspectContext {
     pub max_concurrent: usize,
     /// When the monitor started
     pub start_time: Instant,
+    /// Path to the config file (for reload)
+    pub config_path: Option<PathBuf>,
+    /// Swappable application config (for live reload)
+    pub config: Option<Arc<ArcSwap<AppConfig>>>,
 }
 
 /// TCP-based inspect server.
@@ -150,9 +157,62 @@ impl InspectServer {
                 let state = Self::build_state(context).await;
                 InspectResponse::State(state)
             }
+            "reload_config" => Self::handle_reload_config(context).await,
             other => InspectResponse::Error {
                 error: format!("unknown method: {other}"),
             },
+        }
+    }
+
+    /// Reload configuration from disk and swap it atomically.
+    async fn handle_reload_config(context: &InspectContext) -> InspectResponse {
+        let (config_path, config_swap) = match (&context.config_path, &context.config) {
+            (Some(path), Some(config)) => (path, config),
+            _ => {
+                return InspectResponse::ReloadResult {
+                    success: false,
+                    message: "config reload not available (no config path)".to_string(),
+                };
+            }
+        };
+
+        tracing::info!(path = %config_path.display(), "Reloading configuration");
+
+        // Load and validate new config
+        let new_config = match crate::config::load_config(config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("failed to load config: {e:#}");
+                tracing::warn!("{msg}");
+                return InspectResponse::ReloadResult {
+                    success: false,
+                    message: msg,
+                };
+            }
+        };
+
+        let errors = crate::config::validation::validate_config(&new_config);
+        if !errors.is_empty() {
+            let msg = errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            let msg = format!("validation failed: {msg}");
+            tracing::warn!("{msg}");
+            return InspectResponse::ReloadResult {
+                success: false,
+                message: msg,
+            };
+        }
+
+        // Atomically swap the config
+        config_swap.store(Arc::new(new_config));
+        tracing::info!("Configuration reloaded successfully");
+
+        InspectResponse::ReloadResult {
+            success: true,
+            message: "configuration reloaded".to_string(),
         }
     }
 
@@ -400,6 +460,8 @@ mod tests {
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent: 3,
             start_time: Instant::now(),
+            config_path: None,
+            config: None,
         })
     }
 
@@ -540,6 +602,101 @@ mod tests {
                 other => panic!("expected State, got {:?}", other),
             }
         }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reload_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let config_toml = r#"
+[general]
+max_concurrent_threads = 5
+
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "opencode"
+"#;
+        std::fs::write(&config_path, config_toml).unwrap();
+
+        let initial_config = crate::config::load_config(&config_path).unwrap();
+        let config_swap = Arc::new(ArcSwap::from_pointee(initial_config));
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: vec![],
+            channels: vec![],
+            health_stats: Arc::new(Mutex::new(crate::core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            max_concurrent: 3,
+            start_time: Instant::now(),
+            config_path: Some(config_path.clone()),
+            config: Some(config_swap.clone()),
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send reload_config request
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer.write_all(b"{\"method\":\"reload_config\"}\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ReloadResult { success, message } => {
+                assert!(success, "reload should succeed: {message}");
+                assert!(message.contains("reloaded"));
+            }
+            other => panic!("expected ReloadResult, got {:?}", other),
+        }
+
+        // Verify config was actually updated
+        assert_eq!(config_swap.load().general.max_concurrent_threads, 5);
+
+        // Now modify the config on disk and reload again
+        let updated_toml = config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
+        std::fs::write(&config_path, updated_toml).unwrap();
+
+        writer.write_all(b"{\"method\":\"reload_config\"}\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response2 = String::new();
+        reader.read_line(&mut response2).await.unwrap();
+
+        let resp2: InspectResponse = serde_json::from_str(&response2).unwrap();
+        match resp2 {
+            InspectResponse::ReloadResult { success, .. } => assert!(success),
+            other => panic!("expected ReloadResult, got {:?}", other),
+        }
+
+        assert_eq!(config_swap.load().general.max_concurrent_threads, 10);
 
         cancel.cancel();
         handle.await.unwrap();

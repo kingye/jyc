@@ -2,11 +2,37 @@
 
 All notable changes to JYC will be documented in this file.
 
-## [Unreleased]
+## [0.2.0] - 2026-04-23
 
 ### Added
 
-- **AND/OR logic for labels in pattern matching** — Labels rule now supports nested arrays for boolean combinations. Flat arrays `["bug", "enhancement"]` retain backward-compatible OR logic. Nested arrays `[["bug", "enhancement"], ["test"]]` use CNF: outer AND, inner OR — each group must have at least one matching label. (#83)
+- **Multi-agent workflow refactor** — Developer agent is now a persistent reactive agent (#59), label-based reviewer trigger (#74), removed trigger_mode (#76), unconditional hand-off (#78, #85)
+- **Pattern mode triggers issue/PR directly** — No longer relies solely on comments (#69)
+- **AND/OR label logic** — LabelRule supports CNF nested array boolean combinations (#83)
+- **Dashboard TUI shows thread last active time** (#81)
+- **deploy-templates supports --as flag** (#87), integrated into jyc CLI (#94)
+- **Comment filtering for closed issues/PRs** (#89)
+- **Main branch protection** (#65)
+- **coding-principles skill integration** (#61)
+
+### Fixed
+
+- **Planner empty commit handling** (#93)
+- **SSE loop exit fix** (#89)
+- **Activity panel shows AI thinking and tool errors** (#78)
+- **Pattern mode self-loop protection** (#69)
+
+### Changed
+
+- **README documentation updates** (#96, #98)
+- **Developer agent template simplification** (#59)
+- **Removed model-override file** (#67)
+- **Removed @j:role mentions, use label-based handover instead** (#76)
+- **Dockerfile optimization for dummy main caching** (#57)
+
+### Removed
+
+- **TriggerMode enum and trigger_mode field** (#76)
 
 ## [0.1.11] - 2026-04-20
 

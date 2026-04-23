@@ -430,3 +430,37 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 
 ✅ **Completed** — Tested with Docker (Podman) and bare metal
 ✅ **Tested** — 283 tests pass (18 new: 6 types + 4 metrics + 4 server + 4 client)
+
+---
+
+## Phase 12: Multi-Agent Workflow & Label-Based Routing (v0.2.0)
+
+**Goal:** Refactor the agent system into a persistent reactive multi-agent architecture with label-based routing.
+
+### Overview
+
+v0.2.0 introduces a major architectural shift from single-shot agent invocations to a persistent reactive agent model. The system now supports multiple specialized agents (Planner, Developer, Reviewer) that communicate via GitHub labels rather than @mentions.
+
+### Key Changes
+
+**Multi-Agent Architecture:**
+- Developer agent is now a persistent reactive agent that maintains conversation context
+- Label-based reviewer trigger replaces explicit @j:reviewer mentions
+- Removed TriggerMode enum and trigger_mode field
+- Unconditional hand-off after each agent completes
+
+**Pattern Mode Enhancement:**
+- Pattern mode now directly triggers issues/PRs without relying on comments
+- Self-loop protection prevents infinite routing cycles
+
+**Label Routing:**
+- LabelRule supports CNF (Conjunctive Normal Form) nested array boolean combinations
+- Flat arrays `["bug", "enhancement"]` use OR logic (backward compatible)
+- Nested arrays `[["bug", "enhancement"], ["test"]]` use CNF: outer AND, inner OR
+
+**New Features:**
+- Dashboard TUI shows thread last active time
+- deploy-templates supports `--as` flag for custom naming
+- Comment filtering for closed issues/PRs
+- Main branch protection
+- coding-principles skill integration

@@ -1,20 +1,27 @@
 [templates.invoice-processing]
 skills = ["invoice-processing"]
+mcps = []
 
 [templates.jyc-dev]
 skills = ["coding-principles", "plan-solution", "dev-workflow", "incremental-dev", "jyc-deploy-bare"]
+mcps = []
 
 [templates.jyc-review]
 skills = ["coding-principles", "pr-review"]
+mcps = []
 
 [templates.github-planner]
 skills = ["coding-principles", "dev-workflow"]
+mcps = []
 
 [templates.github-developer]
 skills = ["coding-principles", "incremental-dev", "dev-workflow"]
+mcps = []
 
 [templates.github-reviewer]
 skills = ["coding-principles", "pr-review"]
+mcps = []
 
 [templates.github-high-level-planner]
 skills = ["coding-principles", "dev-workflow"]
+mcps = []

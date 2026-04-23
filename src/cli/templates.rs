@@ -42,6 +42,8 @@ pub enum TemplatesAction {
 #[derive(Debug, Deserialize)]
 struct TemplateEntry {
     skills: Vec<String>,
+    #[serde(default)]
+    mcps: Vec<String>,
 }
 
 /// Top-level structure of `templates/templates.toml`.
@@ -141,7 +143,15 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
             .get(name.as_str())
             .map(|e| e.skills.join(", "))
             .unwrap_or_else(|| "(no skills)".to_string());
+        let mcps = config
+            .templates
+            .get(name.as_str())
+            .map(|e| e.mcps.join(", "))
+            .unwrap_or_default();
         println!("{name}: {skills}");
+        if !mcps.is_empty() {
+            println!("  mcps: {mcps}");
+        }
     }
 
     println!("\n{} template(s) total.", names.len());

@@ -8,6 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Rust toolchain (needed by OpenCode agent for cargo build/test)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # Install OpenCode
 RUN curl -fsSL https://opencode.ai/install | bash \
     && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
@@ -62,10 +66,6 @@ RUN cargo build --release
 FROM base AS production
 
 COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc
-
-# Install Rust toolchain (needed by OpenCode agent for cargo build/test)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 ENTRYPOINT ["jyc"]
 CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]

@@ -3,6 +3,41 @@ use std::collections::HashMap;
 
 use crate::channels::types::ChannelPattern;
 
+/// MCP server configuration for template-driven MCP tool setup.
+///
+/// Supports both `local` (subprocess) and `remote` (HTTP) MCP server types.
+/// Named MCPs are defined in `config.toml` `[[mcps]]` and referenced by
+/// templates in `templates.toml` to determine which MCPs appear in each
+/// thread's `opencode.json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+
+    #[serde(flatten)]
+    pub kind: McpServerKind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpServerKind {
+    Local {
+        command: Vec<String>,
+        #[serde(default)]
+        environment: HashMap<String, String>,
+        #[serde(default = "default_mcp_timeout")]
+        timeout: u64,
+    },
+    Remote {
+        url: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+}
+
+fn default_mcp_timeout() -> u64 {
+    300000
+}
+
 /// Top-level application configuration, deserialized from config.toml.
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
@@ -30,6 +65,11 @@ pub struct AppConfig {
 
     /// Vision API configuration (image analysis via OpenAI-compatible API)
     pub vision: Option<VisionConfig>,
+
+    /// Named MCP server configurations, referenced by templates.
+    /// Each template in `templates.toml` can specify which MCPs it needs.
+    #[serde(default)]
+    pub mcps: Vec<McpServerConfig>,
 }
 
 /// General application settings.

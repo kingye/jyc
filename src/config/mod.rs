@@ -172,4 +172,67 @@ mode = "opencode"
         assert_eq!(config.general.max_concurrent_threads, 3);
         assert_eq!(config.general.max_queue_size_per_thread, 10);
     }
+
+    #[test]
+    fn test_load_config_with_mcps() {
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "user"
+password = "pass"
+
+[agent]
+enabled = true
+mode = "opencode"
+
+[[mcps]]
+name = "jyc_vision"
+type = "local"
+command = ["jyc", "mcp-vision-tool"]
+environment = { "VISION_API_KEY" = "secret", "VISION_API_URL" = "https://api.example.com" }
+timeout = 300000
+
+[[mcps]]
+name = "remote_mcp"
+type = "remote"
+url = "https://mcp.example.com/handler"
+enabled = true
+"#;
+
+        let config = load_config_from_str(toml).unwrap();
+        assert_eq!(config.mcps.len(), 2);
+
+        let vision = &config.mcps[0];
+        assert_eq!(vision.name, "jyc_vision");
+        match &vision.kind {
+            super::types::McpServerKind::Local { command, environment, timeout } => {
+                assert_eq!(command, &["jyc", "mcp-vision-tool"]);
+                assert_eq!(environment.get("VISION_API_KEY").unwrap(), "secret");
+                assert_eq!(*timeout, 300000);
+            }
+            _ => panic!("Expected Local variant for jyc_vision"),
+        }
+
+        let remote = &config.mcps[1];
+        assert_eq!(remote.name, "remote_mcp");
+        match &remote.kind {
+            super::types::McpServerKind::Remote { url, enabled } => {
+                assert_eq!(url, "https://mcp.example.com/handler");
+                assert!(*enabled);
+            }
+            _ => panic!("Expected Remote variant for remote_mcp"),
+        }
+    }
 }

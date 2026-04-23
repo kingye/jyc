@@ -32,6 +32,8 @@ struct App {
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
+    /// Transient status message (e.g., config reload result).
+    status_message: Option<(String, std::time::Instant)>,
 }
 
 impl App {
@@ -41,6 +43,20 @@ impl App {
             error: None,
             table_state: TableState::default(),
             should_quit: false,
+            status_message: None,
+        }
+    }
+
+    fn set_status(&mut self, msg: String) {
+        self.status_message = Some((msg, std::time::Instant::now()));
+    }
+
+    /// Clear status message after 5 seconds.
+    fn tick_status(&mut self) {
+        if let Some((_, at)) = &self.status_message {
+            if at.elapsed() > Duration::from_secs(5) {
+                self.status_message = None;
+            }
         }
     }
 
@@ -111,6 +127,9 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
             last_poll = std::time::Instant::now();
         }
 
+        // Clear expired status messages
+        app.tick_status();
+
         // Draw
         terminal.draw(|f| ui(f, &mut app))?;
 
@@ -132,6 +151,22 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                             // Force refresh
                             last_poll =
                                 std::time::Instant::now() - poll_interval;
+                        }
+                        KeyCode::Char('R') => {
+                            // Reload config
+                            match client.reload_config().await {
+                                Ok((true, msg)) => {
+                                    app.set_status(format!("Config reloaded: {msg}"));
+                                    // Force refresh to show updated state
+                                    last_poll = std::time::Instant::now() - poll_interval;
+                                }
+                                Ok((false, msg)) => {
+                                    app.set_status(format!("Reload failed: {msg}"));
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Reload error: {e:#}"));
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -420,10 +455,12 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let help_text = "[q] quit  [↑↓] select  [r] refresh  [R] reload config";
+
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let bar = Paragraph::new(" [q] quit  [↑↓] select  [r] refresh")
+            let bar = Paragraph::new(format!(" {help_text}"))
                 .style(Style::default().bg(Color::DarkGray).fg(Color::White));
             frame.render_widget(bar, area);
             return;
@@ -432,6 +469,13 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let uptime = format_duration(state.uptime_secs);
     let stats = &state.stats;
+
+    // Show status message if present, otherwise show help text
+    let right_side = if let Some((msg, _)) = &app.status_message {
+        Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
+    } else {
+        Span::styled(help_text, Style::default().fg(Color::DarkGray))
+    };
 
     let bar = Paragraph::new(Line::from(vec![
         Span::raw(format!(
@@ -444,10 +488,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             state.version,
         )),
         Span::raw("  "),
-        Span::styled(
-            "[q] quit  [↑↓] select  [r] refresh",
-            Style::default().fg(Color::DarkGray),
-        ),
+        right_side,
     ]))
     .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 

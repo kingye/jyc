@@ -98,7 +98,42 @@ pub enum ThreadEvent {
         success: bool,
         /// How long the tool took to execute (in seconds)
         duration_secs: u64,
+        /// Error output preview (only set when tool failed, truncated)
+        output: Option<String>,
         /// When the tool completed
+        timestamp: DateTime<Utc>,
+    },
+
+    /// AI thinking/reasoning event.
+    ///
+    /// Sent when the AI model produces reasoning/thinking content
+    /// (e.g., chain-of-thought before generating a response).
+    Thinking {
+        /// Name of the thread
+        thread_name: String,
+        /// Preview of the thinking text (truncated to ~300 chars)
+        text: String,
+        /// Full length of the thinking text in characters
+        full_length: usize,
+        /// When the thinking was received
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Session status change event.
+    ///
+    /// Sent when the AI session status changes (e.g., retry on overload,
+    /// error, rate limit). Surfaces transient issues in the Activity panel
+    /// so operators can see what's happening without checking journalctl.
+    SessionStatus {
+        /// Name of the thread
+        thread_name: String,
+        /// Status type (e.g., "retry", "error", "rate_limit")
+        status_type: String,
+        /// Retry attempt number (if applicable)
+        attempt: Option<u32>,
+        /// Human-readable message (e.g., "server overload, please retry later")
+        message: Option<String>,
+        /// When the status change occurred
         timestamp: DateTime<Utc>,
     },
 }
@@ -113,6 +148,8 @@ impl ThreadEvent {
             ThreadEvent::ProcessingCompleted { thread_name, .. } => thread_name,
             ThreadEvent::ToolStarted { thread_name, .. } => thread_name,
             ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
+            ThreadEvent::Thinking { thread_name, .. } => thread_name,
+            ThreadEvent::SessionStatus { thread_name, .. } => thread_name,
         }
     }
 
@@ -126,6 +163,8 @@ impl ThreadEvent {
             ThreadEvent::ProcessingCompleted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
+            ThreadEvent::Thinking { timestamp, .. } => *timestamp,
+            ThreadEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
     }
 }

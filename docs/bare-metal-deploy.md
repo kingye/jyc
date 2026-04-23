@@ -90,6 +90,33 @@ journalctl --user -u jyc -f    # View logs
 
 ## Troubleshooting
 
+### GitHub CLI (`gh`) Version Too Old
+
+The `deploy-bare-metal.sh` script installs `gh` from the **official GitHub CLI APT
+repository** (`cli.github.com/packages`). However, if `gh` was already installed
+from Debian's own repos before running the script, the idempotent guard
+(`if ! command -v gh`) will skip the official repo setup — leaving you with
+Debian's outdated version (e.g., 2.23.0 from 2023).
+
+**Symptoms:**
+- `gh pr edit --add-label` fails with:
+  `GraphQL: Projects (classic) is being deprecated...`
+- Any `gh` command involving issues/PRs with labels fails
+
+**Fix:** Re-add the official repo and upgrade:
+
+```bash
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt-get update && sudo apt-get install -y gh
+gh --version  # Should be 2.62.0+ to fix the projectCards deprecation
+```
+
+**Required version:** 2.62.0+ (fixes the `projectCards` GraphQL deprecation error).
+
 ### Service Won't Start
 
 Check logs:

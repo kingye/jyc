@@ -547,6 +547,18 @@ impl ThreadManager {
                 ThreadStatus::Idle
             };
 
+            // Fallback: read .jyc directory mtime if no activity tracker data
+            let last_active_at = match tokio::fs::metadata(thread_path.join(".jyc")).await {
+                Ok(meta) => match meta.modified() {
+                    Ok(mtime) => {
+                        let dt: chrono::DateTime<chrono::Utc> = mtime.into();
+                        Some(dt.to_rfc3339())
+                    }
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            };
+
             threads.push(ThreadInfo {
                 name,
                 channel: self.channel_name.clone(),
@@ -557,6 +569,7 @@ impl ThreadManager {
                 input_tokens,
                 max_tokens,
                 activity: vec![],  // Filled by InspectServer from event bus
+                last_active_at,  // Filled by activity tracker; falls back to .jyc mtime
             });
         }
 
@@ -1036,6 +1049,12 @@ async fn process_message(
     // The monitor process (this code) handles actual delivery using its
     // pre-warmed outbound adapter with cached connections/tokens.
     if result.reply_sent_by_tool {
+        // Check if the background delivery watcher already delivered the reply.
+        // The watcher deletes reply-sent.flag after successful delivery.
+        let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
+        if !signal_path.exists() {
+            tracing::info!("Reply already delivered by background watcher, skipping post-SSE delivery");
+        } else {
         // Reply text comes from the SSE tool input (extracted by service layer).
         // If not available (e.g., question tool), try reading from reply.md.
         let reply_text = result.reply_text.as_deref()
@@ -1063,7 +1082,6 @@ async fn process_message(
             );
 
             // Read signal file for attachment info
-            let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
             let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
 
             outbound
@@ -1079,6 +1097,7 @@ async fn process_message(
             thread_manager.metrics.reply_by_tool(thread_name);
         } else {
             tracing::warn!("MCP tool signaled reply but no reply text available");
+        }
         }
     } else if let Some(ref text) = result.reply_text {
         tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");

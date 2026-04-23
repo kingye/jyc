@@ -154,14 +154,20 @@ async fn handle_reply(
         vec![]
     };
 
-    // 5. Write signal file with reply metadata
+    // 5. Write reply.md so the background delivery watcher can deliver immediately
+    //    (without waiting for the SSE stream to complete).
+    //    The watcher checks for both reply-sent.flag and reply.md.
+    let jyc_dir = thread_path.join(".jyc");
+    tokio::fs::create_dir_all(&jyc_dir).await.ok();
+    tokio::fs::write(jyc_dir.join("reply.md"), message).await
+        .map_err(|e| anyhow::anyhow!("failed to write reply.md: {e}"))?;
+
+    // 6. Write signal file with reply metadata
     //    The monitor process reads this to know a reply is ready for delivery.
     //    Note: The reply is NOT stored to the chat log here — that is done by
     //    the outbound adapter after building the full reply with quoted history.
     //    Storing here would cause the reply to appear in the quoted history
     //    and be double-stored.
-    let jyc_dir = thread_path.join(".jyc");
-    tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let signal = serde_json::json!({
         "sent_at": chrono::Utc::now().to_rfc3339(),
         "channel": ctx.channel,
@@ -178,7 +184,7 @@ async fn handle_reply(
     .ok();
     logger.log("INFO", "Signal file written");
 
-    // 6. Return success
+    // 7. Return success
     let mut result = format!(
         "Reply stored for delivery via {} ({} chars)",
         ctx.channel,

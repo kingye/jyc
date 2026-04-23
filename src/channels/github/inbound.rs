@@ -7,10 +7,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    MessageContent, PatternMatch, PatternRules,
+    LabelRule, MessageContent, PatternMatch, PatternRules,
 };
 use crate::utils::helpers::truncate_str;
-use super::client::GithubClient;
+use super::client::{GithubClient, GithubComment};
 use super::config::GithubConfig;
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
@@ -60,43 +60,34 @@ impl ChannelMatcher for GithubMatcher {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
-        // Routing is mention-driven: only comments containing @j:<role> trigger agents.
-        // The handover_role metadata is set by poll_once() when @j:<role> is detected.
-        // No mention = no routing.
-        let handover_role = message.metadata.get("handover_role").and_then(|v| v.as_str())?;
-
         for pattern in patterns {
             if !pattern.enabled {
                 continue;
             }
-            if let Some(ref role) = pattern.role {
-                if role.eq_ignore_ascii_case(handover_role) {
-                    // Self-loop prevention: skip if comment is from this pattern's own role.
-                    // A [Developer] comment with @j:developer should NOT re-trigger developer.
-                    if let Some(comment_role) = message.metadata.get("comment_role").and_then(|v| v.as_str()) {
-                        if role.eq_ignore_ascii_case(comment_role) {
-                            continue;
-                        }
-                    }
 
-                    // Rule filtering: all present rules must match (AND logic).
-                    // Each individual rule uses OR logic (any value in the list suffices).
-                    if !self.rules_match(&pattern.rules, message) {
-                        tracing::debug!(
-                            pattern = %pattern.name,
-                            role = %role,
-                            "Pattern rules did not match, skipping"
-                        );
-                        continue;
-                    }
+            let Some(ref pattern_role) = pattern.role else {
+                continue;
+            };
 
-                    return Some(PatternMatch {
-                        pattern_name: pattern.name.clone(),
-                        channel: "github".to_string(),
-                        matches: HashMap::new(),
-                    });
+            if !self.rules_match(&pattern.rules, message) {
+                tracing::debug!(
+                    pattern = %pattern.name,
+                    "Rules did not match, skipping"
+                );
+                continue;
+            }
+
+            if let Some(comment_role) = message.metadata.get("comment_role").and_then(|v| v.as_str()) {
+                if pattern_role.eq_ignore_ascii_case(comment_role) {
+                    continue;
                 }
             }
+
+            return Some(PatternMatch {
+                pattern_name: pattern.name.clone(),
+                channel: "github".to_string(),
+                matches: HashMap::new(),
+            });
         }
 
         None
@@ -126,22 +117,31 @@ impl GithubMatcher {
             }
         }
 
-        // Check labels rule (OR logic: match if ANY label on the issue/PR is in the rule list)
-        if let Some(ref allowed_labels) = rules.labels {
-            let msg_labels: Vec<String> = message
-                .metadata
-                .get("github_labels")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let has_match = allowed_labels
+        // Extract github_labels once for labels and exclude_labels checks
+        let msg_labels: Vec<String> = message
+            .metadata
+            .get("github_labels")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
+        if let Some(ref label_rule) = rules.labels {
+            if !label_rule.matches(&msg_labels) {
+                return false;
+            }
+        }
+
+        // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
+        if let Some(ref exclude_labels) = rules.exclude_labels {
+            let has_excluded = exclude_labels
                 .iter()
                 .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if !has_match {
+            if has_excluded {
                 return false;
             }
         }
@@ -287,6 +287,100 @@ impl GithubInboundAdapter {
         }
     }
 
+    /// Load seen issues from persistent storage.
+    /// File format: one line per issue (`{number}:{labels}:{updated_at}`).
+    async fn load_seen_issues(&self) -> HashSet<String> {
+        let file = self.state_dir.join("seen-issues.txt");
+        if !file.exists() {
+            return HashSet::new();
+        }
+        match tokio::fs::read_to_string(&file).await {
+            Ok(content) => {
+                let set: HashSet<String> = content
+                    .lines()
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    count = set.len(),
+                    "Loaded seen issues"
+                );
+                set
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load seen issues, starting fresh"
+                );
+                HashSet::new()
+            }
+        }
+    }
+
+    /// Track a seen issue (append to file).
+    /// Key format: `{number}:{labels}:{updated_at}`
+    async fn track_seen_issue(&self, key: &str, seen: &mut HashSet<String>) {
+        if seen.insert(key.to_string()) {
+            let file = self.state_dir.join("seen-issues.txt");
+            use tokio::io::AsyncWriteExt;
+            if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .await
+            {
+                let _ = f.write_all(format!("{key}\n").as_bytes()).await;
+            }
+
+            if seen.len() > 5000 {
+                self.compact_seen_issues(seen).await;
+            }
+        }
+    }
+
+    /// Compact seen issues file by keeping only the latest entries.
+    async fn compact_seen_issues(&self, seen: &mut HashSet<String>) {
+        if seen.len() <= 2000 {
+            return;
+        }
+
+        let mut entries: Vec<(u64, String)> = seen
+            .iter()
+            .map(|key| {
+                let number = key.split(':').next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                (number, key.clone())
+            })
+            .collect();
+        entries.sort_unstable_by_key(|(number, _)| *number);
+        let keep_from = entries.len() - 2000;
+        let keep: HashSet<String> = entries[keep_from..]
+            .iter()
+            .map(|(_, key)| key.clone())
+            .collect();
+
+        let before = seen.len();
+        *seen = keep;
+
+        let file = self.state_dir.join("seen-issues.txt");
+        let content: String = seen
+            .iter()
+            .map(|key| format!("{key}\n"))
+            .collect();
+        if let Err(e) = tokio::fs::write(&file, content).await {
+            tracing::warn!(error = %e, "Failed to compact seen issues file");
+        } else {
+            tracing::info!(
+                channel = %self.channel_name,
+                before = before,
+                after = seen.len(),
+                "Compacted seen issues"
+            );
+        }
+    }
+
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
     fn build_trigger_message(
@@ -428,6 +522,9 @@ impl InboundAdapter for GithubInboundAdapter {
         // Track processed event IDs for non-comment deduplication (close events)
         let mut processed_events: HashSet<String> = HashSet::new();
 
+        // Load seen issues for deduplication (prevent re-triggering after restart)
+        let mut seen_issues: HashSet<String> = self.load_seen_issues().await;
+
         // Cache issue info for comment routing (number → title, type, labels, assignees)
         let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
 
@@ -471,6 +568,7 @@ impl InboundAdapter for GithubInboundAdapter {
                         &options,
                         &mut processed_comments,
                         &mut processed_events,
+                        &mut seen_issues,
                         &mut issue_cache,
                         &mut last_poll,
                     ).await {
@@ -499,6 +597,7 @@ impl GithubInboundAdapter {
         options: &InboundAdapterOptions,
         processed_comments: &mut HashSet<String>,
         processed_events: &mut HashSet<String>,
+        seen_issues: &mut HashSet<String>,
         issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
     ) -> Result<()> {
@@ -527,11 +626,59 @@ impl GithubInboundAdapter {
 
             issue_cache.insert(
                 issue.number,
-                (issue.title.clone(), github_type.to_string(), labels, assignees),
+                (issue.title.clone(), github_type.to_string(), labels.clone(), assignees.clone()),
             );
+
+            // Track seen issues for dedup (prevent re-triggering after restart).
+            // Key = number:labels — triggers on first sight and label changes.
+            // Does NOT include updated_at: comments (including agent's own replies)
+            // update that timestamp, which would cause infinite re-triggering.
+            let mut labels_sorted: Vec<String> = issue.labels.iter()
+                .map(|l| l.name.clone())
+                .collect();
+            labels_sorted.sort();
+            let seen_key = format!("{}:{}", issue.number, labels_sorted.join(","));
+            let is_new = !seen_issues.contains(&seen_key);
+            self.track_seen_issue(&seen_key, seen_issues).await;
+
+            // For new/changed issues, create a trigger message so Pattern-mode
+            // patterns can match on issue metadata (type, labels, assignees)
+            // without requiring a comment.
+            if is_new {
+                let event_uid = format!("{}-{}-opened", github_type, issue.number);
+
+                let message = self.build_trigger_message(
+                    "issues",
+                    issue.number,
+                    &issue.title,
+                    github_type,
+                    "opened",
+                    &issue.user.login,
+                    &labels,
+                    &assignees,
+                    &event_uid,
+                );
+
+                tracing::info!(
+                    channel = %self.channel_name,
+                    event = "issue_trigger",
+                    number = issue.number,
+                    github_type = github_type,
+                    labels = ?labels,
+                    "New/changed issue detected → routing for Pattern mode"
+                );
+
+                if let Err(e) = (options.on_message)(message) {
+                    tracing::error!(error = %e, number = issue.number, "Failed to route issue event");
+                }
+            }
         }
 
-        // 2. Fetch and process comments — only route those with @j:<role> mentions.
+        // Build set of current open issue numbers — needed in step 2 (comment
+        // filtering) and step 3 (close detection).
+        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
+
+        // 2. Fetch and process comments.
         // The issue cache is now populated, so lookups work correctly.
         let comments = client.list_comments_since(&poll_start).await?;
         tracing::trace!(
@@ -556,25 +703,30 @@ impl GithubInboundAdapter {
 
             let body_trimmed = comment.body.trim();
 
-            // Extract @j:<role> mention — only route if present
+            // Extract @j:<role> mention
             let handover_role = mention_re
                 .captures(body_trimmed)
                 .and_then(|caps| caps.get(1))
                 .map(|m| m.as_str().to_lowercase());
 
-            let handover_role = match handover_role {
-                Some(role) => role,
-                None => {
-                    // No @j:<role> mention — skip routing, but mark as processed
-                    self.track_comment(&comment_key, processed_comments).await;
-                    continue;
-                }
-            };
-
             // Extract [Role] prefix for self-loop prevention
             let comment_role = extract_comment_role(body_trimmed);
 
             let issue_number = comment.issue_number().unwrap_or(0);
+
+            // Skip comments on closed issues/PRs — prevents triggering agents
+            // for PRs/issues that were closed between poll cycles.
+            if !should_process_comment(comment, &current_open_numbers) {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    "Skipping comment on closed issue/PR"
+                );
+                // Still track as processed to avoid re-processing on next cycle
+                self.track_comment(&comment_key, processed_comments).await;
+                continue;
+            }
 
             // Look up issue info from cache
             let (title, github_type, labels, assignees) = issue_cache
@@ -584,18 +736,7 @@ impl GithubInboundAdapter {
 
             let event_uid = format!("comment-{}", comment.id);
 
-            tracing::info!(
-                channel = %self.channel_name,
-                event = "mention",
-                comment_id = comment.id,
-                issue_number = issue_number,
-                target_role = %handover_role,
-                user = %comment.user.login,
-                body_preview = %truncate_str(&comment.body, 80),
-                "Comment with @j:{} detected → routing", handover_role,
-            );
-
-            // Build trigger message with handover_role metadata
+            // Build trigger message
             let mut message = self.build_trigger_message(
                 "issue_comment",
                 issue_number,
@@ -624,10 +765,33 @@ impl GithubInboundAdapter {
                 None => message.content.text = Some(comment_section),
             }
 
-            message.metadata.insert(
-                "handover_role".to_string(),
-                serde_json::Value::String(handover_role),
-            );
+            // Add handover_role only if @j:<role> mention exists
+            // Pattern mode patterns can match without handover_role
+            if let Some(ref role) = handover_role {
+                message.metadata.insert(
+                    "handover_role".to_string(),
+                    serde_json::Value::String(role.clone()),
+                );
+
+                tracing::info!(
+                    channel = %self.channel_name,
+                    event = "mention",
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    target_role = %role,
+                    user = %comment.user.login,
+                    body_preview = %truncate_str(&comment.body, 80),
+                    "Comment with @j:{} detected → routing", role,
+                );
+            } else {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    comment_id = comment.id,
+                    issue_number = issue_number,
+                    user = %comment.user.login,
+                    "Comment without @j:<role> mention → routing for Pattern mode"
+                );
+            }
 
             if let Some(ref role) = comment_role {
                 message.metadata.insert(
@@ -647,9 +811,6 @@ impl GithubInboundAdapter {
         // Since we fetched ALL open issues (not just recently-updated ones),
         // the comparison is reliable: if an issue was in the cache but is not
         // in the current open set, it was genuinely closed.
-        //
-        // Build set of current open issue numbers for comparison
-        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
 
         // Find issues that were in cache but not in current open list
         let cached_numbers: Vec<u64> = issue_cache.keys().cloned().collect();
@@ -766,6 +927,7 @@ impl GithubInboundAdapter {
 ///   "[Developer] some text" → Some("Developer")
 ///   "[Reviewer] code looks good" → Some("Reviewer")
 ///   "[Planner] questions about requirements" → Some("Planner")
+///   "[High-Level Planner] planning" → Some("High-Level Planner")
 ///   "normal comment" → None
 ///   "[Unknown] something" → None
 ///
@@ -775,7 +937,7 @@ fn extract_comment_role(text: &str) -> Option<String> {
         if let Some(end) = text.find(']') {
             let role = &text[1..end];
             match role {
-                "Planner" | "Developer" | "Reviewer" | "Designer" => return Some(role.to_string()),
+                "Planner" | "Developer" | "Reviewer" | "Designer" | "High-Level Planner" => return Some(role.to_string()),
                 _ => {}
             }
         }
@@ -794,6 +956,17 @@ fn extract_mention_role(text: &str) -> Option<String> {
     re.captures(text)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().to_lowercase())
+}
+
+/// Check whether a comment should be processed based on whether its
+/// parent issue/PR is still open.
+///
+/// Returns `true` if the comment's issue is in the open set and should
+/// be routed to agents. Returns `false` if the issue is closed (not in
+/// the open set) or if the issue number could not be parsed from the URL.
+fn should_process_comment(comment: &GithubComment, open_numbers: &HashSet<u64>) -> bool {
+    let issue_number = comment.issue_number().unwrap_or(0);
+    open_numbers.contains(&issue_number)
 }
 
 #[cfg(test)]
@@ -909,132 +1082,6 @@ mod tests {
         assert_eq!(name, "pr-43");
     }
 
-    // --- Mention-based routing ---
-
-    #[test]
-    fn test_no_mention_no_match() {
-        // Comment without @j:<role> → no routing
-        let msg = make_message("issue", 42);
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_mention_planner_matches() {
-        let mut msg = make_message("issue", 42);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "planner");
-    }
-
-    #[test]
-    fn test_mention_developer_matches() {
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "developer");
-    }
-
-    #[test]
-    fn test_mention_reviewer_matches() {
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
-    #[test]
-    fn test_mention_case_insensitive() {
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
-    #[test]
-    fn test_mention_unknown_role_no_match() {
-        let mut msg = make_message("issue", 42);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("unknown"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_disabled_pattern_skipped() {
-        let mut msg = make_message("issue", 42);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
-        let patterns = vec![ChannelPattern {
-            name: "planner".to_string(),
-            enabled: false,
-            role: Some("Planner".to_string()),
-            rules: crate::channels::types::PatternRules {
-                github_type: Some(vec!["issue".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        }];
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    // --- Self-loop prevention ---
-
-    #[test]
-    fn test_self_loop_developer_mention_own_role() {
-        // [Developer] posts "@j:developer" — should NOT re-trigger developer
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_self_loop_reviewer_mention_own_role() {
-        // [Reviewer] posts "@j:reviewer" — should NOT re-trigger reviewer
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
-        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_cross_role_reviewer_to_developer() {
-        // [Reviewer] posts "@j:developer" — should trigger developer
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Reviewer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "developer");
-    }
-
-    #[test]
-    fn test_cross_role_developer_to_reviewer() {
-        // [Developer] posts "@j:reviewer" — should trigger reviewer
-        let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
-        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
-        let patterns = make_patterns();
-        let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "reviewer");
-    }
-
     // --- Rule filtering (github_type, labels, assignees) ---
 
     /// Helper: create a message with labels and assignees metadata
@@ -1058,19 +1105,24 @@ mod tests {
 
     #[test]
     fn test_github_type_rule_blocks_wrong_type() {
-        // Developer pattern requires pull_request, but message is an issue
-        let mut msg = make_message("issue", 42);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
-        let patterns = make_patterns();
+        let msg = make_message("issue", 42);
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_none(), "developer pattern should not match issue type");
     }
 
     #[test]
     fn test_github_type_rule_allows_correct_type() {
-        // Planner pattern requires issue, message is an issue
-        let mut msg = make_message("issue", 42);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let msg = make_message("issue", 42);
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
@@ -1169,7 +1221,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1189,7 +1241,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1209,7 +1261,7 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["Bug".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["Bug".to_string()])),
                 ..Default::default()
             },
             ..Default::default()
@@ -1220,9 +1272,9 @@ mod tests {
 
     #[test]
     fn test_all_rules_and_logic() {
-        // Pattern requires: pull_request AND label "needs-review" AND assignee "alice"
+        // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
-        let mut msg = make_message_with_rules("pull_request", 43, &["needs-review"], &["alice"]);
+        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -1230,7 +1282,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["needs-review".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["ready-for-review".to_string()])),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },
@@ -1242,9 +1294,9 @@ mod tests {
 
     #[test]
     fn test_and_logic_partial_fail() {
-        // Pattern requires: pull_request AND label "needs-review" AND assignee "alice"
+        // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has correct type and label but wrong assignee — should NOT match
-        let mut msg = make_message_with_rules("pull_request", 43, &["needs-review"], &["bob"]);
+        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
         msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -1252,7 +1304,7 @@ mod tests {
             role: Some("Reviewer".to_string()),
             rules: crate::channels::types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(vec!["needs-review".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["ready-for-review".to_string()])),
                 assignees: Some(vec!["alice".to_string()]),
                 ..Default::default()
             },
@@ -1341,6 +1393,7 @@ mod tests {
         assert_eq!(extract_comment_role("[Developer] some text"), Some("Developer".to_string()));
         assert_eq!(extract_comment_role("[Reviewer] code looks good"), Some("Reviewer".to_string()));
         assert_eq!(extract_comment_role("[Planner] questions"), Some("Planner".to_string()));
+        assert_eq!(extract_comment_role("[High-Level Planner] planning"), Some("High-Level Planner".to_string()));
         assert_eq!(extract_comment_role("normal comment"), None);
         assert_eq!(extract_comment_role("[Unknown] something"), None);
         assert_eq!(extract_comment_role(""), None);
@@ -1569,5 +1622,460 @@ mod tests {
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
         assert!(text.contains("assignees: alice, bob"));
+    }
+
+    // --- Trigger mode tests ---
+
+    #[test]
+    fn test_pattern_issue_matches() {
+        let msg = make_message("issue", 42);
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "planner");
+    }
+
+    #[test]
+    fn test_pattern_pr_matches() {
+        let msg = make_message("pull_request", 43);
+        let patterns = make_patterns();
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "developer");
+    }
+
+    #[test]
+    fn test_pattern_self_loop_prevention() {
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pattern_blocks_wrong_type() {
+        let msg = make_message("issue", 42);
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none());
+    }
+
+    // --- Nested AND/OR label logic tests ---
+
+    #[test]
+    fn test_labels_nested_and_or() {
+        // Nested: [["bug", "enhancement"], ["test"]] → (bug OR enhancement) AND test
+        // Message has ["bug", "test"] → should match
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string(), "enhancement".to_string()],
+                    vec!["test".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when both AND groups are satisfied");
+
+        // Message has ["bug", "other"] → should NOT match (missing "test" group)
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "should not match when second AND group is not satisfied");
+    }
+
+    #[test]
+    fn test_labels_nested_single_group() {
+        // Nested with single group: [["bug"]] behaves same as flat ["bug"]
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "single nested group should behave like flat");
+    }
+
+    #[test]
+    fn test_labels_nested_all_and() {
+        // Nested: [["bug"], ["test"], ["v2"]] → requires all three labels
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                    vec!["test".to_string()],
+                    vec!["v2".to_string()],
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "should match when all three labels are present");
+
+        // Missing one label → should NOT match
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "should not match when one required label is missing");
+    }
+
+    #[test]
+    fn test_labels_nested_empty_group() {
+        // Edge case: empty inner group [[]] should not block matching
+        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Nested(vec![
+                    vec!["bug".to_string()],
+                    vec![],  // empty group — should be treated as always-match
+                ])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "empty inner group should not block matching");
+    }
+
+    #[test]
+    fn test_labels_flat_backward_compat() {
+        // Verify Flat(vec!["bug", "enhancement"]) still uses OR logic
+        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let patterns = vec![ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["bug".to_string(), "enhancement".to_string()])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "flat labels should use OR logic — enhancement matches");
+
+        // Neither label present → should NOT match
+        let mut msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_none(), "flat labels OR logic — no matching label");
+    }
+
+    // --- TOML deserialization tests for LabelRule ---
+
+    #[test]
+    fn test_labels_toml_flat_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            labels = ["bug", "enhancement"]
+        "#).unwrap();
+        assert!(
+            matches!(pattern.rules.labels, Some(LabelRule::Flat(_))),
+            "flat TOML array should deserialize as LabelRule::Flat"
+        );
+        if let Some(LabelRule::Flat(labels)) = &pattern.rules.labels {
+            assert_eq!(labels, &["bug", "enhancement"]);
+        }
+    }
+
+    #[test]
+    fn test_labels_toml_nested_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            labels = [["bug", "enhancement"], ["test"]]
+        "#).unwrap();
+        assert!(
+            matches!(pattern.rules.labels, Some(LabelRule::Nested(_))),
+            "nested TOML array should deserialize as LabelRule::Nested"
+        );
+        if let Some(LabelRule::Nested(groups)) = &pattern.rules.labels {
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0], vec!["bug", "enhancement"]);
+            assert_eq!(groups[1], vec!["test"]);
+        }
+    }
+
+    // --- Closed issue/PR comment filtering (issue #89) ---
+
+    /// Tests `should_process_comment` — the helper that decides whether a
+    /// comment should be routed to agents based on whether its parent
+    /// issue/PR is still open.
+    #[test]
+    fn test_should_process_comment_open_issue() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment on open issue #10 → should be processed
+        let comment = GithubComment {
+            id: 1,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "https://api.github.com/repos/owner/repo/issues/10".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            should_process_comment(&comment, &open_numbers),
+            "comment on open issue #10 should be processed"
+        );
+    }
+
+    #[test]
+    fn test_should_process_comment_closed_issue() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment on closed issue #30 → should be skipped
+        let comment = GithubComment {
+            id: 2,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "https://api.github.com/repos/owner/repo/issues/30".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            !should_process_comment(&comment, &open_numbers),
+            "comment on closed issue #30 should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_should_process_comment_malformed_url() {
+        use super::super::client::{GithubComment, GithubUser};
+
+        let open_numbers: HashSet<u64> = [10, 20].into_iter().collect();
+
+        // Comment with malformed issue_url → issue_number() returns None,
+        // unwrap_or(0) yields 0, which is not in open set → should be skipped
+        let comment = GithubComment {
+            id: 3,
+            user: GithubUser { login: "user1".to_string() },
+            body: "test".to_string(),
+            issue_url: "not-a-valid-url".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(
+            !should_process_comment(&comment, &open_numbers),
+            "comment with malformed URL should be skipped (issue_number falls back to 0)"
+        );
+    }
+
+    // --- exclude_labels tests ---
+
+    #[test]
+    fn test_exclude_labels_blocks_matching_label() {
+        // Message has "feature-plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels should block matching when label is present");
+    }
+
+    #[test]
+    fn test_exclude_labels_allows_non_matching_label() {
+        // Message has "bug", pattern has exclude_labels = ["feature-plan"] → should match
+        let mut msg = make_message_with_rules("issue", 42, &["bug"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "exclude_labels should not block when excluded label is absent");
+    }
+
+    #[test]
+    fn test_exclude_labels_multiple() {
+        // Message has "feature-plan", pattern has exclude_labels = ["feature-plan", "wip"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string(), "wip".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels should block when any exclude label matches");
+    }
+
+    #[test]
+    fn test_exclude_labels_case_insensitive() {
+        // Message has "Feature-Plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
+        let mut msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "detail-planner".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                exclude_labels: Some(vec!["feature-plan".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_none(), "exclude_labels matching should be case-insensitive");
+    }
+
+    #[test]
+    fn test_exclude_labels_toml_deserialize() {
+        let pattern: ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+            github_type = ["issue"]
+            exclude_labels = ["feature-plan", "wip"]
+        "#).unwrap();
+        assert!(pattern.rules.exclude_labels.is_some(), "exclude_labels should deserialize");
+        let excl = pattern.rules.exclude_labels.unwrap();
+        assert_eq!(excl.len(), 2);
+        assert!(excl.contains(&"feature-plan".to_string()));
+        assert!(excl.contains(&"wip".to_string()));
+    }
+
+    #[test]
+    fn test_high_level_planner_with_feature_plan_label() {
+        // High-level planner pattern: labels = ["feature-plan"]
+        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![ChannelPattern {
+            name: "high-level-planner".to_string(),
+            enabled: true,
+            role: Some("High-Level Planner".to_string()),
+            template: Some("github-high-level-planner".to_string()),
+            rules: crate::channels::types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "high-level planner should match issue with feature-plan label");
+        assert_eq!(result.unwrap().pattern_name, "high-level-planner");
+    }
+
+    #[test]
+    fn test_two_level_routing() {
+        // Issue with feature-plan → high-level planner
+        let mut msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        msg1.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let patterns = vec![
+            ChannelPattern {
+                name: "high-level-planner".to_string(),
+                enabled: true,
+                role: Some("High-Level Planner".to_string()),
+                template: Some("github-high-level-planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "detail-planner".to_string(),
+                enabled: true,
+                role: Some("Planner".to_string()),
+                template: Some("github-planner".to_string()),
+                rules: crate::channels::types::PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    exclude_labels: Some(vec!["feature-plan".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let result1 = GithubMatcher.match_message(&msg1, &patterns);
+        assert!(result1.is_some());
+        assert_eq!(result1.unwrap().pattern_name, "high-level-planner");
+
+        // Issue with bug → detail planner (no feature-plan)
+        let mut msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
+        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+        let result2 = GithubMatcher.match_message(&msg2, &patterns);
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap().pattern_name, "detail-planner");
     }
 }

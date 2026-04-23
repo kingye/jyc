@@ -22,6 +22,7 @@ pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;
 pub struct ThreadActivityState {
     pub entries: VecDeque<ActivityEntry>,
     pub is_processing: bool,
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Shared state accessible by the inspect server.
@@ -179,6 +180,9 @@ impl InspectServer {
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
                 }
+                if let Some(last_active) = state.last_active_at {
+                    thread.last_active_at = Some(last_active.to_rfc3339());
+                }
             }
         }
         drop(activity_map);
@@ -258,6 +262,7 @@ impl ActivityTracker {
                                                                 let mut map = map.lock().await;
                                                                 let state = map.entry(name.clone()).or_default();
                                                                 state.entries.push_back(entry);
+                                                                state.last_active_at = Some(event.timestamp());
                                                                 if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                     state.entries.pop_front();
                                                                 }
@@ -320,10 +325,20 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             tool_name,
             success,
             duration_secs,
+            output,
             ..
         } => {
-            let status = if *success { "done" } else { "failed" };
-            format!("Tool: {tool_name} ({status}, {duration_secs}s)")
+            if *success {
+                format!("Tool: {tool_name} (done, {duration_secs}s)")
+            } else {
+                match output {
+                    Some(err) => {
+                        let oneline = err.replace('\n', " ");
+                        format!("Tool: {tool_name} (FAILED, {duration_secs}s) {oneline}")
+                    }
+                    None => format!("Tool: {tool_name} (FAILED, {duration_secs}s)"),
+                }
+            }
         }
         ThreadEvent::Heartbeat {
             elapsed_secs,
@@ -331,6 +346,32 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             ..
         } => {
             format!("Heartbeat: {activity} ({elapsed_secs}s)")
+        }
+        ThreadEvent::Thinking { text, full_length, .. } => {
+            let oneline = text.replace('\n', " ");
+            if *full_length > text.len() {
+                format!("Thinking: {oneline}...")
+            } else {
+                format!("Thinking: {oneline}")
+            }
+        }
+        ThreadEvent::SessionStatus { status_type, attempt, message, .. } => {
+            let label = match status_type.as_str() {
+                "retry" => "RETRY",
+                "error" => "ERROR",
+                "rate_limit" => "RATE LIMITED",
+                "timeout" => "TIMEOUT",
+                other => other,
+            };
+            let mut text = match attempt {
+                Some(n) => format!("{label} (attempt #{n})"),
+                None => label.to_string(),
+            };
+            if let Some(msg) = message {
+                let oneline = msg.replace('\n', " ");
+                text.push_str(&format!(": {oneline}"));
+            }
+            text
         }
     };
     ActivityEntry { time, text }

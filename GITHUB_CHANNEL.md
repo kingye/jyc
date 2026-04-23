@@ -7,12 +7,10 @@ repositories through issue discussion, PR development, and code review.
 
 1. **Channel = Lightweight Trigger + Router** — Channel only polls events and
    routes them. Agents use `gh` CLI to read/write actual content.
-2. **Mention-Based Routing** — Routing is driven by `@j:<role>` mentions in comments:
-   - A comment containing `@j:planner` triggers the Planner agent
-   - A comment containing `@j:developer` triggers the Developer agent
-   - A comment containing `@j:reviewer` triggers the Reviewer agent
-   - Comments without `@j:<role>` are ignored (no routing)
-   - Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`
+2. **Pattern-Based Routing** — Routing is triggered by pattern rules (labels, github_type, assignees).
+   No `@j:<role>` mention required. All triggering is pattern-based.
+   - Processed comment IDs persisted to `<channel>/.github/processed-comments.txt`
+   - Seen issues persisted to `<channel>/.github/seen-issues.txt` to prevent re-trigger after restart (tracked by number:labels:updated_at)
 3. **One Token, Role Prefix + Self-Loop Prevention** — Single GitHub PAT. Agents
    prefix comments with `[Planner]`, `[Developer]`, `[Reviewer]`. Each pattern
    only skips comments from its **own** role (self-loop prevention), but allows
@@ -159,10 +157,15 @@ pub struct PatternRules {
     // GitHub-specific
     pub github_type: Option<Vec<String>>,    // ["issue"] or ["pull_request"]
     pub labels: Option<Vec<String>>,          // ["bug", "custom-label"]
+    pub assignees: Option<Vec<String>>,       // ["alice", "bob"]
 }
 ```
 
-### Auto-Label from Role
+### Routing
+
+Messages matching github_type/labels/assignees rules trigger immediately.
+No `@j:<role>` mention required. Self-loop prevention still applies:
+an agent's own comments (identified by `[Role]` prefix) don't re-trigger that same agent.
 
 Each pattern with a `role` field and `github_type = ["pull_request"]` gets an
 implicit routing label derived from the role name:
@@ -185,13 +188,8 @@ on the issue/PR.
 - `github_type` + labels: AND across fields, OR within each field
 - Self-loop check: skip if comment is from the pattern's own role
 
-### Routing
-
-Routing is mention-driven. Only comments containing `@j:<role>` trigger agents.
-Comments without mentions are ignored. Processed comment IDs are persisted to
-`<channel>/.github/processed-comments.txt` to survive restarts.
-
-Matching logic: `handover_role` from `@j:<role>` mention + self-loop check
+Processed comment IDs are persisted to `<channel>/.github/processed-comments.txt`.
+Seen issues are persisted to `<channel>/.github/seen-issues.txt` to prevent re-triggering after restart. Issues are tracked by `{number}:{labels}:{updated_at}` — note that if labels change without updating the issue's `updated_at`, re-triggering may not occur.
 
 ### Configuration Example
 
@@ -277,21 +275,25 @@ Labels are a fixed convention hardcoded in agent templates.
 
 | Label | Purpose | Added By |
 |-------|---------|----------|
-| `jyc:plan` | Issue needs planning | User (or auto from config) |
-| `jyc:develop` | PR needs development | Planner (when creating PR) |
-| `jyc:review` | PR needs code review | Developer (when done implementing) |
+| `ready-for-dev` | PR ready for development | Planner (when creating PR) |
+| `ready-for-review` | PR ready for code review | Developer (when done implementing) |
 
 ### Label Usage by Agents
 
+**All label additions should include a creation tolerance** to handle cases where the label doesn't exist yet:
+
 ```bash
 # Planner: create PR with develop label
-gh pr create --title "feat: ..." --label "jyc:develop" --body "..."
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
+gh pr create --title "feat: ..." --label "ready-for-dev" --body "..."
 
 # Developer: add review label when done
-gh pr edit 43 --add-label "jyc:review"
+gh label create ready-for-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
+gh pr edit 43 --add-label "ready-for-review"
 
 # Reviewer: re-add develop label when requesting changes
-gh pr edit 43 --add-label "jyc:develop"
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
+gh pr edit 43 --add-label "ready-for-dev"
 ```
 
 ## Agent Roles & Skills
@@ -300,48 +302,52 @@ gh pr edit 43 --add-label "jyc:develop"
 
 **Thread**: `issue-{N}`
 **Role**: Discuss requirements with user, create PR with spec when ready.
+**Trigger**: Auto-triggered on new issues via pattern matching (github_type, labels)
 
 **Workflow**:
-1. Triggered by `@j:planner` in an issue comment
+1. Triggered automatically when issue matches pattern rules (e.g., label `planning`)
 2. Read issue: `gh issue view {N}`
 3. Read comments: `gh issue view {N} --comments`
 4. Discuss with user (reply via jyc_reply → posts issue comment)
 5. When requirements clear:
    - Create branch: `git checkout -b feat/issue-{N}`
    - Create PR: `gh pr create --body "..."`
-   - Post comment: `@j:developer` to trigger developer
+   - Hand over to developer via pattern matching (no @j:developer needed)
 6. Continue monitoring issue for user feedback
 
 ### Agent B: Developer (github-developer)
 
 **Thread**: `pr-{N}`
 **Role**: Implement code based on PR spec, address review feedback.
+**Trigger**: Auto-triggered on new PRs via pattern matching (github_type, labels)
 
 **Workflow**:
-1. Triggered by `@j:developer` in a PR comment
+1. Triggered automatically when PR matches pattern rules (e.g., label `ready-for-dev`)
 2. Read PR spec: `gh pr view {N}`
 3. Read linked issue: `gh issue view {linked_issue}`
 4. Clone repo, checkout PR branch
 5. Implement code (incremental-dev approach)
 6. Commit, push
-7. Hand over: post comment with `@j:reviewer`
-8. When review feedback received (triggered by `@j:developer` from reviewer):
+7. Hand over to reviewer (create `ready-for-review` label + add to PR + `gh pr ready`)
+8. When review feedback received:
    - Read reviews: `gh pr view {N} --comments`
    - Fix issues, commit, push
-   - Hand over: post comment with `@j:reviewer`
+   - Hand over to reviewer again
 
 ### Agent C: Reviewer (github-reviewer)
 
 **Thread**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
+**Trigger**: Auto-triggered when PR has `ready-for-review` label via pattern matching
 
 **Workflow**:
-1. Triggered by `@j:reviewer` in a PR comment
+1. Triggered automatically when PR has `ready-for-review` label
 2. Read PR: `gh pr view {N}`
 3. Read diff: `gh pr diff {N}`
 4. Review code
 5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. If changes requested: post comment with `@j:developer`
+6. Remove `ready-for-review` label: `gh pr edit {N} --remove-label ready-for-review`
+7. If changes requested: hand over to developer (auto-trigger via pattern)
 
 ## Close & Cleanup
 
@@ -492,7 +498,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh issue view 42     │
   │                                │                      ├─ Implement code       │
   │                                │                      ├─ git commit + push    │
-  │                                │                      ├─ comment: @j:reviewer │
+   │                                │                      ├─ add-label "ready-for-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr view 43
@@ -506,7 +512,7 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
   │                                │                      ├─ gh pr view 43 --comments
   │                                │                      ├─ Fix code             │
   │                                │                      ├─ git push             │
-  │                                │                      ├─ comment: @j:reviewer │
+   │                                │                      ├─ add-label "ready-for-review" │
   │                                │                      │                       │
   │                                │                      │  [poll: @j:rev] ─────►│
   │                                │                      │                       ├─ gh pr diff 43

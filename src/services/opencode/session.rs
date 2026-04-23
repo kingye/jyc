@@ -851,6 +851,6 @@ mod tests {
         let mcp = &config["mcp"];
         assert!(mcp["jyc_reply"].is_object());
         assert!(mcp["jyc_question"].is_object());
-        assert!(!mcp.get("jyc_vision").is_some());
+        assert!(mcp.get("jyc_vision").is_none());
     }
 }

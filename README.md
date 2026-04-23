@@ -140,16 +140,39 @@ Place a `system.md` file in a thread's workspace directory to customize the AI's
 
 ## CLI Commands
 
+### Global Flags
+
 ```bash
-jyc monitor          # Start the agent (main command)
-jyc config init      # Generate config template
-jyc config validate  # Validate config file
-jyc patterns list    # List configured patterns
-jyc state            # Show monitoring state (processed UIDs, etc.)
-jyc dashboard        # Live TUI dashboard (connects via inspect server)
+-w, --workdir <PATH>   # Working directory (default: current directory)
+-d, --debug            # Enable debug logging
+-v, --verbose         # Enable verbose (trace) logging
 ```
 
-The `dashboard` command requires the `[inspect]` section to be enabled in config. Use `--addr` flag to connect to a different address (default: `127.0.0.1:9876`).
+### Subcommands
+
+```bash
+jyc monitor            # Start the agent (main command)
+                       #   --config <FILE>    Config file path (default: config.toml)
+                       #   --no-idle         Use polling instead of IMAP IDLE
+                       #   --reset           Reset monitoring state before starting
+jyc dashboard          # Live TUI dashboard (connects via inspect server)
+                       #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
+                       #   Keyboard: q=quit, ↑/↓=select thread, r=refresh
+jyc config init        # Generate config template
+jyc config validate    # Validate config file
+                       #   --config <FILE>   Config file path (default: config.toml)
+jyc patterns list      # List configured patterns
+                       #   --config <FILE>   Config file path (default: config.toml)
+jyc templates list     # List available templates and their skills
+                       #   --source-dir <PATH>   Source directory containing templates/
+jyc templates deploy <target_dir>   # Deploy templates to a target directory
+                       #   <template_name>       Deploy only this template (optional)
+                       #   --as <NAME>           Rename the deployed template directory
+                       #   --model <MODEL>       Write a model override file
+                       #   --source-dir <PATH>   Source directory containing templates/
+```
+
+The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
 ## MCP Tools
 

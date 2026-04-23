@@ -698,7 +698,7 @@ mod tests {
 
         let json = mcp_config_to_json(&config, "/thread/path");
         assert_eq!(json["type"], "local");
-        assert_eq!(json["command"], serde_json::json!["jyc", "mcp-tool"]);
+        assert_eq!(json["command"], serde_json::json!(["jyc", "mcp-tool"]));
         assert_eq!(json["environment"]["VAR1"], "value1");
         assert_eq!(json["environment"]["JYC_THREAD_DIR"], "/thread/path");
         assert_eq!(json["enabled"], true);

@@ -1,14 +1,18 @@
 [templates.invoice-processing]
 skills = ["invoice-processing"]
-mcps = []
+mcps = ["jyc_vision"]
 
 [templates.jyc-dev]
-skills = ["coding-principles", "plan-solution", "dev-workflow", "incremental-dev", "jyc-deploy-bare"]
-mcps = ["jyc_vision"]
+skills = [
+  "coding-principles",
+  "plan-solution",
+  "dev-workflow",
+  "incremental-dev",
+  "jyc-deploy-bare",
+]
 
 [templates.jyc-review]
 skills = ["coding-principles", "pr-review"]
-mcps = ["jyc_vision"]
 
 [templates.github-planner]
 skills = ["coding-principles", "dev-workflow"]

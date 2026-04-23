@@ -401,6 +401,7 @@ mod tests {
                 github_type: None,
                 labels: None,
                 assignees: None,
+                exclude_labels: None,
             },
             attachments: None,
             ..Default::default()

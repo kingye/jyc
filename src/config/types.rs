@@ -19,7 +19,7 @@ pub struct McpServerConfig {
 
 /// Kind of MCP server — either `local` (subprocess) or `remote` (HTTP).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerKind {
     Local {
         command: Vec<String>,

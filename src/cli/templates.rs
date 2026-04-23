@@ -32,6 +32,10 @@ pub enum TemplatesAction {
         #[arg(long)]
         model: Option<String>,
 
+        /// Override MCPs for the deployed template (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        mcps: Option<Vec<String>>,
+
         /// Path to the source directory containing templates/ and .opencode/skills/
         #[arg(long)]
         source_dir: Option<PathBuf>,
@@ -61,6 +65,7 @@ pub async fn run(action: &TemplatesAction, _workdir: &Path) -> Result<()> {
             template_name,
             as_name,
             model,
+            mcps,
             source_dir,
         } => {
             run_deploy(
@@ -68,6 +73,7 @@ pub async fn run(action: &TemplatesAction, _workdir: &Path) -> Result<()> {
                 template_name.as_deref(),
                 as_name.as_deref(),
                 model.as_deref(),
+                mcps.as_deref(),
                 source_dir.as_deref(),
             )
             .await
@@ -164,6 +170,7 @@ async fn run_deploy(
     template_name: Option<&str>,
     as_name: Option<&str>,
     model: Option<&str>,
+    mcps_override: Option<&[String]>,
     source_dir_arg: Option<&Path>,
 ) -> Result<()> {
     let source_dir = resolve_source_dir(source_dir_arg)?;
@@ -200,6 +207,9 @@ async fn run_deploy(
     }
     if let Some(m) = model {
         println!("Model override:  {m}");
+    }
+    if let Some(m) = mcps_override {
+        println!("MCPs override:   {}", m.join(", "));
     }
     println!();
 
@@ -305,11 +315,15 @@ async fn run_deploy(
         }
 
         // Write mcps.json for template
-        let mcps = config
-            .templates
-            .get(tpl_name.as_str())
-            .map(|e| e.mcps.clone())
-            .unwrap_or_default();
+        let mcps = mcps_override
+            .map(|m| m.to_vec())
+            .unwrap_or_else(|| {
+                config
+                    .templates
+                    .get(tpl_name.as_str())
+                    .map(|e| e.mcps.clone())
+                    .unwrap_or_default()
+            });
 
         if !mcps.is_empty() {
             let jyc_dir = target.join(".jyc");

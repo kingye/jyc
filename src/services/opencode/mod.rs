@@ -69,6 +69,10 @@ impl OpenCodeServer {
         *self.port.lock().await = Some(port);
         *self.base_url.lock().await = Some(url.clone());
 
+        // Wait for the server to actually be ready to serve requests.
+        // The "listening" message may appear before the API is fully initialized.
+        self.wait_for_ready(port).await?;
+
         tracing::info!(port = port, url = %url, "OpenCode server started");
         Ok(port)
     }
@@ -141,6 +145,21 @@ impl OpenCodeServer {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         }
+    }
+
+    /// Wait for the server API to be ready after it starts listening.
+    ///
+    /// Polls the `/session` endpoint up to 10 times with 500ms intervals.
+    async fn wait_for_ready(&self, port: u16) -> Result<()> {
+        for attempt in 1..=10 {
+            if self.is_alive(port).await {
+                tracing::debug!(attempt = attempt, "OpenCode server API ready");
+                return Ok(());
+            }
+            tracing::debug!(attempt = attempt, "Waiting for OpenCode API to be ready");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::bail!("OpenCode server API not ready after 5s")
     }
 
     /// Get the current port (if running).

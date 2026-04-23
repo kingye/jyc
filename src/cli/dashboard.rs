@@ -196,7 +196,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Constraint::Length(3),  // Channels bar
             Constraint::Percentage(40), // Threads table
             Constraint::Percentage(60), // Detail panel + activity log
-            Constraint::Length(1),  // Status bar
+            Constraint::Length(2),  // Status bar (2 lines: stats + help)
         ])
         .split(area);
 
@@ -470,27 +470,30 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let uptime = format_duration(state.uptime_secs);
     let stats = &state.stats;
 
-    // Show status message if present, otherwise show help text
-    let right_side = if let Some((msg, _)) = &app.status_message {
-        Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
+    let stats_line = Line::from(Span::raw(format!(
+        " {} active / {} threads │ {} recv │ {} err │ up {} │ v{}",
+        stats.active_workers,
+        stats.total_threads,
+        stats.messages_received,
+        stats.errors,
+        uptime,
+        state.version,
+    )));
+
+    let help_line = if let Some((msg, _)) = &app.status_message {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(msg.as_str(), Style::default().fg(Color::Yellow)),
+        ])
     } else {
-        Span::styled(help_text, Style::default().fg(Color::DarkGray))
+        Line::from(Span::styled(
+            format!(" {help_text}"),
+            Style::default().fg(Color::DarkGray),
+        ))
     };
 
-    let bar = Paragraph::new(Line::from(vec![
-        Span::raw(format!(
-            " {} active / {} threads │ {} recv │ {} err │ up {} │ v{} ",
-            stats.active_workers,
-            stats.total_threads,
-            stats.messages_received,
-            stats.errors,
-            uptime,
-            state.version,
-        )),
-        Span::raw("  "),
-        right_side,
-    ]))
-    .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let bar = Paragraph::new(vec![stats_line, help_line])
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     frame.render_widget(bar, area);
 }

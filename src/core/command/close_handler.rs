@@ -76,6 +76,7 @@ impl CommandHandler for CloseCommandHandler {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use arc_swap::ArcSwap;
     use tempfile::TempDir;
 
     fn test_config() -> Arc<crate::config::types::AppConfig> {
@@ -102,6 +103,10 @@ mode = "opencode"
             )
             .unwrap(),
         )
+    }
+
+    fn test_config_swap() -> Arc<ArcSwap<crate::config::types::AppConfig>> {
+        Arc::new(ArcSwap::new(test_config()))
     }
 
     fn test_context(thread_path: &std::path::Path) -> CommandContext {
@@ -147,7 +152,7 @@ mode = "opencode"
             crate::config::types::HeartbeatConfig::default(),
             "".into(),
             PathBuf::from("/tmp/templates"),
-            test_config(),
+            test_config_swap(),
             "test".to_string(),
             workspace.clone(),
             crate::core::metrics::MetricsHandle::noop(),
@@ -192,7 +197,7 @@ mode = "opencode"
             crate::config::types::HeartbeatConfig::default(),
             "".into(),
             PathBuf::from("/tmp/templates"),
-            test_config(),
+            test_config_swap(),
             "test".to_string(),
             workspace.clone(),
             crate::core::metrics::MetricsHandle::noop(),
@@ -234,7 +239,7 @@ mode = "opencode"
             crate::config::types::HeartbeatConfig::default(),
             "".into(),
             PathBuf::from("/tmp/templates"),
-            test_config(),
+            test_config_swap(),
             "test".to_string(),
             workspace.clone(),
             crate::core::metrics::MetricsHandle::noop(),

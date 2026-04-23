@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use clap::Args;
 use std::path::Path;
 use std::sync::Arc;
@@ -56,7 +57,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .join("\n");
         anyhow::bail!("Configuration validation failed:\n{msg}");
     }
-    let config = Arc::new(config);
+    let config = Arc::new(ArcSwap::from_pointee(config));
 
     // 2. Setup cancellation (Ctrl+C)
     let cancel = CancellationToken::new();
@@ -75,10 +76,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut tasks = Vec::new();
     let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
     let mut all_channels: Vec<crate::inspect::types::ChannelInfo> = Vec::new();
-    let agent_config = Arc::new(config.agent.clone());
+    let config_snapshot = config.load();
+    let agent_config = Arc::new(config_snapshot.agent.clone());
     let opencode_server = Arc::new(OpenCodeServer::new());
 
-    for (channel_name, channel_config) in &config.channels {
+    for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
 
         // Workspace directory: always <workdir>/<channel>/workspace/
@@ -91,10 +93,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .unwrap_or_default();
 
         // Get attachment configuration from unified config
-        let outbound_attachment_config = config.attachments
+        let outbound_attachment_config = config_snapshot.attachments
             .as_ref()
             .and_then(|att| att.outbound.clone());
-        let inbound_attachment_config = config.attachments
+        let inbound_attachment_config = config_snapshot.attachments
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
@@ -186,14 +188,14 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let template_dir = workdir.join("templates");
         
         let thread_manager = Arc::new(ThreadManager::new_with_options(
-            config.general.max_concurrent_threads,
-            config.general.max_queue_size_per_thread,
+            config_snapshot.general.max_concurrent_threads,
+            config_snapshot.general.max_queue_size_per_thread,
             storage.clone(),
             outbound.clone(),
             agent,
             cancel.clone(),
             true, // enable_events: true for Thread Event system
-            config.heartbeat.clone(),
+            config_snapshot.heartbeat.clone(),
             heartbeat_template,
             template_dir,
             config.clone(),
@@ -435,8 +437,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     }
 
     // 5. Start inspect server (if configured)
-    let inspect_task = if config.inspect.as_ref().map_or(false, |i| i.enabled) {
-        let inspect_config = config.inspect.as_ref().unwrap();
+    let inspect_task = if config_snapshot.inspect.as_ref().map_or(false, |i| i.enabled) {
+        let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: crate::inspect::server::SharedActivityMap =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
@@ -445,7 +447,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             channels: all_channels,
             health_stats: shared_stats,
             activity_map: activity_map.clone(),
-            max_concurrent: config.general.max_concurrent_threads,
+            max_concurrent: config_snapshot.general.max_concurrent_threads,
             start_time: std::time::Instant::now(),
         });
 

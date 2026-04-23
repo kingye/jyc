@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ use tokio::sync::mpsc;
 pub struct OpenCodeService {
     server: Arc<OpenCodeServer>,
     agent_config: Arc<AgentConfig>,
-    app_config: Arc<crate::config::types::AppConfig>,
+    app_config: Arc<ArcSwap<crate::config::types::AppConfig>>,
     workdir: PathBuf,
     /// Shared HTTP client — reused across all requests to share connection pool.
     http_client: reqwest::Client,
@@ -43,7 +44,7 @@ impl OpenCodeService {
     pub fn new(
         server: Arc<OpenCodeServer>,
         agent_config: Arc<AgentConfig>,
-        app_config: Arc<crate::config::types::AppConfig>,
+        app_config: Arc<ArcSwap<crate::config::types::AppConfig>>,
         workdir: PathBuf,
     ) -> Self {
         Self {
@@ -62,7 +63,7 @@ impl OpenCodeService {
     pub fn new_with_event_bus(
         server: Arc<OpenCodeServer>,
         agent_config: Arc<AgentConfig>,
-        app_config: Arc<crate::config::types::AppConfig>,
+        app_config: Arc<ArcSwap<crate::config::types::AppConfig>>,
         workdir: PathBuf,
         event_bus: Option<ThreadEventBusRef>,
     ) -> Self {
@@ -250,10 +251,11 @@ impl OpenCodeService {
         );
 
         // 2. Ensure thread has opencode.json
+        let app_config_snapshot = self.app_config.load();
         let config_changed = session::ensure_thread_opencode_setup(
             thread_path,
             &self.agent_config,
-            &self.app_config,
+            &app_config_snapshot,
             &self.workdir,
         ).await?;
 

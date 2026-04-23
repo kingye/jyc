@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -92,7 +93,7 @@ pub struct ThreadManager {
     workspace_dir: PathBuf,
 
     // Application config (for command handlers that need channel/pattern info)
-    config: Arc<crate::config::types::AppConfig>,
+    config: Arc<ArcSwap<crate::config::types::AppConfig>>,
 
     // Metrics handle for reporting events to the inspect server
     pub(crate) metrics: MetricsHandle,
@@ -114,7 +115,7 @@ impl ThreadManager {
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
         template_dir: PathBuf,
-        config: Arc<crate::config::types::AppConfig>,
+        config: Arc<ArcSwap<crate::config::types::AppConfig>>,
         channel_name: String,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
@@ -149,7 +150,7 @@ impl ThreadManager {
         heartbeat_config: HeartbeatConfig,
         heartbeat_template: String,
         template_dir: PathBuf,
-        config: Arc<crate::config::types::AppConfig>,
+        config: Arc<ArcSwap<crate::config::types::AppConfig>>,
         channel_name: String,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
@@ -487,7 +488,7 @@ impl ThreadManager {
         // This is an approximation: semaphore total - available = active
         // We stored the capacity in the constructor but Semaphore doesn't expose it.
         // We use config's max_concurrent_threads as the total.
-        self.config.general.max_concurrent_threads
+        self.config.load().general.max_concurrent_threads
             .saturating_sub(self.semaphore.available_permits())
     }
 
@@ -872,7 +873,7 @@ async fn process_message(
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &PathBuf,
-    config: &Arc<crate::config::types::AppConfig>,
+    config: &Arc<ArcSwap<crate::config::types::AppConfig>>,
     thread_manager: Arc<ThreadManager>,
 ) -> Result<()> {
     let message = &item.message;
@@ -922,7 +923,7 @@ async fn process_message(
     let cmd_context = CommandContext {
         args: vec![],
         thread_path: store_result.thread_path.clone(),
-        config: config.clone(),
+        config: config.load_full(),
         channel: message.channel.clone(),
         agent: Some(agent.clone()),
         template_dir: template_dir.clone(),

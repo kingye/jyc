@@ -14,6 +14,7 @@ All notable changes to JYC will be documented in this file.
 - **Comment filtering for closed issues/PRs** (#89)
 - **Main branch protection** (#65)
 - **coding-principles skill integration** (#61)
+- **Template-driven MCP configuration** — Named MCP servers defined in `[[mcps]]` in `config.toml`, referenced by templates via `mcps` list in `templates.toml`. Vision MCP is now a template-configurable MCP instead of hardcoded (#104)
 
 ### Fixed
 

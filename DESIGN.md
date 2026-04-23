@@ -159,9 +159,9 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │  2. Convert to base64 data URI          │                            │
 │  │  3. Call OpenAI-compatible vision API   │                            │
 │  │  4. Return analysis text                │                            │
-│  │  Config: [vision] in config.toml        │                            │
-│  │  (api_key, api_url, model passed via    │                            │
-│  │   env vars in opencode.json)            │                            │
+│  │  Config: `[[mcps]]` in config.toml      │                            │
+│  │  (jyc_vision MCP, configured via          │                            │
+│  │   templates.toml mcps list)               │                            │
 │  └─────────────────────────────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────────┘
                       │
@@ -188,7 +188,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 6. **Thread Event System** — Heartbeat rhythm control: monitors processing progress and sends periodic updates (default every 10 minutes, configurable via `[heartbeat]` config section)
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
 8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
-9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[vision]` section
+9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
 10. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
 11. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
 12. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
@@ -2221,7 +2221,8 @@ pub struct AppConfig {
     pub heartbeat: Option<HeartbeatConfig>,
     pub inspect: Option<InspectConfig>,                   // Inspect server config
     pub attachments: Option<UnifiedAttachmentConfig>,  // Global attachment config
-    pub vision: Option<VisionConfig>,                  // Vision API config
+    pub vision: Option<VisionConfig>,                  // DEPRECATED: Use [[mcps]] instead
+    pub mcps: Vec<McpServerConfig>,                    // Named MCP server definitions
 }
 
 #[derive(Debug, Deserialize)]

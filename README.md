@@ -181,7 +181,7 @@ JYC provides several MCP (Model Context Protocol) tools that the AI agent uses i
 | Tool | Description |
 |------|-------------|
 | `reply_message` | Send reply via the channel's outbound adapter. Reads routing info from `reply-context.json`, appends to chat log, writes signal file for delivery. |
-| `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[vision]` section. |
+| `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[[mcps]]` in `config.toml` (see `config.example.toml`). |
 | `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. |
 
 These are internal tools used by the AI, not user-facing commands.
@@ -200,7 +200,7 @@ Key sections:
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address)
-- **`[vision]`** -- Vision API settings (enabled, api_key, api_url, model)
+- **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[heartbeat]`** -- Heartbeat settings (enabled, interval_secs, min_elapsed_secs)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 

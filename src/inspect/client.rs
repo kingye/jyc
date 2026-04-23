@@ -158,6 +158,8 @@ mod tests {
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent: 5,
             start_time: Instant::now(),
+            config_path: None,
+            config: None,
         })
     }
 

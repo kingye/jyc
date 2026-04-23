@@ -219,9 +219,31 @@ impl OpenCodeClient {
     ///
     /// Returns the context token limit if found, or None.
     /// The model string should be in "provider/model-id" format.
+    ///
+    /// Retries up to 3 times with 1s delay if the `/provider` API is
+    /// unreachable (the server may still be initializing).
     pub async fn get_model_context_limit(&self, directory: &Path, model: &str) -> Option<u64> {
         let (provider_id, model_id) = model.split_once('/')?;
-        let providers = self.get_providers(directory).await.ok()?;
+
+        let mut providers_result = None;
+        for attempt in 0..3 {
+            match self.get_providers(directory).await {
+                Ok(p) => {
+                    providers_result = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        error = %e,
+                        "get_providers failed, retrying in 1s"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+
+        let providers = providers_result?;
 
         for provider in &providers.all {
             if provider.id == provider_id {

@@ -417,7 +417,7 @@ pub struct OutboundAttachmentConfig {
 ///
 /// When enabled, automatically removes large subdirectories (e.g., cloned `repo/`)
 /// from idle threads while preserving all metadata (`.jyc/`, chat history, sessions).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdleCleanupConfig {
     /// Whether idle cleanup is enabled (default: false)
     #[serde(default)]

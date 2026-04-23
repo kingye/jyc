@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs;
-use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use anyhow::Result;
@@ -122,9 +122,20 @@ async fn sweep_once(
                 continue;
             }
 
+            let mut cleaned_any = false;
             for clean_path in &idle_config.clean_paths {
+                if !is_safe_path(clean_path) {
+                    warn!(
+                        thread = %thread_name,
+                        path = %clean_path,
+                        "Skipping unsafe clean_path (contains path traversal)"
+                    );
+                    continue;
+                }
+
                 let target = path.join(clean_path);
                 if target.exists() {
+                    cleaned_any = true;
                     match fs::remove_dir_all(&target).await {
                         Ok(_) => {
                             info!(
@@ -146,8 +157,10 @@ async fn sweep_once(
                 }
             }
 
-            if let Err(e) = fs::write(&idle_cleaned_flag, "").await {
-                warn!(error = %e, "Failed to write idle-cleaned.flag");
+            if cleaned_any {
+                if let Err(e) = fs::write(&idle_cleaned_flag, "").await {
+                    warn!(error = %e, "Failed to write idle-cleaned.flag");
+                }
             }
         } else if idle_cleaned_flag.exists() {
             if let Err(e) = fs::remove_file(&idle_cleaned_flag).await {
@@ -161,9 +174,14 @@ async fn sweep_once(
     Ok(())
 }
 
+fn is_safe_path(path: &str) -> bool {
+    !path.contains("..") && !path.contains('/') && !path.contains('\\')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -174,6 +192,10 @@ mod tests {
         let thread_dir = workspace.join("waiting-thread");
         fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
         fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
+
+        let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
+        let old_filetime = filetime::FileTime::from_system_time(old_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
 
         fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
         fs::write(thread_dir.join(".jyc").join("question-sent.flag"), "").await.unwrap();
@@ -189,9 +211,145 @@ mod tests {
 
         let patterns = vec![pattern];
         let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
 
         start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
 
         assert!(thread_dir.join("repo").exists());
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_removes_stale_directories() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let thread_dir = workspace.join("stale-thread");
+        fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
+        fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
+
+        let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
+        let old_filetime = filetime::FileTime::from_system_time(old_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
+
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+
+        let mut pattern = ChannelPattern::default();
+        pattern.name = "developer".to_string();
+        pattern.idle_cleanup = Some(crate::config::types::IdleCleanupConfig {
+            enabled: true,
+            timeout_secs: 86400,
+            clean_paths: vec!["repo".to_string()],
+            interval_secs: 300,
+        });
+
+        let patterns = vec![pattern];
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
+
+        assert!(!thread_dir.join("repo").exists());
+        assert!(thread_dir.join(".jyc").join("idle-cleaned.flag").exists());
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_preserves_active_threads() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let thread_dir = workspace.join("active-thread");
+        fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
+        fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
+
+        let recent_time = SystemTime::now() - std::time::Duration::from_secs(60);
+        let recent_filetime = filetime::FileTime::from_system_time(recent_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), recent_filetime).unwrap();
+
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+
+        let mut pattern = ChannelPattern::default();
+        pattern.name = "developer".to_string();
+        pattern.idle_cleanup = Some(crate::config::types::IdleCleanupConfig {
+            enabled: true,
+            timeout_secs: 86400,
+            clean_paths: vec!["repo".to_string()],
+            interval_secs: 300,
+        });
+
+        let patterns = vec![pattern];
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
+
+        assert!(thread_dir.join("repo").exists());
+        assert!(!thread_dir.join(".jyc").join("idle-cleaned.flag").exists());
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_flag_removed_when_active() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let thread_dir = workspace.join("reactivated-thread");
+        fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
+        fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
+
+        let recent_time = SystemTime::now() - std::time::Duration::from_secs(60);
+        let recent_filetime = filetime::FileTime::from_system_time(recent_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), recent_filetime).unwrap();
+
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+        fs::write(thread_dir.join(".jyc").join("idle-cleaned.flag"), "").await.unwrap();
+
+        let mut pattern = ChannelPattern::default();
+        pattern.name = "developer".to_string();
+        pattern.idle_cleanup = Some(crate::config::types::IdleCleanupConfig {
+            enabled: true,
+            timeout_secs: 86400,
+            clean_paths: vec!["repo".to_string()],
+            interval_secs: 300,
+        });
+
+        let patterns = vec![pattern];
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
+
+        assert!(thread_dir.join("repo").exists());
+        assert!(!thread_dir.join(".jyc").join("idle-cleaned.flag").exists());
+    }
+
+    #[test]
+    fn test_is_safe_path() {
+        assert!(is_safe_path("repo"));
+        assert!(is_safe_path("src"));
+        assert!(is_safe_path("workspace"));
+        assert!(!is_safe_path("../etc"));
+        assert!(!is_safe_path("foo/../bar"));
+        assert!(!is_safe_path("foo\\..\\bar"));
+        assert!(!is_safe_path(".."));
+        assert!(!is_safe_path("repo/../etc"));
     }
 }

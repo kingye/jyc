@@ -486,10 +486,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(msg.as_str(), Style::default().fg(Color::Yellow)),
         ])
     } else {
-        Line::from(Span::styled(
-            format!(" {help_text}"),
-            Style::default().fg(Color::DarkGray),
-        ))
+        Line::from(Span::raw(format!(" {help_text}")))
     };
 
     let bar = Paragraph::new(vec![stats_line, help_line])

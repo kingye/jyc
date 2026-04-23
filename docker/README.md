@@ -138,3 +138,64 @@ Ensure the skills directories are mounted and readable:
 docker exec -it jyc ls /root/.claude/skills/
 docker exec -it jyc ls /root/.agents/skills/
 ```
+
+## OAuth2 Authentication
+
+Some MCP servers (e.g., Jira, Figma) require interactive browser-based OAuth2 login flows that don't work well inside containers by default. JYC includes [oauth2-forwarder](https://github.com/sam-mfb/oauth2-forwarder) to solve this.
+
+### How It Works
+
+- `o2f-browser` (in container): Intercepts browser-open requests and proxies them to the host
+- `o2f-client` (in container): Runs inside the container, proxies browser requests
+- `o2f-server` (on host): Receives browser requests from the container and opens them in the host's browser
+
+### Setup
+
+**1. Install oauth2-forwarder on your host:**
+
+```bash
+npm install -g oauth2-forwarder
+```
+
+**2. Start the host server:**
+
+```bash
+cd docker
+./o2f-server.sh
+```
+
+By default, the server listens on port 9191. To use a different port:
+
+```bash
+./o2f-server.sh 8080
+# or
+OAUTH2_FORWARDER_PORT=8080 ./o2f-server.sh
+```
+
+**3. Verify the connection:**
+
+The container shares host networking (`network_mode: host`), so it can reach `o2f-server` at `localhost:9191` automatically.
+
+### Disabling OAuth2 Forwarder
+
+The forwarder is enabled by default. To disable it and use the system default browser:
+
+```bash
+OAUTH2_FORWARDER_BROWSER=
+```
+
+in your `docker/.env` file. This tells tools inside the container to use their default browser behavior instead of routing through `o2f-browser`.
+
+### Passthrough Mode
+
+Passthrough mode (`OAUTH2_FORWARDER_PASSTHROUGH=true`) is enabled by default. This allows MCP tools that use device code flows (where the user authenticates on a different device or via a code) to work correctly. If you encounter issues with redirect-based OAuth2 flows, you may need to adjust this setting.
+
+### Troubleshooting
+
+**Connection refused when opening browser:**
+- Verify `o2f-server` is running on the host: `curl http://localhost:9191`
+- Check the port matches `OAUTH2_FORWARDER_PORT` in your `.env`
+
+**Port conflicts:**
+- If port 9191 is in use, specify a different port: `./o2f-server.sh 9192`
+- Update `OAUTH2_FORWARDER_PORT` in your `.env` to match

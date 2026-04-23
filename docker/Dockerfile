@@ -25,6 +25,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install oauth2-forwarder for browser-based OAuth2 in containers
+RUN npm install -g oauth2-forwarder
+
 # Directories and workdir
 RUN mkdir -p /root/.claude/skills /root/.agents/skills \
     /root/.config/opencode /root/.config/gh \

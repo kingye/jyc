@@ -6,14 +6,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InspectRequest {
     pub method: String,
+    /// Optional parameters for the method (unused by `get_state`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Response sent by the inspect server to the dashboard client.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InspectResponse {
     State(InspectState),
     Error { error: String },
+    /// Result of a `reload_config` request.
+    ReloadResult { success: bool, message: String },
 }
 
 // ── State snapshot ──
@@ -142,12 +147,19 @@ mod tests {
     fn test_inspect_request_serialize() {
         let req = InspectRequest {
             method: "get_state".to_string(),
+            params: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("get_state"));
 
         let parsed: InspectRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.method, "get_state");
+
+        // Backward compat: old requests without params still parse
+        let old_json = r#"{"method":"get_state"}"#;
+        let parsed: InspectRequest = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.method, "get_state");
+        assert!(parsed.params.is_none());
     }
 
     #[test]
@@ -199,6 +211,27 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("unknown method"));
+        assert!(json.contains(r#""type":"error""#));
+    }
+
+    #[test]
+    fn test_inspect_response_reload_result() {
+        let resp = InspectResponse::ReloadResult {
+            success: true,
+            message: "config reloaded".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""type":"reload_result""#));
+        assert!(json.contains("config reloaded"));
+
+        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            InspectResponse::ReloadResult { success, message } => {
+                assert!(success);
+                assert_eq!(message, "config reloaded");
+            }
+            _ => panic!("expected ReloadResult"),
+        }
     }
 
     #[test]

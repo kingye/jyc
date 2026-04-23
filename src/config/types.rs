@@ -9,7 +9,7 @@ use crate::channels::types::ChannelPattern;
 /// Named MCPs are defined in `config.toml` `[[mcps]]` and referenced by
 /// templates in `templates.toml` to determine which MCPs appear in each
 /// thread's `opencode.json`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub name: String,
 
@@ -18,7 +18,7 @@ pub struct McpServerConfig {
 }
 
 /// Kind of MCP server — either `local` (subprocess) or `remote` (HTTP).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerKind {
     Local {

@@ -434,11 +434,16 @@ mod tests {
         let mut response = String::new();
         reader.read_line(&mut response).await.unwrap();
 
-        let state: InspectState = serde_json::from_str(&response).unwrap();
-        assert_eq!(state.channels.len(), 1);
-        assert_eq!(state.channels[0].name, "emf");
-        assert_eq!(state.stats.max_concurrent, 3);
-        assert!(!state.version.is_empty());
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::State(state) => {
+                assert_eq!(state.channels.len(), 1);
+                assert_eq!(state.channels[0].name, "emf");
+                assert_eq!(state.stats.max_concurrent, 3);
+                assert!(!state.version.is_empty());
+            }
+            other => panic!("expected State, got {:?}", other),
+        }
 
         cancel.cancel();
         handle.await.unwrap();
@@ -527,8 +532,13 @@ mod tests {
             let mut response = String::new();
             reader.read_line(&mut response).await.unwrap();
 
-            let state: InspectState = serde_json::from_str(&response).unwrap();
-            assert_eq!(state.channels.len(), 1);
+            let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+            match resp {
+                InspectResponse::State(state) => {
+                    assert_eq!(state.channels.len(), 1);
+                }
+                other => panic!("expected State, got {:?}", other),
+            }
         }
 
         cancel.cancel();

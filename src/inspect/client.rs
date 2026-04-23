@@ -3,7 +3,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
-use crate::inspect::types::{InspectRequest, InspectState};
+use crate::inspect::types::{InspectRequest, InspectResponse, InspectState};
 
 /// Client for connecting to the jyc inspect server.
 ///
@@ -64,6 +64,7 @@ impl InspectClient {
         // Send request
         let request = InspectRequest {
             method: "get_state".to_string(),
+            params: None,
         };
         let mut json = serde_json::to_string(&request)?;
         json.push('\n');
@@ -82,10 +83,53 @@ impl InspectClient {
             anyhow::bail!("server closed connection");
         }
 
-        let state: InspectState =
-            serde_json::from_str(response_line.trim()).context("failed to parse inspect state")?;
+        let resp: InspectResponse =
+            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
 
-        Ok(state)
+        match resp {
+            InspectResponse::State(state) => Ok(state),
+            InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
+            InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for get_state"),
+        }
+    }
+
+    /// Send a `reload_config` command to the inspect server.
+    pub async fn reload_config(&mut self) -> Result<(bool, String)> {
+        // Ensure connected
+        if self.conn.is_none() {
+            self.connect().await?;
+        }
+
+        let conn = self.conn.as_mut().context("not connected")?;
+
+        let request = InspectRequest {
+            method: "reload_config".to_string(),
+            params: None,
+        };
+        let mut json = serde_json::to_string(&request)?;
+        json.push('\n');
+        conn.writer.write_all(json.as_bytes()).await?;
+        conn.writer.flush().await?;
+
+        let mut response_line = String::new();
+        let bytes = conn
+            .reader
+            .read_line(&mut response_line)
+            .await
+            .context("failed to read response")?;
+
+        if bytes == 0 {
+            anyhow::bail!("server closed connection");
+        }
+
+        let resp: InspectResponse =
+            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
+
+        match resp {
+            InspectResponse::ReloadResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
+        }
     }
 }
 

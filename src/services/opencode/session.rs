@@ -680,9 +680,177 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_mcp_config_to_json_local() {
+        use crate::config::types::{McpServerConfig, McpServerKind};
+        use std::collections::HashMap;
 
+        let config = McpServerConfig {
+            name: "test_mcp".to_string(),
+            kind: McpServerKind::Local {
+                command: vec!["jyc".to_string(), "mcp-tool".to_string()],
+                environment: HashMap::from([
+                    ("VAR1".to_string(), "value1".to_string()),
+                ]),
+                timeout: 300000,
+            },
+        };
 
+        let json = mcp_config_to_json(&config, "/thread/path");
+        assert_eq!(json["type"], "local");
+        assert_eq!(json["command"], serde_json::json!["jyc", "mcp-tool"]);
+        assert_eq!(json["environment"]["VAR1"], "value1");
+        assert_eq!(json["environment"]["JYC_THREAD_DIR"], "/thread/path");
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["timeout"], 300000);
+    }
 
+    #[test]
+    fn test_mcp_config_to_json_remote() {
+        use crate::config::types::{McpServerConfig, McpServerKind};
 
+        let config = McpServerConfig {
+            name: "remote_mcp".to_string(),
+            kind: McpServerKind::Remote {
+                url: "https://mcp.example.com/handler".to_string(),
+                enabled: true,
+            },
+        };
 
+        let json = mcp_config_to_json(&config, "/thread/path");
+        assert_eq!(json["type"], "remote");
+        assert_eq!(json["url"], "https://mcp.example.com/handler");
+        assert_eq!(json["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_thread_opencode_setup_with_template_mcps() {
+        use crate::config::types::{AgentConfig, AppConfig, McpServerConfig, McpServerKind, HeartbeatConfig};
+        use std::collections::HashMap;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let thread_path = tmp.path().join("test-thread");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
+
+        // Write mcps.json
+        tokio::fs::write(
+            thread_path.join(".jyc").join("mcps.json"),
+            r#"["jyc_vision"]"#,
+        )
+        .await
+        .unwrap();
+
+        // Create app_config with MCP definitions
+        let app_config = AppConfig {
+            general: Default::default(),
+            channels: HashMap::new(),
+            agent: AgentConfig {
+                enabled: true,
+                mode: "opencode".to_string(),
+                text: None,
+                opencode: None,
+                attachments: None,
+            },
+            inspect: None,
+            heartbeat: HeartbeatConfig::default(),
+            attachments: None,
+            vision: None,
+            mcps: vec![McpServerConfig {
+                name: "jyc_vision".to_string(),
+                kind: McpServerKind::Local {
+                    command: vec!["jyc".to_string(), "mcp-vision-tool".to_string()],
+                    environment: HashMap::from([(
+                        "VISION_API_KEY".to_string(),
+                        "secret".to_string(),
+                    )]),
+                    timeout: 300000,
+                },
+            }],
+        };
+
+        let agent_config = &app_config.agent;
+        let jyc_root = tmp.path();
+
+        let changed = ensure_thread_opencode_setup(
+            &thread_path,
+            agent_config,
+            &app_config,
+            jyc_root,
+        )
+        .await
+        .unwrap();
+
+        assert!(changed, "opencode.json should be written");
+
+        let config_content = tokio::fs::read_to_string(thread_path.join("opencode.json"))
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config_content).unwrap();
+
+        // Verify jyc_vision MCP is in the config
+        let mcp = &config["mcp"];
+        assert!(mcp["jyc_vision"].is_object(), "jyc_vision should be in mcp config");
+        assert_eq!(mcp["jyc_vision"]["type"], "local");
+        assert_eq!(
+            mcp["jyc_vision"]["environment"]["VISION_API_KEY"],
+            "secret"
+        );
+
+        // Verify jyc_reply and jyc_question are still present
+        assert!(mcp["jyc_reply"].is_object(), "jyc_reply should be present");
+        assert!(mcp["jyc_question"].is_object(), "jyc_question should be present");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_thread_opencode_setup_without_mcps_json() {
+        use crate::config::types::{AgentConfig, AppConfig, HeartbeatConfig};
+        use std::collections::HashMap;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let thread_path = tmp.path().join("test-thread");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+
+        let app_config = AppConfig {
+            general: Default::default(),
+            channels: HashMap::new(),
+            agent: AgentConfig {
+                enabled: true,
+                mode: "opencode".to_string(),
+                text: None,
+                opencode: None,
+                attachments: None,
+            },
+            inspect: None,
+            heartbeat: HeartbeatConfig::default(),
+            attachments: None,
+            vision: None,
+            mcps: vec![],
+        };
+
+        let agent_config = &app_config.agent;
+        let jyc_root = tmp.path();
+
+        let changed = ensure_thread_opencode_setup(
+            &thread_path,
+            agent_config,
+            &app_config,
+            jyc_root,
+        )
+        .await
+        .unwrap();
+
+        assert!(changed, "opencode.json should be written");
+
+        let config_content = tokio::fs::read_to_string(thread_path.join("opencode.json"))
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config_content).unwrap();
+
+        // Verify only jyc_reply and jyc_question are present
+        let mcp = &config["mcp"];
+        assert!(mcp["jyc_reply"].is_object());
+        assert!(mcp["jyc_question"].is_object());
+        assert!(!mcp.get("jyc_vision").is_some());
+    }
 }

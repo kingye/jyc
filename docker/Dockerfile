@@ -3,7 +3,7 @@ FROM debian:bookworm-slim AS base
 
 # Runtime tools for jyc and AI agent
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ripgrep jq procps xz-utils inotify-tools \
+    git curl ripgrep jq procps xz-utils unzip inotify-tools \
     ca-certificates pkg-config libssl-dev build-essential \
     protobuf-compiler \
     pandoc python3 \

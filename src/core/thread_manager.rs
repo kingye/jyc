@@ -433,9 +433,13 @@ impl ThreadManager {
                         .and_then(|patterns| patterns.iter().find(|p| p.name == item.pattern_match.pattern_name))
                         .map(|p| p.idle_cleanup.as_ref().map_or(true, |c| c.skip_cleanup))
                         .unwrap_or(true);
-                    if should_skip && !skip_flag.exists() {
+                    if should_skip {
                         if let Err(e) = tokio::fs::write(&skip_flag, "").await {
                             tracing::warn!(error = %e, "Failed to write idle-cleanup-skip.flag");
+                        }
+                    } else if tokio::fs::metadata(&skip_flag).await.is_ok() {
+                        if let Err(e) = tokio::fs::remove_file(&skip_flag).await {
+                            tracing::warn!(error = %e, "Failed to remove idle-cleanup-skip.flag");
                         }
                     }
                 }

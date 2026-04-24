@@ -16,20 +16,20 @@ skills = ["coding-principles", "pr-review"]
 
 [templates.github-planner]
 skills = ["coding-principles", "dev-workflow"]
-mcps = []
+mcps = [] # For local dev, uncomment: ["github-mcp", "sap-jira"]
 
 [templates.github-developer]
 skills = ["coding-principles", "incremental-dev", "dev-workflow"]
-mcps = []
+mcps = [] # For local dev, uncomment: ["github-mcp", "cap-js-mcp", "ui5-mcp"]
 
 [templates.github-reviewer]
 skills = ["coding-principles", "pr-review"]
-mcps = []
+mcps = [] # For local dev, uncomment: ["github-mcp"]
 
 [templates.github-high-level-planner]
 skills = ["coding-principles", "dev-workflow"]
-mcps = []
+mcps = [] # For local dev, uncomment: ["github-mcp", "sap-jira"]
 
 [templates.github-designer]
 skills = ["coding-principles", "figma-to-fiori", "incremental-dev"]
-mcps = []
+mcps = [] # For local dev, uncomment: ["figma", "fiori-tools", "ui5-mcp", "playwright", "github-mcp"]

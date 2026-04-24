@@ -16,3 +16,4 @@ docker/.env
 jyc
 jyc.bak
 .DS_Store
+jyc-data

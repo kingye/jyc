@@ -46,6 +46,12 @@ pub fn build_system_prompt(
 ## Important: Focus on the Current Message
 You MUST only respond to the CURRENT "Incoming Message". Do NOT continue work from previous messages.
 After you have replied to the current message, STOP. Do not do anything else.
+
+**CRITICAL: The current message has ABSOLUTE PRIORITY over your prior conclusions.**
+If the current message asks you to do something (e.g., run tests, fix a bug, make a change)
+that contradicts what you previously concluded (e.g., "the PR is done", "no further action needed"),
+you MUST obey the current message — NOT your prior conclusion. Your previous "Done" or "Completed"
+statements are irrelevant; the current message is your new task.
 "#,
         thread_path.display()
     ));

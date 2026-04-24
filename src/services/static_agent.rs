@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::agent::{AgentResult, AgentService};
 use crate::channels::types::InboundMessage;
@@ -38,6 +39,7 @@ impl AgentService for StaticAgentService {
         _thread_path: &Path,
         _message_dir: &str,
         _pending_rx: &mut mpsc::Receiver<QueueItem>,
+        _thread_cancel: CancellationToken,
     ) -> Result<AgentResult> {
         tracing::info!("Static reply generated");
 

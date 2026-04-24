@@ -20,6 +20,7 @@ use crate::core::thread_manager::QueueItem;
 use crate::services::agent::{AgentResult, AgentService};
 use crate::utils::constants::{HEARTBEAT_INTERVAL, MIN_HEARTBEAT_ELAPSED};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Encapsulates all OpenCode AI interaction logic.
 ///
@@ -218,6 +219,7 @@ impl OpenCodeService {
         thread_path: &Path,
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<GenerateReplyResult> {
         let _ch = &message.channel;
 
@@ -409,7 +411,7 @@ impl OpenCodeService {
 
 
         let sse_result = client
-            .prompt_with_sse(&session_id, thread_path, &request, &mode_label, pending_rx)
+            .prompt_with_sse(&session_id, thread_path, &request, &mode_label, pending_rx, thread_cancel.clone())
             .instrument(ai_span.clone())
             .await;
 
@@ -419,6 +421,7 @@ impl OpenCodeService {
                 self.handle_sse_result(
                     result, thread_name, thread_path,
                     &client, &session_id, &request, &mode_label, pending_rx,
+                    thread_cancel.clone(),
                 ).await
             }
             Err(e) => {
@@ -465,6 +468,7 @@ impl OpenCodeService {
         request: &PromptRequest,
         mode_label: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<GenerateReplyResult> {
         // ContextOverflow recovery
         if let Some(ref error) = result.error {
@@ -517,7 +521,7 @@ impl OpenCodeService {
             session::delete_session(thread_path).await?;
             let new_id = session::create_new_session(client, thread_path).await?;
             session::cleanup_signal_file(thread_path).await;
-            let retry = client.prompt_with_sse(&new_id, thread_path, request, mode_label, pending_rx).await?;
+            let retry = client.prompt_with_sse(&new_id, thread_path, request, mode_label, pending_rx, thread_cancel.clone()).await?;
             
             // Input tokens already persisted per step in client.rs
             
@@ -629,8 +633,9 @@ impl AgentService for OpenCodeService {
         thread_path: &Path,
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<AgentResult> {
-        let result = self.generate_reply(message, thread_name, thread_path, message_dir, pending_rx).await?;
+        let result = self.generate_reply(message, thread_name, thread_path, message_dir, pending_rx, thread_cancel).await?;
 
         Ok(AgentResult {
             reply_sent_by_tool: result.reply_sent_by_tool,

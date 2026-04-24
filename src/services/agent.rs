@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::channels::types::InboundMessage;
 use crate::core::thread_event_bus::ThreadEventBusRef;
@@ -54,6 +55,7 @@ pub trait AgentService: Send + Sync {
         thread_path: &Path,
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<AgentResult>;
 
     /// Set thread event bus for this thread.

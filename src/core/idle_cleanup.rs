@@ -193,12 +193,12 @@ mod tests {
         fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
         fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
 
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+        fs::write(thread_dir.join(".jyc").join("question-sent.flag"), "").await.unwrap();
+
         let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
         let old_filetime = filetime::FileTime::from_system_time(old_time);
         filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
-
-        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
-        fs::write(thread_dir.join(".jyc").join("question-sent.flag"), "").await.unwrap();
 
         let mut pattern = ChannelPattern::default();
         pattern.name = "developer".to_string();
@@ -232,11 +232,11 @@ mod tests {
         fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
         fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
 
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+
         let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
         let old_filetime = filetime::FileTime::from_system_time(old_time);
         filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
-
-        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
 
         let mut pattern = ChannelPattern::default();
         pattern.name = "developer".to_string();
@@ -271,11 +271,11 @@ mod tests {
         fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
         fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
 
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+
         let recent_time = SystemTime::now() - std::time::Duration::from_secs(60);
         let recent_filetime = filetime::FileTime::from_system_time(recent_time);
         filetime::set_file_mtime(thread_dir.join(".jyc"), recent_filetime).unwrap();
-
-        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
 
         let mut pattern = ChannelPattern::default();
         pattern.name = "developer".to_string();
@@ -310,12 +310,12 @@ mod tests {
         fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
         fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
 
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+        fs::write(thread_dir.join(".jyc").join("idle-cleaned.flag"), "").await.unwrap();
+
         let recent_time = SystemTime::now() - std::time::Duration::from_secs(60);
         let recent_filetime = filetime::FileTime::from_system_time(recent_time);
         filetime::set_file_mtime(thread_dir.join(".jyc"), recent_filetime).unwrap();
-
-        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
-        fs::write(thread_dir.join(".jyc").join("idle-cleaned.flag"), "").await.unwrap();
 
         let mut pattern = ChannelPattern::default();
         pattern.name = "developer".to_string();

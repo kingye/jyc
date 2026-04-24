@@ -23,11 +23,26 @@ number: 42
 ```
 
 ## Repository Setup
-Clone the repository from the trigger message to `repo/` if not already present,
-then `cd repo` before running any command:
+Use the shared bare clone (via `.shared-repos/`) to avoid duplicating the full
+repo in every thread.  Each thread gets a lightweight **git worktree** that
+shares objects with the bare clone — only checked-out files are stored locally.
+
 ```bash
+REPO_SLUG="<owner>/<repo>"          # from the trigger message "repository:" line
+BARE_DIR=".shared-repos/${REPO_SLUG}.git"
+
 if [ ! -d "repo" ]; then
-    gh repo clone <repository_from_trigger> repo
+    # Ensure the shared bare clone exists (first thread creates it)
+    if [ ! -d "$BARE_DIR" ]; then
+        mkdir -p "$(dirname "$BARE_DIR")"
+        gh repo clone "$REPO_SLUG" "$BARE_DIR" -- --bare
+    else
+        # Refresh the bare clone so worktree gets latest refs
+        git -C "$BARE_DIR" fetch --all --prune 2>/dev/null || true
+    fi
+    # Create a worktree for this thread (lightweight — no .git/objects copy)
+    git -C "$BARE_DIR" worktree add "$(pwd)/repo" --detach 2>/dev/null \
+        || gh repo clone "$REPO_SLUG" repo   # fallback to full clone
 fi
 cp -rn repo/.opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 cd repo
@@ -89,7 +104,20 @@ understanding the codebase is useless.
 - Wait for the user to reply via GitHub comments (you will be triggered again)
 - **Do NOT create a PR until the user explicitly tells you to proceed**
 
-### 4. Create PR — ONLY When User Explicitly Asks
+### 4. Classify: Does This Issue Involve UI Changes?
+
+Before creating a PR, determine whether the issue involves **UI/frontend updates**.
+An issue involves UI changes if ANY of these are true:
+- It mentions UI components, views, pages, forms, tables, dialogs, or screens
+- It references Figma designs, mockups, or wireframes
+- It involves SAP Fiori / UI5 / frontend changes (XML views, controllers, manifest.json, i18n)
+- It changes user-facing layout, styling, or interaction patterns
+- It adds or modifies a Fiori Elements floorplan (List Report, Object Page, etc.)
+- It involves accessibility (a11y) or responsive design changes
+
+**Remember your classification** — you will use it in Step 5 to add the `ui-update` label.
+
+### 5. Create PR — ONLY When User Explicitly Asks
 **⚠️ Do NOT create a PR on your own. Wait for the user to say something like:**
 - "go ahead"
 - "start development"
@@ -180,6 +208,12 @@ echo "PR labels: $PR_LABELS (expected: $LABELS)"
 # Trigger the developer agent by adding the developer label
 gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
 gh pr edit <pr_number> --add-label "ready-for-dev"
+
+# If this issue involves UI changes (from Step 4 classification), trigger the Designer agent
+# ONLY add this label if the issue genuinely involves UI/frontend work
+gh label create ui-update --color "1D76DB" --description "PR involves UI/frontend changes" 2>/dev/null || true
+gh pr edit <pr_number> --add-label "ui-update"
+# NOTE: If the issue does NOT involve UI changes, skip the ui-update label entirely.
 ```
 
 **CRITICAL:** The PR must contain only the initialization empty commit (created via `git commit --allow-empty`) — no other code changes. The developer agent will implement the code.
@@ -188,8 +222,9 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.
 
-### 5. After Hand-over
+### 6. After Hand-over
 - Reply on the issue confirming the PR was created
+- If UI changes are involved, mention that the Designer agent has been triggered for UI review
 - You can continue discussing with the user on the issue
 - If requirements change, comment on the PR with the updated requirements
 
@@ -202,6 +237,7 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body
 - ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching
+- ALWAYS classify whether the issue involves UI changes (Step 4). If it does, add the `ui-update` label to the PR — this auto-triggers the Designer agent for UI review alongside development
 - Reply in the same language as the user
 - Your PR must contain ZERO code changes — only the spec in the PR body
 - Your implementation plan must break the work into small, ordered steps — each with a clear verification method

@@ -248,22 +248,28 @@ github_type = ["pull_request"]
 
 Each thread gets its own directory:
 ```
-<workdir>/<channel_name>/workspace/
-  issue-42/           ← Planner agent
-    .jyc/
-    chat_history_*.md
-    jyc/              ← Repo clone (read-only for planner)
-    AGENTS.md         ← Planner role definition
-  pr-43/              ← Developer agent
-    .jyc/
-    chat_history_*.md
-    jyc/              ← Repo clone (developer works here)
-    AGENTS.md         ← Developer role definition
-  review-pr-43/       ← Reviewer agent
-    .jyc/
-    chat_history_*.md
-    jyc/              ← Repo clone (read-only for reviewer)
-    AGENTS.md         ← Reviewer role definition
+<workdir>/<channel_name>/
+  repos/                  ← Shared bare clones (one per repository)
+    owner/repo.git        ← Bare clone, shared by all threads
+  workspace/
+    issue-42/             ← Planner agent
+      .jyc/
+      .shared-repos/      ← Symlink to ../repos/ (auto-created by JYC)
+      chat_history_*.md
+      repo/               ← Git worktree (lightweight, shares objects with bare clone)
+      AGENTS.md           ← Planner role definition
+    pr-43/                ← Developer agent
+      .jyc/
+      .shared-repos/
+      chat_history_*.md
+      repo/               ← Git worktree (developer works here)
+      AGENTS.md           ← Developer role definition
+    review-pr-43/         ← Reviewer agent
+      .jyc/
+      .shared-repos/
+      chat_history_*.md
+      repo/               ← Git worktree (read-only for reviewer)
+      AGENTS.md           ← Reviewer role definition
 ```
 
 ## Routing Labels

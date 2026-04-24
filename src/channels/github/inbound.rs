@@ -406,14 +406,12 @@ impl GithubInboundAdapter {
 
         let gh_cmd = match github_type {
             "pull_request" => format!(
-                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead PR:\n  gh pr view {}\n  gh pr view {} --comments\n  gh pr diff {}",
-                self.config.owner, self.config.repo,
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # see AGENTS.md \"Repository Setup\" for shared-repo worktree instructions\n\nRead PR:\n  gh pr view {}\n  gh pr view {} --comments\n  gh pr diff {}",
                 self.config.owner, self.config.repo,
                 number, number, number
             ),
             _ => format!(
-                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead issue:\n  gh issue view {}\n  gh issue view {} --comments",
-                self.config.owner, self.config.repo,
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # see AGENTS.md \"Repository Setup\" for shared-repo worktree instructions\n\nRead issue:\n  gh issue view {}\n  gh issue view {} --comments",
                 self.config.owner, self.config.repo,
                 number, number
             ),

@@ -15,11 +15,26 @@ number: 43
 ```
 
 ## Repository Setup
-Clone the repository from the trigger message to `repo/` if not already present,
-then `cd repo` before running any command:
+Use the shared bare clone (via `.shared-repos/`) to avoid duplicating the full
+repo in every thread.  Each thread gets a lightweight **git worktree** that
+shares objects with the bare clone — only checked-out files are stored locally.
+
 ```bash
+REPO_SLUG="<owner>/<repo>"          # from the trigger message "repository:" line
+BARE_DIR=".shared-repos/${REPO_SLUG}.git"
+
 if [ ! -d "repo" ]; then
-    gh repo clone <repository_from_trigger> repo
+    # Ensure the shared bare clone exists (first thread creates it)
+    if [ ! -d "$BARE_DIR" ]; then
+        mkdir -p "$(dirname "$BARE_DIR")"
+        gh repo clone "$REPO_SLUG" "$BARE_DIR" -- --bare
+    else
+        # Refresh the bare clone so worktree gets latest refs
+        git -C "$BARE_DIR" fetch --all --prune 2>/dev/null || true
+    fi
+    # Create a worktree for this thread (lightweight — no .git/objects copy)
+    git -C "$BARE_DIR" worktree add "$(pwd)/repo" --detach 2>/dev/null \
+        || gh repo clone "$REPO_SLUG" repo   # fallback to full clone
 fi
 cp -rn repo/.opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 cd repo

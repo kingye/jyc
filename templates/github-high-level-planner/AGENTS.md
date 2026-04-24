@@ -58,6 +58,7 @@ gh issue view <number> --comments
 Present a structured analysis including:
 - **Requirement Analysis**: What is the user asking for? What problem does it solve?
 - **Feature Breakdown**: What are the major components or capabilities needed?
+- **UI Impact**: Does this feature require UI/frontend changes? (e.g., new views, forms, Fiori floorplans, Figma designs, layout changes, accessibility)
 - **Module划分**: How should the work be divided (not technical architecture, but logical units)?
 - **Priority**: What should be tackled first?
 - **Effort Estimation**: Rough estimate of complexity (Low/Medium/High)
@@ -71,6 +72,13 @@ Present a structured analysis including:
 When the user explicitly confirms (e.g., "go ahead", "start development", "proceed"):
 ```bash
 cd repo
+# If this feature involves UI changes, add the ui-update label BEFORE removing feature-plan.
+# This ensures the Detail-Level Planner and Designer agent know UI work is involved.
+# ONLY add this label if the feature genuinely involves UI/frontend work.
+gh label create ui-update --color "1D76DB" --description "PR involves UI/frontend changes" 2>/dev/null || true
+gh issue edit <number> --add-label "ui-update"
+# NOTE: If the feature does NOT involve UI changes, skip the ui-update label entirely.
+
 gh issue edit <number> --remove-label feature-plan
 ```
 

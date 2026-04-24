@@ -416,6 +416,30 @@ impl ThreadManager {
                         );
                     }
                     
+                    // Create .shared-repos symlink so the agent can access the
+                    // channel-level shared bare-clone directory without escaping
+                    // its sandbox.  Path: <workdir>/<channel>/repos/
+                    if let Some(channel_dir) = workspace.parent() {
+                        let repos_dir = channel_dir.join("repos");
+                        let symlink_path = thread_path.join(".shared-repos");
+                        if !symlink_path.exists() {
+                            // Ensure the target directory exists
+                            if let Err(e) = tokio::fs::create_dir_all(&repos_dir).await {
+                                tracing::warn!(error = %e, "Failed to create shared repos dir");
+                            }
+                            #[cfg(unix)]
+                            if let Err(e) = tokio::fs::symlink(&repos_dir, &symlink_path).await {
+                                tracing::warn!(error = %e, "Failed to create .shared-repos symlink");
+                            } else {
+                                tracing::debug!(
+                                    thread = %thread_name,
+                                    target = %repos_dir.display(),
+                                    "Created .shared-repos symlink"
+                                );
+                            }
+                        }
+                    }
+                    
                     // Save pattern name for /template command (after template init)
                     let pattern_file = thread_path.join(".jyc").join("pattern");
                     if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
@@ -815,11 +839,68 @@ impl ThreadManager {
     /// Close and delete a thread's directory.
     ///
     /// This is channel-agnostic — all threads use the same cleanup logic.
-    /// Removes the thread directory from disk and cleans up in-memory state.
+    /// If the thread used a shared-repo worktree, it is pruned from the bare
+    /// clone before the directory is removed so the bare repo stays healthy.
     pub async fn close_thread(&self, thread_name: &str) -> Result<()> {
         let thread_path = self.storage.workspace().join(thread_name);
 
         if thread_path.exists() {
+            // If repo/ is a git worktree linked to the shared bare clone,
+            // remove it via `git worktree remove` so the bare repo's
+            // worktree list stays clean.  Errors are non-fatal — the
+            // directory will be force-deleted regardless.
+            let repo_path = thread_path.join("repo");
+            if repo_path.join(".git").exists() {
+                // .git may be a file (worktree) or a dir (full clone).
+                // For worktrees, .git is a *file* containing "gitdir: …".
+                let is_worktree = tokio::fs::metadata(repo_path.join(".git"))
+                    .await
+                    .map(|m| m.is_file())
+                    .unwrap_or(false);
+                if is_worktree {
+                    // Read the bare repo path from .shared-repos symlink
+                    let shared_repos = thread_path.join(".shared-repos");
+                    if shared_repos.exists() {
+                        let abs_repo = tokio::fs::canonicalize(&repo_path).await;
+                        if let Ok(abs_repo) = abs_repo {
+                            // Find the bare clone directory by reading all entries
+                            // under .shared-repos and trying `git worktree remove`
+                            // from each bare repo.
+                            if let Ok(bare_root) = tokio::fs::canonicalize(&shared_repos).await {
+                                let result = tokio::process::Command::new("git")
+                                    .args(["worktree", "remove", "--force"])
+                                    .arg(&abs_repo)
+                                    .current_dir(&bare_root)
+                                    .output()
+                                    .await;
+                                match result {
+                                    Ok(output) if output.status.success() => {
+                                        tracing::info!(
+                                            thread = %thread_name,
+                                            "Removed git worktree from shared repo"
+                                        );
+                                    }
+                                    Ok(output) => {
+                                        tracing::debug!(
+                                            thread = %thread_name,
+                                            stderr = %String::from_utf8_lossy(&output.stderr),
+                                            "git worktree remove returned non-zero (will force delete)"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            thread = %thread_name,
+                                            error = %e,
+                                            "git worktree remove failed (will force delete)"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             tokio::fs::remove_dir_all(&thread_path)
                 .await
                 .context(format!("Failed to remove thread directory: {:?}", thread_path))?;

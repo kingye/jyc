@@ -75,7 +75,7 @@ pub struct ThreadManager {
     enable_events: bool,
 
     // Per-thread cancellation tokens (used by close_thread to stop workers)
-    thread_cancels: Mutex<HashMap<String, CancellationToken>>,
+    pub(crate) thread_cancels: Mutex<HashMap<String, CancellationToken>>,
 
     // Heartbeat configuration
     heartbeat_config: HeartbeatConfig,
@@ -457,6 +457,7 @@ impl ThreadManager {
                     &template_dir,
                     &config,
                     tm.clone(),
+                    thread_cancel.clone(),
                 ).await {
                     tracing::error!(
                         error = %format!("{:#}", e),
@@ -893,6 +894,7 @@ async fn process_message(
     template_dir: &PathBuf,
     config: &Arc<ArcSwap<crate::config::types::AppConfig>>,
     thread_manager: Arc<ThreadManager>,
+    thread_cancel: CancellationToken,
 ) -> Result<()> {
     let message = &item.message;
 
@@ -1044,7 +1046,7 @@ async fn process_message(
         // Live injection enabled: pass real queue receiver so new messages
         // arriving during AI processing get injected into the active session.
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx, thread_cancel.clone())
             .await?
     } else {
         // Live injection disabled: pass a dummy receiver that never yields.
@@ -1056,13 +1058,25 @@ async fn process_message(
         // making the SSE select loop skip the injection arm.
         drop(_dummy_tx);
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx)
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx, thread_cancel.clone())
             .await?
     };
 
     // Stop the delivery watcher
     delivery_cancel.cancel();
     let _ = delivery_handle.await;
+
+    // ── 5.5. GUARD: skip reply if thread directory no longer exists ──
+    // If the thread was closed while AI was processing, the directory gets
+    // deleted. Even with SSE cancellation, there's a small race window.
+    // This guard prevents posting comments to closed issues/PRs.
+    if !store_result.thread_path.exists() {
+        tracing::warn!(
+            thread_path = %store_result.thread_path.display(),
+            "Thread directory no longer exists — skipping reply delivery"
+        );
+        return Ok(());
+    }
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
     // The MCP reply tool stores the reply in the chat log and writes a signal file.

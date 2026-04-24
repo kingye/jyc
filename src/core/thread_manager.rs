@@ -457,6 +457,7 @@ impl ThreadManager {
                     &template_dir,
                     &config,
                     tm.clone(),
+                    thread_cancel.clone(),
                 ).await {
                     tracing::error!(
                         error = %format!("{:#}", e),
@@ -893,6 +894,7 @@ async fn process_message(
     template_dir: &PathBuf,
     config: &Arc<ArcSwap<crate::config::types::AppConfig>>,
     thread_manager: Arc<ThreadManager>,
+    thread_cancel: CancellationToken,
 ) -> Result<()> {
     let message = &item.message;
 
@@ -1041,22 +1043,15 @@ async fn process_message(
     });
 
     let result = if item.live_injection {
-        // Live injection enabled: pass real queue receiver so new messages
-        // arriving during AI processing get injected into the active session.
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx)
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx, thread_cancel.clone())
             .await?
     } else {
-        // Live injection disabled: pass a dummy receiver that never yields.
-        // Messages stay in the real queue and are processed sequentially
-        // after the current AI call completes.
         tracing::debug!("Live injection disabled for this pattern, using sequential processing");
         let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
-        // Drop _dummy_tx immediately so dummy_rx.recv() returns None instantly,
-        // making the SSE select loop skip the injection arm.
         drop(_dummy_tx);
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx)
+            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx, thread_cancel.clone())
             .await?
     };
 

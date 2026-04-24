@@ -7,6 +7,7 @@ use std::path::Path;
 
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::types::*;
 use crate::core::thread_event::ThreadEvent;
@@ -360,6 +361,7 @@ impl OpenCodeClient {
         request: &PromptRequest,
         mode_label: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<SseResult> {
         // 1. Subscribe to SSE events scoped to the thread directory
         let sse_url = format!(
@@ -588,6 +590,12 @@ impl OpenCodeClient {
 
                         last_progress_log = Instant::now();
                     }
+                }
+
+                // Thread cancellation: close the SSE stream when the thread is closed
+                _ = thread_cancel.cancelled() => {
+                    tracing::info!("Thread cancelled — closing SSE stream");
+                    done = true;
                 }
 
                 // Live message injection: new message arrived while AI is processing

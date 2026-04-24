@@ -412,3 +412,34 @@ pub struct OutboundAttachmentConfig {
     /// Max number of attachments to send per message
     pub max_per_message: Option<usize>,
 }
+
+/// Idle cleanup configuration for a channel pattern.
+///
+/// When enabled, automatically removes large subdirectories (e.g., cloned `repo/`)
+/// from idle threads while preserving all metadata (`.jyc/`, chat history, sessions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdleCleanupConfig {
+    /// Whether idle cleanup is enabled (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Idle timeout in seconds before cleaning (default: 86400 = 24 hours)
+    #[serde(default = "default_86400")]
+    pub timeout_secs: u64,
+
+    /// Subdirectory paths to clean (e.g., ["repo"]) (default: [])
+    #[serde(default)]
+    pub clean_paths: Vec<String>,
+
+    /// Scan interval in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_300")]
+    pub interval_secs: u64,
+}
+
+fn default_86400() -> u64 {
+    86400
+}
+
+fn default_300() -> u64 {
+    300
+}

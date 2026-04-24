@@ -434,6 +434,11 @@ pub struct IdleCleanupConfig {
     /// Scan interval in seconds (default: 300 = 5 minutes)
     #[serde(default = "default_300")]
     pub interval_secs: u64,
+
+    /// Whether to skip cleanup for threads matching this pattern (default: true)
+    /// When true, a .jyc/idle-cleanup-skip.flag file is created on thread creation.
+    #[serde(default = "default_true")]
+    pub skip_cleanup: bool,
 }
 
 fn default_86400() -> u64 {

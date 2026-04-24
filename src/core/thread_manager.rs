@@ -424,6 +424,20 @@ impl ThreadManager {
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
+
+                    // Write idle-cleanup-skip.flag if skip_cleanup is enabled (default)
+                    let skip_flag = thread_path.join(".jyc").join("idle-cleanup-skip.flag");
+                    let config = tm.config.load();
+                    let should_skip = config.channels.get(&tm.channel_name)
+                        .and_then(|ch| ch.patterns.as_ref())
+                        .and_then(|patterns| patterns.iter().find(|p| p.name == item.pattern_match.pattern_name))
+                        .map(|p| p.idle_cleanup.as_ref().map_or(true, |c| c.skip_cleanup))
+                        .unwrap_or(true);
+                    if should_skip && !skip_flag.exists() {
+                        if let Err(e) = tokio::fs::write(&skip_flag, "").await {
+                            tracing::warn!(error = %e, "Failed to write idle-cleanup-skip.flag");
+                        }
+                    }
                 }
 
                 // Update current message for event listeners

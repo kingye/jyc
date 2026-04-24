@@ -83,6 +83,11 @@ async fn sweep_once(
             continue;
         }
 
+        if jyc_dir.join("idle-cleanup-skip.flag").exists() {
+            tracing::debug!(thread = %thread_name, "Skipping thread with idle-cleanup-skip.flag");
+            continue;
+        }
+
         let pattern_file = jyc_dir.join("pattern");
         let pattern_name = if pattern_file.exists() {
             fs::read_to_string(&pattern_file).await?.trim().to_string()
@@ -207,6 +212,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -245,6 +251,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -284,6 +291,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -324,6 +332,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];

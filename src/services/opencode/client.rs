@@ -670,10 +670,11 @@ impl OpenCodeClient {
 
         // Publish ProcessingCompleted event if event bus is available
         let duration = start_time.elapsed();
+        let was_cancelled = thread_cancel.is_cancelled();
         self.publish_event_async(ThreadEvent::ProcessingCompleted {
             thread_name,
             message_id: session_id.to_string(), // Use session_id as proxy for message_id
-            success: true, // We only get here if no error occurred
+            success: !was_cancelled && result.error.is_none(),
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
         });

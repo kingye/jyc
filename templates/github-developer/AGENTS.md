@@ -99,7 +99,8 @@ Read the triggering comment at the bottom of the incoming message.
         ```
      - **Push after each step — do NOT batch**
    - If specific task: do what the comment asks
-     - Run `{check_command}` to verify
+      - Run `{check_command}` to verify
+      - Run `{test_command}` and include the full output in your PR comment
 
 3. **Commit and push**:
    ```bash
@@ -117,7 +118,11 @@ Read the triggering comment at the bottom of the incoming message.
    - `docs: <what>` for documentation tasks
    - Other semantic commit types as appropriate
 
-4. **Hand off to Reviewer**:
+ 4. **Run tests (MANDATORY)**:
+    Before handing off, you MUST run `{test_command}` and include the full output in your PR comment.
+    If any tests fail, fix them and re-run before proceeding.
+
+ 5. **Hand off to Reviewer**:
    Always hand off to Reviewer after completing any task (initial implementation or reviewer feedback fix).
    ```bash
    gh label create ready-for-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
@@ -127,7 +132,12 @@ Read the triggering comment at the bottom of the incoming message.
 
 5. **Reply on the PR**:
    ```bash
-   gh pr comment <number> --body "[Developer] Step completed: <summary of what was done>"
+   gh pr comment <number> --body "[Developer] Step completed: <summary of what was done>
+
+   ## Test Results
+   \`\`\`
+   <paste full {test_command} output here>
+   \`\`\`"
    ```
 
 6. **Wait for the next trigger** (new issues matching pattern rules or labeled for review)
@@ -142,6 +152,7 @@ Read the triggering comment at the bottom of the incoming message.
 - ALWAYS `cd repo` before running any `gh` or `git` command
 - ALWAYS use `gh pr checkout <number>` to get the existing PR branch
 - ALWAYS run `{check_command}` before each commit
+- **MANDATORY: You MUST run `{test_command}` after ANY code change and include the full test output in your PR comment. A PR without test results is NOT complete and will NOT be approved.**
 - ALWAYS commit and push after EACH plan step
 - ALWAYS prefix PR comments with `[Developer]`
 - NEVER implement multiple plan steps before committing

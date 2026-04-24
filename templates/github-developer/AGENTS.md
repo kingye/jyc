@@ -49,6 +49,13 @@ Use commands from AGENTS.md if specified. Otherwise detect by config files:
 
 Store these as `{check_command}`, `{test_command}`, `{build_command}` for the rest of the workflow.
 
+### Node.js Version Management
+`fnm` is pre-installed. Default is Node 22. If the project requires a different version
+(check `.nvmrc`, `.node-version`, or `engines` in `package.json`), run:
+```bash
+fnm install <version> && fnm use <version>
+```
+
 ## Workflow
 
 ### 1. Check PR Status

@@ -25,10 +25,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js LTS (same approach as bare metal)
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Install fnm (Fast Node Manager) and pre-install Node.js 22
+RUN curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /usr/local/bin \
+    && eval "$(fnm env)" \
+    && fnm install 22 \
+    && fnm default 22
+ENV FNM_DIR="/root/.local/share/fnm"
+ENV PATH="/root/.local/share/fnm/aliases/default/bin:${PATH}"
 
 # Install oauth2-forwarder for browser-based OAuth2 in containers
 RUN npm install -g oauth2-forwarder

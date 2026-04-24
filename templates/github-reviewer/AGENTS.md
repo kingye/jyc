@@ -65,6 +65,13 @@ ls .opencode/skills/ 2>/dev/null || ls .claude/ 2>/dev/null || true
 ```
 Use the conventions found in these files as the basis for your review.
 
+### Node.js Version Management
+`fnm` is pre-installed. Default is Node 22. If the project requires a different version
+(check `.nvmrc`, `.node-version`, or `engines` in `package.json`), run:
+```bash
+fnm install <version> && fnm use <version>
+```
+
 ### 4. Review the Code
 
 **Lightweight verification only** — use `cargo check` (Rust) or `npm run lint` (Node/CDS) if needed. **NEVER run `cargo build`, `cargo build --release`, or `npm run build`** — full builds are the developer's responsibility.

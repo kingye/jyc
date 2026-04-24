@@ -63,10 +63,15 @@ if ! command -v python3 &> /dev/null; then
     sudo apt-get install -y python3 python3-pip
 fi
 
-echo "=== Installing Node.js LTS ==="
+echo "=== Installing fnm and Node.js 22 ==="
+if ! command -v fnm &> /dev/null; then
+    curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir "$HOME/.local/bin"
+fi
+export FNM_DIR="$HOME/.local/share/fnm"
+eval "$(fnm env)"
 if ! command -v node &> /dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+    fnm install 22
+    fnm default 22
 fi
 
 echo "=== Installing GitHub CLI ==="

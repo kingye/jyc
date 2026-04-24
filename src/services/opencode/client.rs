@@ -1216,3 +1216,56 @@ fn urlencoding_encode(s: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn test_cancellation_token_interrupts_select_loop() {
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut done = false;
+            loop {
+                if done {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+                        done = true;
+                    }
+                    _ = cancel_clone.cancelled() => {
+                        done = true;
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "Task should complete promptly after cancellation");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_child_propagation() {
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = child.cancelled() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        parent.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "Child token should be cancelled when parent is cancelled");
+    }
+}

@@ -83,6 +83,11 @@ async fn sweep_once(
             continue;
         }
 
+        if jyc_dir.join("idle-cleanup-skip.flag").exists() {
+            tracing::debug!(thread = %thread_name, "Skipping thread with idle-cleanup-skip.flag");
+            continue;
+        }
+
         let pattern_file = jyc_dir.join("pattern");
         let pattern_name = if pattern_file.exists() {
             fs::read_to_string(&pattern_file).await?.trim().to_string()
@@ -207,6 +212,47 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
+        });
+
+        let patterns = vec![pattern];
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
+
+        assert!(thread_dir.join("repo").exists());
+    }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_skips_skip_flag() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let thread_dir = workspace.join("skipped-thread");
+        fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
+        fs::create_dir_all(thread_dir.join("repo")).await.unwrap();
+
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+        fs::write(thread_dir.join(".jyc").join("idle-cleanup-skip.flag"), "").await.unwrap();
+
+        let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
+        let old_filetime = filetime::FileTime::from_system_time(old_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
+
+        let mut pattern = ChannelPattern::default();
+        pattern.name = "developer".to_string();
+        pattern.idle_cleanup = Some(crate::config::types::IdleCleanupConfig {
+            enabled: true,
+            timeout_secs: 86400,
+            clean_paths: vec!["repo".to_string()],
+            interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -245,6 +291,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -284,6 +331,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];
@@ -324,6 +372,7 @@ mod tests {
             timeout_secs: 86400,
             clean_paths: vec!["repo".to_string()],
             interval_secs: 300,
+            skip_cleanup: false,
         });
 
         let patterns = vec![pattern];

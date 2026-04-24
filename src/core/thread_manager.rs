@@ -75,7 +75,7 @@ pub struct ThreadManager {
     enable_events: bool,
 
     // Per-thread cancellation tokens (used by close_thread to stop workers)
-    thread_cancels: Mutex<HashMap<String, CancellationToken>>,
+    pub(crate) thread_cancels: Mutex<HashMap<String, CancellationToken>>,
 
     // Heartbeat configuration
     heartbeat_config: HeartbeatConfig,

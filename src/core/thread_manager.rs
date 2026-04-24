@@ -1059,6 +1059,18 @@ async fn process_message(
     delivery_cancel.cancel();
     let _ = delivery_handle.await;
 
+    // ── 5.5. GUARD: skip reply if thread directory no longer exists ──
+    // If the thread was closed while AI was processing, the directory gets
+    // deleted. Even with SSE cancellation, there's a small race window.
+    // This guard prevents posting comments to closed issues/PRs.
+    if !store_result.thread_path.exists() {
+        tracing::warn!(
+            thread_path = %store_result.thread_path.display(),
+            "Thread directory no longer exists — skipping reply delivery"
+        );
+        return Ok(());
+    }
+
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
     // The MCP reply tool stores the reply in the chat log and writes a signal file.
     // The monitor process (this code) handles actual delivery using its

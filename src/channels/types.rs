@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::types::InboundAttachmentConfig;
+use crate::config::types::{IdleCleanupConfig, InboundAttachmentConfig};
 
 /// Channel type identifier (e.g., "email", "feishu", "slack")
 pub type ChannelType = String;
@@ -278,6 +278,10 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
+    /// Idle cleanup configuration for this pattern.
+    /// When enabled, automatically removes specified subdirectories from idle threads.
+    #[serde(default)]
+    pub idle_cleanup: Option<IdleCleanupConfig>,
 }
 
 impl Default for ChannelPattern {
@@ -292,6 +296,7 @@ impl Default for ChannelPattern {
             thread_name: None,
             role: None,
             live_injection: true,
+            idle_cleanup: None,
         }
     }
 }

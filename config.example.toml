@@ -295,6 +295,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
 #
+# # Idle cleanup: automatically remove cloned repo directories from idle threads
+# # Only threads matching this pattern are affected; default is off.
+# idle_cleanup = { enabled = true, timeout_secs = 86400, clean_paths = ["repo"], interval_secs = 300 }
+#
 # # Pattern: PRs with 'ready-for-review' label → Reviewer agent (auto-trigger)
 # [[channels.my_repo.patterns]]
 # name = "reviewer"

@@ -7,6 +7,7 @@ use std::path::Path;
 
 use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::types::*;
 use crate::core::thread_event::ThreadEvent;
@@ -360,6 +361,7 @@ impl OpenCodeClient {
         request: &PromptRequest,
         mode_label: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
+        thread_cancel: CancellationToken,
     ) -> Result<SseResult> {
         // 1. Subscribe to SSE events scoped to the thread directory
         let sse_url = format!(
@@ -590,6 +592,12 @@ impl OpenCodeClient {
                     }
                 }
 
+                // Thread cancellation: close the SSE stream when the thread is closed
+                _ = thread_cancel.cancelled() => {
+                    tracing::info!("Thread cancelled — closing SSE stream");
+                    done = true;
+                }
+
                 // Live message injection: new message arrived while AI is processing
                 new_item = pending_rx.recv() => {
                     if let Some(item) = new_item {
@@ -662,10 +670,11 @@ impl OpenCodeClient {
 
         // Publish ProcessingCompleted event if event bus is available
         let duration = start_time.elapsed();
+        let was_cancelled = thread_cancel.is_cancelled();
         self.publish_event_async(ThreadEvent::ProcessingCompleted {
             thread_name,
             message_id: session_id.to_string(), // Use session_id as proxy for message_id
-            success: true, // We only get here if no error occurred
+            success: !was_cancelled && result.error.is_none(),
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
         });
@@ -1207,4 +1216,57 @@ fn urlencoding_encode(s: &str) -> String {
             _ => format!("%{:02X}", b),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn test_cancellation_token_interrupts_select_loop() {
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut done = false;
+            loop {
+                if done {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+                        done = true;
+                    }
+                    _ = cancel_clone.cancelled() => {
+                        done = true;
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "Task should complete promptly after cancellation");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_child_propagation() {
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = child.cancelled() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        parent.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "Child token should be cancelled when parent is cancelled");
+    }
 }

@@ -221,4 +221,74 @@ mode = "opencode"
         assert!(received.is_some(), "Real channel should receive messages");
         assert_eq!(received.unwrap().message.id, "1");
     }
+
+    /// Verify that close_thread cancels the per-thread CancellationToken,
+    /// which is the mechanism that interrupts the SSE stream in prompt_with_sse.
+    #[tokio::test]
+    async fn test_close_thread_cancels_token() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let thread_dir = workspace.join("test_thread");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+
+        let storage = Arc::new(crate::core::message_storage::MessageStorage::new(&workspace));
+
+        let thread_manager = crate::core::thread_manager::ThreadManager::new(
+            3,
+            10,
+            storage,
+            Arc::new(crate::channels::email::outbound::EmailOutboundAdapter::new(
+                &crate::config::types::SmtpConfig {
+                    host: "smtp.example.com".into(),
+                    port: 465,
+                    secure: true,
+                    username: "test".into(),
+                    password: "test".into(),
+                    from_address: Some("test@example.com".into()),
+                    from_name: None,
+                },
+                Arc::new(crate::core::message_storage::MessageStorage::new(&workspace)),
+            )),
+            Arc::new(StaticAgentService::new("test reply")),
+            tokio_util::sync::CancellationToken::new(),
+            crate::config::types::HeartbeatConfig::default(),
+            "".into(),
+            PathBuf::from("/tmp/templates"),
+            test_config(),
+            "test".to_string(),
+            workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
+        );
+
+        // Insert a cancellation token manually (simulating what create_and_enqueue does)
+        let token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut cancels = thread_manager.thread_cancels.lock().await;
+            cancels.insert("test_thread".to_string(), token.clone());
+        }
+        assert!(!token.is_cancelled());
+
+        thread_manager.close_thread("test_thread").await.unwrap();
+
+        assert!(token.is_cancelled(), "close_thread should cancel the per-thread token");
+    }
+
+    /// Verify that a deleted thread directory is correctly detected,
+    /// which is the guard condition used in process_message to skip
+    /// reply delivery when the thread was closed during AI processing.
+    #[tokio::test]
+    async fn test_deleted_thread_directory_detection() {
+        let tmp = TempDir::new().unwrap();
+        let thread_path = tmp.path().join("test_thread");
+        std::fs::create_dir_all(&thread_path).unwrap();
+        assert!(thread_path.exists(), "Thread directory should exist initially");
+
+        std::fs::remove_dir_all(&thread_path).unwrap();
+        assert!(!thread_path.exists(), "Thread directory should not exist after deletion");
+
+        // This is the same check used in process_message():
+        // if !store_result.thread_path.exists() { return Ok(()); }
+        // The guard correctly skips reply delivery when the directory is gone.
+    }
 }

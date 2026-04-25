@@ -12,6 +12,20 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
     workdir.join(channel).join("workspace")
 }
 
+/// Resolve the shared repo directory for a repo group key.
+///
+/// Convention: `<workspace>/repos/<group_key>/`
+pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
+    workspace.join("repos").join(group_key)
+}
+
+/// Compute the repo group key from a `repo_group` config value and GitHub number.
+///
+/// Returns `"{repo_group}-{github_number}"`.
+pub fn compute_repo_group_key(repo_group: &str, github_number: u64) -> String {
+    format!("{}-{}", repo_group, github_number)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +76,19 @@ mod tests {
     fn test_resolve_workspace_feishu() {
         let ws = resolve_workspace(Path::new("/data"), "feishu_bot");
         assert_eq!(ws, PathBuf::from("/data/feishu_bot/workspace"));
+    }
+
+    #[test]
+    fn test_resolve_shared_repo_dir() {
+        let ws = Path::new("/data/github/workspace");
+        let shared = resolve_shared_repo_dir(&ws, "pr-42");
+        assert_eq!(shared, PathBuf::from("/data/github/workspace/repos/pr-42"));
+    }
+
+    #[test]
+    fn test_compute_repo_group_key() {
+        assert_eq!(compute_repo_group_key("pr", 42), "pr-42");
+        assert_eq!(compute_repo_group_key("repo", 1), "repo-1");
     }
 
     // === MessageStorage.store_with_match (real production path) ===

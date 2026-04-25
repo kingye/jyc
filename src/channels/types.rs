@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::types::{IdleCleanupConfig, InboundAttachmentConfig};
+use crate::config::types::InboundAttachmentConfig;
 
 /// Channel type identifier (e.g., "email", "feishu", "slack")
 pub type ChannelType = String;
@@ -278,10 +278,6 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
-    /// Idle cleanup configuration for this pattern.
-    /// When enabled, automatically removes specified subdirectories from idle threads.
-    #[serde(default)]
-    pub idle_cleanup: Option<IdleCleanupConfig>,
     /// Repo group key for shared repo directories among GitHub threads.
     /// When set, threads matching this pattern share a single repo clone
     /// via symlinks, saving disk space. The group key is `"{repo_group}-{github_number}"`.
@@ -302,7 +298,6 @@ impl Default for ChannelPattern {
             thread_name: None,
             role: None,
             live_injection: true,
-            idle_cleanup: None,
             repo_group: None,
         }
     }

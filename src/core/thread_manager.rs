@@ -328,8 +328,8 @@ impl ThreadManager {
         let tm_span = tracing::info_span!("tm", t = %thread_name);
 
         tokio::spawn(async move {
-            let _permit = tokio::select! {
-                permit = semaphore.acquire_owned() => match permit {
+            let mut _permit = tokio::select! {
+                permit = semaphore.clone().acquire_owned() => match permit {
                     Ok(p) => p,
                     Err(_) => return,
                 },
@@ -382,20 +382,25 @@ impl ThreadManager {
                 None
             };
 
+            let mut pending: Option<QueueItem> = None;
+
             loop {
-                let item = tokio::select! {
-                    item = rx.recv() => match item {
-                        Some(item) => item,
-                        None => break,
+                let item = match pending.take() {
+                    Some(item) => item,
+                    None => tokio::select! {
+                        item = rx.recv() => match item {
+                            Some(item) => item,
+                            None => break,
+                        },
+                        _ = cancel.cancelled() => {
+                            tracing::info!("Worker cancelled");
+                            break;
+                        }
+                        _ = thread_cancel.cancelled() => {
+                            tracing::info!("Worker cancelled (thread closed)");
+                            break;
+                        }
                     },
-                    _ = cancel.cancelled() => {
-                        tracing::info!("Worker cancelled");
-                        break;
-                    }
-                    _ = thread_cancel.cancelled() => {
-                        tracing::info!("Worker cancelled (thread closed)");
-                        break;
-                    }
                 };
 
                 // Initialize thread from template if needed
@@ -403,7 +408,6 @@ impl ThreadManager {
                     let workspace = storage.workspace();
                     let thread_path = workspace.join(&thread_name);
                     
-                    // Initialize template first (before creating .jyc to avoid exists check failing)
                     if let Err(e) = initialize_thread_from_template(
                         &thread_path,
                         template_name,
@@ -416,7 +420,6 @@ impl ThreadManager {
                         );
                     }
                     
-                    // Create shared repo directory and symlink if repo_group_key is present
                     if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
                         let shared_repo_dir = crate::core::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
                         let symlink_path = thread_path.join("repo");
@@ -448,31 +451,12 @@ impl ThreadManager {
                         }
                     }
                     
-                    // Save pattern name for /template command (after template init)
                     let pattern_file = thread_path.join(".jyc").join("pattern");
                     if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
                         tracing::warn!(error = %e, "Failed to create .jyc directory");
                     }
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
-                    }
-
-                    // Write idle-cleanup-skip.flag if skip_cleanup is enabled (default)
-                    let skip_flag = thread_path.join(".jyc").join("idle-cleanup-skip.flag");
-                    let config = tm.config.load();
-                    let should_skip = config.channels.get(&tm.channel_name)
-                        .and_then(|ch| ch.patterns.as_ref())
-                        .and_then(|patterns| patterns.iter().find(|p| p.name == item.pattern_match.pattern_name))
-                        .map(|p| p.idle_cleanup.as_ref().map_or(true, |c| c.skip_cleanup))
-                        .unwrap_or(true);
-                    if should_skip {
-                        if let Err(e) = tokio::fs::write(&skip_flag, "").await {
-                            tracing::warn!(error = %e, "Failed to write idle-cleanup-skip.flag");
-                        }
-                    } else if tokio::fs::metadata(&skip_flag).await.is_ok() {
-                        if let Err(e) = tokio::fs::remove_file(&skip_flag).await {
-                            tracing::warn!(error = %e, "Failed to remove idle-cleanup-skip.flag");
-                        }
                     }
                 }
 
@@ -500,6 +484,45 @@ impl ThreadManager {
                 
                 // Clear current message after processing
                 let _ = current_message_tx.send(None);
+
+                // Release the semaphore permit while idle, so new threads can start.
+                drop(_permit);
+
+                // Re-acquire the permit before receiving the next message.
+                // This ordering prevents message loss: if cancellation fires while
+                // waiting for the permit, no message has been taken from the channel yet.
+                _permit = tokio::select! {
+                    permit = semaphore.clone().acquire_owned() => match permit {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    },
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Worker cancelled while waiting for permit");
+                        break;
+                    }
+                    _ = thread_cancel.cancelled() => {
+                        tracing::info!("Worker cancelled (thread closed) while waiting for permit");
+                        break;
+                    }
+                };
+
+                // Now that we hold the permit, receive the next message.
+                let next = tokio::select! {
+                    item = rx.recv() => match item {
+                        Some(item) => item,
+                        None => break,
+                    },
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Worker cancelled");
+                        break;
+                    }
+                    _ = thread_cancel.cancelled() => {
+                        tracing::info!("Worker cancelled (thread closed)");
+                        break;
+                    }
+                };
+
+                pending = Some(next);
             }
 
             // Wait for event listener to finish

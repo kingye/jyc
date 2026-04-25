@@ -415,4 +415,49 @@ mod tests {
         assert!(!is_safe_path(".."));
         assert!(!is_safe_path("repo/../etc"));
     }
+
+    #[tokio::test]
+    async fn test_idle_cleanup_symlink_only_removes_symlink() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let shared_repo = workspace.join("repos").join("pr-42");
+        fs::create_dir_all(&shared_repo).await.unwrap();
+        fs::write(shared_repo.join("test.txt"), "shared content").await.unwrap();
+
+        let thread_dir = workspace.join("stale-thread");
+        fs::create_dir_all(thread_dir.join(".jyc")).await.unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread_dir.join("repo")).unwrap();
+
+        fs::write(thread_dir.join(".jyc").join("pattern"), "developer").await.unwrap();
+
+        let old_time = SystemTime::now() - std::time::Duration::from_secs(86400 * 2);
+        let old_filetime = filetime::FileTime::from_system_time(old_time);
+        filetime::set_file_mtime(thread_dir.join(".jyc"), old_filetime).unwrap();
+
+        let mut pattern = ChannelPattern::default();
+        pattern.name = "developer".to_string();
+        pattern.idle_cleanup = Some(crate::config::types::IdleCleanupConfig {
+            enabled: true,
+            timeout_secs: 86400,
+            clean_paths: vec!["repo".to_string()],
+            interval_secs: 300,
+            skip_cleanup: false,
+        });
+
+        let patterns = vec![pattern];
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_clone.cancel();
+        });
+
+        start_idle_cleanup_sweep(workspace.to_path_buf(), patterns, cancel).await;
+
+        assert!(!thread_dir.join("repo").exists(), "Symlink should be removed");
+        assert!(shared_repo.join("test.txt").exists(), "Shared repo content should be preserved");
+        assert!(thread_dir.join(".jyc").join("idle-cleaned.flag").exists());
+    }
 }

@@ -91,6 +91,49 @@ mod tests {
         assert_eq!(compute_repo_group_key("repo", 1), "repo-1");
     }
 
+    #[tokio::test]
+    async fn test_symlink_creation_with_repo_group_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("github").join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let group_key = compute_repo_group_key("pr", 42);
+        let shared_repo_dir = resolve_shared_repo_dir(&workspace, &group_key);
+        let thread_path = workspace.join("pr-42");
+
+        tokio::fs::create_dir_all(&shared_repo_dir).await.unwrap();
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+
+        let symlink_path = thread_path.join("repo");
+        assert!(!symlink_path.exists());
+
+        std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path).unwrap();
+        assert!(symlink_path.exists());
+        assert!(tokio::fs::symlink_metadata(&symlink_path).await.unwrap().file_type().is_symlink());
+
+        let target = std::fs::read_link(&symlink_path).unwrap();
+        assert_eq!(target, shared_repo_dir);
+    }
+
+    #[test]
+    fn test_repo_group_backward_compatibility_no_field() {
+        let pattern: crate::channels::types::ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+        "#).unwrap();
+        assert!(pattern.repo_group.is_none(), "repo_group should default to None when omitted from config");
+    }
+
+    #[test]
+    fn test_repo_group_set_via_serde() {
+        let pattern: crate::channels::types::ChannelPattern = toml::from_str(r#"
+            name = "test"
+            repo_group = "pr"
+            [rules]
+        "#).unwrap();
+        assert_eq!(pattern.repo_group.as_deref(), Some("pr"));
+    }
+
     // === MessageStorage.store_with_match (real production path) ===
 
     #[tokio::test]

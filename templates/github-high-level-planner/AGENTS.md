@@ -22,14 +22,17 @@ No `@j:planner` mention is required.
 The trigger message tells you the repository and issue number.
 
 ## Repository Setup
-Clone the repository from the trigger message to `repo/` if not already present,
-then `cd repo` before running any command:
+The `repo/` directory is created by JYC (symlink for grouped patterns, regular
+directory otherwise). Clone into it if `.git` is missing:
 ```bash
 if [ ! -d "repo" ]; then
-    gh repo clone <repository_from_trigger> repo
+    mkdir repo
 fi
-cp -rn repo/.opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 cd repo
+if [ ! -d ".git" ]; then
+    gh repo clone <repository_from_trigger> .
+fi
+cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 ```
 
 ## Workflow

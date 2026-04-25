@@ -871,11 +871,35 @@ impl ThreadManager {
         let thread_path = self.storage.workspace().join(thread_name);
 
         if thread_path.exists() {
+            // Check for symlinks (e.g., repo/) and remove them before remove_dir_all
+            // to prevent remove_dir_all from following symlinks into shared directories
+            let repo_symlink = thread_path.join("repo");
+            match tokio::fs::symlink_metadata(&repo_symlink).await {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    if let Err(e) = tokio::fs::remove_file(&repo_symlink).await {
+                        tracing::warn!(
+                            error = %e,
+                            path = %repo_symlink.display(),
+                            "Failed to remove repo symlink before thread deletion"
+                        );
+                    } else {
+                        tracing::debug!(
+                            thread = %thread_name,
+                            "Removed repo symlink before thread deletion"
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             tokio::fs::remove_dir_all(&thread_path)
                 .await
                 .context(format!("Failed to remove thread directory: {:?}", thread_path))?;
             tracing::info!(thread = %thread_name, "Thread directory deleted");
         }
+
+        // Clean up orphaned shared repos (repos/ dirs no longer referenced by any thread)
+        self.cleanup_orphaned_shared_repos().await;
 
         self.cleanup_thread_state(thread_name).await;
     Ok(())
@@ -905,6 +929,69 @@ impl ThreadManager {
         }
 
         tracing::debug!(thread = %thread_name, "Thread in-memory state cleaned up");
+    }
+
+    /// Clean up shared repos that are no longer referenced by any active thread.
+    ///
+    /// Scans `<workspace>/repos/` and checks if any thread directory still has
+    /// a symlink pointing to each shared repo. Orphaned shared repos are deleted.
+    async fn cleanup_orphaned_shared_repos(&self) {
+        let workspace = self.storage.workspace();
+        let repos_dir = workspace.join("repos");
+
+        let mut repos_entries = match tokio::fs::read_dir(&repos_dir).await {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+
+        while let Ok(Some(entry)) = repos_entries.next_entry().await {
+            let shared_repo_path = entry.path();
+            if !shared_repo_path.is_dir() {
+                continue;
+            }
+
+            let group_key = match entry.file_name().to_str() {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            let mut is_referenced = false;
+            if let Ok(mut thread_entries) = tokio::fs::read_dir(&workspace).await {
+                while let Ok(Some(thread_entry)) = thread_entries.next_entry().await {
+                    let thread_path = thread_entry.path();
+                    if !thread_path.is_dir() {
+                        continue;
+                    }
+                    let repo_link = thread_path.join("repo");
+                    match tokio::fs::symlink_metadata(&repo_link).await {
+                        Ok(meta) if meta.file_type().is_symlink() => {
+                            if let Ok(target) = std::fs::read_link(&repo_link) {
+                                if target == shared_repo_path {
+                                    is_referenced = true;
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if !is_referenced {
+                if let Err(e) = tokio::fs::remove_dir_all(&shared_repo_path).await {
+                    tracing::warn!(
+                        error = %e,
+                        path = %shared_repo_path.display(),
+                        "Failed to remove orphaned shared repo"
+                    );
+                } else {
+                    tracing::info!(
+                        group_key = %group_key,
+                        "Removed orphaned shared repo"
+                    );
+                }
+            }
+        }
     }
 }
 

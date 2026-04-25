@@ -416,6 +416,38 @@ impl ThreadManager {
                         );
                     }
                     
+                    // Create shared repo directory and symlink if repo_group_key is present
+                    if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
+                        let shared_repo_dir = crate::core::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
+                        let symlink_path = thread_path.join("repo");
+
+                        if let Err(e) = tokio::fs::create_dir_all(&shared_repo_dir).await {
+                            tracing::warn!(
+                                error = %e,
+                                path = %shared_repo_dir.display(),
+                                "Failed to create shared repo directory"
+                            );
+                        }
+
+                        if !symlink_path.exists() {
+                            if let Err(e) = std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path) {
+                                tracing::warn!(
+                                    error = %e,
+                                    target = %shared_repo_dir.display(),
+                                    link = %symlink_path.display(),
+                                    "Failed to create repo symlink"
+                                );
+                            } else {
+                                tracing::info!(
+                                    thread = %thread_name,
+                                    group_key = %repo_group_key,
+                                    shared_repo = %shared_repo_dir.display(),
+                                    "Created shared repo symlink"
+                                );
+                            }
+                        }
+                    }
+                    
                     // Save pattern name for /template command (after template init)
                     let pattern_file = thread_path.join(".jyc").join("pattern");
                     if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {

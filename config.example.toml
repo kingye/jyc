@@ -290,6 +290,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # role = "Developer"
 # template = "github-developer"
 # live_injection = false
+# repo_group = "pr"  # Share repo clone with other patterns in the same group
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
@@ -305,6 +306,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
+# repo_group = "pr"  # Share repo clone with developer pattern
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]

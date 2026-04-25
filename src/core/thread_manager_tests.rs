@@ -291,4 +291,169 @@ mode = "opencode"
         // if !store_result.thread_path.exists() { return Ok(()); }
         // The guard correctly skips reply delivery when the directory is gone.
     }
+
+    #[tokio::test]
+    async fn test_close_thread_removes_symlink_preserves_shared_repo() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let shared_repo = workspace.join("repos").join("pr-42");
+        std::fs::create_dir_all(&shared_repo).unwrap();
+        std::fs::write(shared_repo.join("test.txt"), "shared content").unwrap();
+
+        let thread_dir = workspace.join("pr-42");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread_dir.join("repo")).unwrap();
+
+        assert!(thread_dir.join("repo").exists());
+        assert!(shared_repo.join("test.txt").exists());
+
+        let storage = Arc::new(crate::core::message_storage::MessageStorage::new(&workspace));
+
+        let thread_manager = crate::core::thread_manager::ThreadManager::new(
+            3,
+            10,
+            storage,
+            Arc::new(crate::channels::email::outbound::EmailOutboundAdapter::new(
+                &crate::config::types::SmtpConfig {
+                    host: "smtp.example.com".into(),
+                    port: 465,
+                    secure: true,
+                    username: "test".into(),
+                    password: "test".into(),
+                    from_address: Some("test@example.com".into()),
+                    from_name: None,
+                },
+                Arc::new(crate::core::message_storage::MessageStorage::new(&workspace)),
+            )),
+            Arc::new(StaticAgentService::new("test reply")),
+            tokio_util::sync::CancellationToken::new(),
+            crate::config::types::HeartbeatConfig::default(),
+            "".into(),
+            PathBuf::from("/tmp/templates"),
+            test_config(),
+            "test".to_string(),
+            workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
+        );
+
+        let result = thread_manager.close_thread("pr-42").await;
+        assert!(result.is_ok());
+        assert!(!thread_dir.exists(), "Thread directory should be deleted");
+        assert!(!shared_repo.exists(), "Orphaned shared repo should be cleaned up");
+    }
+
+    #[tokio::test]
+    async fn test_close_thread_preserves_shared_repo_when_still_referenced() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let shared_repo = workspace.join("repos").join("pr-42");
+        std::fs::create_dir_all(&shared_repo).unwrap();
+        std::fs::write(shared_repo.join("test.txt"), "shared content").unwrap();
+
+        // Thread 1 with symlink
+        let thread1_dir = workspace.join("pr-42");
+        std::fs::create_dir_all(&thread1_dir).unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread1_dir.join("repo")).unwrap();
+
+        // Thread 2 also with symlink to same shared repo
+        let thread2_dir = workspace.join("review-pr-42");
+        std::fs::create_dir_all(&thread2_dir).unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread2_dir.join("repo")).unwrap();
+
+        let storage = Arc::new(crate::core::message_storage::MessageStorage::new(&workspace));
+
+        let thread_manager = crate::core::thread_manager::ThreadManager::new(
+            3,
+            10,
+            storage,
+            Arc::new(crate::channels::email::outbound::EmailOutboundAdapter::new(
+                &crate::config::types::SmtpConfig {
+                    host: "smtp.example.com".into(),
+                    port: 465,
+                    secure: true,
+                    username: "test".into(),
+                    password: "test".into(),
+                    from_address: Some("test@example.com".into()),
+                    from_name: None,
+                },
+                Arc::new(crate::core::message_storage::MessageStorage::new(&workspace)),
+            )),
+            Arc::new(StaticAgentService::new("test reply")),
+            tokio_util::sync::CancellationToken::new(),
+            crate::config::types::HeartbeatConfig::default(),
+            "".into(),
+            PathBuf::from("/tmp/templates"),
+            test_config(),
+            "test".to_string(),
+            workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
+        );
+
+        // Close thread 1 — shared repo should still be referenced by thread 2
+        let result = thread_manager.close_thread("pr-42").await;
+        assert!(result.is_ok());
+        assert!(!thread1_dir.exists(), "Thread 1 should be deleted");
+        assert!(shared_repo.exists(), "Shared repo should be preserved (still referenced by thread 2)");
+        assert!(shared_repo.join("test.txt").exists(), "Shared repo content should be intact");
+    }
+
+    #[tokio::test]
+    async fn test_close_thread_both_symlinks_removes_shared_repo() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let shared_repo = workspace.join("repos").join("pr-42");
+        std::fs::create_dir_all(&shared_repo).unwrap();
+        std::fs::write(shared_repo.join("test.txt"), "shared content").unwrap();
+
+        let thread1_dir = workspace.join("pr-42");
+        std::fs::create_dir_all(&thread1_dir).unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread1_dir.join("repo")).unwrap();
+
+        let thread2_dir = workspace.join("review-pr-42");
+        std::fs::create_dir_all(&thread2_dir).unwrap();
+        std::os::unix::fs::symlink(&shared_repo, thread2_dir.join("repo")).unwrap();
+
+        let storage = Arc::new(crate::core::message_storage::MessageStorage::new(&workspace));
+
+        let thread_manager = crate::core::thread_manager::ThreadManager::new(
+            3,
+            10,
+            storage,
+            Arc::new(crate::channels::email::outbound::EmailOutboundAdapter::new(
+                &crate::config::types::SmtpConfig {
+                    host: "smtp.example.com".into(),
+                    port: 465,
+                    secure: true,
+                    username: "test".into(),
+                    password: "test".into(),
+                    from_address: Some("test@example.com".into()),
+                    from_name: None,
+                },
+                Arc::new(crate::core::message_storage::MessageStorage::new(&workspace)),
+            )),
+            Arc::new(StaticAgentService::new("test reply")),
+            tokio_util::sync::CancellationToken::new(),
+            crate::config::types::HeartbeatConfig::default(),
+            "".into(),
+            PathBuf::from("/tmp/templates"),
+            test_config(),
+            "test".to_string(),
+            workspace.clone(),
+            crate::core::metrics::MetricsHandle::noop(),
+        );
+
+        // Close thread 1
+        thread_manager.close_thread("pr-42").await.unwrap();
+        assert!(shared_repo.exists(), "Shared repo should be preserved after closing thread 1");
+
+        // Close thread 2 — now no more references
+        thread_manager.close_thread("review-pr-42").await.unwrap();
+        assert!(!shared_repo.exists(), "Orphaned shared repo should be cleaned up when all references gone");
+    }
 }

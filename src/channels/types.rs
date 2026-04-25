@@ -282,6 +282,12 @@ pub struct ChannelPattern {
     /// When enabled, automatically removes specified subdirectories from idle threads.
     #[serde(default)]
     pub idle_cleanup: Option<IdleCleanupConfig>,
+    /// Repo group key for shared repo directories among GitHub threads.
+    /// When set, threads matching this pattern share a single repo clone
+    /// via symlinks, saving disk space. The group key is `"{repo_group}-{github_number}"`.
+    /// Patterns without `repo_group` keep existing behavior (no symlink, no sharing).
+    #[serde(default)]
+    pub repo_group: Option<String>,
 }
 
 impl Default for ChannelPattern {
@@ -297,6 +303,7 @@ impl Default for ChannelPattern {
             role: None,
             live_injection: true,
             idle_cleanup: None,
+            repo_group: None,
         }
     }
 }

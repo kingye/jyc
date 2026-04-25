@@ -231,17 +231,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             "State loaded"
         );
 
-        let cleanup_patterns = patterns.clone();
-        let cleanup_workspace = workspace_dir.clone();
-        let cleanup_cancel = cancel.clone();
-        tokio::spawn(async move {
-            crate::core::idle_cleanup::start_idle_cleanup_sweep(
-                cleanup_workspace,
-                cleanup_patterns,
-                cleanup_cancel,
-            ).await;
-        });
-
         // Spawn the inbound monitor as a task (channel-type-specific)
         let cancel_child = cancel.clone();
         let channel_name_owned = channel_name.clone();

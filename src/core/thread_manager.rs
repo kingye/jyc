@@ -429,7 +429,7 @@ impl ThreadManager {
                             );
                         }
 
-                        if !symlink_path.exists() {
+                        if std::fs::symlink_metadata(&symlink_path).is_err() {
                             if let Err(e) = std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path) {
                                 tracing::warn!(
                                     error = %e,

@@ -18,7 +18,10 @@ number: 43
 The `repo/` directory is created by JYC (symlink for grouped patterns, regular
 directory otherwise). Clone into it if `.git` is missing:
 ```bash
-cd repo  # created by JYC (symlink for grouped patterns, dir otherwise)
+if [ ! -d "repo" ]; then
+    mkdir repo
+fi
+cd repo
 if [ ! -d ".git" ]; then
     gh repo clone <repository_from_trigger> .
 fi

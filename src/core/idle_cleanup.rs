@@ -141,12 +141,26 @@ async fn sweep_once(
                 let target = path.join(clean_path);
                 if target.exists() {
                     cleaned_any = true;
-                    match fs::remove_dir_all(&target).await {
+                    // Check if the target is a symlink — if so, remove only the symlink
+                    // to avoid destroying shared repos
+                    let is_symlink = fs::symlink_metadata(&target)
+                        .await
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+
+                    let remove_result = if is_symlink {
+                        fs::remove_file(&target).await
+                    } else {
+                        fs::remove_dir_all(&target).await
+                    };
+
+                    match remove_result {
                         Ok(_) => {
                             info!(
                                 thread = %thread_name,
                                 path = %target.display(),
                                 idle_secs = idle_duration.num_seconds(),
+                                symlink = is_symlink,
                                 "Cleaned idle thread subdirectory"
                             );
                         }

@@ -278,7 +278,6 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
-
     /// Repo group key for shared repo directories among GitHub threads.
     /// When set, threads matching this pattern share a single repo clone
     /// via symlinks, saving disk space. The group key is `"{repo_group}-{github_number}"`.

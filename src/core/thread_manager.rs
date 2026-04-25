@@ -488,23 +488,9 @@ impl ThreadManager {
                 // Release the semaphore permit while idle, so new threads can start.
                 drop(_permit);
 
-                // Wait for the next message without holding the permit.
-                let next = tokio::select! {
-                    item = rx.recv() => match item {
-                        Some(item) => item,
-                        None => break,
-                    },
-                    _ = cancel.cancelled() => {
-                        tracing::info!("Worker cancelled");
-                        break;
-                    }
-                    _ = thread_cancel.cancelled() => {
-                        tracing::info!("Worker cancelled (thread closed)");
-                        break;
-                    }
-                };
-
-                // Re-acquire the permit before processing the next message.
+                // Re-acquire the permit before receiving the next message.
+                // This ordering prevents message loss: if cancellation fires while
+                // waiting for the permit, no message has been taken from the channel yet.
                 _permit = tokio::select! {
                     permit = semaphore.clone().acquire_owned() => match permit {
                         Ok(p) => p,
@@ -516,6 +502,22 @@ impl ThreadManager {
                     }
                     _ = thread_cancel.cancelled() => {
                         tracing::info!("Worker cancelled (thread closed) while waiting for permit");
+                        break;
+                    }
+                };
+
+                // Now that we hold the permit, receive the next message.
+                let next = tokio::select! {
+                    item = rx.recv() => match item {
+                        Some(item) => item,
+                        None => break,
+                    },
+                    _ = cancel.cancelled() => {
+                        tracing::info!("Worker cancelled");
+                        break;
+                    }
+                    _ = thread_cancel.cancelled() => {
+                        tracing::info!("Worker cancelled (thread closed)");
                         break;
                     }
                 };

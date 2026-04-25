@@ -3,6 +3,62 @@
 GitHub Issue/PR channel for JYC — enables multi-agent workflows on GitHub
 repositories through issue discussion, PR development, and code review.
 
+## repo_group — Shared Repo Directories
+
+When multiple GitHub agent threads (e.g., Developer and Reviewer) work on the
+same PR, each normally clones the repository independently, wasting disk space.
+The `repo_group` field on `ChannelPattern` enables shared repo directories via
+symlinks.
+
+### How It Works
+
+1. Add `repo_group = "pr"` to patterns that should share a repo clone
+2. JYC computes a group key: `"{repo_group}-{github_number}"` (e.g., `"pr-42"`)
+3. On thread init, JYC creates `<workspace>/repos/<group_key>/` and symlinks
+   `<thread_path>/repo` → the shared directory
+4. Agents are group-agnostic — they just `cd repo` and clone if `.git` is missing
+5. When a thread is closed, the symlink is removed first (before `remove_dir_all`)
+6. Shared repos are cleaned up when no remaining thread references them
+
+### Directory Structure
+
+```
+<workdir>/<channel>/workspace/
+  pr-42/               ← Developer agent
+    .jyc/
+    repo/ → ../../repos/pr-42/   ← symlink
+  review-pr-42/        ← Reviewer agent
+    .jyc/
+    repo/ → ../../repos/pr-42/   ← symlink (same shared repo)
+  repos/
+    pr-42/             ← Shared repo directory (actual clone)
+      .git/
+      src/
+      ...
+```
+
+### Configuration
+
+```toml
+# Developer and Reviewer share the same repo clone for a PR
+[[channels.my_repo.patterns]]
+name = "developer"
+role = "Developer"
+template = "github-developer"
+repo_group = "pr"
+
+[[channels.my_repo.patterns]]
+name = "reviewer"
+role = "Reviewer"
+template = "github-reviewer"
+repo_group = "pr"
+```
+
+### Backward Compatibility
+
+Patterns without `repo_group` keep existing behavior — no symlink, no sharing.
+`repo_group` is fully opt-in and does not affect non-GitHub channels.
+
 ## Design Principles
 
 1. **Channel = Lightweight Trigger + Router** — Channel only polls events and

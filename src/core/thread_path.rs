@@ -12,6 +12,20 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
     workdir.join(channel).join("workspace")
 }
 
+/// Resolve the shared repo directory for a repo group key.
+///
+/// Convention: `<workspace>/repos/<group_key>/`
+pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
+    workspace.join("repos").join(group_key)
+}
+
+/// Compute the repo group key from a `repo_group` config value and GitHub number.
+///
+/// Returns `"{repo_group}-{github_number}"`.
+pub fn compute_repo_group_key(repo_group: &str, github_number: u64) -> String {
+    format!("{}-{}", repo_group, github_number)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +76,62 @@ mod tests {
     fn test_resolve_workspace_feishu() {
         let ws = resolve_workspace(Path::new("/data"), "feishu_bot");
         assert_eq!(ws, PathBuf::from("/data/feishu_bot/workspace"));
+    }
+
+    #[test]
+    fn test_resolve_shared_repo_dir() {
+        let ws = Path::new("/data/github/workspace");
+        let shared = resolve_shared_repo_dir(&ws, "pr-42");
+        assert_eq!(shared, PathBuf::from("/data/github/workspace/repos/pr-42"));
+    }
+
+    #[test]
+    fn test_compute_repo_group_key() {
+        assert_eq!(compute_repo_group_key("pr", 42), "pr-42");
+        assert_eq!(compute_repo_group_key("repo", 1), "repo-1");
+    }
+
+    #[tokio::test]
+    async fn test_symlink_creation_with_repo_group_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("github").join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let group_key = compute_repo_group_key("pr", 42);
+        let shared_repo_dir = resolve_shared_repo_dir(&workspace, &group_key);
+        let thread_path = workspace.join("pr-42");
+
+        tokio::fs::create_dir_all(&shared_repo_dir).await.unwrap();
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+
+        let symlink_path = thread_path.join("repo");
+        assert!(!symlink_path.exists());
+
+        std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path).unwrap();
+        assert!(symlink_path.exists());
+        assert!(tokio::fs::symlink_metadata(&symlink_path).await.unwrap().file_type().is_symlink());
+
+        let target = std::fs::read_link(&symlink_path).unwrap();
+        assert_eq!(target, shared_repo_dir);
+    }
+
+    #[test]
+    fn test_repo_group_backward_compatibility_no_field() {
+        let pattern: crate::channels::types::ChannelPattern = toml::from_str(r#"
+            name = "test"
+            [rules]
+        "#).unwrap();
+        assert!(pattern.repo_group.is_none(), "repo_group should default to None when omitted from config");
+    }
+
+    #[test]
+    fn test_repo_group_set_via_serde() {
+        let pattern: crate::channels::types::ChannelPattern = toml::from_str(r#"
+            name = "test"
+            repo_group = "pr"
+            [rules]
+        "#).unwrap();
+        assert_eq!(pattern.repo_group.as_deref(), Some("pr"));
     }
 
     // === MessageStorage.store_with_match (real production path) ===

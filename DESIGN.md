@@ -2173,21 +2173,6 @@ allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md"]
 enabled = true
 interval_secs = 600                # Default: 10 minutes (avoids SMTP rate limits)
 min_elapsed_secs = 60              # Default: 1 minute before first heartbeat
-
-# --- Alerting ---
-
-[alerting]
-enabled = true
-recipient = "ops@example.com"
-batch_interval_minutes = 5
-max_errors_per_batch = 50
-subject_prefix = "JYC Alert"
-include_reply_tool_log = true
-reply_tool_log_tail_lines = 50
-
-[alerting.health_check]
-enabled = true
-interval_hours = 6
 ```
 
 ### Config Structs
@@ -2276,30 +2261,6 @@ pub struct OpenCodeConfig {
     pub system_prompt: Option<String>,
     // Note: include_thread_history is deprecated — conversation history
     // is no longer injected into the prompt. OpenCode session memory handles it.
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AlertingConfig {
-    pub enabled: bool,
-    pub recipient: String,
-    #[serde(default = "default_5")]
-    pub batch_interval_minutes: u64,
-    #[serde(default = "default_50")]
-    pub max_errors_per_batch: usize,
-    pub subject_prefix: Option<String>,
-    #[serde(default = "default_true")]
-    pub include_reply_tool_log: bool,
-    #[serde(default = "default_50")]
-    pub reply_tool_log_tail_lines: usize,
-    pub health_check: Option<HealthCheckConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HealthCheckConfig {
-    pub enabled: bool,
-    #[serde(default = "default_24")]
-    pub interval_hours: f64,
-    pub recipient: Option<String>,            // Falls back to alerting.recipient
 }
 
 /// Heartbeat configuration — controls progress updates during long AI processing.

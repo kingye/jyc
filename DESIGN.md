@@ -240,7 +240,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
- - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, monitor reply send path (when MCP tool appends to chat log), and AlertService
+ - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback and monitor reply send path (when MCP tool appends to chat log)
 
 **Thread Event System**
 - **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
@@ -550,7 +550,7 @@ The Feishu channel integrates seamlessly with the core JYC architecture:
 - Follows the same pattern matching system
 - Integrates with the thread manager and queue system
 - Supports all existing AI features and command system
-- Compatible with MCP reply tool and alert service
+- Compatible with MCP reply tool
 
 ### Testing
 
@@ -580,7 +580,7 @@ The GitHub channel enables multi-agent AI workflows on GitHub issues and pull re
 │  │ poll_once():     │         │ send_reply():      │                   │
 │  │  list open issues│         │  post comment with │                   │
 │  │  list comments   │         │  [Role] prefix     │                   │
-│  │  detect @j:role  │         │                    │                   │
+│  │  detect labels  │         │                    │                   │
 │  │  detect closes   │         │ send_heartbeat():  │                   │
 │  │  detect edits    │         │  post progress     │                   │
 │  └────────┬─────────┘         └──────────┬─────────┘                   │
@@ -601,68 +601,85 @@ The GitHub channel enables multi-agent AI workflows on GitHub issues and pull re
 
 ### Multi-Agent Workflow
 
-JYC supports a planner/developer/reviewer workflow on GitHub issues and PRs:
+JYC supports a planner/developer/reviewer workflow on GitHub issues and PRs. Agent hand-off is driven by **labels**, not mentions:
 
 ```
-User creates issue
+User creates issue with "jyc:plan" label
     │
-    ├── @j:planner comment
-    │       ↓
-    │   [Planner] analyzes codebase, discusses with user
+    ├── [Planner] analyzes codebase, discusses with user
     │   [Planner] creates empty PR with implementation plan
-    │   [Planner] posts @j:developer comment on PR
+    │   [Planner] adds "jyc:develop" label to PR
     │       ↓
-    ├── @j:developer triggered on PR
+    ├── "jyc:develop" label detected → Developer triggered
     │       ↓
     │   [Developer] implements code per plan
-    │   [Developer] pushes commits, posts @j:reviewer comment
+    │   [Developer] pushes commits, adds "jyc:review" label to PR
     │       ↓
-    ├── @j:reviewer triggered on PR
+    ├── "jyc:review" label detected → Reviewer triggered
     │       ↓
     │   [Reviewer] reviews code changes
-    │   [Reviewer] approves or requests changes via @j:developer
+    │   [Reviewer] approves or requests changes by adding "jyc:develop" label
     │       ↓
     └── Cycle continues until PR is approved and merged
 ```
 
 Each role maps to a pattern with a `role` field and a template that defines the agent's behavior. Templates are in `templates/github-{planner,developer,reviewer}/`.
 
-### Mention-Driven Routing
+### Label-Based Routing
 
-Routing is driven by `@j:<role>` mentions in comments:
+Routing is driven by **labels** on issues and PRs. Patterns with a `role` field get an implicit routing label:
 
-1. **Detection**: `poll_once()` scans comments for the regex `@j:(\w+)` via `extract_mention_role()`
-2. **Metadata**: The extracted role is stored as `handover_role` in message metadata
-3. **Matching**: `GithubMatcher::match_message()` iterates patterns, matching `pattern.role` against `handover_role` (case-insensitive)
-4. **Self-loop prevention**: If the comment's `[Role]` prefix matches the target pattern's role, the pattern is skipped (prevents a `[Developer]` comment with `@j:developer` from re-triggering the developer)
-5. **Rule filtering**: After role matching, `rules_match()` validates `github_type`, `labels`, and `assignees` rules (AND logic between rules, OR logic within each rule)
+| Role | Routing Label |
+|------|--------------|
+| `Developer` | `jyc:develop` |
+| `Reviewer` | `jyc:review` |
+| `Planner` | `jyc:plan` |
+
+1. **Auto-label**: When a pattern has a `role` field, the routing label is automatically included in label matching (OR-merged with any explicit `labels` in pattern config)
+2. **Matching**: `GithubMatcher::match_message()` iterates patterns, checking `rules_match()` against github_type, labels, and assignees
+3. **Self-loop prevention**: If the comment's `[Role]` prefix matches the target pattern's role, the pattern is skipped (prevents a `[Developer]` comment from re-triggering the developer)
+4. **Rule filtering**: After label matching, `rules_match()` validates `github_type`, `labels`, and `assignees` rules (AND logic between rules, OR logic within each rule)
+
+### Label Change Detection
+
+Adding labels to existing issues/PRs triggers routing:
+
+1. Each poll cycle tracks seen issues with key `number:sorted_labels`
+2. When labels change (e.g., user adds `jyc:plan`), the new key is not in the seen set
+3. A trigger message is generated for the issue/PR, allowing Pattern-mode patterns to match on the new label
+4. This enables users to manually add routing labels to route work to agents
 
 ### Pattern Rule Filtering
 
-When a `@j:<role>` mention matches a pattern's role, the pattern's rules are additionally checked:
+When a pattern's rules are evaluated, all rules must match (AND logic):
 
 ```
-@j:developer detected → find patterns with role="Developer"
+Pattern "developer" (rules: github_type=["pull_request"], labels=[["ready-for-dev"]])
     │
-    ├── Pattern "developer" (rules: github_type=["pull_request"], assignees=["alice"])
-    │       ↓
-    │   Check github_type: message is "pull_request" → ✓
-    │   Check assignees: PR assigned to "bob" → ✗
-    │   → SKIP (rules don't match)
-    │
-    ├── Pattern "developer-default" (rules: github_type=["pull_request"])
-    │       ↓
-    │   Check github_type: message is "pull_request" → ✓
-    │   No assignees rule → ✓
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── Check labels: PR has "ready-for-dev" label → ✓
+    │   (auto-label "jyc:develop" is OR-merged with explicit labels)
     │   → MATCH
     │
-    └── Route to thread with "developer-default" pattern
+Pattern "developer-default" (rules: github_type=["pull_request"])
+    │
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── No labels rule → ✓ (auto-label still applied for routing)
+    │   → MATCH
+    │
+Pattern "restricted-dev" (rules: github_type=["pull_request"], assignees=["alice"])
+    │
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── Check assignees: PR assigned to "bob" → ✗
+    │   → SKIP (rules don't match)
+```
 ```
 
 Rules:
 - **`github_type`**: `"issue"` or `"pull_request"` — OR logic within the list
-- **`labels`**: Match if ANY label on the issue/PR is in the pattern's label list — case-insensitive
+- **`labels`**: `LabelRule` — supports flat OR (`["bug", "enhancement"]`) or nested AND-OR/CNF (`[["bug", "enhancement"], ["test"]]`), case-insensitive. Auto-label from `role` is OR-merged with explicit labels.
 - **`assignees`**: Match if ANY assignee on the issue/PR is in the pattern's assignee list — case-insensitive
+- **`exclude_labels`**: If ANY label on the issue/PR matches, the pattern is excluded — OR logic
 - All present rules use **AND logic** (all must pass). `None` rules are considered matched.
 
 ### Close Detection
@@ -738,12 +755,13 @@ The reviewer gets a separate thread prefix so developer and reviewer can work on
 ### Testing
 
 Comprehensive unit tests (14 tests for rule filtering alone) cover:
-- Mention-driven routing (role matching, case-insensitive, unknown role)
+- Label-based routing (auto-label matching, role-to-label mapping)
 - Self-loop prevention (own-role skip, cross-role pass)
 - Rule filtering (github_type, labels, assignees — AND/OR logic, case-insensitive)
 - Pattern fallback (skip first pattern on rule failure, match second)
 - Thread name derivation (issue, PR, reviewer prefix)
 - Persistent comment tracking (track, reload, edit detection, compaction)
+- Label change detection (new label triggers routing)
 - Trigger message building (issue and PR variants)
 
 ## Core Types & Traits
@@ -927,8 +945,23 @@ pub struct PatternRules {
 
     // --- GitHub rules ---
     pub github_type: Option<Vec<String>>,     // Entity type: "issue" or "pull_request" (OR logic)
-    pub labels: Option<Vec<String>>,          // Labels to match (OR logic)
+    pub labels: Option<LabelRule>,            // Label matching (OR or AND-OR logic, see LabelRule)
     pub assignees: Option<Vec<String>>,       // Assignees to match (OR logic, case-insensitive)
+    pub exclude_labels: Option<Vec<String>>,  // Labels that must NOT be present (OR logic)
+}
+
+/// Label matching rule supporting flat OR logic and nested AND-OR (CNF) logic.
+///
+/// Uses `#[serde(untagged)]` for backward compatibility: a flat `["bug"]`
+/// deserializes as `Flat`, while `[["bug"], ["test"]]` deserializes as `Nested`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LabelRule {
+    /// Flat: `["bug", "enhancement"]` → OR logic (at least one label must match)
+    Flat(Vec<String>),
+    /// Nested: `[["bug", "enhancement"], ["test"]]` → CNF (AND of ORs)
+    /// Each inner group must have at least one matching label.
+    Nested(Vec<Vec<String>>),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -968,15 +1001,15 @@ JYC uses **Tokio** as its async runtime. The message processing pipeline is buil
                     │  (multi-threaded)    │
                     └─────────────────────┘
                               │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
-     │ tokio::spawn   │ │ tokio::spawn   │ │ tokio::spawn   │
-     │ IMAP Monitor   │ │ FeiShu Monitor │ │ Alert Service  │
-     │ (channel: work)│ │ (WebSocket)    │ │ (flush timer)  │
-     └───────┬────────┘ └───────┬────────┘ └────────────────┘
-             │                  │
-             ▼                  ▼
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+     ┌────────────────┐               ┌────────────────┐
+     │ tokio::spawn   │               │ tokio::spawn   │
+     │ IMAP Monitor   │               │ FeiShu Monitor │
+     │ (channel: work)│               │ (WebSocket)    │
+     └───────┬────────┘               └───────┬────────┘
+             │                                │
+             ▼                                ▼
       mpsc::Sender ─────> mpsc::Receiver
       (bounded, 256)      (MessageRouter task)
                                 │
@@ -1349,54 +1382,6 @@ impl ThreadManager {
 - **Event Publishing**: Events are published to thread-isolated event bus
 - **Thread Manager Monitoring**: Listens for events and controls heartbeat rhythm
 
-### Alert Service: Event-Driven Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Alert Service                                │
-│                                                                   │
-│  ┌───────────────┐                                               │
-│  │  AppLogger    │  (unified logging + alerting handle)           │
-│  │               │                                               │
-│  │ .error() ─────┼──> tracing::error!() + mpsc::Sender<Event>   │
-│  │ .info()  ─────┼──> tracing::info!()                           │
-│  │ .reply_by_tool()──> tracing + mpsc (health stats)             │
-│  └───────────────┘         │                                     │
-│                            ▼                                     │
-│              ┌─────────────────────────┐                         │
-│              │  Alert Service Task     │                         │
-│              │  (tokio::spawn)         │                         │
-│              │  span: alert            │                         │
-│              │                         │                         │
-│              │  tokio::select! {       │                         │
-│              │    event = rx.recv() => │                         │
-│              │      match event:       │                         │
-│              │        Error →          │                         │
-│              │          buffer_error() │                         │
-│              │        MessageReceived →│                         │
-│              │          track_stats()  │                         │
-│              │        ReplyByTool →    │                         │
-│              │          track_stats()  │                         │
-│              │                         │                         │
-│              │    _ = flush_tick =>    │                         │
-│              │      flush_errors()    │                         │
-│              │      → send digest     │                         │
-│              │                         │                         │
-│              │    _ = health_tick =>   │                         │
-│              │      send_health()     │                         │
-│              │      → send report     │                         │
-│              │                         │                         │
-│              │    _ = cancel =>        │                         │
-│              │      final_flush()     │                         │
-│              │      break             │                         │
-│              │  }                      │                         │
-│              └─────────────────────────┘                         │
-│                                                                   │
-│  AppLogger sends structured AlertEvent variants via mpsc.        │
-│  Self-protection: send failures use eprintln (not tracing).       │
-└──────────────────────────────────────────────────────────────────┘
-```
-
 ### Graceful Shutdown Sequence
 
 ```
@@ -1408,16 +1393,14 @@ Signal (SIGINT/SIGTERM)
        ▼
  CancellationToken::cancel()
        │
-       ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
-       │
-       ├──> ThreadManager workers: finish current message → exit
-       │    (in-queue messages are lost — IMAP re-fetch on restart)
-       │
-       ├──> Alert Service: final flush → send pending errors → exit
-       │
-       ├──> OpenCode Server: explicitly stopped via server.stop()
-       │
-       └──> SMTP connections: disconnect
+        ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
+        │
+        ├──> ThreadManager workers: finish current message → exit
+        │    (in-queue messages are lost — IMAP re-fetch on restart)
+        │
+        ├──> OpenCode Server: explicitly stopped via server.stop()
+        │
+        └──> SMTP connections: disconnect
 
  All JoinHandles awaited → process exits cleanly
 ```
@@ -1441,9 +1424,6 @@ root_cancel (top-level)
     │
     ├── thread_manager_cancel
     │       └── all worker tasks check this
-    │
-    ├── alert_service_cancel
-    │       └── triggers final flush
     │
     └── opencode_service_cancel
             └── aborts SSE streams
@@ -2193,21 +2173,6 @@ allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md"]
 enabled = true
 interval_secs = 600                # Default: 10 minutes (avoids SMTP rate limits)
 min_elapsed_secs = 60              # Default: 1 minute before first heartbeat
-
-# --- Alerting ---
-
-[alerting]
-enabled = true
-recipient = "ops@example.com"
-batch_interval_minutes = 5
-max_errors_per_batch = 50
-subject_prefix = "JYC Alert"
-include_reply_tool_log = true
-reply_tool_log_tail_lines = 50
-
-[alerting.health_check]
-enabled = true
-interval_hours = 6
 ```
 
 ### Config Structs
@@ -2296,30 +2261,6 @@ pub struct OpenCodeConfig {
     pub system_prompt: Option<String>,
     // Note: include_thread_history is deprecated — conversation history
     // is no longer injected into the prompt. OpenCode session memory handles it.
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AlertingConfig {
-    pub enabled: bool,
-    pub recipient: String,
-    #[serde(default = "default_5")]
-    pub batch_interval_minutes: u64,
-    #[serde(default = "default_50")]
-    pub max_errors_per_batch: usize,
-    pub subject_prefix: Option<String>,
-    #[serde(default = "default_true")]
-    pub include_reply_tool_log: bool,
-    #[serde(default = "default_50")]
-    pub reply_tool_log_tail_lines: usize,
-    pub health_check: Option<HealthCheckConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HealthCheckConfig {
-    pub enabled: bool,
-    #[serde(default = "default_24")]
-    pub interval_hours: f64,
-    pub recipient: Option<String>,            // Falls back to alerting.recipient
 }
 
 /// Heartbeat configuration — controls progress updates during long AI processing.
@@ -2530,7 +2471,7 @@ Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refre
 
 ### MetricsCollector
 
-Replaces the old `AlertService`. Components report events via `MetricsHandle`:
+Components report events via `MetricsHandle`:
 
 - `message_received(thread)`, `message_matched(thread)`
 - `reply_by_tool(thread)`, `reply_by_fallback(thread)`
@@ -2597,7 +2538,7 @@ jyc/
 │   │   ├── chat_log_store.rs           # Chat log storage (daily log files)
 │   │   ├── email_parser.rs             # Stripping, quoting, thread trail
 │   │   ├── state_manager.rs            # UID tracking, state persistence
-│   │   ├── metrics.rs                   # MetricsCollector (replaces AlertService)
+│   │   ├── metrics.rs                   # MetricsCollector
 │   │   ├── attachment_storage.rs       # Channel-agnostic attachment saving
 │   │   ├── template_utils.rs           # Template file copying
 │   │   ├── pending_delivery.rs         # Background reply delivery watcher
@@ -2761,7 +2702,6 @@ INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
 INFO worker{channel=jiny283, thread=weather}: Reply sent by MCP tool
 INFO worker{channel=jiny283, thread=weather}: Agent complete reply_sent=true
 INFO worker{channel=jiny283, thread=weather}: Worker finished
-alert: Alert service stopped
 ```
 
 #### Key Rules
@@ -2781,15 +2721,6 @@ alert: Alert service stopped
 | INFO | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start, tool calls |
 | DEBUG | SSE events, session status changes, step finish with costs, AI response text, config details |
 | TRACE | IMAP polling, mailbox select, skipping heartbeat notifications |
-
-### Alert Service Integration
-
-The `AppLogger` provides a unified logging + alerting interface:
-
-1. **Logging methods** (`info()`, `error()`, etc.) delegate to `tracing` for console output
-2. **Structured event methods** (`message_received()`, `reply_by_tool()`, etc.) additionally send events to the alert service via `mpsc` channel
-3. The alert service buffers errors and periodically flushes them as digest emails
-4. Self-protection: alert send failures use `eprintln` (not tracing) to avoid feedback loops
 
 ## Command System
 

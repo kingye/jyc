@@ -677,8 +677,9 @@ Pattern "restricted-dev" (rules: github_type=["pull_request"], assignees=["alice
 
 Rules:
 - **`github_type`**: `"issue"` or `"pull_request"` — OR logic within the list
-- **`labels`**: Match if ANY label on the issue/PR is in the pattern's label list — case-insensitive
+- **`labels`**: `LabelRule` — supports flat OR (`["bug", "enhancement"]`) or nested AND-OR/CNF (`[["bug", "enhancement"], ["test"]]`), case-insensitive. Auto-label from `role` is OR-merged with explicit labels.
 - **`assignees`**: Match if ANY assignee on the issue/PR is in the pattern's assignee list — case-insensitive
+- **`exclude_labels`**: If ANY label on the issue/PR matches, the pattern is excluded — OR logic
 - All present rules use **AND logic** (all must pass). `None` rules are considered matched.
 
 ### Close Detection
@@ -944,8 +945,23 @@ pub struct PatternRules {
 
     // --- GitHub rules ---
     pub github_type: Option<Vec<String>>,     // Entity type: "issue" or "pull_request" (OR logic)
-    pub labels: Option<Vec<String>>,          // Labels to match (OR logic)
+    pub labels: Option<LabelRule>,            // Label matching (OR or AND-OR logic, see LabelRule)
     pub assignees: Option<Vec<String>>,       // Assignees to match (OR logic, case-insensitive)
+    pub exclude_labels: Option<Vec<String>>,  // Labels that must NOT be present (OR logic)
+}
+
+/// Label matching rule supporting flat OR logic and nested AND-OR (CNF) logic.
+///
+/// Uses `#[serde(untagged)]` for backward compatibility: a flat `["bug"]`
+/// deserializes as `Flat`, while `[["bug"], ["test"]]` deserializes as `Nested`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LabelRule {
+    /// Flat: `["bug", "enhancement"]` → OR logic (at least one label must match)
+    Flat(Vec<String>),
+    /// Nested: `[["bug", "enhancement"], ["test"]]` → CNF (AND of ORs)
+    /// Each inner group must have at least one matching label.
+    Nested(Vec<Vec<String>>),
 }
 
 #[derive(Debug, Clone, Deserialize)]

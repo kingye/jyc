@@ -580,7 +580,7 @@ The GitHub channel enables multi-agent AI workflows on GitHub issues and pull re
 │  │ poll_once():     │         │ send_reply():      │                   │
 │  │  list open issues│         │  post comment with │                   │
 │  │  list comments   │         │  [Role] prefix     │                   │
-│  │  detect @j:role  │         │                    │                   │
+│  │  detect labels  │         │                    │                   │
 │  │  detect closes   │         │ send_heartbeat():  │                   │
 │  │  detect edits    │         │  post progress     │                   │
 │  └────────┬─────────┘         └──────────┬─────────┘                   │
@@ -601,62 +601,78 @@ The GitHub channel enables multi-agent AI workflows on GitHub issues and pull re
 
 ### Multi-Agent Workflow
 
-JYC supports a planner/developer/reviewer workflow on GitHub issues and PRs:
+JYC supports a planner/developer/reviewer workflow on GitHub issues and PRs. Agent hand-off is driven by **labels**, not mentions:
 
 ```
-User creates issue
+User creates issue with "jyc:plan" label
     │
-    ├── @j:planner comment
-    │       ↓
-    │   [Planner] analyzes codebase, discusses with user
+    ├── [Planner] analyzes codebase, discusses with user
     │   [Planner] creates empty PR with implementation plan
-    │   [Planner] posts @j:developer comment on PR
+    │   [Planner] adds "jyc:develop" label to PR
     │       ↓
-    ├── @j:developer triggered on PR
+    ├── "jyc:develop" label detected → Developer triggered
     │       ↓
     │   [Developer] implements code per plan
-    │   [Developer] pushes commits, posts @j:reviewer comment
+    │   [Developer] pushes commits, adds "jyc:review" label to PR
     │       ↓
-    ├── @j:reviewer triggered on PR
+    ├── "jyc:review" label detected → Reviewer triggered
     │       ↓
     │   [Reviewer] reviews code changes
-    │   [Reviewer] approves or requests changes via @j:developer
+    │   [Reviewer] approves or requests changes by adding "jyc:develop" label
     │       ↓
     └── Cycle continues until PR is approved and merged
 ```
 
 Each role maps to a pattern with a `role` field and a template that defines the agent's behavior. Templates are in `templates/github-{planner,developer,reviewer}/`.
 
-### Mention-Driven Routing
+### Label-Based Routing
 
-Routing is driven by `@j:<role>` mentions in comments:
+Routing is driven by **labels** on issues and PRs. Patterns with a `role` field get an implicit routing label:
 
-1. **Detection**: `poll_once()` scans comments for the regex `@j:(\w+)` via `extract_mention_role()`
-2. **Metadata**: The extracted role is stored as `handover_role` in message metadata
-3. **Matching**: `GithubMatcher::match_message()` iterates patterns, matching `pattern.role` against `handover_role` (case-insensitive)
-4. **Self-loop prevention**: If the comment's `[Role]` prefix matches the target pattern's role, the pattern is skipped (prevents a `[Developer]` comment with `@j:developer` from re-triggering the developer)
-5. **Rule filtering**: After role matching, `rules_match()` validates `github_type`, `labels`, and `assignees` rules (AND logic between rules, OR logic within each rule)
+| Role | Routing Label |
+|------|--------------|
+| `Developer` | `jyc:develop` |
+| `Reviewer` | `jyc:review` |
+| `Planner` | `jyc:plan` |
+
+1. **Auto-label**: When a pattern has a `role` field, the routing label is automatically included in label matching (OR-merged with any explicit `labels` in pattern config)
+2. **Matching**: `GithubMatcher::match_message()` iterates patterns, checking `rules_match()` against github_type, labels, and assignees
+3. **Self-loop prevention**: If the comment's `[Role]` prefix matches the target pattern's role, the pattern is skipped (prevents a `[Developer]` comment from re-triggering the developer)
+4. **Rule filtering**: After label matching, `rules_match()` validates `github_type`, `labels`, and `assignees` rules (AND logic between rules, OR logic within each rule)
+
+### Label Change Detection
+
+Adding labels to existing issues/PRs triggers routing:
+
+1. Each poll cycle tracks seen issues with key `number:sorted_labels`
+2. When labels change (e.g., user adds `jyc:plan`), the new key is not in the seen set
+3. A trigger message is generated for the issue/PR, allowing Pattern-mode patterns to match on the new label
+4. This enables users to manually add routing labels to route work to agents
 
 ### Pattern Rule Filtering
 
-When a `@j:<role>` mention matches a pattern's role, the pattern's rules are additionally checked:
+When a pattern's rules are evaluated, all rules must match (AND logic):
 
 ```
-@j:developer detected → find patterns with role="Developer"
+Pattern "developer" (rules: github_type=["pull_request"], labels=[["ready-for-dev"]])
     │
-    ├── Pattern "developer" (rules: github_type=["pull_request"], assignees=["alice"])
-    │       ↓
-    │   Check github_type: message is "pull_request" → ✓
-    │   Check assignees: PR assigned to "bob" → ✗
-    │   → SKIP (rules don't match)
-    │
-    ├── Pattern "developer-default" (rules: github_type=["pull_request"])
-    │       ↓
-    │   Check github_type: message is "pull_request" → ✓
-    │   No assignees rule → ✓
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── Check labels: PR has "ready-for-dev" label → ✓
+    │   (auto-label "jyc:develop" is OR-merged with explicit labels)
     │   → MATCH
     │
-    └── Route to thread with "developer-default" pattern
+Pattern "developer-default" (rules: github_type=["pull_request"])
+    │
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── No labels rule → ✓ (auto-label still applied for routing)
+    │   → MATCH
+    │
+Pattern "restricted-dev" (rules: github_type=["pull_request"], assignees=["alice"])
+    │
+    ├── Check github_type: message is "pull_request" → ✓
+    ├── Check assignees: PR assigned to "bob" → ✗
+    │   → SKIP (rules don't match)
+```
 ```
 
 Rules:
@@ -738,12 +754,13 @@ The reviewer gets a separate thread prefix so developer and reviewer can work on
 ### Testing
 
 Comprehensive unit tests (14 tests for rule filtering alone) cover:
-- Mention-driven routing (role matching, case-insensitive, unknown role)
+- Label-based routing (auto-label matching, role-to-label mapping)
 - Self-loop prevention (own-role skip, cross-role pass)
 - Rule filtering (github_type, labels, assignees — AND/OR logic, case-insensitive)
 - Pattern fallback (skip first pattern on rule failure, match second)
 - Thread name derivation (issue, PR, reviewer prefix)
 - Persistent comment tracking (track, reload, edit detection, compaction)
+- Label change detection (new label triggers routing)
 - Trigger message building (issue and PR variants)
 
 ## Core Types & Traits

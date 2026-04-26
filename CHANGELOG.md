@@ -27,7 +27,7 @@ All notable changes to JYC will be documented in this file.
 
 - **README documentation updates** (#96, #98)
 - **Developer agent template simplification** (#59)
-- **Removed model-override file** (#67)
+- **Removed config-level model-override** (#67) — per-thread `.jyc/model-override` still supported via `/model` command
 - **Removed @j:role mentions, use label-based handover instead** (#76)
 - **Dockerfile optimization for dummy main caching** (#57)
 

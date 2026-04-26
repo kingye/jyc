@@ -1399,8 +1399,8 @@ Signal (SIGINT/SIGTERM)
         │    (in-queue messages are lost — IMAP re-fetch on restart)
         │
         ├──> OpenCode Server: explicitly stopped via server.stop()
-       │
-       └──> SMTP connections: disconnect
+        │
+        └──> SMTP connections: disconnect
 
  All JoinHandles awaited → process exits cleanly
 ```

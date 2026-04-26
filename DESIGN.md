@@ -240,7 +240,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
- - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback, monitor reply send path (when MCP tool appends to chat log), and AlertService
+ - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback and monitor reply send path (when MCP tool appends to chat log)
 
 **Thread Event System**
 - **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
@@ -550,7 +550,7 @@ The Feishu channel integrates seamlessly with the core JYC architecture:
 - Follows the same pattern matching system
 - Integrates with the thread manager and queue system
 - Supports all existing AI features and command system
-- Compatible with MCP reply tool and alert service
+- Compatible with MCP reply tool
 
 ### Testing
 
@@ -968,15 +968,15 @@ JYC uses **Tokio** as its async runtime. The message processing pipeline is buil
                     │  (multi-threaded)    │
                     └─────────────────────┘
                               │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
-     │ tokio::spawn   │ │ tokio::spawn   │ │ tokio::spawn   │
-     │ IMAP Monitor   │ │ FeiShu Monitor │ │ Alert Service  │
-     │ (channel: work)│ │ (WebSocket)    │ │ (flush timer)  │
-     └───────┬────────┘ └───────┬────────┘ └────────────────┘
-             │                  │
-             ▼                  ▼
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+     ┌────────────────┐               ┌────────────────┐
+     │ tokio::spawn   │               │ tokio::spawn   │
+     │ IMAP Monitor   │               │ FeiShu Monitor │
+     │ (channel: work)│               │ (WebSocket)    │
+     └───────┬────────┘               └───────┬────────┘
+             │                                │
+             ▼                                ▼
       mpsc::Sender ─────> mpsc::Receiver
       (bounded, 256)      (MessageRouter task)
                                 │
@@ -1349,54 +1349,6 @@ impl ThreadManager {
 - **Event Publishing**: Events are published to thread-isolated event bus
 - **Thread Manager Monitoring**: Listens for events and controls heartbeat rhythm
 
-### Alert Service: Event-Driven Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Alert Service                                │
-│                                                                   │
-│  ┌───────────────┐                                               │
-│  │  AppLogger    │  (unified logging + alerting handle)           │
-│  │               │                                               │
-│  │ .error() ─────┼──> tracing::error!() + mpsc::Sender<Event>   │
-│  │ .info()  ─────┼──> tracing::info!()                           │
-│  │ .reply_by_tool()──> tracing + mpsc (health stats)             │
-│  └───────────────┘         │                                     │
-│                            ▼                                     │
-│              ┌─────────────────────────┐                         │
-│              │  Alert Service Task     │                         │
-│              │  (tokio::spawn)         │                         │
-│              │  span: alert            │                         │
-│              │                         │                         │
-│              │  tokio::select! {       │                         │
-│              │    event = rx.recv() => │                         │
-│              │      match event:       │                         │
-│              │        Error →          │                         │
-│              │          buffer_error() │                         │
-│              │        MessageReceived →│                         │
-│              │          track_stats()  │                         │
-│              │        ReplyByTool →    │                         │
-│              │          track_stats()  │                         │
-│              │                         │                         │
-│              │    _ = flush_tick =>    │                         │
-│              │      flush_errors()    │                         │
-│              │      → send digest     │                         │
-│              │                         │                         │
-│              │    _ = health_tick =>   │                         │
-│              │      send_health()     │                         │
-│              │      → send report     │                         │
-│              │                         │                         │
-│              │    _ = cancel =>        │                         │
-│              │      final_flush()     │                         │
-│              │      break             │                         │
-│              │  }                      │                         │
-│              └─────────────────────────┘                         │
-│                                                                   │
-│  AppLogger sends structured AlertEvent variants via mpsc.        │
-│  Self-protection: send failures use eprintln (not tracing).       │
-└──────────────────────────────────────────────────────────────────┘
-```
-
 ### Graceful Shutdown Sequence
 
 ```
@@ -1410,12 +1362,10 @@ Signal (SIGINT/SIGTERM)
        │
        ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
        │
-       ├──> ThreadManager workers: finish current message → exit
-       │    (in-queue messages are lost — IMAP re-fetch on restart)
-       │
-       ├──> Alert Service: final flush → send pending errors → exit
-       │
-       ├──> OpenCode Server: explicitly stopped via server.stop()
+        ├──> ThreadManager workers: finish current message → exit
+        │    (in-queue messages are lost — IMAP re-fetch on restart)
+        │
+        ├──> OpenCode Server: explicitly stopped via server.stop()
        │
        └──> SMTP connections: disconnect
 
@@ -1441,9 +1391,6 @@ root_cancel (top-level)
     │
     ├── thread_manager_cancel
     │       └── all worker tasks check this
-    │
-    ├── alert_service_cancel
-    │       └── triggers final flush
     │
     └── opencode_service_cancel
             └── aborts SSE streams
@@ -2530,7 +2477,7 @@ Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refre
 
 ### MetricsCollector
 
-Replaces the old `AlertService`. Components report events via `MetricsHandle`:
+Components report events via `MetricsHandle`:
 
 - `message_received(thread)`, `message_matched(thread)`
 - `reply_by_tool(thread)`, `reply_by_fallback(thread)`
@@ -2597,7 +2544,7 @@ jyc/
 │   │   ├── chat_log_store.rs           # Chat log storage (daily log files)
 │   │   ├── email_parser.rs             # Stripping, quoting, thread trail
 │   │   ├── state_manager.rs            # UID tracking, state persistence
-│   │   ├── metrics.rs                   # MetricsCollector (replaces AlertService)
+│   │   ├── metrics.rs                   # MetricsCollector
 │   │   ├── attachment_storage.rs       # Channel-agnostic attachment saving
 │   │   ├── template_utils.rs           # Template file copying
 │   │   ├── pending_delivery.rs         # Background reply delivery watcher
@@ -2761,7 +2708,6 @@ INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
 INFO worker{channel=jiny283, thread=weather}: Reply sent by MCP tool
 INFO worker{channel=jiny283, thread=weather}: Agent complete reply_sent=true
 INFO worker{channel=jiny283, thread=weather}: Worker finished
-alert: Alert service stopped
 ```
 
 #### Key Rules
@@ -2781,15 +2727,6 @@ alert: Alert service stopped
 | INFO | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start, tool calls |
 | DEBUG | SSE events, session status changes, step finish with costs, AI response text, config details |
 | TRACE | IMAP polling, mailbox select, skipping heartbeat notifications |
-
-### Alert Service Integration
-
-The `AppLogger` provides a unified logging + alerting interface:
-
-1. **Logging methods** (`info()`, `error()`, etc.) delegate to `tracing` for console output
-2. **Structured event methods** (`message_received()`, `reply_by_tool()`, etc.) additionally send events to the alert service via `mpsc` channel
-3. The alert service buffers errors and periodically flushes them as digest emails
-4. Self-protection: alert send failures use `eprintln` (not tracing) to avoid feedback loops
 
 ## Command System
 

@@ -1393,8 +1393,8 @@ Signal (SIGINT/SIGTERM)
        ▼
  CancellationToken::cancel()
        │
-       ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
-       │
+        ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
+        │
         ├──> ThreadManager workers: finish current message → exit
         │    (in-queue messages are lost — IMAP re-fetch on restart)
         │

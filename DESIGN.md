@@ -2436,7 +2436,7 @@ JSON line protocol over TCP. Client sends one JSON object per line, server respo
 // Response
 {
   "uptime_secs": 3600,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "channels": [{"name": "emf", "channel_type": "github"}],
   "threads": [{"name": "issue-42", "channel": "emf", "pattern": "planner", "status": "processing", ...}],
   "stats": {"active_workers": 2, "total_threads": 3, "max_concurrent": 3, ...}
@@ -2463,7 +2463,7 @@ JSON line protocol over TCP. Client sends one JSON object per line, server respo
 │ │ Tokens: 45231 / 120000 (37%)                                 │  │
 │ │ Status: Processing                                           │  │
 │ └─────────────────────────────────────────────────────────────┘  │
-│ 2 active / 4 threads │ 156 recv │ 2 err │ up 1h03m │ v0.2.0   │
+│ 2 active / 4 threads │ 156 recv │ 2 err │ up 1h03m │ v0.2.1   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 

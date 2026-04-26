@@ -2,6 +2,35 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.2.1] - 2026-04-26
+
+### Added
+
+- High-level planner with feature-plan label routing (#102)
+- Template-driven MCP configuration with `--mcps` override (#104)
+- OAuth2-forwarder integration for browser-based OAuth2 in Docker/Podman containers (#107)
+- Idle thread directory auto-cleanup (#110)
+- Live config reload via dashboard TUI — ArcSwap, reload_config protocol, R keybinding (#103)
+- `repo_group` for shared repo among GitHub threads (#122)
+- Replace NodeSource with fnm, pre-install Node 22
+
+### Fixed
+
+- Worker idle permit release and remove idle_cleanup (#125)
+- Interrupt SSE stream when thread is closed (#118)
+- Idle cleanup per-thread skip flag (#113)
+- Docker build fixes — protobuf-compiler, Rust toolchain, unzip dependencies
+- Retry /provider API up to 3 times for model context limit lookup
+- Wait for OpenCode API to be ready after server starts listening
+- Dashboard TUI status bar consolidation and keybinding hints
+- Add mandatory test gate and strengthen current-message priority
+- Remove invalid pub qualifiers from enum variant fields
+
+### Changed
+
+- Replace `Arc<AppConfig>` with `ArcSwap` for live config reload support
+- Extend inspect protocol with `reload_config` command and typed responses
+
 ## [0.2.0] - 2026-04-23
 
 ### Added

@@ -63,7 +63,7 @@ vi /path/to/data/config.toml
 ./target/release/jyc config validate --workdir /path/to/data
 ```
 
-See `config_template.toml` for a full annotated example. Use `${ENV_VAR}` syntax for secrets (passwords, API keys).
+See `config.example.toml` for a full annotated example. Use `${ENV_VAR}` syntax for secrets (passwords, API keys).
 
 ### 3. Run
 
@@ -96,7 +96,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ GitHub
 - **Status:** Production ready (implemented in v0.1.10)
-- **Features:** Issue/PR comments, label routing, @j:role mention routing, multi-agent workflow
+- **Features:** Issue/PR comments, label-based routing, multi-agent workflow
 - **Protocols:** REST API polling (inbound), REST API (outbound)
 - **Authentication:** Personal Access Token (PAT)
 - **Agents:** Planner, Developer, Reviewer templates for full PR workflow

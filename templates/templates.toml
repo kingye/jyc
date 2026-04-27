@@ -29,3 +29,7 @@ mcps = []
 [templates.github-high-level-planner]
 skills = ["coding-principles", "dev-workflow"]
 mcps = []
+
+[templates.frontend-designer]
+skills = ["ui-ux-frontend"]
+mcps = []

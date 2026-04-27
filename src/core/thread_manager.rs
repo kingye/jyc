@@ -100,6 +100,8 @@ pub struct ThreadManager {
 
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
+
+    repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 #[allow(dead_code)]
@@ -174,6 +176,7 @@ impl ThreadManager {
             metrics,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
+            repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -293,6 +296,7 @@ impl ThreadManager {
             metrics: self.metrics.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
+            repo_group_locks: self.repo_group_locks.clone(),
         });
         let handle = ThreadManager::spawn_worker(tm, thread_name, rx, event_bus, thread_cancel);
 
@@ -462,7 +466,64 @@ impl ThreadManager {
 
                 // Update current message for event listeners
                 let _ = current_message_tx.send(Some(item.message.clone()));
-                
+
+                // Acquire repo group lock to prevent concurrent initialization
+                // of the shared repo directory. If the shared dir is already
+                // non-empty (a previous agent initialized it), skip the wait.
+                // Otherwise, hold the lock for a fixed delay so the first
+                // agent's clone can complete before the second agent starts.
+                if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
+                    let lock = {
+                        let mut locks = tm.repo_group_locks.lock().await;
+                        locks.entry(repo_group_key.to_string())
+                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                            .clone()
+                    };
+
+                    let workspace = storage.workspace();
+                    let shared_repo_dir = crate::core::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
+
+                    if let Ok(guard) = lock.clone().try_lock_owned() {
+                        let is_empty = match tokio::fs::read_dir(&shared_repo_dir).await {
+                            Ok(mut entries) => entries.next_entry().await.unwrap_or(None).is_none(),
+                            Err(_) => true,
+                        };
+
+                        if is_empty {
+                            tracing::info!(
+                                thread = %thread_name,
+                                group_key = %repo_group_key,
+                                "Shared repo dir empty, holding repo group lock for 120s"
+                            );
+                            let key = repo_group_key.to_string();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                                drop(guard);
+                                tracing::debug!(group_key = %key, "Repo group lock released after delay");
+                            });
+                        } else {
+                            tracing::debug!(
+                                thread = %thread_name,
+                                group_key = %repo_group_key,
+                                "Shared repo dir already initialized, proceeding immediately"
+                            );
+                            drop(guard);
+                        }
+                    } else {
+                        tracing::info!(
+                            thread = %thread_name,
+                            group_key = %repo_group_key,
+                            "Repo group lock held by another worker, waiting..."
+                        );
+                        let _guard = lock.lock().await;
+                        tracing::info!(
+                            thread = %thread_name,
+                            group_key = %repo_group_key,
+                            "Repo group lock acquired, proceeding"
+                        );
+                    }
+                }
+
                 if let Err(e) = process_message(
                     &item,
                     &thread_name,

@@ -243,6 +243,8 @@ impl InspectServer {
                 thread.activity = state.entries.iter().cloned().collect();
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
+                } else if state.has_error {
+                    thread.status = ThreadStatus::Error;
                 }
                 if let Some(last_active) = state.last_active_at {
                     thread.last_active_at = Some(last_active.to_rfc3339());

@@ -396,6 +396,17 @@ impl ActivityTracker {
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
 fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
+    let severity = match event {
+        ThreadEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
+            "error" | "timeout" => Severity::Error,
+            "retry" | "rate_limit" => Severity::Warning,
+            _ => Severity::Info,
+        },
+        ThreadEvent::ToolCompleted { success: false, .. } => Severity::Error,
+        ThreadEvent::ProcessingCompleted { success: false, .. } => Severity::Error,
+        _ => Severity::Info,
+    };
+
     let text = match event {
         ThreadEvent::ProcessingStarted { .. } => "Processing started".to_string(),
         ThreadEvent::ProcessingProgress {
@@ -479,7 +490,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
     ActivityEntry {
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
-        severity: Severity::Info,
+        severity,
     }
 }
 

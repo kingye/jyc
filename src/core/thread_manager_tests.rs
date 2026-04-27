@@ -456,4 +456,41 @@ mode = "opencode"
         thread_manager.close_thread("review-pr-42").await.unwrap();
         assert!(!shared_repo.exists(), "Orphaned shared repo should be cleaned up when all references gone");
     }
+
+    /// Verify that SessionStatus error events are correctly delivered through
+    /// the event bus pub/sub mechanism. This tests the event bus primitive only
+    /// — it does NOT exercise the spawn_worker error-publishing code path
+    /// (which would require mocking AgentService to return an error).
+    #[tokio::test]
+    async fn test_event_bus_session_status_error_delivery() {
+        use crate::core::thread_event::ThreadEvent;
+        use crate::core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBus};
+
+        let event_bus = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = event_bus.subscribe().await.unwrap();
+
+        let event = ThreadEvent::SessionStatus {
+            thread_name: "test_thread".to_string(),
+            status_type: "error".to_string(),
+            attempt: None,
+            message: Some("processing failed".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+
+        event_bus.publish(event.clone()).await.unwrap();
+
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            rx.recv(),
+        ).await;
+
+        match received {
+            Ok(Some(ThreadEvent::SessionStatus { status_type, message, .. })) => {
+                assert_eq!(status_type, "error");
+                assert_eq!(message.as_deref(), Some("processing failed"));
+            }
+            Ok(other) => panic!("Expected SessionStatus error event, got: {:?}", other),
+            Err(_) => panic!("Timed out waiting for error event"),
+        }
+    }
 }

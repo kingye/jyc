@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_event_bus::{ThreadEventBusRef, SimpleThreadEventBus};
 
 use crate::channels::types::{InboundMessage, OutboundAdapter, PatternMatch};
@@ -347,6 +348,7 @@ impl ThreadManager {
 
             // Start event listener if event bus is provided and heartbeat is enabled
             let thread_cancel_for_listener = thread_cancel.clone();
+            let event_bus_for_error = event_bus.clone();
             let event_listener_handle = if heartbeat_config.enabled {
                 if let Some(event_bus) = event_bus {
                     tracing::trace!(thread = %thread_name, "Creating event listener with heartbeat control");
@@ -475,11 +477,29 @@ impl ThreadManager {
                     tm.clone(),
                     thread_cancel.clone(),
                 ).await {
+                    let err_display = format!("{:#}", e);
                     tracing::error!(
-                        error = %format!("{:#}", e),
+                        error = %err_display,
                         "Failed to process message"
                     );
-                    tm.metrics.processing_error(&thread_name, &format!("{:#}", e));
+                    tm.metrics.processing_error(&thread_name, &err_display);
+
+                    if let Some(event_bus) = event_bus_for_error.clone() {
+                        let truncated: String = err_display.chars().take(200).collect();
+                        let thread_name_clone = thread_name.clone();
+                        tokio::spawn(async move {
+                            let event = ThreadEvent::SessionStatus {
+                                thread_name: thread_name_clone,
+                                status_type: "error".to_string(),
+                                attempt: None,
+                                message: Some(truncated),
+                                timestamp: chrono::Utc::now(),
+                            };
+                            if let Err(publish_err) = event_bus.publish(event).await {
+                                tracing::trace!("Failed to publish error event: {}", publish_err);
+                            }
+                        });
+                    }
                 }
                 
                 // Clear current message after processing
@@ -701,7 +721,7 @@ impl ThreadManager {
                     let event_clone = event.clone();
                     
                     // Update processing state based on ProcessingProgress events
-                    if let crate::core::thread_event::ThreadEvent::ProcessingProgress {
+                    if let ThreadEvent::ProcessingProgress {
                         thread_name: event_thread_name,
                         elapsed_secs,
                         activity,

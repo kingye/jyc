@@ -512,6 +512,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_event_to_activity_session_status_error() {
+        let event = ThreadEvent::SessionStatus {
+            thread_name: "test_thread".to_string(),
+            status_type: "error".to_string(),
+            attempt: None,
+            message: Some("SMTP 535 authentication failed".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("ERROR"), "Expected ERROR label, got: {}", entry.text);
+        assert!(entry.text.contains("SMTP 535 authentication failed"), "Expected error message, got: {}", entry.text);
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_session_status_error_with_attempt() {
+        let event = ThreadEvent::SessionStatus {
+            thread_name: "test_thread".to_string(),
+            status_type: "error".to_string(),
+            attempt: Some(3),
+            message: Some("server overload".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("ERROR (attempt #3)"), "Expected ERROR with attempt, got: {}", entry.text);
+        assert!(entry.text.contains("server overload"), "Expected error message, got: {}", entry.text);
+    }
+
+    #[tokio::test]
     async fn test_inspect_server_handles_unknown_method() {
         let cancel = CancellationToken::new();
         let ctx = test_context();

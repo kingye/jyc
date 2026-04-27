@@ -396,7 +396,6 @@ impl ActivityTracker {
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
 fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
-    let time = event.timestamp().format("%H:%M:%S").to_string();
     let text = match event {
         ThreadEvent::ProcessingStarted { .. } => "Processing started".to_string(),
         ThreadEvent::ProcessingProgress {
@@ -478,9 +477,9 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         }
     };
     ActivityEntry {
-        time,
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
+        severity: Severity::Info,
     }
 }
 

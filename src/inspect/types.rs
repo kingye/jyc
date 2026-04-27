@@ -79,16 +79,32 @@ pub struct ThreadInfo {
     pub last_active_at: Option<String>,
 }
 
+/// Severity level for an activity entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl Default for Severity {
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
 /// A single activity event from the thread's SSE stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
-    /// Timestamp (HH:MM:SS)
-    pub time: String,
     /// Human-readable description
     pub text: String,
     /// RFC 3339 timestamp for ordering and cross-day sorting
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Severity level (defaults to Info for backward compat)
+    #[serde(default)]
+    pub severity: Severity,
 }
 
 /// Thread processing status.
@@ -103,6 +119,8 @@ pub enum ThreadStatus {
     Idle,
     /// Question tool waiting for user reply
     WaitingForAnswer,
+    /// Thread encountered an error
+    Error,
 }
 
 impl Default for ThreadStatus {
@@ -118,6 +136,7 @@ impl std::fmt::Display for ThreadStatus {
             Self::Processing => write!(f, "Processing"),
             Self::Idle => write!(f, "Idle"),
             Self::WaitingForAnswer => write!(f, "Waiting"),
+            Self::Error => write!(f, "Error"),
         }
     }
 }
@@ -248,6 +267,7 @@ mod tests {
         assert_eq!(format!("{}", ThreadStatus::Processing), "Processing");
         assert_eq!(format!("{}", ThreadStatus::Idle), "Idle");
         assert_eq!(format!("{}", ThreadStatus::WaitingForAnswer), "Waiting");
+        assert_eq!(format!("{}", ThreadStatus::Error), "Error");
     }
 
     #[test]

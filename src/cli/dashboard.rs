@@ -17,7 +17,7 @@ use std::io::stdout;
 use std::time::Duration;
 
 use crate::inspect::client::InspectClient;
-use crate::inspect::types::{InspectState, ThreadStatus};
+use crate::inspect::types::{InspectState, Severity, ThreadStatus};
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
@@ -284,6 +284,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 ThreadStatus::Queued => Style::default().fg(Color::Yellow),
                 ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
+                ThreadStatus::Error => Style::default().fg(Color::Red),
             };
 
             let tokens = match (t.input_tokens, t.max_tokens) {
@@ -397,6 +398,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
                 ThreadStatus::Queued => Style::default().fg(Color::Yellow),
                 ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
+                ThreadStatus::Error => Style::default().fg(Color::Red),
             },
         ),
     ];
@@ -439,12 +441,22 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
             .iter()
             .skip(skip)
             .map(|entry| {
+                let time_str = entry.timestamp.as_deref().and_then(|ts| {
+                    chrono::DateTime::parse_from_rfc3339(ts)
+                        .ok()
+                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                }).unwrap_or_else(|| "-".to_string());
+                let text_style = match entry.severity {
+                    Severity::Error => Style::default().fg(Color::Red),
+                    Severity::Warning => Style::default().fg(Color::Yellow),
+                    Severity::Info => Style::default(),
+                };
                 Line::from(vec![
                     Span::styled(
-                        format!("  {} ", entry.time),
+                        format!("  {time_str} "),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::raw(&entry.text),
+                    Span::styled(&entry.text, text_style),
                 ])
             })
             .collect();

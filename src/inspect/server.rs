@@ -360,7 +360,6 @@ impl ActivityTracker {
                                                                 );
                                                                  let entry = event_to_activity(&event);
                                                                  let is_error = entry.severity == Severity::Error;
-                                                                 // Persist to disk
                                                                  if let Some(ref path) = thread_path {
                                                                      if let Err(e) = ActivityLogStore::append(path, &entry) {
                                                                          tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");

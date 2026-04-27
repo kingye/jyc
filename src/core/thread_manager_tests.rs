@@ -457,8 +457,12 @@ mode = "opencode"
         assert!(!shared_repo.exists(), "Orphaned shared repo should be cleaned up when all references gone");
     }
 
+    /// Verify that SessionStatus error events are correctly delivered through
+    /// the event bus pub/sub mechanism. This tests the event bus primitive only
+    /// — it does NOT exercise the spawn_worker error-publishing code path
+    /// (which would require mocking AgentService to return an error).
     #[tokio::test]
-    async fn test_error_event_published_to_event_bus() {
+    async fn test_event_bus_session_status_error_delivery() {
         use crate::core::thread_event::ThreadEvent;
         use crate::core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBus};
 

@@ -477,15 +477,15 @@ impl ThreadManager {
                     tm.clone(),
                     thread_cancel.clone(),
                 ).await {
+                    let err_display = format!("{:#}", e);
                     tracing::error!(
-                        error = %format!("{:#}", e),
+                        error = %err_display,
                         "Failed to process message"
                     );
-                    tm.metrics.processing_error(&thread_name, &format!("{:#}", e));
+                    tm.metrics.processing_error(&thread_name, &err_display);
 
                     if let Some(event_bus) = event_bus_for_error.clone() {
-                        let err_msg = format!("{:#}", e);
-                        let truncated: String = err_msg.chars().take(200).collect();
+                        let truncated: String = err_display.chars().take(200).collect();
                         let thread_name_clone = thread_name.clone();
                         tokio::spawn(async move {
                             let event = ThreadEvent::SessionStatus {

@@ -824,6 +824,10 @@ impl GithubInboundAdapter {
                     );
 
                     for review in &reviews {
+                        if review.state == "PENDING" {
+                            continue;
+                        }
+
                         let submitted_at = review.submitted_at.as_deref().unwrap_or("");
                         let review_key = format!("review-{}:{}", review.id, submitted_at);
 

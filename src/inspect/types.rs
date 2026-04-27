@@ -287,5 +287,58 @@ mod tests {
 
         let parsed: ThreadStatus = serde_json::from_str(r#""processing""#).unwrap();
         assert_eq!(parsed, ThreadStatus::Processing);
+
+        let json = serde_json::to_string(&ThreadStatus::Error).unwrap();
+        assert_eq!(json, r#""error""#);
+
+        let parsed: ThreadStatus = serde_json::from_str(r#""error""#).unwrap();
+        assert_eq!(parsed, ThreadStatus::Error);
+    }
+
+    #[test]
+    fn test_severity_serde_roundtrip() {
+        let json = serde_json::to_string(&Severity::Info).unwrap();
+        assert_eq!(json, r#""info""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Info);
+
+        let json = serde_json::to_string(&Severity::Warning).unwrap();
+        assert_eq!(json, r#""warning""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Warning);
+
+        let json = serde_json::to_string(&Severity::Error).unwrap();
+        assert_eq!(json, r#""error""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Error);
+    }
+
+    #[test]
+    fn test_severity_default_is_info() {
+        assert_eq!(Severity::default(), Severity::Info);
+    }
+
+    #[test]
+    fn test_activity_entry_backward_compat_old_jsonl() {
+        // Old JSONL entries have `time` field but no `severity` — should deserialize fine
+        let old_json =
+            r#"{"time":"12:34:56","text":"Processing started","timestamp":"2025-01-15T12:34:56Z"}"#;
+        let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.text, "Processing started");
+        assert_eq!(entry.severity, Severity::Info);
+        assert_eq!(entry.timestamp.as_deref(), Some("2025-01-15T12:34:56Z"));
+    }
+
+    #[test]
+    fn test_activity_entry_with_severity() {
+        let entry = ActivityEntry {
+            text: "Failed (5s)".to_string(),
+            timestamp: Some("2025-01-15T12:34:56Z".to_string()),
+            severity: Severity::Error,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""severity":"error""#));
+        let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.severity, Severity::Error);
     }
 }

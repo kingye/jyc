@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::types::AppConfig;
+use crate::core::activity_log_store::ActivityLogStore;
 use crate::core::metrics::SharedHealthStats;
 use crate::core::thread_event::ThreadEvent;
 use crate::core::thread_manager::ThreadManager;
@@ -46,6 +47,8 @@ pub struct InspectContext {
     pub config_path: Option<PathBuf>,
     /// Swappable application config (for live reload)
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
+    /// Per-channel workspace directories (parallel to channels)
+    pub workspace_dirs: Vec<PathBuf>,
 }
 
 /// TCP-based inspect server.
@@ -276,12 +279,44 @@ pub struct ActivityTracker;
 impl ActivityTracker {
     /// Start tracking activity for all thread managers.
     /// Periodically discovers new threads and subscribes to their event buses.
+    /// Persists activity entries to `.jyc/activity.jsonl` per thread.
+    /// On startup, loads historical activity from disk.
     pub fn start(
         thread_managers: Vec<Arc<ThreadManager>>,
         activity_map: SharedActivityMap,
+        workspace_dirs: Vec<PathBuf>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
+        assert_eq!(
+            thread_managers.len(),
+            workspace_dirs.len(),
+            "thread_managers and workspace_dirs must have the same length"
+        );
         tokio::spawn(async move {
+            // Load historical activity from disk for all existing threads
+            for (tm_index, tm) in thread_managers.iter().enumerate() {
+                let workspace_dir = &workspace_dirs[tm_index];
+                let threads = tm.list_threads().await;
+                for thread in &threads {
+                    let thread_path = workspace_dir.join(&thread.name);
+                    if let Ok(entries) = ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES) {
+                        if !entries.is_empty() {
+                            let mut map = activity_map.lock().await;
+                            let state = map.entry(thread.name.clone()).or_default();
+                            state.entries = entries.into_iter().collect();
+                            state.is_processing = false;
+                            if let Some(last) = state.entries.back() {
+                                if let Some(ref ts) = last.timestamp {
+                                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+                                        state.last_active_at = Some(dt.with_timezone(&chrono::Utc));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut subscribed: HashSet<String> = HashSet::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
@@ -289,7 +324,8 @@ impl ActivityTracker {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Discover new threads and subscribe to their event buses
-                        for tm in &thread_managers {
+                        for (tm_index, tm) in thread_managers.iter().enumerate() {
+                            let workspace_dir = workspace_dirs.get(tm_index);
                             let threads = tm.list_threads().await;
                             for thread in threads {
                                 if subscribed.contains(&thread.name) {
@@ -300,6 +336,7 @@ impl ActivityTracker {
                                         subscribed.insert(thread.name.clone());
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
+                                        let thread_path = workspace_dir.map(|d| d.join(&name));
                                         let cancel_inner = cancel.clone();
                                         tokio::spawn(async move {
                                             loop {
@@ -319,6 +356,12 @@ impl ActivityTracker {
                                                                     ThreadEvent::ProcessingCompleted { .. }
                                                                 );
                                                                 let entry = event_to_activity(&event);
+                                                                // Persist to disk
+                                                                if let Some(ref path) = thread_path {
+                                                                    if let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                        tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                    }
+                                                                }
                                                                 let mut map = map.lock().await;
                                                                 let state = map.entry(name.clone()).or_default();
                                                                 state.entries.push_back(entry);
@@ -434,7 +477,11 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             text
         }
     };
-    ActivityEntry { time, text }
+    ActivityEntry {
+        time,
+        text,
+        timestamp: Some(event.timestamp().to_rfc3339()),
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +509,7 @@ mod tests {
             start_time: Instant::now(),
             config_path: None,
             config: None,
+            workspace_dirs: vec![],
         })
     }
 
@@ -674,6 +722,7 @@ mode = "opencode"
             start_time: Instant::now(),
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),
+            workspace_dirs: vec![],
         });
 
         let cancel = CancellationToken::new();

@@ -16,9 +16,14 @@ pub struct InspectRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InspectResponse {
     State(InspectState),
-    Error { error: String },
+    Error {
+        error: String,
+    },
     /// Result of a `reload_config` request.
-    ReloadResult { success: bool, message: String },
+    ReloadResult {
+        success: bool,
+        message: String,
+    },
 }
 
 // ── State snapshot ──
@@ -81,6 +86,9 @@ pub struct ActivityEntry {
     pub time: String,
     /// Human-readable description
     pub text: String,
+    /// RFC 3339 timestamp for ordering and cross-day sorting
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 /// Thread processing status.

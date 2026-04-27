@@ -1,3 +1,4 @@
+pub mod activity_log_store;
 pub mod attachment_storage;
 pub mod chat_log_store;
 pub mod command;

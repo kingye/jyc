@@ -164,7 +164,8 @@ InboundMessage {
 |--------|-------------|--------|
 | Issues | `GET /repos/{o}/{r}/issues?state=open&since=...` | opened, labeled |
 | Comments | `GET /repos/{o}/{r}/issues/comments?since=...` | created (on issues + PRs) |
-| Reviews | `GET /repos/{o}/{r}/pulls/{n}/reviews?since=...` | submitted |
+| Reviews | `GET /repos/{o}/{r}/pulls/{n}/reviews` | submitted |
+| Review Comments | `GET /repos/{o}/{r}/pulls/{n}/comments` | created (inline code comments) |
 | Close | `GET /repos/{o}/{r}/issues?state=closed&since=...` | closed, merged |
 
 ### Event → Thread Routing
@@ -179,6 +180,7 @@ InboundMessage {
 | pr.commented | Not self-loop | `pr-{N}` | Trigger agent |
 | pr.labeled | New labels match pattern | `pr-{N}` | Trigger agent (re-route) |
 | pr.review_submitted | — | `pr-{N}` | Trigger developer agent |
+| pr.review_comment | — | `pr-{N}` | Trigger developer agent (inline feedback) |
 | pr.merged | — | `pr-{N}`, `review-pr-{N}`, linked `issue-{N}` | **Close + delete all** |
 | pr.closed (not merged) | — | `pr-{N}`, `review-pr-{N}` | **Close + delete** (keep issue thread) |
 
@@ -491,8 +493,9 @@ Every poll_interval_secs:
 3. Fetch recently closed issues/PRs (for close events)
    GET /repos/{o}/{r}/issues?state=closed&since={last_poll}&sort=updated
 
-4. For each open PR with 'ready-for-review' label: fetch reviews
-   GET /repos/{o}/{r}/pulls/{n}/reviews?since={last_poll}
+4. For each open PR: fetch reviews and review comments
+   GET /repos/{o}/{r}/pulls/{n}/reviews?per_page=100
+   GET /repos/{o}/{r}/pulls/{n}/comments?sort=updated&direction=asc&per_page=100
 ```
 
 ### Deduplication
@@ -500,7 +503,8 @@ Every poll_interval_secs:
 Each event gets a unique ID for dedup:
 - Issue opened: `issue-{number}-opened`
 - Comment: `comment-{comment_id}`
-- Review: `review-{review_id}`
+- Review: `review-{review_id}:{submitted_at}`
+- Review comment: `review-comment-{id}:{updated_at}`
 - Label change: `issue-{number}-labeled-{label}-{timestamp}`
 - Close: `issue-{number}-closed-{timestamp}`
 
@@ -509,8 +513,8 @@ Processed event IDs are stored in a set (persisted to disk between restarts).
 ### Rate Limiting
 
 GitHub API rate limit: 5000 requests/hour for PAT.
-With 60s poll interval and 4 API calls per cycle: ~240 requests/hour.
-Well within limits even with review fetching.
+With 60s poll interval, ~4 base API calls per cycle, plus 2 per open PR (reviews + review comments):
+~240 base requests/hour + ~2400 for 20 open PRs = well within limits.
 
 ## Bot Identity
 

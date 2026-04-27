@@ -2284,4 +2284,33 @@ mod tests {
         assert!(result2.is_some());
         assert_eq!(result2.unwrap().pattern_name, "detail-planner");
     }
+
+    #[test]
+    fn test_review_dedup_key_format() {
+        let mut processed: HashSet<String> = HashSet::new();
+        processed.insert("review-123:2026-04-15T10:00:00Z".to_string());
+        processed.insert("review-comment-456:2026-04-15T10:00:00Z".to_string());
+
+        assert!(processed.contains("review-123:2026-04-15T10:00:00Z"));
+        assert!(processed.contains("review-comment-456:2026-04-15T10:00:00Z"));
+        assert!(!processed.contains("review-123:2026-04-16T10:00:00Z"));
+    }
+
+    #[test]
+    fn test_review_comment_role_extraction() {
+        assert_eq!(extract_comment_role("[Developer] Fixed the issue"), Some("Developer".to_string()));
+        assert_eq!(extract_comment_role("[Reviewer] Looks good"), Some("Reviewer".to_string()));
+        assert_eq!(extract_comment_role("[Planner] Planning phase"), Some("Planner".to_string()));
+        assert_eq!(extract_comment_role("Normal review comment"), None);
+    }
+
+    #[test]
+    fn test_review_dedup_key_uniqueness() {
+        let key1 = format!("review-{}:{}", 123, "2026-04-15T10:00:00Z");
+        let key2 = format!("review-{}:{}", 123, "2026-04-16T10:00:00Z");
+        let key3 = format!("review-comment-{}:{}", 456, "2026-04-15T10:00:00Z");
+
+        assert_ne!(key1, key2, "Same review ID with different submitted_at should be different keys");
+        assert_ne!(key1, key3, "Review and review comment keys should be different");
+    }
 }

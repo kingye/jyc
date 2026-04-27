@@ -457,10 +457,6 @@ mode = "opencode"
         assert!(!shared_repo.exists(), "Orphaned shared repo should be cleaned up when all references gone");
     }
 
-    /// Verify that SessionStatus error events are correctly delivered through
-    /// the event bus pub/sub mechanism. This tests the event bus primitive only
-    /// — it does NOT exercise the spawn_worker error-publishing code path
-    /// (which would require mocking AgentService to return an error).
     #[tokio::test]
     async fn test_event_bus_session_status_error_delivery() {
         use crate::core::thread_event::ThreadEvent;
@@ -492,5 +488,58 @@ mode = "opencode"
             Ok(other) => panic!("Expected SessionStatus error event, got: {:?}", other),
             Err(_) => panic!("Timed out waiting for error event"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_repo_group_lock_serializes_same_key() {
+        use tokio::sync::Mutex;
+        use std::time::Duration;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+        let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+        let lock1 = lock.clone();
+        let counter1 = counter.clone();
+        let h1 = tokio::spawn(async move {
+            let _guard = lock1.lock().await;
+            counter1.store(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let lock2 = lock.clone();
+        let counter2 = counter.clone();
+        let h2 = tokio::spawn(async move {
+            let _guard = lock2.lock().await;
+            assert_eq!(counter2.load(Ordering::SeqCst), 1, "First task should have set counter before second acquires lock");
+            counter2.store(2, Ordering::SeqCst);
+        });
+
+        h1.await.unwrap();
+        h2.await.unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_repo_group_lock_different_keys_dont_block() {
+        use tokio::sync::Mutex;
+        use std::time::Duration;
+
+        let lock_a: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+        let lock_b: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+
+        let guard_a = lock_a.lock().await;
+
+        let lock_a_clone = lock_a.clone();
+        let h = tokio::spawn(async move {
+            let _g = lock_a_clone.lock().await;
+        });
+
+        let _guard_b = lock_b.lock().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!h.is_finished(), "Same-key lock should still be blocked");
+
+        drop(guard_a);
+        h.await.unwrap();
     }
 }

@@ -82,6 +82,44 @@ impl GithubComment {
     }
 }
 
+/// GitHub PR review (from /pulls/{n}/reviews endpoint).
+#[derive(Debug, Deserialize)]
+pub struct GithubReview {
+    pub id: u64,
+    pub user: GithubUser,
+    pub body: String,
+    /// "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING", "DISMISSED"
+    pub state: String,
+    pub submitted_at: Option<String>,
+    pub pull_request_url: String,
+}
+
+impl GithubReview {
+    /// Extract the PR number from the pull_request_url.
+    /// pull_request_url looks like: https://api.github.com/repos/{owner}/{repo}/pulls/{number}
+    pub fn pr_number(&self) -> Option<u64> {
+        self.pull_request_url
+            .rsplit('/')
+            .next()
+            .and_then(|s| s.parse().ok())
+    }
+}
+
+/// GitHub PR review comment (from /pulls/{n}/comments endpoint).
+#[derive(Debug, Deserialize)]
+pub struct GithubReviewComment {
+    pub id: u64,
+    pub user: GithubUser,
+    pub body: String,
+    pub pull_request_review_id: u64,
+    pub path: Option<String>,
+    pub line: Option<u64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub diff_hunk: Option<String>,
+    pub in_reply_to_id: Option<u64>,
+}
+
 impl GithubClient {
     /// Create a new GitHub API client.
     pub fn new(config: &GithubConfig) -> Result<Self> {
@@ -242,6 +280,60 @@ impl GithubClient {
             .context("Failed to parse closed issues response")
     }
 
+    /// List reviews on a PR.
+    ///
+    /// Returns all reviews for the given PR number.
+    pub async fn list_reviews(&self, pr_number: u64) -> Result<Vec<GithubReview>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews?per_page=100",
+            self.api_url, self.owner, self.repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch reviews")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GET reviews failed: {} — {}", status, truncate_str(&body, 200));
+        }
+
+        resp.json::<Vec<GithubReview>>()
+            .await
+            .context("Failed to parse reviews response")
+    }
+
+    /// List review comments on a PR.
+    ///
+    /// Returns inline review comments for the given PR number.
+    pub async fn list_review_comments(&self, pr_number: u64) -> Result<Vec<GithubReviewComment>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments?sort=updated&direction=asc&per_page=100",
+            self.api_url, self.owner, self.repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch review comments")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("GET review comments failed: {} — {}", status, truncate_str(&body, 200));
+        }
+
+        resp.json::<Vec<GithubReviewComment>>()
+            .await
+            .context("Failed to parse review comments response")
+    }
+
     /// Post a comment on an issue or PR.
     ///
     /// GitHub API uses the /issues/ endpoint for both issue and PR comments.
@@ -321,5 +413,55 @@ mod tests {
             ..issue
         };
         assert!(pr.is_pull_request());
+    }
+
+    #[test]
+    fn test_review_pr_number() {
+        let review = GithubReview {
+            id: 1,
+            user: GithubUser { login: "test".to_string() },
+            body: "looks good".to_string(),
+            state: "APPROVED".to_string(),
+            submitted_at: Some("2026-04-15T10:00:00Z".to_string()),
+            pull_request_url: "https://api.github.com/repos/kingye/jyc/pulls/42".to_string(),
+        };
+        assert_eq!(review.pr_number(), Some(42));
+    }
+
+    #[test]
+    fn test_review_pr_number_no_match() {
+        let review = GithubReview {
+            id: 1,
+            user: GithubUser { login: "test".to_string() },
+            body: "looks good".to_string(),
+            state: "APPROVED".to_string(),
+            submitted_at: Some("2026-04-15T10:00:00Z".to_string()),
+            pull_request_url: "invalid-url".to_string(),
+        };
+        assert_eq!(review.pr_number(), None);
+    }
+
+    #[test]
+    fn test_review_comment_deserialization() {
+        let json = r#"{
+            "id": 123,
+            "user": {"login": "reviewer"},
+            "body": "Fix this logic",
+            "pull_request_review_id": 456,
+            "path": "src/main.rs",
+            "line": 42,
+            "created_at": "2026-04-15T10:00:00Z",
+            "updated_at": "2026-04-15T10:00:00Z",
+            "diff_hunk": "@@ -1,3 +1,3 @@\n-old\n+new",
+            "in_reply_to_id": null
+        }"#;
+        let comment: GithubReviewComment = serde_json::from_str(json).unwrap();
+        assert_eq!(comment.id, 123);
+        assert_eq!(comment.user.login, "reviewer");
+        assert_eq!(comment.body, "Fix this logic");
+        assert_eq!(comment.pull_request_review_id, 456);
+        assert_eq!(comment.path.as_deref(), Some("src/main.rs"));
+        assert_eq!(comment.line, Some(42));
+        assert!(comment.in_reply_to_id.is_none());
     }
 }

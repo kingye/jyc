@@ -16,3 +16,5 @@ docker/.env
 jyc
 jyc.bak
 .DS_Store
+# data directory (contains runtime data, logs, and credentials)
+jyc-data 

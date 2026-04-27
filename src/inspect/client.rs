@@ -161,7 +161,6 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![],
-            channel_names: vec![],
         })
     }
 

@@ -47,10 +47,8 @@ pub struct InspectContext {
     pub config_path: Option<PathBuf>,
     /// Swappable application config (for live reload)
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
-    /// Per-channel workspace directories (parallel to thread_managers)
+    /// Per-channel workspace directories (parallel to channels)
     pub workspace_dirs: Vec<PathBuf>,
-    /// Per-channel names (parallel to thread_managers)
-    pub channel_names: Vec<String>,
 }
 
 /// TCP-based inspect server.
@@ -237,14 +235,6 @@ impl InspectServer {
             threads.extend(tm_threads);
         }
 
-        // Build channel -> workspace_dir lookup
-        let channel_workspace: std::collections::HashMap<&str, &std::path::Path> = context
-            .channel_names
-            .iter()
-            .zip(context.workspace_dirs.iter())
-            .map(|(name, dir)| (name.as_str(), dir.as_path()))
-            .collect();
-
         // Merge activity logs and status into threads
         let activity_map = context.activity_map.lock().await;
         for thread in &mut threads {
@@ -259,23 +249,6 @@ impl InspectServer {
             }
         }
         drop(activity_map);
-
-        // For threads without in-memory activity, load from disk
-        if !context.workspace_dirs.is_empty() {
-            for thread in &mut threads {
-                if !thread.activity.is_empty() {
-                    continue;
-                }
-                if let Some(workspace_dir) = channel_workspace.get(thread.channel.as_str()) {
-                    let thread_path = workspace_dir.join(&thread.name);
-                    if let Ok(entries) = ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES) {
-                        if !entries.is_empty() {
-                            thread.activity = entries;
-                        }
-                    }
-                }
-            }
-        }
 
         // Read metrics
         let health = context.health_stats.lock().await;
@@ -314,6 +287,11 @@ impl ActivityTracker {
         workspace_dirs: Vec<PathBuf>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
+        assert_eq!(
+            thread_managers.len(),
+            workspace_dirs.len(),
+            "thread_managers and workspace_dirs must have the same length"
+        );
         tokio::spawn(async move {
             // Load historical activity from disk for all existing threads
             for (tm_index, tm) in thread_managers.iter().enumerate() {
@@ -347,8 +325,8 @@ impl ActivityTracker {
                     _ = interval.tick() => {
                         // Discover new threads and subscribe to their event buses
                         for (tm_index, tm) in thread_managers.iter().enumerate() {
+                            let workspace_dir = workspace_dirs.get(tm_index);
                             let threads = tm.list_threads().await;
-                            let workspace_dir = &workspace_dirs[tm_index];
                             for thread in threads {
                                 if subscribed.contains(&thread.name) {
                                     continue;
@@ -358,7 +336,7 @@ impl ActivityTracker {
                                         subscribed.insert(thread.name.clone());
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
-                                        let thread_path = workspace_dir.join(&name);
+                                        let thread_path = workspace_dir.map(|d| d.join(&name));
                                         let cancel_inner = cancel.clone();
                                         tokio::spawn(async move {
                                             loop {
@@ -379,8 +357,10 @@ impl ActivityTracker {
                                                                 );
                                                                 let entry = event_to_activity(&event);
                                                                 // Persist to disk
-                                                                if let Err(e) = ActivityLogStore::append(&thread_path, &entry) {
-                                                                    tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                if let Some(ref path) = thread_path {
+                                                                    if let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                        tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                    }
                                                                 }
                                                                 let mut map = map.lock().await;
                                                                 let state = map.entry(name.clone()).or_default();
@@ -530,7 +510,6 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![],
-            channel_names: vec![],
         })
     }
 
@@ -744,7 +723,6 @@ mode = "opencode"
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),
             workspace_dirs: vec![],
-            channel_names: vec![],
         });
 
         let cancel = CancellationToken::new();

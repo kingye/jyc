@@ -77,7 +77,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
     let mut all_channels: Vec<crate::inspect::types::ChannelInfo> = Vec::new();
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
-    let mut all_channel_names: Vec<String> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
     let opencode_server = Arc::new(OpenCodeServer::new());
@@ -213,7 +212,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             channel_type: channel_type.to_string(),
         });
         all_workspace_dirs.push(workspace_dir);
-        all_channel_names.push(channel_name.clone());
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
@@ -456,7 +454,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             config_path: Some(config_path.clone()),
             config: Some(config.clone()),
             workspace_dirs: all_workspace_dirs.clone(),
-            channel_names: all_channel_names.clone(),
         });
 
         // Start activity tracker (subscribes to thread event buses)

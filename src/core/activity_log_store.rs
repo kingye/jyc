@@ -7,6 +7,10 @@ use crate::inspect::types::ActivityEntry;
 const DEFAULT_MAX_ENTRIES: usize = 200;
 const ROTATION_THRESHOLD: f64 = 1.5;
 
+/// Persists activity entries to `.jyc/activity.jsonl` per thread.
+///
+/// Each thread's activity log is stored as one JSON line per entry,
+/// enabling efficient append-only writes and bounded history retrieval.
 pub struct ActivityLogStore;
 
 impl ActivityLogStore {
@@ -14,6 +18,10 @@ impl ActivityLogStore {
         thread_path.join(".jyc").join("activity.jsonl")
     }
 
+    /// Append an activity entry to the thread's JSONL log file.
+    ///
+    /// Creates the `.jyc/` directory if it doesn't exist. After writing,
+    /// checks whether lazy rotation is needed (1.5x threshold).
     pub fn append(thread_path: &Path, entry: &ActivityEntry) -> anyhow::Result<()> {
         let path = Self::jsonl_path(thread_path);
         if let Some(parent) = path.parent() {
@@ -33,6 +41,10 @@ impl ActivityLogStore {
         Ok(())
     }
 
+    /// Load the most recent activity entries from the thread's JSONL log.
+    ///
+    /// Returns up to `max_entries` entries in chronological order (oldest first).
+    /// Returns an empty vec if the file doesn't exist or has no valid entries.
     pub fn load_recent(
         thread_path: &Path,
         max_entries: usize,
@@ -51,6 +63,10 @@ impl ActivityLogStore {
             .collect())
     }
 
+    /// Rotate the JSONL file if it exceeds the default max entries.
+    ///
+    /// Keeps only the most recent `DEFAULT_MAX_ENTRIES` lines,
+    /// rewriting the file in place.
     pub fn rotate_if_needed(thread_path: &Path) -> anyhow::Result<()> {
         Self::rotate_if_needed_with_max(thread_path, DEFAULT_MAX_ENTRIES)
     }

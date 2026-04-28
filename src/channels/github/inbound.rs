@@ -378,6 +378,88 @@ impl GithubInboundAdapter {
         }
     }
 
+    /// Load CI status tracking from persistent storage.
+    /// File format: `{pr_number}:{head_sha}:{overall_status}` per line.
+    /// Returns map of pr_number → (head_sha, overall_status).
+    async fn load_ci_status(&self) -> HashMap<u64, (String, String)> {
+        let file = self.state_dir.join("ci-status.txt");
+        if !file.exists() {
+            return HashMap::new();
+        }
+        match tokio::fs::read_to_string(&file).await {
+            Ok(content) => {
+                let map: HashMap<u64, (String, String)> = content
+                    .lines()
+                    .filter_map(|line| {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            return None;
+                        }
+                        let mut parts = line.splitn(3, ':');
+                        let number: u64 = parts.next()?.parse().ok()?;
+                        let head_sha = parts.next()?.to_string();
+                        let status = parts.next()?.to_string();
+                        Some((number, (head_sha, status)))
+                    })
+                    .collect();
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    count = map.len(),
+                    "Loaded CI status tracking"
+                );
+                map
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load CI status, starting fresh"
+                );
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Track CI status for a PR (append to file).
+    /// Key format: `{pr_number}:{head_sha}:{overall_status}`
+    async fn track_ci_status(
+        &self,
+        pr_number: u64,
+        head_sha: &str,
+        status: &str,
+        tracked: &mut HashMap<u64, (String, String)>,
+    ) {
+        tracked.insert(pr_number, (head_sha.to_string(), status.to_string()));
+
+        let file = self.state_dir.join("ci-status.txt");
+        use tokio::io::AsyncWriteExt;
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .await
+        {
+            let _ = f
+                .write_all(format!("{}:{}:{}\n", pr_number, head_sha, status).as_bytes())
+                .await;
+        }
+
+        if tracked.len() > 5000 {
+            self.compact_ci_status(tracked).await;
+        }
+    }
+
+    /// Rewrite CI status file from in-memory map.
+    async fn compact_ci_status(&self, tracked: &mut HashMap<u64, (String, String)>) {
+        let file = self.state_dir.join("ci-status.txt");
+        let content: String = tracked
+            .iter()
+            .map(|(number, (sha, status))| format!("{}:{}:{}\n", number, sha, status))
+            .collect();
+        if let Err(e) = tokio::fs::write(&file, content).await {
+            tracing::warn!(error = %e, "Failed to compact CI status file");
+        }
+    }
+
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
     fn build_trigger_message(

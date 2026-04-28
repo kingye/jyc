@@ -607,6 +607,9 @@ impl InboundAdapter for GithubInboundAdapter {
         // Cache issue info for comment routing (number → title, type, labels, assignees)
         let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
 
+        // Load CI status tracking for check-run polling
+        let mut ci_status: HashMap<u64, (String, String)> = self.load_ci_status().await;
+
         // Determine poll start time:
         // - Fresh start (no processed-comments.txt): start from "now" to avoid
         //   replaying old comments that already have @j:<role> mentions.
@@ -650,6 +653,7 @@ impl InboundAdapter for GithubInboundAdapter {
                         &mut seen_issues,
                         &mut issue_cache,
                         &mut last_poll,
+                        &mut ci_status,
                     ).await {
                         tracing::error!(
                             channel = %self.channel_name,
@@ -679,6 +683,7 @@ impl GithubInboundAdapter {
         seen_issues: &mut HashSet<String>,
         issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
+        ci_status: &mut HashMap<u64, (String, String)>, // pr_number → (head_sha, overall_status)
     ) -> Result<()> {
         let poll_start = last_poll.clone();
 
@@ -1096,6 +1101,159 @@ impl GithubInboundAdapter {
                         "Failed to fetch review comments for PR"
                     );
                 }
+            }
+        }
+
+        // 2c. Poll CI check-run status for open PRs (if enabled).
+        if self.config.poll_ci_status {
+            for pr_number in &open_pr_numbers {
+                let head_sha = match client.get_pr_head_sha(*pr_number).await {
+                    Ok(sha) => sha,
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = %self.channel_name,
+                            pr_number = pr_number,
+                            error = %e,
+                            "Failed to get PR head SHA for CI polling"
+                        );
+                        continue;
+                    }
+                };
+
+                let check_runs = match client.list_check_runs(&head_sha).await {
+                    Ok(runs) => runs,
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = %self.channel_name,
+                            pr_number = pr_number,
+                            error = %e,
+                            "Failed to list check runs for CI polling"
+                        );
+                        continue;
+                    }
+                };
+
+                let has_failure = check_runs
+                    .iter()
+                    .any(|cr| cr.conclusion.as_deref() == Some("failure"));
+                let all_completed = check_runs
+                    .iter()
+                    .all(|cr| cr.status == "completed");
+
+                let overall_status = if has_failure {
+                    "failure"
+                } else if !all_completed {
+                    "pending"
+                } else {
+                    "success"
+                };
+
+                let tracked_status = ci_status
+                    .get(pr_number)
+                    .map(|(sha, status)| (sha.clone(), status.clone()));
+
+                // Reset tracking if head_sha changed (new commit pushed)
+                let should_reset = tracked_status
+                    .as_ref()
+                    .map(|(tracked_sha, _)| tracked_sha != &head_sha)
+                    .unwrap_or(true);
+
+                let previous_status = if should_reset {
+                    None
+                } else {
+                    tracked_status.as_ref().map(|(_, s)| s.clone())
+                };
+
+                // Only trigger on transition TO "failure"
+                if overall_status == "failure" && previous_status.as_deref() != Some("failure") {
+                    let failed_checks: Vec<&super::client::GithubCheckRun> = check_runs
+                        .iter()
+                        .filter(|cr| cr.conclusion.as_deref() == Some("failure"))
+                        .collect();
+
+                    let (title, github_type, labels, assignees) = issue_cache
+                        .get(pr_number)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            (
+                                format!("#{}", pr_number),
+                                "pull_request".to_string(),
+                                vec![],
+                                vec![],
+                            )
+                        });
+
+                    let event_uid = format!("ci-{}-{}-failure", pr_number, &head_sha[..8]);
+
+                    let mut message = self.build_trigger_message(
+                        "check_run",
+                        *pr_number,
+                        &title,
+                        &github_type,
+                        "completed",
+                        "github-actions",
+                        &labels,
+                        &assignees,
+                        &event_uid,
+                    );
+
+                    message.metadata.insert(
+                        "ci_head_sha".to_string(),
+                        serde_json::Value::String(head_sha.clone()),
+                    );
+
+                    let failed_checks_json: Vec<serde_json::Value> = failed_checks
+                        .iter()
+                        .map(|cr| {
+                            serde_json::json!({
+                                "name": cr.name,
+                                "conclusion": cr.conclusion.clone().unwrap_or_default(),
+                            })
+                        })
+                        .collect();
+                    message.metadata.insert(
+                        "ci_failed_checks".to_string(),
+                        serde_json::Value::Array(failed_checks_json),
+                    );
+
+                    let failed_names: Vec<String> = failed_checks
+                        .iter()
+                        .map(|cr| {
+                            format!(
+                                "- {} ({})",
+                                cr.name,
+                                cr.conclusion.as_deref().unwrap_or("unknown")
+                            )
+                        })
+                        .collect();
+
+                    let ci_section = format!(
+                        "\n\n---\nCI check-run failure detected on commit {}:\n\n{}\n\nDiagnose:\n  gh pr checks {}",
+                        &head_sha[..8],
+                        failed_names.join("\n"),
+                        pr_number
+                    );
+                    match &mut message.content.text {
+                        Some(text) => text.push_str(&ci_section),
+                        None => message.content.text = Some(ci_section),
+                    }
+
+                    tracing::info!(
+                        channel = %self.channel_name,
+                        event = "ci_failure",
+                        pr_number = pr_number,
+                        head_sha = %&head_sha[..8],
+                        failed_count = failed_checks.len(),
+                        "CI failure detected → routing to developer agent"
+                    );
+
+                    if let Err(e) = (options.on_message)(message) {
+                        tracing::error!(error = %e, pr_number = pr_number, "Failed to route CI failure event");
+                    }
+                }
+
+                self.track_ci_status(*pr_number, &head_sha, overall_status, ci_status)
+                    .await;
             }
         }
 

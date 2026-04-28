@@ -228,7 +228,7 @@ impl OpenCodeService {
         }
 
         for lsp in &lsp_servers {
-            if lsp.name.contains("rust") {
+            if lsp.name.to_lowercase().contains("rust") {
                 if let Some(pid) = lsp.pid {
                     tracing::info!(
                         lsp_name = %lsp.name,

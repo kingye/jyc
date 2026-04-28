@@ -181,6 +181,7 @@ InboundMessage {
 | pr.labeled | New labels match pattern | `pr-{N}` | Trigger agent (re-route) |
 | pr.review_submitted | — | `pr-{N}` | Trigger developer agent |
 | pr.review_comment | — | `pr-{N}` | Trigger developer agent (inline feedback) |
+| pr.ci_failure | Check run conclusion = "failure" | `pr-{N}` | Trigger developer agent (auto-fix CI failures) |
 | pr.merged | — | `pr-{N}`, `review-pr-{N}`, linked `issue-{N}` | **Close + delete all** |
 | pr.closed (not merged) | — | `pr-{N}`, `review-pr-{N}` | **Close + delete** (keep issue thread) |
 
@@ -260,6 +261,7 @@ owner = "kingye"
 repo = "jyc"
 token = "${GITHUB_TOKEN}"
 poll_interval_secs = 60
+poll_ci_status = true
 
 # Pattern 1: Issues with jyc:plan label → Planner
 [[channels.my_repo.patterns]]
@@ -496,7 +498,28 @@ Every poll_interval_secs:
 4. For each open PR: fetch reviews and review comments
    GET /repos/{o}/{r}/pulls/{n}/reviews?per_page=100
    GET /repos/{o}/{r}/pulls/{n}/comments?sort=updated&direction=asc&per_page=100
+
+5. For each open PR: poll CI check-run status (if poll_ci_status = true)
+   GET /repos/{o}/{r}/pulls/{n}  (get head SHA)
+   GET /repos/{o}/{r}/commits/{sha}/check-runs?per_page=100
 ```
+
+### CI Check-Run Polling
+
+When `poll_ci_status = true` (default), the adapter monitors CI check-run results
+for all open PRs on each poll cycle. It detects **transitions** to "failure" status
+and triggers the developer agent to fix the issue.
+
+**Behavior**:
+- Only triggers on status **change** to "failure" (not on every poll if still failing)
+- When a new commit is pushed (head SHA changes), tracking resets automatically
+- CI status is persisted to `<channel>/.github/ci-status.txt` across restarts
+- CI events use `github_event: "check_run"` and `actor: "github-actions"` — they
+  pass through self-loop prevention since they're not prefixed with `[Developer]`
+- Failing check names and conclusions are included in metadata (`ci_failed_checks`)
+  and in the message body
+
+**Dedup key**: `ci-{pr_number}-{head_sha_prefix}-failure`
 
 ### Deduplication
 
@@ -513,8 +536,9 @@ Processed event IDs are stored in a set (persisted to disk between restarts).
 ### Rate Limiting
 
 GitHub API rate limit: 5000 requests/hour for PAT.
-With 60s poll interval, ~4 base API calls per cycle, plus 2 per open PR (reviews + review comments):
-~240 base requests/hour + ~2400 for 20 open PRs = well within limits.
+With 60s poll interval, ~4 base API calls per cycle, plus 2 per open PR (reviews + review comments),
+plus 2 per open PR for CI polling (get_pr_head_sha + list_check_runs) when `poll_ci_status = true`:
+~240 base requests/hour + ~2400 for 20 open PRs (reviews) + ~2400 for CI polling = well within limits.
 
 ## Bot Identity
 

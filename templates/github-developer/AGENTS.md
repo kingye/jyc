@@ -92,6 +92,7 @@ Read the triggering comment at the bottom of the incoming message.
 
 1. **Analyze the task**: Determine what the comment asks for
    - If it's implementing the full implementation plan → treat as planner task
+   - If `github_event: "check_run"` → CI failure on the PR → fix the failing checks
    - Otherwise → treat as specific task (fix, add comments, refactor, etc.)
 
 2. **Execute the task**:
@@ -156,6 +157,19 @@ Read the triggering comment at the bottom of the incoming message.
 
 - **After full plan**: Hand off → add `ready-for-review` label + `gh pr ready`
 - **After reviewer feedback fix**: Hand off → add `ready-for-review` label (reviewer needs the label to be re-triggered)
+- **After CI failure fix**: Hand off → add `ready-for-review` label + `gh pr ready`
+
+## CI Failure Handling
+
+When `github_event: "check_run"` appears in the triggering message, CI checks have failed on the PR.
+
+1. **Read the failing checks**: The message body lists which checks failed and their conclusions. The `ci_failed_checks` metadata contains a JSON array of `{name, conclusion}` objects. The `ci_head_sha` metadata contains the failing commit SHA.
+
+2. **Diagnose**: Run `gh pr checks <number>` to see the current status of all checks.
+
+3. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
+
+4. **Hand off to Reviewer**: After pushing fixes, hand off to reviewer as usual.
 
 ## Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

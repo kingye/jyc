@@ -628,4 +628,56 @@ mode = "opencode"
         assert!(idle_timeout.is_zero(),
             "Duration::ZERO should be zero — production code uses this guard to skip spawning the idle monitor");
     }
+
+    #[tokio::test]
+    async fn test_permit_released_while_worker_idle() {
+        use tokio::sync::{Semaphore, mpsc};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let semaphore = Arc::new(Semaphore::new(1));
+        let (tx, mut rx) = mpsc::channel::<i32>(10);
+
+        tx.send(1).await.unwrap();
+
+        let sem = semaphore.clone();
+        let (idle_tx, mut idle_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+        let handle = tokio::spawn(async move {
+            let mut _permit = sem.clone().acquire_owned().await.unwrap();
+
+            loop {
+                let msg = match rx.recv().await {
+                    Some(m) => m,
+                    None => break,
+                };
+
+                drop(_permit);
+                let _ = idle_tx.send(()).await;
+
+                let next = match rx.recv().await {
+                    Some(n) => n,
+                    None => break,
+                };
+
+                _permit = sem.clone().acquire_owned().await.unwrap();
+                let _ = next;
+                let _ = msg;
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), idle_rx.recv())
+            .await
+            .expect("timed out waiting for worker to go idle")
+            .expect("worker dropped idle signal");
+
+        assert_eq!(
+            semaphore.available_permits(), 1,
+            "Permit should be released while worker is idle waiting for next message"
+        );
+
+        tx.send(2).await.unwrap();
+        drop(tx);
+        let _ = handle.await;
+    }
 }

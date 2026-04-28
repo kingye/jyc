@@ -542,12 +542,16 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     };
 
     // 6. Start idle shutdown monitor (auto-stop OpenCode server when idle)
+    let idle_enabled = config_snapshot.agent.opencode.as_ref()
+        .map(|oc| oc.idle_shutdown_enabled)
+        .unwrap_or(true);
+
     let idle_timeout = config_snapshot.agent.opencode.as_ref()
         .and_then(|oc| oc.idle_shutdown_timeout_secs)
         .map(std::time::Duration::from_secs)
         .unwrap_or(OPENCODE_IDLE_SHUTDOWN_TIMEOUT);
 
-    let idle_monitor_task = {
+    let idle_monitor_task = if idle_enabled {
         let idle_tms = thread_managers_for_idle;
         let idle_server: Arc<dyn IdleStopServer> = opencode_server.clone();
         let idle_cancel = cancel.clone();
@@ -577,6 +581,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 idle_cancel,
             ).await;
         }))
+    } else {
+        tracing::info!("Idle shutdown monitor disabled (idle_shutdown_enabled = false)");
+        None
     };
 
     tracing::info!(

@@ -225,9 +225,15 @@ pub struct OpenCodeConfig {
     /// If not set, uses 95% of the model's context window, or 120K as fallback.
     pub max_input_tokens: Option<u64>,
 
+    /// Whether idle shutdown is enabled. Defaults to `true` (the idle monitor
+    /// will auto-stop the OpenCode server when all workers are idle).
+    /// Set to `false` to disable idle shutdown entirely.
+    #[serde(default = "default_true")]
+    pub idle_shutdown_enabled: bool,
+
     /// Idle timeout in seconds before auto-shutting down the OpenCode server.
-    /// Defaults to 0 (immediate shutdown) when None. Set to `None` explicitly
-    /// in config (via omitting or using a sentinel) to disable idle shutdown.
+    /// Defaults to 0 (immediate shutdown) when None. Only effective when
+    /// `idle_shutdown_enabled` is `true`.
     pub idle_shutdown_timeout_secs: Option<u64>,
 
     /// Kill LSP server processes after each prompt completes to free memory.

@@ -236,10 +236,11 @@ impl OpenCodeService {
                 );
                 let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
                 if ret != 0 {
+                    let err = std::io::Error::last_os_error();
                     tracing::warn!(
                         lsp_name = %lsp.name,
                         pid = pid,
-                        errno = ret,
+                        error = %err,
                         "Failed to send SIGTERM to LSP process"
                     );
                 }

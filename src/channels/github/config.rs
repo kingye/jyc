@@ -10,6 +10,10 @@ fn default_poll_interval() -> u64 {
     60
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// GitHub-specific configuration for a channel.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GithubConfig {
@@ -30,6 +34,10 @@ pub struct GithubConfig {
     /// Polling interval in seconds (default: 60)
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
+
+    /// Whether to poll CI check-run status on open PRs (default: true)
+    #[serde(default = "default_true")]
+    pub poll_ci_status: bool,
 }
 
 impl Default for GithubConfig {
@@ -40,6 +48,7 @@ impl Default for GithubConfig {
             token: String::new(),
             api_url: default_api_url(),
             poll_interval_secs: default_poll_interval(),
+            poll_ci_status: true,
         }
     }
 }
@@ -99,5 +108,30 @@ mod tests {
         assert_eq!(config.owner, "myorg");
         assert_eq!(config.repo, "myrepo");
         assert_eq!(config.api_url, "https://github.example.com/api/v3");
+    }
+
+    #[test]
+    fn test_config_deserialize_poll_ci_status_default() {
+        let toml_str = r#"
+            owner = "kingye"
+            repo = "jyc"
+            token = "ghp_test123"
+        "#;
+
+        let config: GithubConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.poll_ci_status);
+    }
+
+    #[test]
+    fn test_config_deserialize_poll_ci_status_disabled() {
+        let toml_str = r#"
+            owner = "kingye"
+            repo = "jyc"
+            token = "ghp_test123"
+            poll_ci_status = false
+        "#;
+
+        let config: GithubConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.poll_ci_status);
     }
 }

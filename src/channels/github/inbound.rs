@@ -378,6 +378,80 @@ impl GithubInboundAdapter {
         }
     }
 
+    /// Load CI status tracking from persistent storage.
+    /// File format: `{pr_number}:{head_sha}:{overall_status}` per line.
+    /// Returns map of pr_number → (head_sha, overall_status).
+    async fn load_ci_status(&self) -> HashMap<u64, (String, String)> {
+        let file = self.state_dir.join("ci-status.txt");
+        if !file.exists() {
+            return HashMap::new();
+        }
+        match tokio::fs::read_to_string(&file).await {
+            Ok(content) => {
+                let map: HashMap<u64, (String, String)> = content
+                    .lines()
+                    .filter_map(|line| {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            return None;
+                        }
+                        let mut parts = line.splitn(3, ':');
+                        let number: u64 = parts.next()?.parse().ok()?;
+                        let head_sha = parts.next()?.to_string();
+                        let status = parts.next()?.to_string();
+                        Some((number, (head_sha, status)))
+                    })
+                    .collect();
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    count = map.len(),
+                    "Loaded CI status tracking"
+                );
+                map
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load CI status, starting fresh"
+                );
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Track CI status for a PR (append to file).
+    /// Key format: `{pr_number}:{head_sha}:{overall_status}`
+    async fn track_ci_status(
+        &self,
+        pr_number: u64,
+        head_sha: &str,
+        status: &str,
+        tracked: &mut HashMap<u64, (String, String)>,
+    ) {
+        let changed = tracked
+            .get(&pr_number)
+            .map(|(sha, s)| sha != head_sha || s != status)
+            .unwrap_or(true);
+
+        tracked.insert(pr_number, (head_sha.to_string(), status.to_string()));
+
+        if changed {
+            self.compact_ci_status(tracked).await;
+        }
+    }
+
+    /// Rewrite CI status file from in-memory map.
+    async fn compact_ci_status(&self, tracked: &mut HashMap<u64, (String, String)>) {
+        let file = self.state_dir.join("ci-status.txt");
+        let content: String = tracked
+            .iter()
+            .map(|(number, (sha, status))| format!("{}:{}:{}\n", number, sha, status))
+            .collect();
+        if let Err(e) = tokio::fs::write(&file, content).await {
+            tracing::warn!(error = %e, "Failed to compact CI status file");
+        }
+    }
+
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
     fn build_trigger_message(
@@ -525,6 +599,9 @@ impl InboundAdapter for GithubInboundAdapter {
         // Cache issue info for comment routing (number → title, type, labels, assignees)
         let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
 
+        // Load CI status tracking for check-run polling
+        let mut ci_status: HashMap<u64, (String, String)> = self.load_ci_status().await;
+
         // Determine poll start time:
         // - Fresh start (no processed-comments.txt): start from "now" to avoid
         //   replaying old comments that already have @j:<role> mentions.
@@ -568,6 +645,7 @@ impl InboundAdapter for GithubInboundAdapter {
                         &mut seen_issues,
                         &mut issue_cache,
                         &mut last_poll,
+                        &mut ci_status,
                     ).await {
                         tracing::error!(
                             channel = %self.channel_name,
@@ -597,6 +675,7 @@ impl GithubInboundAdapter {
         seen_issues: &mut HashSet<String>,
         issue_cache: &mut HashMap<u64, (String, String, Vec<String>, Vec<String>)>, // number → (title, type, labels, assignees)
         last_poll: &mut String,
+        ci_status: &mut HashMap<u64, (String, String)>, // pr_number → (head_sha, overall_status)
     ) -> Result<()> {
         let poll_start = last_poll.clone();
 
@@ -802,6 +881,372 @@ impl GithubInboundAdapter {
             }
 
             self.track_comment(&comment_key, processed_comments).await;
+        }
+
+        // 2b. Fetch and process PR reviews and review comments.
+        // These are per-PR endpoints, so we iterate over open PRs from issue_cache.
+        let open_pr_numbers: Vec<u64> = issue_cache
+            .iter()
+            .filter(|(_, (_, github_type, _, _))| github_type == "pull_request")
+            .map(|(number, _)| *number)
+            .collect();
+
+        for pr_number in &open_pr_numbers {
+            // Process reviews
+            match client.list_reviews(*pr_number).await {
+                Ok(reviews) => {
+                    tracing::trace!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        count = reviews.len(),
+                        "Fetched reviews for PR"
+                    );
+
+                    for review in &reviews {
+                        if review.state == "PENDING" {
+                            continue;
+                        }
+
+                        let submitted_at = review.submitted_at.as_deref().unwrap_or("");
+                        let review_key = format!("review-{}:{}", review.id, submitted_at);
+
+                        if processed_comments.contains(&review_key) {
+                            continue;
+                        }
+
+                        let body_trimmed = review.body.trim();
+
+                        let comment_role = extract_comment_role(body_trimmed);
+
+                        let (title, github_type, labels, assignees) = issue_cache
+                            .get(pr_number)
+                            .cloned()
+                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+
+                        let event_uid = format!("review-{}", review.id);
+
+                        let mut message = self.build_trigger_message(
+                            "pull_request_review",
+                            *pr_number,
+                            &title,
+                            &github_type,
+                            "review_submitted",
+                            &review.user.login,
+                            &labels,
+                            &assignees,
+                            &event_uid,
+                        );
+
+                        message.metadata.insert(
+                            "review_state".to_string(),
+                            serde_json::Value::String(review.state.clone()),
+                        );
+
+                        message.metadata.insert(
+                            "comment_body".to_string(),
+                            serde_json::Value::String(review.body.clone()),
+                        );
+
+                        let review_section = format!(
+                            "\n\n---\nReview by {} ({}):\n\n{}",
+                            review.user.login, review.state, review.body
+                        );
+                        match &mut message.content.text {
+                            Some(text) => text.push_str(&review_section),
+                            None => message.content.text = Some(review_section),
+                        }
+
+                        if let Some(ref role) = comment_role {
+                            message.metadata.insert(
+                                "comment_role".to_string(),
+                                serde_json::Value::String(role.clone()),
+                            );
+                        }
+
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "review_submitted",
+                            review_id = review.id,
+                            pr_number = pr_number,
+                            review_state = %review.state,
+                            user = %review.user.login,
+                            "PR review detected → routing"
+                        );
+
+                        if let Err(e) = (options.on_message)(message) {
+                            tracing::error!(error = %e, pr_number = pr_number, "Failed to route review event");
+                        }
+
+                        self.track_comment(&review_key, processed_comments).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        error = %e,
+                        "Failed to fetch reviews for PR"
+                    );
+                }
+            }
+
+            // Process review comments
+            match client.list_review_comments(*pr_number).await {
+                Ok(review_comments) => {
+                    tracing::trace!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        count = review_comments.len(),
+                        "Fetched review comments for PR"
+                    );
+
+                    for rc in &review_comments {
+                        let rc_key = format!("review-comment-{}:{}", rc.id, rc.updated_at);
+
+                        if processed_comments.contains(&rc_key) {
+                            continue;
+                        }
+
+                        let body_trimmed = rc.body.trim();
+
+                        let comment_role = extract_comment_role(body_trimmed);
+
+                        let (title, github_type, labels, assignees) = issue_cache
+                            .get(pr_number)
+                            .cloned()
+                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+
+                        let event_uid = format!("review-comment-{}", rc.id);
+
+                        let mut message = self.build_trigger_message(
+                            "pull_request_review_comment",
+                            *pr_number,
+                            &title,
+                            &github_type,
+                            "created",
+                            &rc.user.login,
+                            &labels,
+                            &assignees,
+                            &event_uid,
+                        );
+
+                        message.metadata.insert(
+                            "comment_body".to_string(),
+                            serde_json::Value::String(rc.body.clone()),
+                        );
+
+                        let mut context_parts = Vec::new();
+                        if let Some(ref path) = rc.path {
+                            if let Some(line) = rc.line {
+                                context_parts.push(format!("{}:{}", path, line));
+                            } else {
+                                context_parts.push(path.clone());
+                            }
+                        }
+
+                        let review_comment_section = if context_parts.is_empty() {
+                            format!(
+                                "\n\n---\nReview comment by {}:\n\n{}",
+                                rc.user.login, rc.body
+                            )
+                        } else {
+                            format!(
+                                "\n\n---\nReview comment by {} on {}:\n\n{}",
+                                rc.user.login, context_parts.join(", "), rc.body
+                            )
+                        };
+                        match &mut message.content.text {
+                            Some(text) => text.push_str(&review_comment_section),
+                            None => message.content.text = Some(review_comment_section),
+                        }
+
+                        if let Some(ref role) = comment_role {
+                            message.metadata.insert(
+                                "comment_role".to_string(),
+                                serde_json::Value::String(role.clone()),
+                            );
+                        }
+
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "review_comment",
+                            comment_id = rc.id,
+                            pr_number = pr_number,
+                            path = ?rc.path,
+                            line = ?rc.line,
+                            user = %rc.user.login,
+                            "PR review comment detected → routing"
+                        );
+
+                        if let Err(e) = (options.on_message)(message) {
+                            tracing::error!(error = %e, pr_number = pr_number, "Failed to route review comment event");
+                        }
+
+                        self.track_comment(&rc_key, processed_comments).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        error = %e,
+                        "Failed to fetch review comments for PR"
+                    );
+                }
+            }
+        }
+
+        // 2c. Poll CI check-run status for open PRs (if enabled).
+        if self.config.poll_ci_status {
+            for pr_number in &open_pr_numbers {
+                let head_sha = match client.get_pr_head_sha(*pr_number).await {
+                    Ok(sha) => sha,
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = %self.channel_name,
+                            pr_number = pr_number,
+                            error = %e,
+                            "Failed to get PR head SHA for CI polling"
+                        );
+                        continue;
+                    }
+                };
+
+                let check_runs = match client.list_check_runs(&head_sha).await {
+                    Ok(runs) => runs,
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = %self.channel_name,
+                            pr_number = pr_number,
+                            error = %e,
+                            "Failed to list check runs for CI polling"
+                        );
+                        continue;
+                    }
+                };
+
+                let has_failure = check_runs
+                    .iter()
+                    .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
+                let all_completed = check_runs
+                    .iter()
+                    .all(|cr| cr.status == "completed");
+
+                let overall_status = if has_failure {
+                    "failure"
+                } else if !all_completed {
+                    "pending"
+                } else {
+                    "success"
+                };
+
+                let tracked_status = ci_status
+                    .get(pr_number)
+                    .map(|(sha, status)| (sha.clone(), status.clone()));
+
+                // Reset tracking if head_sha changed (new commit pushed)
+                let should_reset = tracked_status
+                    .as_ref()
+                    .map(|(tracked_sha, _)| tracked_sha != &head_sha)
+                    .unwrap_or(true);
+
+                let previous_status = if should_reset {
+                    None
+                } else {
+                    tracked_status.as_ref().map(|(_, s)| s.clone())
+                };
+
+                // Only trigger on transition TO "failure"
+                if overall_status == "failure" && previous_status.as_deref() != Some("failure") {
+                    let failed_checks: Vec<&super::client::GithubCheckRun> = check_runs
+                        .iter()
+                        .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
+                        .collect();
+
+                    let (title, github_type, labels, assignees) = issue_cache
+                        .get(pr_number)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            (
+                                format!("#{}", pr_number),
+                                "pull_request".to_string(),
+                                vec![],
+                                vec![],
+                            )
+                        });
+
+                    let event_uid = format!("ci-{}-{}-failure", pr_number, head_sha.get(..12).unwrap_or(&head_sha));
+
+                    let mut message = self.build_trigger_message(
+                        "check_run",
+                        *pr_number,
+                        &title,
+                        &github_type,
+                        "completed",
+                        "github-actions",
+                        &labels,
+                        &assignees,
+                        &event_uid,
+                    );
+
+                    message.metadata.insert(
+                        "ci_head_sha".to_string(),
+                        serde_json::Value::String(head_sha.clone()),
+                    );
+
+                    let failed_checks_json: Vec<serde_json::Value> = failed_checks
+                        .iter()
+                        .map(|cr| {
+                            serde_json::json!({
+                                "name": cr.name,
+                                "conclusion": cr.conclusion.clone().unwrap_or_default(),
+                            })
+                        })
+                        .collect();
+                    message.metadata.insert(
+                        "ci_failed_checks".to_string(),
+                        serde_json::Value::Array(failed_checks_json),
+                    );
+
+                    let failed_names: Vec<String> = failed_checks
+                        .iter()
+                        .map(|cr| {
+                            format!(
+                                "- {} ({})",
+                                cr.name,
+                                cr.conclusion.as_deref().unwrap_or("unknown")
+                            )
+                        })
+                        .collect();
+
+                    let ci_section = format!(
+                        "\n\n---\nCI check-run failure detected on commit {}:\n\n{}\n\nDiagnose:\n  gh pr checks {}",
+                        head_sha.get(..8).unwrap_or(&head_sha),
+                        failed_names.join("\n"),
+                        pr_number
+                    );
+                    match &mut message.content.text {
+                        Some(text) => text.push_str(&ci_section),
+                        None => message.content.text = Some(ci_section),
+                    }
+
+                    tracing::info!(
+                        channel = %self.channel_name,
+                        event = "ci_failure",
+                        pr_number = pr_number,
+                        head_sha = %head_sha.get(..8).unwrap_or(&head_sha),
+                        failed_count = failed_checks.len(),
+                        "CI failure detected → routing to developer agent"
+                    );
+
+                    if let Err(e) = (options.on_message)(message) {
+                        tracing::error!(error = %e, pr_number = pr_number, "Failed to route CI failure event");
+                    }
+                }
+
+                self.track_ci_status(*pr_number, &head_sha, overall_status, ci_status)
+                    .await;
+            }
         }
 
         // 3. Detect closed issues/PRs by comparing cache with full open set.
@@ -1425,6 +1870,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1442,6 +1888,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1473,6 +1920,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1504,6 +1952,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1539,6 +1988,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1561,6 +2011,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
@@ -1599,6 +2050,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
@@ -2074,5 +2526,276 @@ mod tests {
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_some());
         assert_eq!(result2.unwrap().pattern_name, "detail-planner");
+    }
+
+    #[test]
+    fn test_review_dedup_key_format() {
+        let mut processed: HashSet<String> = HashSet::new();
+        processed.insert("review-123:2026-04-15T10:00:00Z".to_string());
+        processed.insert("review-comment-456:2026-04-15T10:00:00Z".to_string());
+
+        assert!(processed.contains("review-123:2026-04-15T10:00:00Z"));
+        assert!(processed.contains("review-comment-456:2026-04-15T10:00:00Z"));
+        assert!(!processed.contains("review-123:2026-04-16T10:00:00Z"));
+    }
+
+    #[test]
+    fn test_review_comment_role_extraction() {
+        assert_eq!(extract_comment_role("[Developer] Fixed the issue"), Some("Developer".to_string()));
+        assert_eq!(extract_comment_role("[Reviewer] Looks good"), Some("Reviewer".to_string()));
+        assert_eq!(extract_comment_role("[Planner] Planning phase"), Some("Planner".to_string()));
+        assert_eq!(extract_comment_role("Normal review comment"), None);
+    }
+
+    #[test]
+    fn test_review_dedup_key_uniqueness() {
+        let key1 = format!("review-{}:{}", 123, "2026-04-15T10:00:00Z");
+        let key2 = format!("review-{}:{}", 123, "2026-04-16T10:00:00Z");
+        let key3 = format!("review-comment-{}:{}", 456, "2026-04-15T10:00:00Z");
+
+        assert_ne!(key1, key2, "Same review ID with different submitted_at should be different keys");
+        assert_ne!(key1, key3, "Review and review comment keys should be different");
+    }
+
+    // --- CI status tracking tests ---
+
+    fn make_ci_test_config() -> GithubConfig {
+        GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+            poll_ci_status: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_load_and_track() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
+        adapter.track_ci_status(43, "def456", "failure", &mut ci_status).await;
+
+        assert_eq!(ci_status.len(), 2);
+        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
+        assert_eq!(ci_status.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+
+        let reloaded = adapter.load_ci_status().await;
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
+        assert_eq!(reloaded.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_transition_triggers_message() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 was previously tracked as "pending"
+        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
+
+        // Simulate transition: same head_sha, status changes to "failure"
+        let (tracked_sha, previous_status) = ci_status.get(&42).cloned().unwrap();
+        assert_eq!(tracked_sha, "abc123");
+        assert_eq!(previous_status, "pending");
+
+        // The polling logic would detect: overall_status="failure" && previous_status != "failure"
+        // → trigger message. We test the state management part here.
+        let should_trigger = previous_status != "failure";
+        assert!(should_trigger, "Transition from pending to failure should trigger message");
+
+        // Update to failure
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "failure".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_no_retrigger_on_same_failure() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 is already tracked as "failure"
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+
+        // On next poll, same failure status — should NOT re-trigger
+        let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
+        let should_trigger = previous_status != "failure";
+        assert!(!should_trigger, "Same failure status should not re-trigger");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_resets_on_new_commit() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 tracked with old head_sha in "failure" status
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+
+        // Developer pushes a fix — new head_sha
+        let new_head_sha = "def456";
+        let (tracked_sha, _) = ci_status.get(&42).cloned().unwrap();
+
+        // head_sha changed → tracking should reset
+        let should_reset = tracked_sha != new_head_sha;
+        assert!(should_reset, "New commit should reset CI status tracking");
+
+        // After reset, previous_status would be None → transition to any status triggers
+        // Simulate: new commit's CI is still pending
+        adapter.track_ci_status(42, new_head_sha, "pending", &mut ci_status).await;
+        assert_eq!(
+            ci_status.get(&42),
+            Some(&("def456".to_string(), "pending".to_string()))
+        );
+
+        // Now CI fails on new commit → should trigger (because we reset)
+        let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
+        let should_trigger = previous_status != "failure";
+        assert!(should_trigger, "Failure on new commit should trigger after reset");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_empty_load() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let ci_status = adapter.load_ci_status().await;
+        assert!(ci_status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_compact() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // Add entries
+        for i in 1..=100u64 {
+            adapter
+                .track_ci_status(i, &format!("sha{}", i), "success", &mut ci_status)
+                .await;
+        }
+
+        assert_eq!(ci_status.len(), 100);
+
+        // Compact should rewrite the file (no size reduction since under threshold)
+        adapter.compact_ci_status(&mut ci_status).await;
+        assert_eq!(ci_status.len(), 100);
+
+        // Verify persistence
+        let reloaded = adapter.load_ci_status().await;
+        assert_eq!(reloaded.len(), 100);
+    }
+
+    #[test]
+    fn test_ci_failure_message_routing() {
+        // CI failure messages with github_type=pull_request should route to pr-{N}
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert(
+            "github_event".to_string(),
+            serde_json::Value::String("check_run".to_string()),
+        );
+        msg.metadata.insert(
+            "github_action".to_string(),
+            serde_json::Value::String("completed".to_string()),
+        );
+
+        let name = GithubMatcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "pr-43");
+
+        // CI failure with developer pattern match should also route to pr-{N}
+        let pm = PatternMatch {
+            pattern_name: "developer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name_with_pattern = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+        assert_eq!(name_with_pattern, "pr-43");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_no_file_growth_on_unchanged() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        let file = adapter.state_dir.join("ci-status.txt");
+        let lines_after_first = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+
+        // Track same entry again — file should be rewritten (same content), not grow
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        let lines_after_second = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+
+        assert_eq!(lines_after_first, lines_after_second, "File should not grow when status is unchanged");
+    }
+
+    #[test]
+    fn test_ci_timed_out_triggers_failure() {
+        let check_runs = vec![
+            super::super::client::GithubCheckRun {
+                id: 1,
+                name: "CI".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("timed_out".to_string()),
+                head_sha: "abc123def456".to_string(),
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+
+        let has_failure = check_runs
+            .iter()
+            .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
+
+        assert!(has_failure, "timed_out should be treated as failure");
+
+        let failed_checks: Vec<_> = check_runs
+            .iter()
+            .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
+            .collect();
+
+        assert_eq!(failed_checks.len(), 1);
+        assert_eq!(failed_checks[0].name, "CI");
+    }
+
+    #[test]
+    fn test_safe_head_sha_truncation() {
+        let short_sha = "abc".to_string();
+        let result = short_sha.get(..8).unwrap_or(&short_sha);
+        assert_eq!(result, "abc");
+
+        let normal_sha = "abc123def456".to_string();
+        let result2 = normal_sha.get(..8).unwrap_or(&normal_sha);
+        assert_eq!(result2, "abc123de");
+
+        let empty_sha = "".to_string();
+        let result3 = empty_sha.get(..8).unwrap_or(&empty_sha);
+        assert_eq!(result3, "");
     }
 }

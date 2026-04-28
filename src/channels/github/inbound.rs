@@ -804,6 +804,219 @@ impl GithubInboundAdapter {
             self.track_comment(&comment_key, processed_comments).await;
         }
 
+        // 2b. Fetch and process PR reviews and review comments.
+        // These are per-PR endpoints, so we iterate over open PRs from issue_cache.
+        let open_pr_numbers: Vec<u64> = issue_cache
+            .iter()
+            .filter(|(_, (_, github_type, _, _))| github_type == "pull_request")
+            .map(|(number, _)| *number)
+            .collect();
+
+        for pr_number in &open_pr_numbers {
+            // Process reviews
+            match client.list_reviews(*pr_number).await {
+                Ok(reviews) => {
+                    tracing::trace!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        count = reviews.len(),
+                        "Fetched reviews for PR"
+                    );
+
+                    for review in &reviews {
+                        if review.state == "PENDING" {
+                            continue;
+                        }
+
+                        let submitted_at = review.submitted_at.as_deref().unwrap_or("");
+                        let review_key = format!("review-{}:{}", review.id, submitted_at);
+
+                        if processed_comments.contains(&review_key) {
+                            continue;
+                        }
+
+                        let body_trimmed = review.body.trim();
+
+                        let comment_role = extract_comment_role(body_trimmed);
+
+                        let (title, github_type, labels, assignees) = issue_cache
+                            .get(pr_number)
+                            .cloned()
+                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+
+                        let event_uid = format!("review-{}", review.id);
+
+                        let mut message = self.build_trigger_message(
+                            "pull_request_review",
+                            *pr_number,
+                            &title,
+                            &github_type,
+                            "review_submitted",
+                            &review.user.login,
+                            &labels,
+                            &assignees,
+                            &event_uid,
+                        );
+
+                        message.metadata.insert(
+                            "review_state".to_string(),
+                            serde_json::Value::String(review.state.clone()),
+                        );
+
+                        message.metadata.insert(
+                            "comment_body".to_string(),
+                            serde_json::Value::String(review.body.clone()),
+                        );
+
+                        let review_section = format!(
+                            "\n\n---\nReview by {} ({}):\n\n{}",
+                            review.user.login, review.state, review.body
+                        );
+                        match &mut message.content.text {
+                            Some(text) => text.push_str(&review_section),
+                            None => message.content.text = Some(review_section),
+                        }
+
+                        if let Some(ref role) = comment_role {
+                            message.metadata.insert(
+                                "comment_role".to_string(),
+                                serde_json::Value::String(role.clone()),
+                            );
+                        }
+
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "review_submitted",
+                            review_id = review.id,
+                            pr_number = pr_number,
+                            review_state = %review.state,
+                            user = %review.user.login,
+                            "PR review detected → routing"
+                        );
+
+                        if let Err(e) = (options.on_message)(message) {
+                            tracing::error!(error = %e, pr_number = pr_number, "Failed to route review event");
+                        }
+
+                        self.track_comment(&review_key, processed_comments).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        error = %e,
+                        "Failed to fetch reviews for PR"
+                    );
+                }
+            }
+
+            // Process review comments
+            match client.list_review_comments(*pr_number).await {
+                Ok(review_comments) => {
+                    tracing::trace!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        count = review_comments.len(),
+                        "Fetched review comments for PR"
+                    );
+
+                    for rc in &review_comments {
+                        let rc_key = format!("review-comment-{}:{}", rc.id, rc.updated_at);
+
+                        if processed_comments.contains(&rc_key) {
+                            continue;
+                        }
+
+                        let body_trimmed = rc.body.trim();
+
+                        let comment_role = extract_comment_role(body_trimmed);
+
+                        let (title, github_type, labels, assignees) = issue_cache
+                            .get(pr_number)
+                            .cloned()
+                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+
+                        let event_uid = format!("review-comment-{}", rc.id);
+
+                        let mut message = self.build_trigger_message(
+                            "pull_request_review_comment",
+                            *pr_number,
+                            &title,
+                            &github_type,
+                            "created",
+                            &rc.user.login,
+                            &labels,
+                            &assignees,
+                            &event_uid,
+                        );
+
+                        message.metadata.insert(
+                            "comment_body".to_string(),
+                            serde_json::Value::String(rc.body.clone()),
+                        );
+
+                        let mut context_parts = Vec::new();
+                        if let Some(ref path) = rc.path {
+                            if let Some(line) = rc.line {
+                                context_parts.push(format!("{}:{}", path, line));
+                            } else {
+                                context_parts.push(path.clone());
+                            }
+                        }
+
+                        let review_comment_section = if context_parts.is_empty() {
+                            format!(
+                                "\n\n---\nReview comment by {}:\n\n{}",
+                                rc.user.login, rc.body
+                            )
+                        } else {
+                            format!(
+                                "\n\n---\nReview comment by {} on {}:\n\n{}",
+                                rc.user.login, context_parts.join(", "), rc.body
+                            )
+                        };
+                        match &mut message.content.text {
+                            Some(text) => text.push_str(&review_comment_section),
+                            None => message.content.text = Some(review_comment_section),
+                        }
+
+                        if let Some(ref role) = comment_role {
+                            message.metadata.insert(
+                                "comment_role".to_string(),
+                                serde_json::Value::String(role.clone()),
+                            );
+                        }
+
+                        tracing::info!(
+                            channel = %self.channel_name,
+                            event = "review_comment",
+                            comment_id = rc.id,
+                            pr_number = pr_number,
+                            path = ?rc.path,
+                            line = ?rc.line,
+                            user = %rc.user.login,
+                            "PR review comment detected → routing"
+                        );
+
+                        if let Err(e) = (options.on_message)(message) {
+                            tracing::error!(error = %e, pr_number = pr_number, "Failed to route review comment event");
+                        }
+
+                        self.track_comment(&rc_key, processed_comments).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %self.channel_name,
+                        pr_number = pr_number,
+                        error = %e,
+                        "Failed to fetch review comments for PR"
+                    );
+                }
+            }
+        }
+
         // 3. Detect closed issues/PRs by comparing cache with full open set.
         // Since we fetched ALL open issues (not just recently-updated ones),
         // the comparison is reliable: if an issue was in the cache but is not
@@ -2074,5 +2287,34 @@ mod tests {
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_some());
         assert_eq!(result2.unwrap().pattern_name, "detail-planner");
+    }
+
+    #[test]
+    fn test_review_dedup_key_format() {
+        let mut processed: HashSet<String> = HashSet::new();
+        processed.insert("review-123:2026-04-15T10:00:00Z".to_string());
+        processed.insert("review-comment-456:2026-04-15T10:00:00Z".to_string());
+
+        assert!(processed.contains("review-123:2026-04-15T10:00:00Z"));
+        assert!(processed.contains("review-comment-456:2026-04-15T10:00:00Z"));
+        assert!(!processed.contains("review-123:2026-04-16T10:00:00Z"));
+    }
+
+    #[test]
+    fn test_review_comment_role_extraction() {
+        assert_eq!(extract_comment_role("[Developer] Fixed the issue"), Some("Developer".to_string()));
+        assert_eq!(extract_comment_role("[Reviewer] Looks good"), Some("Reviewer".to_string()));
+        assert_eq!(extract_comment_role("[Planner] Planning phase"), Some("Planner".to_string()));
+        assert_eq!(extract_comment_role("Normal review comment"), None);
+    }
+
+    #[test]
+    fn test_review_dedup_key_uniqueness() {
+        let key1 = format!("review-{}:{}", 123, "2026-04-15T10:00:00Z");
+        let key2 = format!("review-{}:{}", 123, "2026-04-16T10:00:00Z");
+        let key3 = format!("review-comment-{}:{}", 456, "2026-04-15T10:00:00Z");
+
+        assert_ne!(key1, key2, "Same review ID with different submitted_at should be different keys");
+        assert_ne!(key1, key3, "Review and review comment keys should be different");
     }
 }

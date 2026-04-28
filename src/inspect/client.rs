@@ -160,6 +160,7 @@ mod tests {
             start_time: Instant::now(),
             config_path: None,
             config: None,
+            workspace_dirs: vec![],
         })
     }
 

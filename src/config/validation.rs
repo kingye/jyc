@@ -289,21 +289,8 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // OpenCode config
-    if let Some(ref opencode) = config.agent.opencode {
-        if opencode.kill_lsp_after_prompt.unwrap_or(false)
-            && opencode.idle_shutdown_enabled
-            && opencode.idle_shutdown_timeout_secs.map_or(true, |s| s == 0)
-        {
-            errors.push(ValidationError {
-                path: "agent.opencode.kill_lsp_after_prompt".into(),
-                message: "redundant with idle_shutdown_timeout_secs = 0 (immediate idle \
-                          shutdown already kills all LSP processes). Consider removing \
-                          kill_lsp_after_prompt."
-                    .into(),
-            });
-        }
-    }
+    // OpenCode config — no additional validation needed
+    // (idle_shutdown_timeout_secs = 0 means "disabled", which is valid)
 
     errors
 }
@@ -679,5 +666,86 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("allowed_extensions")));
         assert!(errors.iter().any(|e| e.path.contains("max_file_size")));
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
+    }
+
+    #[test]
+    fn test_opencode_defaults() {
+        let toml = r#"
+[general]
+max_concurrent_threads = 3
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "user"
+password = "pass"
+
+[agent]
+enabled = true
+mode = "opencode"
+
+[agent.opencode]
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let oc = config.agent.opencode.as_ref().unwrap();
+        assert!(
+            oc.kill_lsp_after_prompt,
+            "kill_lsp_after_prompt should default to true"
+        );
+        assert_eq!(
+            oc.idle_shutdown_timeout_secs, 5,
+            "idle_shutdown_timeout_secs should default to 5"
+        );
+    }
+
+    #[test]
+    fn test_opencode_idle_disabled_with_zero() {
+        let toml = r#"
+[general]
+max_concurrent_threads = 3
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "user"
+password = "pass"
+
+[agent]
+enabled = true
+mode = "opencode"
+
+[agent.opencode]
+idle_shutdown_timeout_secs = 0
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let oc = config.agent.opencode.as_ref().unwrap();
+        assert_eq!(
+            oc.idle_shutdown_timeout_secs, 0,
+            "idle_shutdown_timeout_secs = 0 means disabled"
+        );
+        let errors = validate_config(&config);
+        assert!(
+            errors.is_empty(),
+            "idle_shutdown_timeout_secs = 0 should be valid, got: {:?}",
+            errors
+        );
     }
 }

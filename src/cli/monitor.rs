@@ -55,6 +55,7 @@ pub async fn run_idle_monitor(
     cancel: CancellationToken,
 ) {
     let mut idle_since: Option<std::time::Instant> = None;
+    let mut server_stopped = false;
     let mut interval = tokio::time::interval(check_interval);
     interval.tick().await;
 
@@ -64,6 +65,9 @@ pub async fn run_idle_monitor(
                 let total_active = active_count();
 
                 if total_active == 0 {
+                    if server_stopped {
+                        continue;
+                    }
                     let since = idle_since.get_or_insert(std::time::Instant::now());
                     let elapsed = since.elapsed();
                     if elapsed >= idle_timeout {
@@ -74,14 +78,24 @@ pub async fn run_idle_monitor(
                         );
                         on_stop_server.stop_server().await;
                         tracing::info!("OpenCode server stopped due to idle timeout");
+                        server_stopped = true;
                         idle_since = None;
                     }
-                } else if idle_since.is_some() {
-                    tracing::info!(
-                        active_workers = total_active,
-                        "Activity detected — idle timer reset"
-                    );
-                    idle_since = None;
+                } else {
+                    if server_stopped {
+                        tracing::info!(
+                            active_workers = total_active,
+                            "Activity detected after server stop — resetting guard"
+                        );
+                        server_stopped = false;
+                    }
+                    if idle_since.is_some() {
+                        tracing::info!(
+                            active_workers = total_active,
+                            "Activity detected — idle timer reset"
+                        );
+                        idle_since = None;
+                    }
                 }
             }
             _ = cancel.cancelled() => {

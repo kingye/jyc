@@ -59,6 +59,7 @@ impl OpenCodeServer {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
+            .process_group(0)
             .spawn()
             .context("failed to start opencode server — is 'opencode' in PATH?")?;
 
@@ -120,16 +121,36 @@ impl OpenCodeServer {
         }
     }
 
-    /// Stop the server.
+    /// Stop the server and kill the entire process group.
+    ///
+    /// Using `process_group(0)` means opencode and all its children (e.g.
+    /// rust-analyzer) share a process group. We send SIGTERM to the negative
+    /// PID (process group) first, then fall back to SIGKILL, before calling
+    /// `child.kill()` as a final safety net.
     pub async fn stop(&self) -> Result<()> {
         if let Some(mut child) = self.process.lock().await.take() {
-            tracing::debug!("Stopping OpenCode server...");
+            tracing::info!("Stopping OpenCode server (process group kill)...");
+
+            if let Some(pid) = child.id() {
+                let pgid = pid as i32;
+                unsafe {
+                    if libc::kill(-pgid, libc::SIGTERM) == 0 {
+                        tracing::info!(pid = pid, "Sent SIGTERM to process group");
+                    } else {
+                        let err = std::io::Error::last_os_error();
+                        tracing::warn!(pid = pid, error = %err, "SIGTERM to process group failed, trying SIGKILL");
+                        let _ = libc::kill(-pgid, libc::SIGKILL);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
             child.kill().await.ok();
             child.wait().await.ok();
         }
         *self.port.lock().await = None;
         *self.base_url.lock().await = None;
-        tracing::debug!("OpenCode server stopped");
+        tracing::info!("OpenCode server stopped");
         Ok(())
     }
 

@@ -639,7 +639,7 @@ impl ThreadManager {
     }
 
     /// Number of active workers (holding semaphore permits).
-    fn active_worker_count(&self) -> usize {
+    pub fn active_worker_count(&self) -> usize {
         // This is an approximation: semaphore total - available = active
         // We stored the capacity in the constructor but Semaphore doesn't expose it.
         // We use config's max_concurrent_threads as the total.

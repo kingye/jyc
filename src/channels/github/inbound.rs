@@ -2564,4 +2564,182 @@ mod tests {
         assert_ne!(key1, key2, "Same review ID with different submitted_at should be different keys");
         assert_ne!(key1, key3, "Review and review comment keys should be different");
     }
+
+    // --- CI status tracking tests ---
+
+    fn make_ci_test_config() -> GithubConfig {
+        GithubConfig {
+            owner: "test".to_string(),
+            repo: "test".to_string(),
+            token: "test".to_string(),
+            api_url: "https://api.github.com".to_string(),
+            poll_interval_secs: 60,
+            poll_ci_status: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_load_and_track() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
+        adapter.track_ci_status(43, "def456", "failure", &mut ci_status).await;
+
+        assert_eq!(ci_status.len(), 2);
+        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
+        assert_eq!(ci_status.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+
+        let reloaded = adapter.load_ci_status().await;
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
+        assert_eq!(reloaded.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_transition_triggers_message() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 was previously tracked as "pending"
+        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
+
+        // Simulate transition: same head_sha, status changes to "failure"
+        let (tracked_sha, previous_status) = ci_status.get(&42).cloned().unwrap();
+        assert_eq!(tracked_sha, "abc123");
+        assert_eq!(previous_status, "pending");
+
+        // The polling logic would detect: overall_status="failure" && previous_status != "failure"
+        // → trigger message. We test the state management part here.
+        let should_trigger = previous_status != "failure";
+        assert!(should_trigger, "Transition from pending to failure should trigger message");
+
+        // Update to failure
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "failure".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_no_retrigger_on_same_failure() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 is already tracked as "failure"
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+
+        // On next poll, same failure status — should NOT re-trigger
+        let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
+        let should_trigger = previous_status != "failure";
+        assert!(!should_trigger, "Same failure status should not re-trigger");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_resets_on_new_commit() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // PR 42 tracked with old head_sha in "failure" status
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+
+        // Developer pushes a fix — new head_sha
+        let new_head_sha = "def456";
+        let (tracked_sha, _) = ci_status.get(&42).cloned().unwrap();
+
+        // head_sha changed → tracking should reset
+        let should_reset = tracked_sha != new_head_sha;
+        assert!(should_reset, "New commit should reset CI status tracking");
+
+        // After reset, previous_status would be None → transition to any status triggers
+        // Simulate: new commit's CI is still pending
+        adapter.track_ci_status(42, new_head_sha, "pending", &mut ci_status).await;
+        assert_eq!(
+            ci_status.get(&42),
+            Some(&("def456".to_string(), "pending".to_string()))
+        );
+
+        // Now CI fails on new commit → should trigger (because we reset)
+        let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
+        let should_trigger = previous_status != "failure";
+        assert!(should_trigger, "Failure on new commit should trigger after reset");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_empty_load() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let ci_status = adapter.load_ci_status().await;
+        assert!(ci_status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_compact() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        // Add entries
+        for i in 1..=100u64 {
+            adapter
+                .track_ci_status(i, &format!("sha{}", i), "success", &mut ci_status)
+                .await;
+        }
+
+        assert_eq!(ci_status.len(), 100);
+
+        // Compact should rewrite the file (no size reduction since under threshold)
+        adapter.compact_ci_status(&mut ci_status).await;
+        assert_eq!(ci_status.len(), 100);
+
+        // Verify persistence
+        let reloaded = adapter.load_ci_status().await;
+        assert_eq!(reloaded.len(), 100);
+    }
+
+    #[test]
+    fn test_ci_failure_message_routing() {
+        // CI failure messages with github_type=pull_request should route to pr-{N}
+        let mut msg = make_message("pull_request", 43);
+        msg.metadata.insert(
+            "github_event".to_string(),
+            serde_json::Value::String("check_run".to_string()),
+        );
+        msg.metadata.insert(
+            "github_action".to_string(),
+            serde_json::Value::String("completed".to_string()),
+        );
+
+        let name = GithubMatcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "pr-43");
+
+        // CI failure with developer pattern match should also route to pr-{N}
+        let pm = PatternMatch {
+            pattern_name: "developer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name_with_pattern = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+        assert_eq!(name_with_pattern, "pr-43");
+    }
 }

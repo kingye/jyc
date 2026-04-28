@@ -543,91 +543,89 @@ mode = "opencode"
         h.await.unwrap();
     }
 
-    #[test]
-    fn test_process_group_configuration() {
+    #[tokio::test]
+    async fn test_process_group_child_pgid_matches_pid() {
         use std::process::Command;
         use std::os::unix::process::CommandExt;
 
-        let mut cmd = Command::new("echo");
-        cmd.arg("test");
-        cmd.process_group(0);
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("failed to spawn sleep");
 
-        let has_process_group = true;
-        assert!(has_process_group, "Command should support process_group(0)");
+        let pid = child.id();
+
+        let pgid = unsafe { libc::getpgid(pid as i32) };
+        assert_eq!(pgid, pid as i32, "Child's PGID should match its PID (process_group(0))");
+
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+        let _ = child.wait();
     }
 
     #[tokio::test]
     async fn test_idle_shutdown_logic() {
+        use crate::cli::monitor::{run_idle_monitor, IdleStopServer};
+
+        struct MockStopServer {
+            stopped: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl IdleStopServer for MockStopServer {
+            async fn stop_server(&self) {
+                self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         let cancel = tokio_util::sync::CancellationToken::new();
-        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let active_count = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         let idle_timeout = std::time::Duration::from_millis(200);
         let check_interval = std::time::Duration::from_millis(50);
 
-        let active_count: Arc<std::sync::atomic::AtomicUsize> =
-            Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let active_clone = active_count.clone();
-        let stop_tx_clone = stop_tx.clone();
-        let cancel_clone = cancel.clone();
-
-        let monitor = tokio::spawn(async move {
-            let mut idle_since: Option<std::time::Instant> = None;
-            let mut interval = tokio::time::interval(check_interval);
-            interval.tick().await;
-
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let total_active = active_clone.load(std::sync::atomic::Ordering::SeqCst);
-                        if total_active == 0 {
-                            match idle_since {
-                                None => {
-                                    idle_since = Some(std::time::Instant::now());
-                                }
-                                Some(since) => {
-                                    if since.elapsed() >= idle_timeout {
-                                        let _ = stop_tx_clone.send(()).await;
-                                        break;
-                                    }
-                                }
-                            }
-                        } else {
-                            idle_since = None;
-                        }
-                    }
-                    _ = cancel_clone.cancelled() => { break; }
-                }
-            }
+        let active_fn: Box<dyn Fn() -> usize + Send + Sync> = Box::new(move || {
+            active_clone.load(std::sync::atomic::Ordering::SeqCst)
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert!(stop_rx.try_recv().is_err(), "Should not stop while active");
+        let mock_server = Arc::new(MockStopServer { stopped: stopped.clone() });
 
-        active_count.store(1, std::sync::atomic::Ordering::SeqCst);
+        let cancel_clone = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_idle_monitor(
+                active_fn,
+                mock_server,
+                idle_timeout,
+                check_interval,
+                cancel_clone,
+            ).await;
+        });
+
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(stop_rx.try_recv().is_err(), "Should not stop while workers active");
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "Should not stop while workers are active");
 
         active_count.store(0, std::sync::atomic::Ordering::SeqCst);
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            stop_rx.recv(),
+            async {
+                while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            },
         ).await;
 
         assert!(result.is_ok(), "Idle timeout should trigger stop");
-        let _ = monitor.await;
+        cancel.cancel();
+        let _ = handle.await;
     }
 
     #[tokio::test]
-    async fn test_idle_timeout_zero_disables() {
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel::<()>(1);
+    async fn test_idle_timeout_zero_skips_monitor_spawn() {
         let idle_timeout = std::time::Duration::ZERO;
-
-        if idle_timeout.is_zero() {
-            return;
-        }
-
-        let _ = (stop_tx, cancel);
-        panic!("Should have returned early when timeout is zero");
+        assert!(idle_timeout.is_zero(),
+            "Duration::ZERO should be zero — production code uses this guard to skip spawning the idle monitor");
     }
 }

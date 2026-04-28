@@ -27,6 +27,80 @@ use crate::core::thread_manager::ThreadManager;
 use crate::services::imap::monitor::ImapMonitor;
 use crate::utils::constants::{OPENCODE_IDLE_SHUTDOWN_TIMEOUT, OPENCODE_IDLE_CHECK_INTERVAL};
 
+/// Trait for stopping the OpenCode server, used by the idle monitor.
+#[async_trait::async_trait]
+pub trait IdleStopServer: Send + Sync {
+    async fn stop_server(&self);
+}
+
+#[async_trait::async_trait]
+impl IdleStopServer for OpenCodeServer {
+    async fn stop_server(&self) {
+        if let Err(e) = self.stop().await {
+            tracing::warn!(error = %e, "Failed to stop idle server");
+        }
+    }
+}
+
+/// Run the idle shutdown monitor loop.
+///
+/// Periodically checks `active_count` and calls `on_stop_server` when all
+/// workers have been idle for longer than `idle_timeout`. Returns when
+/// `cancel` is fired.
+pub async fn run_idle_monitor(
+    active_count: Box<dyn Fn() -> usize + Send + Sync>,
+    on_stop_server: Arc<dyn IdleStopServer>,
+    idle_timeout: std::time::Duration,
+    check_interval: std::time::Duration,
+    cancel: CancellationToken,
+) {
+    let mut idle_since: Option<std::time::Instant> = None;
+    let mut interval = tokio::time::interval(check_interval);
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let total_active = active_count();
+
+                if total_active == 0 {
+                    match idle_since {
+                        None => {
+                            idle_since = Some(std::time::Instant::now());
+                            tracing::info!(
+                                "All workers idle — idle timer started"
+                            );
+                        }
+                        Some(since) => {
+                            let elapsed = since.elapsed();
+                            if elapsed >= idle_timeout {
+                                tracing::info!(
+                                    elapsed_secs = elapsed.as_secs(),
+                                    timeout_secs = idle_timeout.as_secs(),
+                                    "Idle timeout reached — stopping OpenCode server"
+                                );
+                                on_stop_server.stop_server().await;
+                                tracing::info!("OpenCode server stopped due to idle timeout");
+                                idle_since = None;
+                            }
+                        }
+                    }
+                } else if idle_since.is_some() {
+                    tracing::info!(
+                        active_workers = total_active,
+                        "Activity detected — idle timer reset"
+                    );
+                    idle_since = None;
+                }
+            }
+            _ = cancel.cancelled() => {
+                tracing::debug!("Idle shutdown monitor cancelled");
+                break;
+            }
+        }
+    }
+}
+
 /// Monitor command — start the agent, monitor inbound channels, process messages.
 #[derive(Debug, Args)]
 pub struct MonitorArgs {
@@ -483,8 +557,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         .unwrap_or(OPENCODE_IDLE_SHUTDOWN_TIMEOUT);
 
     let idle_monitor_task = if !idle_timeout.is_zero() {
-        let idle_tms = thread_managers_for_idle.clone();
-        let idle_server = opencode_server.clone();
+        let idle_tms = thread_managers_for_idle;
+        let idle_server: Arc<dyn IdleStopServer> = opencode_server.clone();
         let idle_cancel = cancel.clone();
 
         tracing::info!(
@@ -493,55 +567,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             "Idle shutdown monitor enabled"
         );
 
+        let active_count: Box<dyn Fn() -> usize + Send + Sync> = Box::new(move || {
+            idle_tms.iter().map(|tm| tm.active_worker_count()).sum::<usize>()
+        });
+
         Some(tokio::spawn(async move {
-            let mut idle_since: Option<std::time::Instant> = None;
-            let mut interval = tokio::time::interval(OPENCODE_IDLE_CHECK_INTERVAL);
-            interval.tick().await;
-
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let total_active: usize = idle_tms.iter()
-                            .map(|tm| tm.active_worker_count())
-                            .sum();
-
-                        if total_active == 0 {
-                            match idle_since {
-                                None => {
-                                    idle_since = Some(std::time::Instant::now());
-                                    tracing::info!(
-                                        "All workers idle — idle timer started"
-                                    );
-                                }
-                                Some(since) => {
-                                    let elapsed = since.elapsed();
-                                    if elapsed >= idle_timeout {
-                                        tracing::info!(
-                                            elapsed_secs = elapsed.as_secs(),
-                                            timeout_secs = idle_timeout.as_secs(),
-                                            "Idle timeout reached — stopping OpenCode server"
-                                        );
-                                        if let Err(e) = idle_server.stop().await {
-                                            tracing::warn!(error = %e, "Failed to stop idle server");
-                                        }
-                                        idle_since = None;
-                                    }
-                                }
-                            }
-                        } else if idle_since.is_some() {
-                            tracing::info!(
-                                active_workers = total_active,
-                                "Activity detected — idle timer reset"
-                            );
-                            idle_since = None;
-                        }
-                    }
-                    _ = idle_cancel.cancelled() => {
-                        tracing::debug!("Idle shutdown monitor cancelled");
-                        break;
-                    }
-                }
-            }
+            run_idle_monitor(
+                active_count,
+                idle_server,
+                idle_timeout,
+                OPENCODE_IDLE_CHECK_INTERVAL,
+                idle_cancel,
+            ).await;
         }))
     } else {
         tracing::info!("Idle shutdown monitor disabled (timeout = 0)");

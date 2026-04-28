@@ -226,7 +226,7 @@ pub struct OpenCodeConfig {
     pub max_input_tokens: Option<u64>,
 
     /// Idle timeout in seconds before auto-shutting down the OpenCode server.
-    /// Set to 0 to disable. Defaults to 600 (10 minutes) when None.
+    /// Set to 0 to disable. Defaults to 60 (1 minute) when None.
     pub idle_shutdown_timeout_secs: Option<u64>,
 }
 

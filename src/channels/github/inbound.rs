@@ -1638,6 +1638,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1655,6 +1656,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1686,6 +1688,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1717,6 +1720,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1752,6 +1756,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
@@ -1774,6 +1779,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
@@ -1812,6 +1818,7 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://api.github.com".to_string(),
             poll_interval_secs: 60,
+            poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
         let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());

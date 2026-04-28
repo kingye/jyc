@@ -224,6 +224,10 @@ pub struct OpenCodeConfig {
     /// Maximum input tokens per session before resetting.
     /// If not set, uses 95% of the model's context window, or 120K as fallback.
     pub max_input_tokens: Option<u64>,
+
+    /// Idle timeout in seconds before auto-shutting down the OpenCode server.
+    /// Set to 0 to disable. Defaults to 60 (1 minute) when None.
+    pub idle_shutdown_timeout_secs: Option<u64>,
 }
 
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.
@@ -412,5 +416,3 @@ pub struct OutboundAttachmentConfig {
     /// Max number of attachments to send per message
     pub max_per_message: Option<usize>,
 }
-
-

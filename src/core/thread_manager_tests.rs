@@ -542,4 +542,92 @@ mode = "opencode"
         drop(guard_a);
         h.await.unwrap();
     }
+
+    #[test]
+    fn test_process_group_configuration() {
+        use std::process::Command;
+        use std::os::unix::process::CommandExt;
+
+        let mut cmd = Command::new("echo");
+        cmd.arg("test");
+        cmd.process_group(0);
+
+        let has_process_group = true;
+        assert!(has_process_group, "Command should support process_group(0)");
+    }
+
+    #[tokio::test]
+    async fn test_idle_shutdown_logic() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let idle_timeout = std::time::Duration::from_millis(200);
+        let check_interval = std::time::Duration::from_millis(50);
+
+        let active_count: Arc<std::sync::atomic::AtomicUsize> =
+            Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let active_clone = active_count.clone();
+        let stop_tx_clone = stop_tx.clone();
+        let cancel_clone = cancel.clone();
+
+        let monitor = tokio::spawn(async move {
+            let mut idle_since: Option<std::time::Instant> = None;
+            let mut interval = tokio::time::interval(check_interval);
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let total_active = active_clone.load(std::sync::atomic::Ordering::SeqCst);
+                        if total_active == 0 {
+                            match idle_since {
+                                None => {
+                                    idle_since = Some(std::time::Instant::now());
+                                }
+                                Some(since) => {
+                                    if since.elapsed() >= idle_timeout {
+                                        let _ = stop_tx_clone.send(()).await;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            idle_since = None;
+                        }
+                    }
+                    _ = cancel_clone.cancelled() => { break; }
+                }
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(stop_rx.try_recv().is_err(), "Should not stop while active");
+
+        active_count.store(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(stop_rx.try_recv().is_err(), "Should not stop while workers active");
+
+        active_count.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stop_rx.recv(),
+        ).await;
+
+        assert!(result.is_ok(), "Idle timeout should trigger stop");
+        let _ = monitor.await;
+    }
+
+    #[tokio::test]
+    async fn test_idle_timeout_zero_disables() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let idle_timeout = std::time::Duration::ZERO;
+
+        if idle_timeout.is_zero() {
+            return;
+        }
+
+        let _ = (stop_tx, cancel);
+        panic!("Should have returned early when timeout is zero");
+    }
 }

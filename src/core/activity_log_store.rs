@@ -98,9 +98,9 @@ mod tests {
 
     fn make_entry(text: &str) -> ActivityEntry {
         ActivityEntry {
-            time: "00:00:00".to_string(),
             text: text.to_string(),
             timestamp: Some(Utc::now().to_rfc3339()),
+            severity: crate::inspect::types::Severity::Info,
         }
     }
 

@@ -211,6 +211,45 @@ impl OpenCodeService {
         }
     }
 
+    /// Kill LSP server processes for the given project directory.
+    ///
+    /// Queries the OpenCode `/lsp` endpoint to discover running LSP servers
+    /// and sends SIGTERM to each process by PID. Frees memory occupied by
+    /// LSP servers (especially rust-analyzer at ~2GB) after a prompt completes.
+    async fn kill_lsp_processes(&self, directory: &Path) -> Result<()> {
+        let base_url = self.server.base_url().await?;
+        let client = OpenCodeClient::with_http_client(&base_url, self.http_client.clone());
+
+        let lsp_servers = client.get_lsp_status(directory).await?;
+
+        if lsp_servers.is_empty() {
+            tracing::debug!("No LSP servers found to kill");
+            return Ok(());
+        }
+
+        for lsp in &lsp_servers {
+            if let Some(pid) = lsp.pid {
+                tracing::info!(
+                    lsp_name = %lsp.name,
+                    pid = pid,
+                    "Killing LSP server process"
+                );
+                let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    tracing::warn!(
+                        lsp_name = %lsp.name,
+                        pid = pid,
+                        error = %err,
+                        "Failed to send SIGTERM to LSP process"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Internal: generate AI reply via OpenCode SSE streaming.
     async fn generate_reply(
         &self,
@@ -636,6 +675,17 @@ impl AgentService for OpenCodeService {
         thread_cancel: CancellationToken,
     ) -> Result<AgentResult> {
         let result = self.generate_reply(message, thread_name, thread_path, message_dir, pending_rx, thread_cancel).await?;
+
+        let kill_lsp = self.app_config.load()
+            .agent.opencode.as_ref()
+            .and_then(|oc| oc.kill_lsp_after_prompt)
+            .unwrap_or(false);
+
+        if kill_lsp {
+            if let Err(e) = self.kill_lsp_processes(thread_path).await {
+                tracing::warn!(error = %e, "Failed to kill LSP processes after prompt");
+            }
+        }
 
         Ok(AgentResult {
             reply_sent_by_tool: result.reply_sent_by_tool,

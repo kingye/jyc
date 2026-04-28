@@ -64,26 +64,17 @@ pub async fn run_idle_monitor(
                 let total_active = active_count();
 
                 if total_active == 0 {
-                    match idle_since {
-                        None => {
-                            idle_since = Some(std::time::Instant::now());
-                            tracing::info!(
-                                "All workers idle — idle timer started"
-                            );
-                        }
-                        Some(since) => {
-                            let elapsed = since.elapsed();
-                            if elapsed >= idle_timeout {
-                                tracing::info!(
-                                    elapsed_secs = elapsed.as_secs(),
-                                    timeout_secs = idle_timeout.as_secs(),
-                                    "Idle timeout reached — stopping OpenCode server"
-                                );
-                                on_stop_server.stop_server().await;
-                                tracing::info!("OpenCode server stopped due to idle timeout");
-                                idle_since = None;
-                            }
-                        }
+                    let since = idle_since.get_or_insert(std::time::Instant::now());
+                    let elapsed = since.elapsed();
+                    if elapsed >= idle_timeout {
+                        tracing::info!(
+                            elapsed_secs = elapsed.as_secs(),
+                            timeout_secs = idle_timeout.as_secs(),
+                            "Idle timeout reached — stopping OpenCode server"
+                        );
+                        on_stop_server.stop_server().await;
+                        tracing::info!("OpenCode server stopped due to idle timeout");
+                        idle_since = None;
                     }
                 } else if idle_since.is_some() {
                     tracing::info!(
@@ -551,19 +542,29 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     };
 
     // 6. Start idle shutdown monitor (auto-stop OpenCode server when idle)
+    let idle_enabled = config_snapshot.agent.opencode.as_ref()
+        .map(|oc| oc.idle_shutdown_enabled)
+        .unwrap_or(true);
+
     let idle_timeout = config_snapshot.agent.opencode.as_ref()
         .and_then(|oc| oc.idle_shutdown_timeout_secs)
         .map(std::time::Duration::from_secs)
         .unwrap_or(OPENCODE_IDLE_SHUTDOWN_TIMEOUT);
 
-    let idle_monitor_task = if !idle_timeout.is_zero() {
+    let idle_monitor_task = if idle_enabled {
         let idle_tms = thread_managers_for_idle;
         let idle_server: Arc<dyn IdleStopServer> = opencode_server.clone();
         let idle_cancel = cancel.clone();
 
+        let check_interval = if idle_timeout.as_secs() <= 10 {
+            std::time::Duration::from_secs(5)
+        } else {
+            OPENCODE_IDLE_CHECK_INTERVAL
+        };
+
         tracing::info!(
             timeout_secs = idle_timeout.as_secs(),
-            check_interval_secs = OPENCODE_IDLE_CHECK_INTERVAL.as_secs(),
+            check_interval_secs = check_interval.as_secs(),
             "Idle shutdown monitor enabled"
         );
 
@@ -576,12 +577,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 active_count,
                 idle_server,
                 idle_timeout,
-                OPENCODE_IDLE_CHECK_INTERVAL,
+                check_interval,
                 idle_cancel,
             ).await;
         }))
     } else {
-        tracing::info!("Idle shutdown monitor disabled (timeout = 0)");
+        tracing::info!("Idle shutdown monitor disabled (idle_shutdown_enabled = false)");
         None
     };
 

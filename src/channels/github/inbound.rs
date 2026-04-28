@@ -428,22 +428,14 @@ impl GithubInboundAdapter {
         status: &str,
         tracked: &mut HashMap<u64, (String, String)>,
     ) {
+        let changed = tracked
+            .get(&pr_number)
+            .map(|(sha, s)| sha != head_sha || s != status)
+            .unwrap_or(true);
+
         tracked.insert(pr_number, (head_sha.to_string(), status.to_string()));
 
-        let file = self.state_dir.join("ci-status.txt");
-        use tokio::io::AsyncWriteExt;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .await
-        {
-            let _ = f
-                .write_all(format!("{}:{}:{}\n", pr_number, head_sha, status).as_bytes())
-                .await;
-        }
-
-        if tracked.len() > 5000 {
+        if changed {
             self.compact_ci_status(tracked).await;
         }
     }
@@ -1135,7 +1127,7 @@ impl GithubInboundAdapter {
 
                 let has_failure = check_runs
                     .iter()
-                    .any(|cr| cr.conclusion.as_deref() == Some("failure"));
+                    .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
                 let all_completed = check_runs
                     .iter()
                     .all(|cr| cr.status == "completed");
@@ -1168,7 +1160,7 @@ impl GithubInboundAdapter {
                 if overall_status == "failure" && previous_status.as_deref() != Some("failure") {
                     let failed_checks: Vec<&super::client::GithubCheckRun> = check_runs
                         .iter()
-                        .filter(|cr| cr.conclusion.as_deref() == Some("failure"))
+                        .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
                         .collect();
 
                     let (title, github_type, labels, assignees) = issue_cache
@@ -1183,7 +1175,7 @@ impl GithubInboundAdapter {
                             )
                         });
 
-                    let event_uid = format!("ci-{}-{}-failure", pr_number, &head_sha[..8]);
+                    let event_uid = format!("ci-{}-{}-failure", pr_number, head_sha.get(..12).unwrap_or(&head_sha));
 
                     let mut message = self.build_trigger_message(
                         "check_run",
@@ -1229,7 +1221,7 @@ impl GithubInboundAdapter {
 
                     let ci_section = format!(
                         "\n\n---\nCI check-run failure detected on commit {}:\n\n{}\n\nDiagnose:\n  gh pr checks {}",
-                        &head_sha[..8],
+                        head_sha.get(..8).unwrap_or(&head_sha),
                         failed_names.join("\n"),
                         pr_number
                     );
@@ -1242,7 +1234,7 @@ impl GithubInboundAdapter {
                         channel = %self.channel_name,
                         event = "ci_failure",
                         pr_number = pr_number,
-                        head_sha = %&head_sha[..8],
+                        head_sha = %head_sha.get(..8).unwrap_or(&head_sha),
                         failed_count = failed_checks.len(),
                         "CI failure detected → routing to developer agent"
                     );
@@ -2741,5 +2733,69 @@ mod tests {
         };
         let name_with_pattern = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
         assert_eq!(name_with_pattern, "pr-43");
+    }
+
+    #[tokio::test]
+    async fn test_ci_status_no_file_growth_on_unchanged() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
+
+        let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
+
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        let file = adapter.state_dir.join("ci-status.txt");
+        let lines_after_first = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+
+        // Track same entry again — file should be rewritten (same content), not grow
+        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        let lines_after_second = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+
+        assert_eq!(lines_after_first, lines_after_second, "File should not grow when status is unchanged");
+    }
+
+    #[test]
+    fn test_ci_timed_out_triggers_failure() {
+        let check_runs = vec![
+            super::super::client::GithubCheckRun {
+                id: 1,
+                name: "CI".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("timed_out".to_string()),
+                head_sha: "abc123def456".to_string(),
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+
+        let has_failure = check_runs
+            .iter()
+            .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
+
+        assert!(has_failure, "timed_out should be treated as failure");
+
+        let failed_checks: Vec<_> = check_runs
+            .iter()
+            .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
+            .collect();
+
+        assert_eq!(failed_checks.len(), 1);
+        assert_eq!(failed_checks[0].name, "CI");
+    }
+
+    #[test]
+    fn test_safe_head_sha_truncation() {
+        let short_sha = "abc".to_string();
+        let result = short_sha.get(..8).unwrap_or(&short_sha);
+        assert_eq!(result, "abc");
+
+        let normal_sha = "abc123def456".to_string();
+        let result2 = normal_sha.get(..8).unwrap_or(&normal_sha);
+        assert_eq!(result2, "abc123de");
+
+        let empty_sha = "".to_string();
+        let result3 = empty_sha.get(..8).unwrap_or(&empty_sha);
+        assert_eq!(result3, "");
     }
 }

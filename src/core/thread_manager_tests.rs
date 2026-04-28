@@ -623,6 +623,64 @@ mode = "opencode"
     }
 
     #[tokio::test]
+    async fn test_idle_monitor_no_hot_loop_after_stop() {
+        use crate::cli::monitor::{run_idle_monitor, IdleStopServer};
+
+        struct CountingStopServer {
+            stop_count: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl IdleStopServer for CountingStopServer {
+            async fn stop_server(&self) {
+                self.stop_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let active_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let idle_timeout = std::time::Duration::from_millis(100);
+        let check_interval = std::time::Duration::from_millis(50);
+
+        let active_clone = active_count.clone();
+        let active_fn: Box<dyn Fn() -> usize + Send + Sync> = Box::new(move || {
+            active_clone.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        let mock_server = Arc::new(CountingStopServer { stop_count: stop_count.clone() });
+
+        let cancel_clone = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_idle_monitor(
+                active_fn,
+                mock_server,
+                idle_timeout,
+                check_interval,
+                cancel_clone,
+            ).await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let count = stop_count.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(count, 1,
+            "stop_server should be called exactly once, but was called {} times", count);
+
+        active_count.store(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        active_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let count_after = stop_count.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(count_after, 2,
+            "stop_server should be called exactly once more after activity reset, but total is {}", count_after);
+
+        cancel.cancel();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
     async fn test_idle_timeout_zero_skips_monitor_spawn() {
         let idle_timeout = std::time::Duration::ZERO;
         assert!(idle_timeout.is_zero(),

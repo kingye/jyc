@@ -289,6 +289,22 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
+    // OpenCode config
+    if let Some(ref opencode) = config.agent.opencode {
+        if opencode.kill_lsp_after_prompt.unwrap_or(false)
+            && opencode.idle_shutdown_enabled
+            && opencode.idle_shutdown_timeout_secs.map_or(true, |s| s == 0)
+        {
+            errors.push(ValidationError {
+                path: "agent.opencode.kill_lsp_after_prompt".into(),
+                message: "redundant with idle_shutdown_timeout_secs = 0 (immediate idle \
+                          shutdown already kills all LSP processes). Consider removing \
+                          kill_lsp_after_prompt."
+                    .into(),
+            });
+        }
+    }
+
     errors
 }
 fn validate_pattern(

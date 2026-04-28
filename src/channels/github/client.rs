@@ -120,6 +120,38 @@ pub struct GithubReviewComment {
     pub in_reply_to_id: Option<u64>,
 }
 
+/// GitHub check run (from /commits/{ref}/check-runs endpoint).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubCheckRun {
+    pub id: u64,
+    pub name: String,
+    /// "queued", "in_progress", "completed"
+    pub status: String,
+    /// "success", "failure", "cancelled", "timed_out", etc. (None if not completed)
+    pub conclusion: Option<String>,
+    pub head_sha: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// Response wrapper for the check runs API.
+#[derive(Debug, Deserialize)]
+pub struct GithubCheckRunsResponse {
+    pub total_count: u64,
+    pub check_runs: Vec<GithubCheckRun>,
+}
+
+/// Response wrapper for the PR detail API (minimal fields for head SHA).
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestDetail {
+    head: GithubPullRequestHead,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHead {
+    sha: String,
+}
+
 impl GithubClient {
     /// Create a new GitHub API client.
     pub fn new(config: &GithubConfig) -> Result<Self> {
@@ -370,6 +402,81 @@ impl GithubClient {
 
         Ok(comment.id)
     }
+
+    /// Get the head SHA for a PR.
+    ///
+    /// Calls `GET /repos/{owner}/{repo}/pulls/{pr_number}` and extracts `head.sha`.
+    pub async fn get_pr_head_sha(&self, pr_number: u64) -> Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.api_url, self.owner, self.repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch PR detail")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "GET PR detail failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
+        }
+
+        let pr: GithubPullRequestDetail = resp
+            .json()
+            .await
+            .context("Failed to parse PR detail response")?;
+
+        Ok(pr.head.sha)
+    }
+
+    /// List check runs for a given commit ref.
+    ///
+    /// Calls `GET /repos/{owner}/{repo}/commits/{ref}/check-runs?per_page=100`.
+    pub async fn list_check_runs(&self, ref_sha: &str) -> Result<Vec<GithubCheckRun>> {
+        let url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs?per_page=100",
+            self.api_url, self.owner, self.repo, ref_sha
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch check runs")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "GET check runs failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
+        }
+
+        let response: GithubCheckRunsResponse = resp
+            .json()
+            .await
+            .context("Failed to parse check runs response")?;
+
+        tracing::trace!(
+            ref_sha = %ref_sha,
+            total_count = response.total_count,
+            returned = response.check_runs.len(),
+            "Fetched check runs"
+        );
+
+        Ok(response.check_runs)
+    }
 }
 
 #[cfg(test)]
@@ -463,5 +570,40 @@ mod tests {
         assert_eq!(comment.path.as_deref(), Some("src/main.rs"));
         assert_eq!(comment.line, Some(42));
         assert!(comment.in_reply_to_id.is_none());
+    }
+
+    #[test]
+    fn test_check_run_deserialization() {
+        let json = r#"{
+            "id": 789,
+            "name": "CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_sha": "abc123",
+            "started_at": "2026-04-15T10:00:00Z",
+            "completed_at": "2026-04-15T10:05:00Z"
+        }"#;
+        let check_run: GithubCheckRun = serde_json::from_str(json).unwrap();
+        assert_eq!(check_run.id, 789);
+        assert_eq!(check_run.name, "CI");
+        assert_eq!(check_run.status, "completed");
+        assert_eq!(check_run.conclusion.as_deref(), Some("failure"));
+        assert_eq!(check_run.head_sha, "abc123");
+    }
+
+    #[test]
+    fn test_check_run_deserialization_pending() {
+        let json = r#"{
+            "id": 790,
+            "name": "Lint",
+            "status": "in_progress",
+            "conclusion": null,
+            "head_sha": "def456",
+            "started_at": "2026-04-15T10:00:00Z",
+            "completed_at": null
+        }"#;
+        let check_run: GithubCheckRun = serde_json::from_str(json).unwrap();
+        assert_eq!(check_run.status, "in_progress");
+        assert!(check_run.conclusion.is_none());
     }
 }

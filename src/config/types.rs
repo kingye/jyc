@@ -229,6 +229,12 @@ pub struct OpenCodeConfig {
     /// Defaults to 0 (immediate shutdown) when None. Set to `None` explicitly
     /// in config (via omitting or using a sentinel) to disable idle shutdown.
     pub idle_shutdown_timeout_secs: Option<u64>,
+
+    /// Kill LSP server processes after each prompt completes to free memory.
+    /// Default is `false` (no behavior change). When `true`, LSP processes
+    /// are killed after each prompt completes.
+    #[serde(default)]
+    pub kill_lsp_after_prompt: Option<bool>,
 }
 
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.

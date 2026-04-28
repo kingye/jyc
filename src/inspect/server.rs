@@ -26,6 +26,7 @@ pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;
 pub struct ThreadActivityState {
     pub entries: VecDeque<ActivityEntry>,
     pub is_processing: bool,
+    pub has_error: bool,
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -242,6 +243,8 @@ impl InspectServer {
                 thread.activity = state.entries.iter().cloned().collect();
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
+                } else if state.has_error {
+                    thread.status = ThreadStatus::Error;
                 }
                 if let Some(last_active) = state.last_active_at {
                     thread.last_active_at = Some(last_active.to_rfc3339());
@@ -355,25 +358,29 @@ impl ActivityTracker {
                                                                     &event,
                                                                     ThreadEvent::ProcessingCompleted { .. }
                                                                 );
-                                                                let entry = event_to_activity(&event);
-                                                                // Persist to disk
-                                                                if let Some(ref path) = thread_path {
-                                                                    if let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                        tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
-                                                                    }
-                                                                }
-                                                                let mut map = map.lock().await;
-                                                                let state = map.entry(name.clone()).or_default();
-                                                                state.entries.push_back(entry);
-                                                                state.last_active_at = Some(event.timestamp());
-                                                                if state.entries.len() > MAX_ACTIVITY_ENTRIES {
-                                                                    state.entries.pop_front();
-                                                                }
-                                                                if is_processing {
-                                                                    state.is_processing = true;
-                                                                } else if is_completed {
-                                                                    state.is_processing = false;
-                                                                }
+                                                                 let entry = event_to_activity(&event);
+                                                                 let is_error = entry.severity == Severity::Error;
+                                                                 if let Some(ref path) = thread_path {
+                                                                     if let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                         tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                     }
+                                                                 }
+                                                                 let mut map = map.lock().await;
+                                                                 let state = map.entry(name.clone()).or_default();
+                                                                 state.entries.push_back(entry);
+                                                                 state.last_active_at = Some(event.timestamp());
+                                                                 if state.entries.len() > MAX_ACTIVITY_ENTRIES {
+                                                                     state.entries.pop_front();
+                                                                 }
+                                                                 if is_processing {
+                                                                     state.is_processing = true;
+                                                                     state.has_error = false;
+                                                                 } else if is_completed {
+                                                                     state.is_processing = false;
+                                                                 }
+                                                                 if is_error {
+                                                                     state.has_error = true;
+                                                                 }
                                                             }
                                                             None => break,
                                                         }
@@ -396,7 +403,17 @@ impl ActivityTracker {
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
 fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
-    let time = event.timestamp().format("%H:%M:%S").to_string();
+    let severity = match event {
+        ThreadEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
+            "error" | "timeout" => Severity::Error,
+            "retry" | "rate_limit" => Severity::Warning,
+            _ => Severity::Info,
+        },
+        ThreadEvent::ToolCompleted { success: false, .. } => Severity::Error,
+        ThreadEvent::ProcessingCompleted { success: false, .. } => Severity::Error,
+        _ => Severity::Info,
+    };
+
     let text = match event {
         ThreadEvent::ProcessingStarted { .. } => "Processing started".to_string(),
         ThreadEvent::ProcessingProgress {
@@ -478,9 +495,9 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         }
     };
     ActivityEntry {
-        time,
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
+        severity,
     }
 }
 

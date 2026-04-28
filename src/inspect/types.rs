@@ -79,16 +79,32 @@ pub struct ThreadInfo {
     pub last_active_at: Option<String>,
 }
 
+/// Severity level for an activity entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl Default for Severity {
+    fn default() -> Self {
+        Self::Info
+    }
+}
+
 /// A single activity event from the thread's SSE stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
-    /// Timestamp (HH:MM:SS)
-    pub time: String,
     /// Human-readable description
     pub text: String,
     /// RFC 3339 timestamp for ordering and cross-day sorting
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Severity level (defaults to Info for backward compat)
+    #[serde(default)]
+    pub severity: Severity,
 }
 
 /// Thread processing status.
@@ -103,6 +119,8 @@ pub enum ThreadStatus {
     Idle,
     /// Question tool waiting for user reply
     WaitingForAnswer,
+    /// Thread encountered an error
+    Error,
 }
 
 impl Default for ThreadStatus {
@@ -118,6 +136,7 @@ impl std::fmt::Display for ThreadStatus {
             Self::Processing => write!(f, "Processing"),
             Self::Idle => write!(f, "Idle"),
             Self::WaitingForAnswer => write!(f, "Waiting"),
+            Self::Error => write!(f, "Error"),
         }
     }
 }
@@ -248,6 +267,7 @@ mod tests {
         assert_eq!(format!("{}", ThreadStatus::Processing), "Processing");
         assert_eq!(format!("{}", ThreadStatus::Idle), "Idle");
         assert_eq!(format!("{}", ThreadStatus::WaitingForAnswer), "Waiting");
+        assert_eq!(format!("{}", ThreadStatus::Error), "Error");
     }
 
     #[test]
@@ -267,5 +287,58 @@ mod tests {
 
         let parsed: ThreadStatus = serde_json::from_str(r#""processing""#).unwrap();
         assert_eq!(parsed, ThreadStatus::Processing);
+
+        let json = serde_json::to_string(&ThreadStatus::Error).unwrap();
+        assert_eq!(json, r#""error""#);
+
+        let parsed: ThreadStatus = serde_json::from_str(r#""error""#).unwrap();
+        assert_eq!(parsed, ThreadStatus::Error);
+    }
+
+    #[test]
+    fn test_severity_serde_roundtrip() {
+        let json = serde_json::to_string(&Severity::Info).unwrap();
+        assert_eq!(json, r#""info""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Info);
+
+        let json = serde_json::to_string(&Severity::Warning).unwrap();
+        assert_eq!(json, r#""warning""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Warning);
+
+        let json = serde_json::to_string(&Severity::Error).unwrap();
+        assert_eq!(json, r#""error""#);
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Error);
+    }
+
+    #[test]
+    fn test_severity_default_is_info() {
+        assert_eq!(Severity::default(), Severity::Info);
+    }
+
+    #[test]
+    fn test_activity_entry_backward_compat_old_jsonl() {
+        // Old JSONL entries have `time` field but no `severity` — should deserialize fine
+        let old_json =
+            r#"{"time":"12:34:56","text":"Processing started","timestamp":"2025-01-15T12:34:56Z"}"#;
+        let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.text, "Processing started");
+        assert_eq!(entry.severity, Severity::Info);
+        assert_eq!(entry.timestamp.as_deref(), Some("2025-01-15T12:34:56Z"));
+    }
+
+    #[test]
+    fn test_activity_entry_with_severity() {
+        let entry = ActivityEntry {
+            text: "Failed (5s)".to_string(),
+            timestamp: Some("2025-01-15T12:34:56Z".to_string()),
+            severity: Severity::Error,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""severity":"error""#));
+        let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.severity, Severity::Error);
     }
 }

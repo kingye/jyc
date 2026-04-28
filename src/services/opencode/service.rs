@@ -678,8 +678,8 @@ impl AgentService for OpenCodeService {
 
         let kill_lsp = self.app_config.load()
             .agent.opencode.as_ref()
-            .and_then(|oc| oc.kill_lsp_after_prompt)
-            .unwrap_or(false);
+            .map(|oc| oc.kill_lsp_after_prompt)
+            .unwrap_or(true);
 
         if kill_lsp {
             if let Err(e) = self.kill_lsp_processes(thread_path).await {

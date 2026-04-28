@@ -34,8 +34,8 @@ pub const OPENCODE_PORT_RANGE_START: u16 = 49152;
 pub const OPENCODE_PORT_RANGE_END: u16 = 49252;
 pub const OPENCODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 pub const OPENCODE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
-/// Default idle timeout before auto-shutting down the OpenCode server (0 = immediate).
-pub const OPENCODE_IDLE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(0);
+/// Default idle timeout before auto-shutting down the OpenCode server (5 seconds).
+pub const OPENCODE_IDLE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the idle monitor checks active worker counts (60 seconds).
 pub const OPENCODE_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 

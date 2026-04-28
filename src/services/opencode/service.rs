@@ -675,6 +675,17 @@ impl AgentService for OpenCodeService {
     ) -> Result<AgentResult> {
         let result = self.generate_reply(message, thread_name, thread_path, message_dir, pending_rx, thread_cancel).await?;
 
+        let kill_lsp = self.app_config.load()
+            .agent.opencode.as_ref()
+            .and_then(|oc| oc.kill_lsp_after_prompt)
+            .unwrap_or(false);
+
+        if kill_lsp {
+            if let Err(e) = self.kill_lsp_processes(thread_path).await {
+                tracing::warn!(error = %e, "Failed to kill LSP processes after prompt");
+            }
+        }
+
         Ok(AgentResult {
             reply_sent_by_tool: result.reply_sent_by_tool,
             reply_text: result.reply_text,

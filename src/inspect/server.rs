@@ -40,8 +40,6 @@ pub struct InspectContext {
     pub health_stats: SharedHealthStats,
     /// Per-thread activity logs from SSE events
     pub activity_map: SharedActivityMap,
-    /// Max concurrent threads per channel
-    pub max_concurrent: usize,
     /// When the monitor started
     pub start_time: Instant,
     /// Path to the config file (for reload)
@@ -524,7 +522,6 @@ mod tests {
                 crate::core::metrics::HealthStats::default(),
             )),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
-            max_concurrent: 3,
             start_time: Instant::now(),
             config_path: None,
             config: None,
@@ -738,7 +735,6 @@ mode = "opencode"
             channels: vec![],
             health_stats: Arc::new(Mutex::new(crate::core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
-            max_concurrent: 3,
             start_time: Instant::now(),
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),

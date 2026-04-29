@@ -449,7 +449,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             channels: all_channels,
             health_stats: shared_stats,
             activity_map: activity_map.clone(),
-            max_concurrent: config_snapshot.general.max_concurrent_threads,
             start_time: std::time::Instant::now(),
             config_path: Some(config_path.clone()),
             config: Some(config.clone()),

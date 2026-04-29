@@ -50,6 +50,12 @@ pub struct ChannelInfo {
     pub name: String,
     /// Channel type: "email", "feishu", "github"
     pub channel_type: String,
+    /// Number of active workers holding semaphore permits in this channel.
+    #[serde(default)]
+    pub active_workers: usize,
+    /// Max concurrent workers allowed for this channel.
+    #[serde(default)]
+    pub max_concurrent: usize,
 }
 
 /// Information about an active thread.
@@ -199,6 +205,8 @@ mod tests {
             channels: vec![ChannelInfo {
                 name: "emf".to_string(),
                 channel_type: "github".to_string(),
+                active_workers: 2,
+                max_concurrent: 3,
             }],
             threads: vec![ThreadInfo {
                 name: "issue-42".to_string(),
@@ -229,6 +237,8 @@ mod tests {
         assert_eq!(parsed.uptime_secs, 3600);
         assert_eq!(parsed.channels.len(), 1);
         assert_eq!(parsed.channels[0].name, "emf");
+        assert_eq!(parsed.channels[0].active_workers, 2);
+        assert_eq!(parsed.channels[0].max_concurrent, 3);
         assert_eq!(parsed.threads.len(), 1);
         assert_eq!(parsed.threads[0].status, ThreadStatus::Processing);
         assert_eq!(parsed.stats.active_workers, 2);
@@ -343,5 +353,14 @@ mod tests {
         assert!(json.contains(r#""severity":"error""#));
         let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.severity, Severity::Error);
+    }
+
+    #[test]
+    fn test_channel_info_backward_compat() {
+        let old_json = r#"{"name":"emf","channel_type":"github"}"#;
+        let ch: ChannelInfo = serde_json::from_str(old_json).unwrap();
+        assert_eq!(ch.name, "emf");
+        assert_eq!(ch.active_workers, 0);
+        assert_eq!(ch.max_concurrent, 0);
     }
 }

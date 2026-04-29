@@ -259,6 +259,7 @@ impl InspectServer {
             active_workers,
             total_threads,
             max_concurrent: context.max_concurrent,
+            available_workers: context.max_concurrent.saturating_sub(active_workers),
             messages_received: health.messages_received,
             messages_processed: health.messages_processed,
             errors: health.errors,

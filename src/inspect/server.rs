@@ -255,11 +255,12 @@ impl InspectServer {
 
         // Read metrics
         let health = context.health_stats.lock().await;
+        let max_concurrent: usize = context.thread_managers.iter().map(|tm| tm.max_concurrent()).sum();
         let stats = GlobalStats {
             active_workers,
             total_threads,
-            max_concurrent: context.max_concurrent,
-            available_workers: context.max_concurrent.saturating_sub(active_workers),
+            max_concurrent,
+            available_workers: max_concurrent.saturating_sub(active_workers),
             messages_received: health.messages_received,
             messages_processed: health.messages_processed,
             errors: health.errors,

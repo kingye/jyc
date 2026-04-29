@@ -565,8 +565,9 @@ mod tests {
             InspectResponse::State(state) => {
                 assert_eq!(state.channels.len(), 1);
                 assert_eq!(state.channels[0].name, "emf");
-                assert_eq!(state.stats.max_concurrent, 3);
-                assert_eq!(state.stats.available_workers, 3);
+                assert_eq!(state.stats.active_workers, 0);
+                assert_eq!(state.stats.max_concurrent, 0);
+                assert_eq!(state.stats.available_workers, 0);
                 assert!(!state.version.is_empty());
             }
             other => panic!("expected State, got {:?}", other),

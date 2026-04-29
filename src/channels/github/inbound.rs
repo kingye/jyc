@@ -1131,7 +1131,18 @@ impl GithubInboundAdapter {
 
         // 2c. Poll CI check-run status for open PRs (if enabled).
         if self.config.poll_ci_status {
+            let active_pr_threads = self.scan_active_pr_threads();
+            tracing::debug!(
+                channel = %self.channel_name,
+                active = active_pr_threads.len(),
+                total = open_pr_numbers.len(),
+                "CI polling: active threads out of open PRs"
+            );
+
             for pr_number in &open_pr_numbers {
+                if !active_pr_threads.contains(pr_number) {
+                    continue;
+                }
                 let head_sha = match client.get_pr_head_sha(*pr_number).await {
                     Ok(sha) => sha,
                     Err(e) => {

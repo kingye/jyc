@@ -114,6 +114,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_config,
                     storage.clone(),
                     outbound_attachment_config,
+                    true,
                 ))
             }
             "feishu" => {

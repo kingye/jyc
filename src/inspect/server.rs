@@ -221,16 +221,20 @@ impl InspectServer {
     async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
 
-        // Collect threads from all thread managers
         let mut threads = Vec::new();
         let mut total_threads = 0;
         let mut active_workers = 0;
+        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
 
         for tm in &context.thread_managers {
             let tm_threads = tm.list_threads().await;
             total_threads += tm_threads.len();
             let stats = tm.get_stats().await;
             active_workers += stats.active_workers;
+            per_channel_workers.insert(
+                tm.channel_name().to_string(),
+                (stats.active_workers, tm.max_concurrent()),
+            );
             threads.extend(tm_threads);
         }
 
@@ -265,10 +269,18 @@ impl InspectServer {
         };
         drop(health);
 
+        let mut channels = context.channels.clone();
+        for ch in &mut channels {
+            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
+                ch.active_workers = *aw;
+                ch.max_concurrent = *mc;
+            }
+        }
+
         InspectState {
             uptime_secs: uptime,
             version: env!("CARGO_PKG_VERSION").to_string(),
-            channels: context.channels.clone(),
+            channels,
             threads,
             stats,
         }
@@ -516,6 +528,8 @@ mod tests {
                 ChannelInfo {
                     name: "emf".to_string(),
                     channel_type: "github".to_string(),
+                    active_workers: 0,
+                    max_concurrent: 0,
                 },
             ],
             health_stats: Arc::new(Mutex::new(

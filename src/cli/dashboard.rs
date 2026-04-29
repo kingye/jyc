@@ -239,11 +239,19 @@ fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
             if i > 0 {
                 parts.push(Span::raw("  "));
             }
-            parts.push(Span::styled(
-                "●",
-                Style::default().fg(Color::Green),
-            ));
-            parts.push(Span::raw(format!(" {} ({})", ch.name, ch.channel_type)));
+            let free = ch.max_concurrent.saturating_sub(ch.active_workers);
+            let dot_color = if free == 0 {
+                Color::Red
+            } else if free < ch.max_concurrent {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            parts.push(Span::styled("●", Style::default().fg(dot_color)));
+            parts.push(Span::raw(format!(
+                " {} ({} {}/{})",
+                ch.name, ch.channel_type, free, ch.max_concurrent
+            )));
             parts
         })
         .collect();
@@ -253,23 +261,6 @@ fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
 
     let channels_para = Paragraph::new(Line::from(spans));
     frame.render_widget(channels_para, inner);
-
-    let available = state.stats.available_workers;
-    let max = state.stats.max_concurrent;
-    let color = if available == 0 {
-        Color::Red
-    } else if available < max {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-    let worker_span = Span::styled(
-        format!("Workers: {}/{} free ", available, max),
-        Style::default().fg(color),
-    );
-    let worker_para = Paragraph::new(Line::from(worker_span))
-        .alignment(ratatui::layout::Alignment::Right);
-    frame.render_widget(worker_para, inner);
 }
 
 fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {

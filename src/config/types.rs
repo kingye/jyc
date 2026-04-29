@@ -225,11 +225,6 @@ pub struct OpenCodeConfig {
     /// If not set, uses 95% of the model's context window, or 120K as fallback.
     pub max_input_tokens: Option<u64>,
 
-    /// Idle timeout in seconds before auto-shutting down the OpenCode server.
-    /// Defaults to `5`. Set to `0` to disable idle shutdown entirely.
-    #[serde(default = "default_5_u64")]
-    pub idle_shutdown_timeout_secs: u64,
-
     /// Kill LSP server processes after each prompt completed to free memory.
     /// Default is `true`. When `true`, LSP processes are killed after each
     /// prompt completes.
@@ -336,9 +331,6 @@ fn default_3() -> usize {
     3
 }
 fn default_5() -> usize {
-    5
-}
-fn default_5_u64() -> u64 {
     5
 }
 fn default_10() -> usize {

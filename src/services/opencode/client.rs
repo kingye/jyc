@@ -216,24 +216,22 @@ impl OpenCodeClient {
         Ok(providers)
     }
 
-    /// Get LSP server status for a project directory.
-    pub async fn get_lsp_status(&self, directory: &Path) -> Result<Vec<LspStatus>> {
+    /// Get LSP server status across all directories (no directory filter).
+    pub async fn get_lsp_status_all(&self) -> Result<Vec<LspStatus>> {
         let url = format!("{}/lsp", self.base_url);
-        let (hdr_name, hdr_val) = Self::directory_header(directory);
 
         let resp = self
             .http
             .get(&url)
-            .header(hdr_name, &hdr_val)
             .timeout(OPENCODE_HEALTH_CHECK_TIMEOUT)
             .send()
             .await
-            .context("get_lsp_status request failed")?;
+            .context("get_lsp_status_all request failed")?;
 
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("get_lsp_status failed ({}): {}", status, body);
+            anyhow::bail!("get_lsp_status_all failed ({}): {}", status, body);
         }
 
         let lsp_status: Vec<LspStatus> = resp.json().await.context("parse lsp status response")?;

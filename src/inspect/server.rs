@@ -516,6 +516,8 @@ mod tests {
                 ChannelInfo {
                     name: "emf".to_string(),
                     channel_type: "github".to_string(),
+                    active_workers: 0,
+                    max_concurrent: 0,
                 },
             ],
             health_stats: Arc::new(Mutex::new(

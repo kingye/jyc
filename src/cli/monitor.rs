@@ -210,6 +210,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         all_channels.push(crate::inspect::types::ChannelInfo {
             name: channel_name.clone(),
             channel_type: channel_type.to_string(),
+            active_workers: 0,
+            max_concurrent: 0,
         });
         all_workspace_dirs.push(workspace_dir);
 

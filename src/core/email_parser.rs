@@ -697,4 +697,77 @@ Hello, I need help with X.
         let text2 = "   ";
         assert_eq!(strip_trailing_separators(text2), "");
     }
+
+    // --- build_footer tests ---
+
+    #[test]
+    fn test_build_footer_enabled_with_model() {
+        let footer = build_footer(Some("test-model"), None, None, None, true);
+        assert!(footer.contains("Model: test-model"));
+        assert!(footer.starts_with("---\n\n"));
+    }
+
+    #[test]
+    fn test_build_footer_disabled_returns_empty() {
+        let footer = build_footer(Some("test-model"), Some("opencode"), Some(5000), Some(120000), false);
+        assert!(footer.is_empty());
+    }
+
+    #[test]
+    fn test_build_footer_disabled_no_model_returns_empty() {
+        let footer = build_footer(None, None, None, None, false);
+        assert!(footer.is_empty());
+    }
+
+    #[test]
+    fn test_build_footer_enabled_all_fields() {
+        let footer = build_footer(Some("gpt-4"), Some("opencode"), Some(10240), Some(122880), true);
+        assert!(footer.contains("Model: gpt-4"));
+        assert!(footer.contains("Mode: opencode"));
+        assert!(footer.contains("Tokens:"));
+    }
+
+    // --- build_full_reply_text footer tests ---
+
+    #[tokio::test]
+    async fn test_build_full_reply_text_footer_disabled() {
+        let reply = build_full_reply_text(
+            "Hello world",
+            std::path::Path::new("/tmp"),
+            "sender",
+            "2026-01-01T00:00:00Z",
+            "topic",
+            "body",
+            "msg",
+            Some("model"),
+            Some("opencode"),
+            Some(5000),
+            Some(120000),
+            false,
+        )
+        .await;
+        assert_eq!(reply, "Hello world");
+        assert!(!reply.contains("Model:"));
+    }
+
+    #[tokio::test]
+    async fn test_build_full_reply_text_footer_enabled() {
+        let reply = build_full_reply_text(
+            "Hello world",
+            std::path::Path::new("/tmp"),
+            "sender",
+            "2026-01-01T00:00:00Z",
+            "topic",
+            "body",
+            "msg",
+            Some("model"),
+            Some("opencode"),
+            Some(5000),
+            Some(120000),
+            true,
+        )
+        .await;
+        assert!(reply.contains("Hello world"));
+        assert!(reply.contains("Model: model"));
+    }
 }

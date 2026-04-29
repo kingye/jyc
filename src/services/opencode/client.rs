@@ -216,28 +216,6 @@ impl OpenCodeClient {
         Ok(providers)
     }
 
-    /// Get LSP server status across all directories (no directory filter).
-    pub async fn get_lsp_status_all(&self) -> Result<Vec<LspStatus>> {
-        let url = format!("{}/lsp", self.base_url);
-
-        let resp = self
-            .http
-            .get(&url)
-            .timeout(OPENCODE_HEALTH_CHECK_TIMEOUT)
-            .send()
-            .await
-            .context("get_lsp_status_all request failed")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("get_lsp_status_all failed ({}): {}", status, body);
-        }
-
-        let lsp_status: Vec<LspStatus> = resp.json().await.context("parse lsp status response")?;
-        Ok(lsp_status)
-    }
-
     /// Look up the context window limit for a specific model.
     ///
     /// Returns the context token limit if found, or None.

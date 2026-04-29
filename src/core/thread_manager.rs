@@ -615,9 +615,9 @@ impl ThreadManager {
     pub async fn get_stats(&self) -> QueueStats {
         let queues = self.thread_queues.lock().await;
         let total_threads = queues.len();
-        let active_workers = self.semaphore.available_permits();
+        let active_workers = self.active_worker_count();
         QueueStats {
-            active_workers: total_threads.saturating_sub(active_workers),
+            active_workers,
             total_threads,
             pending_messages: 0,
         }

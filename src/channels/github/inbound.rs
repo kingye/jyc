@@ -452,6 +452,39 @@ impl GithubInboundAdapter {
         }
     }
 
+    /// Scan workspace directory for active PR thread directories.
+    ///
+    /// Returns a set of PR numbers that have an active thread directory
+    /// (matching `pr-{N}` or `review-pr-{N}` prefixes) in the workspace.
+    /// Returns an empty set if the workspace directory does not exist.
+    fn scan_active_pr_threads(&self) -> HashSet<u64> {
+        let workspace = self.state_dir.parent().map(|p| p.join("workspace"));
+        let Some(workspace) = workspace else {
+            return HashSet::new();
+        };
+
+        let Ok(entries) = std::fs::read_dir(&workspace) else {
+            return HashSet::new();
+        };
+
+        let mut pr_numbers = HashSet::new();
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+            let suffix = if let Some(s) = name.strip_prefix("pr-") {
+                s
+            } else if let Some(s) = name.strip_prefix("review-pr-") {
+                s
+            } else {
+                continue;
+            };
+            if let Ok(num) = suffix.parse::<u64>() {
+                pr_numbers.insert(num);
+            }
+        }
+        pr_numbers
+    }
+
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
     fn build_trigger_message(

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -211,42 +211,36 @@ impl OpenCodeService {
         }
     }
 
-    /// Kill LSP server processes for the given project directory.
+    /// Kill LSP server processes spawned by the OpenCode server.
     ///
-    /// Queries the OpenCode `/lsp` endpoint to discover running LSP servers
-    /// and sends SIGTERM to each process by PID. Frees memory occupied by
-    /// LSP servers (especially rust-analyzer at ~2GB) after a prompt completes.
+    /// Uses `pkill -P <opencode_pid> -f rust-analyzer` to kill
+    /// rust-analyzer child processes of the known OpenCode server PID.
+    /// Frees memory occupied by LSP servers (especially rust-analyzer
+    /// at ~2GB) after a prompt completes.
     async fn kill_lsp_processes(&self) -> Result<()> {
-        let base_url = self.server.base_url().await?;
-        let client = OpenCodeClient::with_http_client(&base_url, self.http_client.clone());
-
-        let lsp_servers = client.get_lsp_status_all().await?;
-
-        if lsp_servers.is_empty() {
-            tracing::debug!("No LSP servers found to kill");
-            return Ok(());
-        }
-
-        for lsp in &lsp_servers {
-            if lsp.name.to_lowercase().contains("rust") {
-                if let Some(pid) = lsp.pid {
-                    tracing::info!(
-                        lsp_name = %lsp.name,
-                        pid = pid,
-                        "Killing LSP server process"
-                    );
-                    let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                    if ret != 0 {
-                        let err = std::io::Error::last_os_error();
-                        tracing::warn!(
-                            lsp_name = %lsp.name,
-                            pid = pid,
-                            error = %err,
-                            "Failed to send SIGTERM to LSP process"
-                        );
-                    }
-                }
+        let pid = match self.server.server_pid().await {
+            Some(pid) => pid,
+            None => {
+                tracing::debug!("OpenCode server not running, skipping LSP kill");
+                return Ok(());
             }
+        };
+
+        tracing::info!(
+            pid = pid,
+            "Killing rust-analyzer child processes of OpenCode server"
+        );
+
+        let status = tokio::process::Command::new("pkill")
+            .args(["-P", &pid.to_string(), "-f", "rust-analyzer"])
+            .status()
+            .await
+            .context("failed to execute pkill")?;
+
+        if status.success() {
+            tracing::info!("rust-analyzer processes killed via pkill");
+        } else {
+            tracing::debug!("pkill found no matching processes (exit code non-zero)");
         }
 
         Ok(())

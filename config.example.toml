@@ -31,6 +31,11 @@ poll_interval_secs = 30
 max_retries = 5
 folder = "INBOX"
 
+# Footer configuration: controls whether model/mode/tokens footer is appended to replies.
+# Default is enabled = true when omitted. Set enabled = false to disable the footer.
+# [channels.jiny283.footer]
+# enabled = true
+
 [[channels.jiny283.patterns]]
 name = "sap"
 enabled = true
@@ -259,6 +264,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # token = "${GITHUB_TOKEN}"           # PAT scopes: repo, read:user
 # poll_interval_secs = 60
 # # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
+#
+# # Disable footer for GitHub channel (comments don't need model info)
+# [channels.my_repo.footer]
+# enabled = false
 #
 # # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
 # [[channels.my_repo.patterns]]

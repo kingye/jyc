@@ -13,13 +13,18 @@ pub struct GithubOutboundAdapter {
     config: GithubConfig,
     storage: Arc<MessageStorage>,
     client: GithubClient,
+    footer_enabled: bool,
 }
 
 impl GithubOutboundAdapter {
     pub fn new(config: GithubConfig, storage: Arc<MessageStorage>) -> Result<Self> {
+        Self::with_footer_enabled(config, storage, true)
+    }
+
+    pub fn with_footer_enabled(config: GithubConfig, storage: Arc<MessageStorage>, footer_enabled: bool) -> Result<Self> {
         let client = GithubClient::new(&config)
             .context("Failed to create GitHub client for outbound")?;
-        Ok(Self { config, storage, client })
+        Ok(Self { config, storage, client, footer_enabled })
     }
 }
 
@@ -77,7 +82,7 @@ impl OutboundAdapter for GithubOutboundAdapter {
         let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
 
         // Build footer with model/mode/tokens information
-        let footer = crate::core::email_parser::build_footer(model, mode, input_tokens, max_tokens);
+        let footer = crate::core::email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
 
         // Clean reply text
         let clean_reply = crate::core::email_parser::strip_trailing_separators(reply_text);

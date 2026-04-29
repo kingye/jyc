@@ -27,18 +27,20 @@ pub struct EmailOutboundAdapter {
     from_address: String,
     from_name: Option<String>,
     attachment_config: Option<OutboundAttachmentConfig>,
+    footer_enabled: bool,
 }
 
 impl EmailOutboundAdapter {
     #[allow(dead_code)]
     pub fn new(config: &SmtpConfig, storage: Arc<MessageStorage>) -> Self {
-        Self::new_with_attachments(config, storage, None)
+        Self::new_with_attachments(config, storage, None, true)
     }
     
     pub fn new_with_attachments(
         config: &SmtpConfig,
         storage: Arc<MessageStorage>,
         attachment_config: Option<OutboundAttachmentConfig>,
+        footer_enabled: bool,
     ) -> Self {
         let from_address = config
             .from_address
@@ -52,6 +54,7 @@ impl EmailOutboundAdapter {
             from_address,
             from_name,
             attachment_config,
+            footer_enabled,
         }
     }
 
@@ -170,6 +173,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
             mode,
             input_tokens,
             max_tokens,
+            self.footer_enabled,
         )
         .await;
 

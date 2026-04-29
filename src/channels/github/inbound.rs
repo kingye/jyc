@@ -2842,4 +2842,47 @@ mod tests {
         let result3 = empty_sha.get(..8).unwrap_or(&empty_sha);
         assert_eq!(result3, "");
     }
+
+    // --- scan_active_pr_threads tests ---
+
+    #[test]
+    fn test_scan_active_pr_threads_empty_workspace() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let result = adapter.scan_active_pr_threads();
+        assert!(result.is_empty(), "should return empty set when workspace dir does not exist");
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_with_pr_dirs() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+        std::fs::create_dir_all(workspace.join("issue-5")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&42));
+        assert!(result.contains(&43));
+        assert!(!result.contains(&5), "issue dirs should not be included");
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_non_numeric_suffix() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-abc")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert!(result.is_empty(), "non-numeric suffix should be skipped");
+    }
 }

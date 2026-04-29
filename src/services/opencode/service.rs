@@ -216,11 +216,11 @@ impl OpenCodeService {
     /// Queries the OpenCode `/lsp` endpoint to discover running LSP servers
     /// and sends SIGTERM to each process by PID. Frees memory occupied by
     /// LSP servers (especially rust-analyzer at ~2GB) after a prompt completes.
-    async fn kill_lsp_processes(&self, directory: &Path) -> Result<()> {
+    async fn kill_lsp_processes(&self) -> Result<()> {
         let base_url = self.server.base_url().await?;
         let client = OpenCodeClient::with_http_client(&base_url, self.http_client.clone());
 
-        let lsp_servers = client.get_lsp_status(directory).await?;
+        let lsp_servers = client.get_lsp_status_all().await?;
 
         if lsp_servers.is_empty() {
             tracing::debug!("No LSP servers found to kill");
@@ -228,21 +228,23 @@ impl OpenCodeService {
         }
 
         for lsp in &lsp_servers {
-            if let Some(pid) = lsp.pid {
-                tracing::info!(
-                    lsp_name = %lsp.name,
-                    pid = pid,
-                    "Killing LSP server process"
-                );
-                let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                if ret != 0 {
-                    let err = std::io::Error::last_os_error();
-                    tracing::warn!(
+            if lsp.name.to_lowercase().contains("rust") {
+                if let Some(pid) = lsp.pid {
+                    tracing::info!(
                         lsp_name = %lsp.name,
                         pid = pid,
-                        error = %err,
-                        "Failed to send SIGTERM to LSP process"
+                        "Killing LSP server process"
                     );
+                    let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                    if ret != 0 {
+                        let err = std::io::Error::last_os_error();
+                        tracing::warn!(
+                            lsp_name = %lsp.name,
+                            pid = pid,
+                            error = %err,
+                            "Failed to send SIGTERM to LSP process"
+                        );
+                    }
                 }
             }
         }
@@ -682,7 +684,7 @@ impl AgentService for OpenCodeService {
             .unwrap_or(true);
 
         if kill_lsp {
-            if let Err(e) = self.kill_lsp_processes(thread_path).await {
+            if let Err(e) = self.kill_lsp_processes().await {
                 tracing::warn!(error = %e, "Failed to kill LSP processes after prompt");
             }
         }

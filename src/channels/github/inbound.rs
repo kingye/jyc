@@ -173,6 +173,8 @@ pub struct GithubInboundAdapter {
     channel_name: String,
     /// Directory for persistent state: <workdir>/<channel>/.github/
     state_dir: PathBuf,
+    /// Workdir for workspace resolution: <workdir>/
+    workdir: PathBuf,
 }
 
 impl GithubInboundAdapter {
@@ -182,6 +184,7 @@ impl GithubInboundAdapter {
             config: config.clone(),
             channel_name,
             state_dir,
+            workdir: workdir.to_path_buf(),
         }
     }
 
@@ -450,6 +453,36 @@ impl GithubInboundAdapter {
         if let Err(e) = tokio::fs::write(&file, content).await {
             tracing::warn!(error = %e, "Failed to compact CI status file");
         }
+    }
+
+    /// Scan workspace directory for active PR thread directories.
+    ///
+    /// Returns a set of PR numbers that have an active thread directory
+    /// (matching `pr-{N}` or `review-pr-{N}` prefixes) in the workspace.
+    /// Returns an empty set if the workspace directory does not exist.
+    fn scan_active_pr_threads(&self) -> HashSet<u64> {
+        let workspace = crate::core::thread_path::resolve_workspace(&self.workdir, &self.channel_name);
+
+        let Ok(entries) = std::fs::read_dir(&workspace) else {
+            return HashSet::new();
+        };
+
+        let mut pr_numbers = HashSet::new();
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+            let suffix = if let Some(s) = name.strip_prefix("pr-") {
+                s
+            } else if let Some(s) = name.strip_prefix("review-pr-") {
+                s
+            } else {
+                continue;
+            };
+            if let Ok(num) = suffix.parse::<u64>() {
+                pr_numbers.insert(num);
+            }
+        }
+        pr_numbers
     }
 
     /// Build a minimal InboundMessage from a GitHub event.
@@ -1098,7 +1131,18 @@ impl GithubInboundAdapter {
 
         // 2c. Poll CI check-run status for open PRs (if enabled).
         if self.config.poll_ci_status {
+            let active_pr_threads = self.scan_active_pr_threads();
+            tracing::debug!(
+                channel = %self.channel_name,
+                active = active_pr_threads.len(),
+                total = open_pr_numbers.len(),
+                "CI polling: active threads out of open PRs"
+            );
+
             for pr_number in &open_pr_numbers {
+                if !active_pr_threads.contains(pr_number) {
+                    continue;
+                }
                 let head_sha = match client.get_pr_head_sha(*pr_number).await {
                     Ok(sha) => sha,
                     Err(e) => {
@@ -2797,5 +2841,90 @@ mod tests {
         let empty_sha = "".to_string();
         let result3 = empty_sha.get(..8).unwrap_or(&empty_sha);
         assert_eq!(result3, "");
+    }
+
+    // --- scan_active_pr_threads tests ---
+
+    #[test]
+    fn test_scan_active_pr_threads_empty_workspace() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let result = adapter.scan_active_pr_threads();
+        assert!(result.is_empty(), "should return empty set when workspace dir does not exist");
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_with_pr_dirs() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+        std::fs::create_dir_all(workspace.join("issue-5")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&42));
+        assert!(result.contains(&43));
+        assert!(!result.contains(&5), "issue dirs should not be included");
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_non_numeric_suffix() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-abc")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert!(result.is_empty(), "non-numeric suffix should be skipped");
+    }
+
+    #[test]
+    fn test_ci_polling_filters_by_active_threads() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+
+        let active_pr_threads = adapter.scan_active_pr_threads();
+
+        let open_pr_numbers: Vec<u64> = vec![42, 43, 44, 45];
+
+        let polled: Vec<u64> = open_pr_numbers
+            .iter()
+            .filter(|pr| active_pr_threads.contains(pr))
+            .copied()
+            .collect();
+
+        assert_eq!(polled, vec![42, 43], "only PRs with active thread dirs should be polled");
+    }
+
+    #[test]
+    fn test_ci_polling_no_active_threads_skips_all() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let active_pr_threads = adapter.scan_active_pr_threads();
+
+        let open_pr_numbers: Vec<u64> = vec![100, 200, 300];
+
+        let polled: Vec<u64> = open_pr_numbers
+            .iter()
+            .filter(|pr| active_pr_threads.contains(pr))
+            .copied()
+            .collect();
+
+        assert!(polled.is_empty(), "no workspace dirs means no PRs should be polled");
     }
 }

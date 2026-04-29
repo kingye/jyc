@@ -170,6 +170,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
             mode,
             input_tokens,
             max_tokens,
+            true,
         )
         .await;
 

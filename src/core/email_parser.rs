@@ -356,7 +356,13 @@ pub fn parse_stored_reply(content: &str) -> String {
 }
 
 /// Build a footer with model, mode, and token information.
-pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>) -> String {
+///
+/// When `footer_enabled` is `false`, returns an empty string immediately.
+pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>, footer_enabled: bool) -> String {
+    if !footer_enabled {
+        return String::new();
+    }
+
     let mut parts = Vec::new();
 
     if let Some(m) = model {
@@ -406,8 +412,9 @@ pub async fn build_full_reply_text(
     mode: Option<&str>,
     input_tokens: Option<u64>,
     max_tokens: Option<u64>,
+    footer_enabled: bool,
 ) -> String {
-    let footer = build_footer(model, mode, input_tokens, max_tokens);
+    let footer = build_footer(model, mode, input_tokens, max_tokens, footer_enabled);
     
     // Clean reply text to remove any trailing `---` separators
     let clean_reply = strip_trailing_separators(reply_text);

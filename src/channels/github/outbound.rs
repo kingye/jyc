@@ -77,7 +77,7 @@ impl OutboundAdapter for GithubOutboundAdapter {
         let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
 
         // Build footer with model/mode/tokens information
-        let footer = crate::core::email_parser::build_footer(model, mode, input_tokens, max_tokens);
+        let footer = crate::core::email_parser::build_footer(model, mode, input_tokens, max_tokens, true);
 
         // Clean reply text
         let clean_reply = crate::core::email_parser::strip_trailing_separators(reply_text);

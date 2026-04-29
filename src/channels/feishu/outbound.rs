@@ -95,7 +95,7 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
         let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
         
         // 2. Build footer with model/mode/tokens information
-        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens);
+        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens, true);
         
         // 3. Clean reply text to remove any trailing `---` separators
         let clean_reply = email_parser::strip_trailing_separators(reply_text);

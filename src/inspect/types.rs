@@ -150,6 +150,8 @@ pub struct GlobalStats {
     pub total_threads: usize,
     /// Max concurrent workers allowed
     pub max_concurrent: usize,
+    /// Number of available worker slots (max_concurrent - active_workers)
+    pub available_workers: usize,
     /// Total messages received since startup
     pub messages_received: u64,
     /// Total messages processed since startup
@@ -214,6 +216,7 @@ mod tests {
                 active_workers: 2,
                 total_threads: 3,
                 max_concurrent: 3,
+                available_workers: 1,
                 messages_received: 156,
                 messages_processed: 150,
                 errors: 2,

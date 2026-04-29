@@ -259,6 +259,7 @@ impl InspectServer {
             active_workers,
             total_threads,
             max_concurrent: context.max_concurrent,
+            available_workers: context.max_concurrent.saturating_sub(active_workers),
             messages_received: health.messages_received,
             messages_processed: health.messages_processed,
             errors: health.errors,
@@ -567,6 +568,7 @@ mod tests {
                 assert_eq!(state.channels.len(), 1);
                 assert_eq!(state.channels[0].name, "emf");
                 assert_eq!(state.stats.max_concurrent, 3);
+                assert_eq!(state.stats.available_workers, 3);
                 assert!(!state.version.is_empty());
             }
             other => panic!("expected State, got {:?}", other),

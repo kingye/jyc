@@ -248,8 +248,28 @@ fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let text = Paragraph::new(Line::from(spans)).block(block);
-    frame.render_widget(text, area);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let channels_para = Paragraph::new(Line::from(spans));
+    frame.render_widget(channels_para, inner);
+
+    let available = state.stats.available_workers;
+    let max = state.stats.max_concurrent;
+    let color = if available == 0 {
+        Color::Red
+    } else if available < max {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    let worker_span = Span::styled(
+        format!("Workers: {}/{} free ", available, max),
+        Style::default().fg(color),
+    );
+    let worker_para = Paragraph::new(Line::from(worker_span))
+        .alignment(ratatui::layout::Alignment::Right);
+    frame.render_widget(worker_para, inner);
 }
 
 fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {

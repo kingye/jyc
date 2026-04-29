@@ -101,6 +101,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
+        let footer_enabled = channel_config
+            .footer
+            .as_ref()
+            .map_or(true, |f| f.enabled);
+
         // Create the outbound adapter based on channel type
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
@@ -114,7 +119,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_config,
                     storage.clone(),
                     outbound_attachment_config,
-                    true,
+                    footer_enabled,
                 ))
             }
             "feishu" => {
@@ -129,7 +134,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     feishu_config,
                     storage.clone(),
                     outbound_attachment_config,
-                    true,
+                    footer_enabled,
                 ))
             }
             "github" => {
@@ -140,9 +145,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         anyhow::anyhow!("channel '{channel_name}': missing github config")
                     })?
                     .clone();
-                Arc::new(GithubOutboundAdapter::new(
+                Arc::new(GithubOutboundAdapter::with_footer_enabled(
                     github_config,
                     storage.clone(),
+                    footer_enabled,
                 )?)
             }
             other => {

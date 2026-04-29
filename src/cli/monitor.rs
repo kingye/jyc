@@ -129,6 +129,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     feishu_config,
                     storage.clone(),
                     outbound_attachment_config,
+                    true,
                 ))
             }
             "github" => {

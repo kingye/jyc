@@ -173,6 +173,8 @@ pub struct GithubInboundAdapter {
     channel_name: String,
     /// Directory for persistent state: <workdir>/<channel>/.github/
     state_dir: PathBuf,
+    /// Workdir for workspace resolution: <workdir>/
+    workdir: PathBuf,
 }
 
 impl GithubInboundAdapter {
@@ -182,6 +184,7 @@ impl GithubInboundAdapter {
             config: config.clone(),
             channel_name,
             state_dir,
+            workdir: workdir.to_path_buf(),
         }
     }
 
@@ -458,10 +461,7 @@ impl GithubInboundAdapter {
     /// (matching `pr-{N}` or `review-pr-{N}` prefixes) in the workspace.
     /// Returns an empty set if the workspace directory does not exist.
     fn scan_active_pr_threads(&self) -> HashSet<u64> {
-        let workspace = self.state_dir.parent().map(|p| p.join("workspace"));
-        let Some(workspace) = workspace else {
-            return HashSet::new();
-        };
+        let workspace = crate::core::thread_path::resolve_workspace(&self.workdir, &self.channel_name);
 
         let Ok(entries) = std::fs::read_dir(&workspace) else {
             return HashSet::new();

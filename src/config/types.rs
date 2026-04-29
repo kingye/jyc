@@ -94,6 +94,17 @@ impl Default for GeneralConfig {
     }
 }
 
+/// Footer display configuration for a channel.
+///
+/// Controls whether the model/mode/tokens footer is appended to AI replies.
+/// Default is `enabled = true` for backward compatibility.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FooterConfig {
+    /// Whether the footer is appended to replies (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 /// Configuration for a single channel (e.g., one email account).
 #[derive(Debug, Deserialize)]
 pub struct ChannelConfig {
@@ -126,6 +137,9 @@ pub struct ChannelConfig {
 
     /// Channel-specific agent config override
     pub agent: Option<AgentConfig>,
+
+    /// Footer display configuration (omit for default: footer enabled)
+    pub footer: Option<FooterConfig>,
 }
 
 /// IMAP server configuration.

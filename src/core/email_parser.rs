@@ -356,7 +356,13 @@ pub fn parse_stored_reply(content: &str) -> String {
 }
 
 /// Build a footer with model, mode, and token information.
-pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>) -> String {
+///
+/// When `footer_enabled` is `false`, returns an empty string immediately.
+pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>, footer_enabled: bool) -> String {
+    if !footer_enabled {
+        return String::new();
+    }
+
     let mut parts = Vec::new();
 
     if let Some(m) = model {
@@ -406,8 +412,9 @@ pub async fn build_full_reply_text(
     mode: Option<&str>,
     input_tokens: Option<u64>,
     max_tokens: Option<u64>,
+    footer_enabled: bool,
 ) -> String {
-    let footer = build_footer(model, mode, input_tokens, max_tokens);
+    let footer = build_footer(model, mode, input_tokens, max_tokens, footer_enabled);
     
     // Clean reply text to remove any trailing `---` separators
     let clean_reply = strip_trailing_separators(reply_text);
@@ -689,5 +696,78 @@ Hello, I need help with X.
         
         let text2 = "   ";
         assert_eq!(strip_trailing_separators(text2), "");
+    }
+
+    // --- build_footer tests ---
+
+    #[test]
+    fn test_build_footer_enabled_with_model() {
+        let footer = build_footer(Some("test-model"), None, None, None, true);
+        assert!(footer.contains("Model: test-model"));
+        assert!(footer.starts_with("---\n\n"));
+    }
+
+    #[test]
+    fn test_build_footer_disabled_returns_empty() {
+        let footer = build_footer(Some("test-model"), Some("opencode"), Some(5000), Some(120000), false);
+        assert!(footer.is_empty());
+    }
+
+    #[test]
+    fn test_build_footer_disabled_no_model_returns_empty() {
+        let footer = build_footer(None, None, None, None, false);
+        assert!(footer.is_empty());
+    }
+
+    #[test]
+    fn test_build_footer_enabled_all_fields() {
+        let footer = build_footer(Some("gpt-4"), Some("opencode"), Some(10240), Some(122880), true);
+        assert!(footer.contains("Model: gpt-4"));
+        assert!(footer.contains("Mode: opencode"));
+        assert!(footer.contains("Tokens:"));
+    }
+
+    // --- build_full_reply_text footer tests ---
+
+    #[tokio::test]
+    async fn test_build_full_reply_text_footer_disabled() {
+        let reply = build_full_reply_text(
+            "Hello world",
+            std::path::Path::new("/tmp"),
+            "sender",
+            "2026-01-01T00:00:00Z",
+            "topic",
+            "body",
+            "msg",
+            Some("model"),
+            Some("opencode"),
+            Some(5000),
+            Some(120000),
+            false,
+        )
+        .await;
+        assert_eq!(reply, "Hello world");
+        assert!(!reply.contains("Model:"));
+    }
+
+    #[tokio::test]
+    async fn test_build_full_reply_text_footer_enabled() {
+        let reply = build_full_reply_text(
+            "Hello world",
+            std::path::Path::new("/tmp"),
+            "sender",
+            "2026-01-01T00:00:00Z",
+            "topic",
+            "body",
+            "msg",
+            Some("model"),
+            Some("opencode"),
+            Some(5000),
+            Some(120000),
+            true,
+        )
+        .await;
+        assert!(reply.contains("Hello world"));
+        assert!(reply.contains("Model: model"));
     }
 }

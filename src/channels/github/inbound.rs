@@ -2885,4 +2885,46 @@ mod tests {
         let result = adapter.scan_active_pr_threads();
         assert!(result.is_empty(), "non-numeric suffix should be skipped");
     }
+
+    #[test]
+    fn test_ci_polling_filters_by_active_threads() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+
+        let active_pr_threads = adapter.scan_active_pr_threads();
+
+        let open_pr_numbers: Vec<u64> = vec![42, 43, 44, 45];
+
+        let polled: Vec<u64> = open_pr_numbers
+            .iter()
+            .filter(|pr| active_pr_threads.contains(pr))
+            .copied()
+            .collect();
+
+        assert_eq!(polled, vec![42, 43], "only PRs with active thread dirs should be polled");
+    }
+
+    #[test]
+    fn test_ci_polling_no_active_threads_skips_all() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let active_pr_threads = adapter.scan_active_pr_threads();
+
+        let open_pr_numbers: Vec<u64> = vec![100, 200, 300];
+
+        let polled: Vec<u64> = open_pr_numbers
+            .iter()
+            .filter(|pr| active_pr_threads.contains(pr))
+            .copied()
+            .collect();
+
+        assert!(polled.is_empty(), "no workspace dirs means no PRs should be polled");
+    }
 }

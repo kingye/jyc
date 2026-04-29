@@ -186,6 +186,14 @@ impl OpenCodeServer {
         anyhow::bail!("OpenCode server API not ready after 5s")
     }
 
+    /// Get the PID of the running OpenCode server process.
+    ///
+    /// Returns `Some(pid)` when the server is running and `None` when stopped.
+    pub async fn server_pid(&self) -> Option<u32> {
+        let guard = self.process.lock().await;
+        guard.as_ref().and_then(|child| child.id())
+    }
+
     /// Get the current port (if running).
     #[allow(dead_code)]
     pub async fn port(&self) -> Option<u16> {

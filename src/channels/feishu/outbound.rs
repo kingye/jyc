@@ -21,13 +21,14 @@ pub struct FeishuOutboundAdapter {
     client: FeishuClient,
     storage: Arc<MessageStorage>,
     attachment_config: Option<OutboundAttachmentConfig>,
+    footer_enabled: bool,
 }
 
 impl FeishuOutboundAdapter {
     /// Create a new Feishu outbound adapter.
     #[allow(dead_code)]
     pub fn new(config: FeishuConfig, storage: Arc<MessageStorage>) -> Self {
-        Self::new_with_attachments(config, storage, None)
+        Self::new_with_attachments(config, storage, None, true)
     }
     
     /// Create a new Feishu outbound adapter with attachment configuration.
@@ -35,11 +36,13 @@ impl FeishuOutboundAdapter {
         config: FeishuConfig,
         storage: Arc<MessageStorage>,
         attachment_config: Option<OutboundAttachmentConfig>,
+        footer_enabled: bool,
     ) -> Self {
         Self {
             client: FeishuClient::new(config),
             storage,
             attachment_config,
+            footer_enabled,
         }
     }
 }
@@ -95,7 +98,7 @@ impl crate::channels::types::OutboundAdapter for FeishuOutboundAdapter {
         let (input_tokens, max_tokens) = crate::services::opencode::session::read_input_tokens(thread_path).await;
         
         // 2. Build footer with model/mode/tokens information
-        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens);
+        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
         
         // 3. Clean reply text to remove any trailing `---` separators
         let clean_reply = email_parser::strip_trailing_separators(reply_text);

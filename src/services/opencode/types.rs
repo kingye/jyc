@@ -268,21 +268,6 @@ pub struct CacheTokenInfo {
     pub write: u64,
 }
 
-/// LSP server status from the OpenCode `/lsp` endpoint.
-#[derive(Debug, Clone, Deserialize)]
-pub struct LspStatus {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub pid: Option<u32>,
-    #[serde(default)]
-    pub directory: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

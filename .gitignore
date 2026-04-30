@@ -11,6 +11,7 @@ config.test.toml
 
 # Docker env (contains local paths)
 docker/.env
+docker/.env.proxy
 
 # JYC binary and backup (for systemd supervision)
 jyc

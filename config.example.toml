@@ -45,7 +45,7 @@ enabled = true
 # live_injection = false
 
 [channels.jiny283.patterns.rules.sender]
-exact = ["ye.jin@sap.com", "kingye@petalmail.com", "qing.cheng@roedl.com"]
+exact = ["kingye@petalmail.com"]
 
 [channels.jiny283.patterns.rules.subject]
 prefix = ["283", "jiny"]
@@ -97,7 +97,7 @@ name = "jiny-m"
 enabled = true
 
 [channels.jiny283a.patterns.rules.sender]
-exact = ["ye.jin@sap.com", "kingye@petalmail.com", "kingye283@163.com"]
+exact = ["kingye@petalmail.com", "kingye283@163.com"]
 
 [channels.jiny283a.patterns.rules.subject]
 prefix = ["283a", "jiny", "bs"]

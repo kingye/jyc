@@ -207,12 +207,14 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 Each component has a single, clear responsibility. Data flows through the system with transformations happening at well-defined boundaries.
 
 **InboundAdapter** (e.g., `EmailInboundAdapter`)
+
 - Boundary between the external world and the internal system
 - Parses raw data from the channel (e.g., raw email bytes via `mail-parser`)
 - Cleans and normalizes data at the boundary: strips redundant `Re:/回复:` from subject, cleans bracket-nested duplicates
 - Produces a clean `InboundMessage` — all downstream consumers receive clean data
 
 **MessageStorage**
+
 - Unified chat log storage: appends messages and replies to daily log files
 - HTML comment metadata: stores timestamp, type, sender, channel, and external ID
 - Dual-write support: during migration, maintains compatibility with legacy format
@@ -221,12 +223,14 @@ Each component has a single, clear responsibility. Data flows through the system
 - Format: HTML comments for metadata + Markdown content
 
 **PromptBuilder**
+
 - Builds the user prompt from the incoming message
 - Strips quoted history from body and truncates to fit AI token budget
 - Note: Reply context is saved to disk (.jyc/reply-context.json), NOT embedded in the prompt
 - Does NOT include conversation history in the prompt (OpenCode session memory handles multi-turn context)
 
 **Reply Tool** (MCP `reply_message`)
+
 - Orchestrator for the reply flow
 - Reads `.jyc/reply-context.json` from disk to get routing info (channel name, message timestamp)
 - Reads ALL message metadata (sender, recipient, topic, threading headers) from reply-context.json — NOT from the AI prompt
@@ -236,13 +240,15 @@ Each component has a single, clear responsibility. Data flows through the system
 - Chat log entries reflect exactly what was sent to the recipient
 
 **SmtpClient** (and other transport services)
+
 - Dumb transport: receives markdown, converts to HTML (via `comrak`), adds email headers, sends via `lettre`
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
- - **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback and monitor reply send path (when MCP tool appends to chat log)
+- **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback and monitor reply send path (when MCP tool appends to chat log)
 
 **Thread Event System**
+
 - **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
 - **Heartbeat Control** - Sends periodic progress updates (default every 10 minutes, configurable via `[heartbeat]` section) during long AI operations
 - **Thread Isolation** - Each thread has independent event bus and heartbeat state
@@ -254,27 +260,30 @@ Each component has a single, clear responsibility. Data flows through the system
   1. ✅ Current message being processed
   2. ✅ Processing state available (from `ProcessingProgress` events)
   3. ✅ Processing elapsed ≥ `min_elapsed_secs` (default 1 minute)
-   4. ✅ Time since last heartbeat ≥ `interval_secs` (default 10 minutes)
- - **Event Flow**: SSE events → OpenCode Client conversion → Thread Event Bus → Thread Manager monitoring → Heartbeat via `send_heartbeat()` (pre-formatted from per-channel template)
+  4. ✅ Time since last heartbeat ≥ `interval_secs` (default 10 minutes)
+- **Event Flow**: SSE events → OpenCode Client conversion → Thread Event Bus → Thread Manager monitoring → Heartbeat via `send_heartbeat()` (pre-formatted from per-channel template)
 
 **Reply context** saved to `.jyc/reply-context.json` — the AI never sees it
+
 - Only 5 fields: `channel`, `threadName`, `incomingMessageDir`, `uid`, `_nonce`
 - Channel-agnostic — no email-specific fields (no sender, recipient, topic, threading headers)
 - The AI passes it through unchanged as `reply-context.json=<base64>` (not XML tags)
- - The Reply Tool decodes it for routing only — reads all message metadata from chat log frontmatter
- - Short token (~120 bytes) reduces AI corruption risk compared to the old 12-field token (~400 bytes)
+- The Reply Tool decodes it for routing only — reads all message metadata from chat log frontmatter
+- Short token (~120 bytes) reduces AI corruption risk compared to the old 12-field token (~400 bytes)
 
 ### Chat Log Storage Architecture
 
 JYC 0.1.2 introduces a new unified chat log storage system that replaces the previous timestamped directory approach.
 
 #### Design Goals
+
 1. **Simplicity**: Single log file per day instead of nested directories
 2. **Searchability**: All messages in chronological order for easy searching
 3. **AI Accessibility**: Chat history accessible to AI via tool calls
 4. **Backward Compatibility**: Smooth transition with dual-write support
 
 #### Log File Format
+
 ```
 <!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
 **FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
@@ -286,11 +295,13 @@ JYC 0.1.2 introduces a new unified chat log storage system that replaces the pre
 ```
 
 #### Migration Strategy
+
 1. **Dual-write Phase**: Messages written to both legacy directories and new logs
 2. **Email Parser Enhancement**: `email_parser` reads from logs first, falls back to directories
 3. **Directory Removal**: Legacy directories gradually phased out after verification
 
 #### AI Access Pattern
+
 - AI uses `glob "chat_history_*.md"` to find log files
 - `read "chat_history_2026-04-07.md"` to access specific logs
 - `grep "keyword" --include "chat_history_*.md"` to search history
@@ -385,13 +396,14 @@ Email arrives
 ```
 
 **Key invariants:**
+
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is (with full frontmatter metadata) — the authoritative source of message data
 - **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (OpenCode session memory handles that)
 - **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or ThreadManager
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
- - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
- - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
+- **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
+- **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
 
 ## Feishu Channel Implementation
 
@@ -517,26 +529,31 @@ websocket.reconnect_delay_ms = 5000
 The Feishu channel was implemented in multiple phases:
 
 **Phase 1: Foundation**
+
 - Basic FeishuConfig structure
 - Channel type registration
 - Skeleton adapters
 
 **Phase 2: Client Implementation**
+
 - FeishuClient with openlark SDK integration
 - Authentication and token management
 - Basic message sending capabilities
 
 **Phase 3: WebSocket Integration**
+
 - Real-time message reception
 - WebSocket connection management
 - Event parsing and routing
 
 **Phase 4: Complete Adapter Implementation**
+
 - Full InboundAdapter implementation
 - Complete OutboundAdapter implementation
 - Message formatting and validation
 
 **Phase 5: Production Readiness**
+
 - Comprehensive error handling
 - Unit test coverage
 - Configuration validation
@@ -555,6 +572,7 @@ The Feishu channel integrates seamlessly with the core JYC architecture:
 ### Testing
 
 Comprehensive unit tests cover:
+
 - Client initialization and authentication
 - Message sending and receiving
 - WebSocket connection management
@@ -629,11 +647,11 @@ Each role maps to a pattern with a `role` field and a template that defines the 
 
 Routing is driven by **labels** on issues and PRs. Patterns with a `role` field get an implicit routing label:
 
-| Role | Routing Label |
-|------|--------------|
+| Role        | Routing Label |
+| ----------- | ------------- |
 | `Developer` | `jyc:develop` |
-| `Reviewer` | `jyc:review` |
-| `Planner` | `jyc:plan` |
+| `Reviewer`  | `jyc:review`  |
+| `Planner`   | `jyc:plan`    |
 
 1. **Auto-label**: When a pattern has a `role` field, the routing label is automatically included in label matching (OR-merged with any explicit `labels` in pattern config)
 2. **Matching**: `GithubMatcher::match_message()` iterates patterns, checking `rules_match()` against github_type, labels, and assignees
@@ -673,7 +691,8 @@ Pattern "restricted-dev" (rules: github_type=["pull_request"], assignees=["alice
     ├── Check assignees: PR assigned to "bob" → ✗
     │   → SKIP (rules don't match)
 ```
-```
+
+````
 
 Rules:
 - **`github_type`**: `"issue"` or `"pull_request"` — OR logic within the list
@@ -740,21 +759,22 @@ template = "github-reviewer"
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
-```
+````
 
 ### Thread Naming
 
-| GitHub Type | Pattern | Thread Name |
-|-------------|---------|-------------|
-| Issue | any | `issue-{N}` |
-| Pull Request | developer | `pr-{N}` |
-| Pull Request | reviewer | `review-pr-{N}` |
+| GitHub Type  | Pattern   | Thread Name     |
+| ------------ | --------- | --------------- |
+| Issue        | any       | `issue-{N}`     |
+| Pull Request | developer | `pr-{N}`        |
+| Pull Request | reviewer  | `review-pr-{N}` |
 
 The reviewer gets a separate thread prefix so developer and reviewer can work on the same PR concurrently without context collision.
 
 ### Testing
 
 Comprehensive unit tests (14 tests for rule filtering alone) cover:
+
 - Label-based routing (auto-label matching, role-to-label mapping)
 - Self-loop prevention (own-role skip, cross-role pass)
 - Rule filtering (github_type, labels, assignees — AND/OR logic, case-insensitive)
@@ -1143,7 +1163,7 @@ impl ThreadManager {
                 let event_bus = Arc::new(SimpleThreadEventBus::new(10));
                 // Set event bus for agent service
                 let _ = agent.set_thread_event_bus(&thread_name, Some(event_bus.clone())).await;
-                
+
                 // Start event listener with heartbeat control
                 Some(tokio::spawn(async move {
                     Self::event_listener_with_heartbeat(
@@ -1168,7 +1188,7 @@ impl ThreadManager {
 
                 // Update current message for event listeners
                 let _ = current_message_tx.send(Some(item.message.clone()));
-                
+
                 if let Err(e) = process_message(
                     &item, &thread_name, &opencode, &storage, /* ... */
                 ).await {
@@ -1178,7 +1198,7 @@ impl ThreadManager {
                         "Failed to process message"
                     );
                 }
-                
+
                 // Clear current message after processing
                 let _ = current_message_tx.send(None);
             }
@@ -1191,6 +1211,7 @@ impl ThreadManager {
 ```
 
 **Key properties:**
+
 - **Bounded concurrency**: `Semaphore(3)` — at most 3 threads process messages simultaneously
 - **Per-thread ordering**: Each thread's `mpsc::Receiver` ensures FIFO order. Messages arriving during AI processing are injected live into the session (not queued).
 - **Back-pressure**: `mpsc::channel(10)` — `try_send` fails when queue is full (message dropped)
@@ -1199,7 +1220,9 @@ impl ThreadManager {
 - **Thread Event System**: Each thread has isolated event bus and heartbeat control (default 10-minute intervals, configurable via `[heartbeat]` section)
 
 **Thread Event System Integration:**
+
 - **Event Listener with Heartbeat Control**:
+
   ```rust
   async fn event_listener_with_heartbeat(
       event_bus: ThreadEventBusRef,
@@ -1215,7 +1238,7 @@ impl ThreadManager {
       let mut heartbeat_timer = tokio::time::interval(interval);
       let mut last_heartbeat_sent: Option<Instant> = None;
       let mut last_processing_state: Option<(u64, String, String)> = None;
-      
+
       loop {
           tokio::select! {
               event = receiver.recv() => {
@@ -1246,11 +1269,12 @@ impl ThreadManager {
       }
   }
   ```
+
 - **Heartbeat Conditions**:
   1. ✅ Current message being processed
   2. ✅ Processing state available (from `ProcessingProgress` events)
   3. ✅ Processing elapsed ≥ `min_elapsed_secs` (default 1 minute)
-   4. ✅ Time since last heartbeat ≥ `interval_secs` (default 10 minutes)
+  4. ✅ Time since last heartbeat ≥ `interval_secs` (default 10 minutes)
 - **Thread Isolation**: Each thread maintains independent event bus and heartbeat state
 
 ### IMAP Monitor: State Machine
@@ -1371,6 +1395,7 @@ impl ThreadManager {
 ```
 
 **Thread Event Integration with SSE:**
+
 - **SSE Event Conversion**: OpenCode Client converts SSE events to ThreadEvents
 - **Event Types Converted**:
   - `ProcessingStarted` → `ThreadEvent::ProcessingStarted`
@@ -1407,11 +1432,11 @@ Signal (SIGINT/SIGTERM)
 
 ### OpenCode Server Process Lifecycle on Shutdown
 
-| Scenario | Server killed? | How? |
-|----------|---------------|------|
-| Ctrl+C (graceful) | Yes | `opencode_server.stop()` explicitly kills it during shutdown sequence |
-| jyc panics | Yes | `kill_on_drop(true)` on the child process — Rust drop runs during unwind |
-| SIGTERM to jyc | Yes | Same as panic — drop destructors run |
+| Scenario                 | Server killed?  | How?                                                                                                                   |
+| ------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Ctrl+C (graceful)        | Yes             | `opencode_server.stop()` explicitly kills it during shutdown sequence                                                  |
+| jyc panics               | Yes             | `kill_on_drop(true)` on the child process — Rust drop runs during unwind                                               |
+| SIGTERM to jyc           | Yes             | Same as panic — drop destructors run                                                                                   |
 | SIGKILL (kill -9) to jyc | **No** — orphan | Destructors don't run. Opencode process stays alive on its ephemeral port. Harmless — next jyc start picks a new port. |
 
 ### Cancellation Token Hierarchy
@@ -1436,6 +1461,7 @@ root_cancel (top-level)
 (See the Async Event Queue Architecture section above for the full `ThreadManager` design with code.)
 
 **Key properties:**
+
 - **Inbound channels run as concurrent tokio tasks** — Email monitor and FeiShu monitor listen simultaneously
 - **Fire-and-forget enqueue** — MessageRouter sends into mpsc and returns immediately
 - **Each thread has its own mpsc channel** — FIFO order preserved within a conversation
@@ -1449,10 +1475,12 @@ root_cancel (top-level)
 When a user sends a follow-up message while the AI is still processing the first message in the same thread, the follow-up is injected into the ongoing AI session rather than waiting in the queue.
 
 **Behavior:**
+
 - Message 2 arrives while AI processes Message 1 → Message 2 body injected into same session → user gets one combined reply
 - Message 2 arrives after AI finished Message 1 → normal sequential processing → two separate replies
 
 **How it works:**
+
 1. The worker passes its queue receiver (`rx`) to `agent.process()` during processing
 2. The agent passes `rx` through to the SSE streaming loop (`prompt_with_sse()`)
 3. The SSE `tokio::select!` loop monitors `rx.recv()` alongside SSE events and timeout checks
@@ -1479,6 +1507,7 @@ Please also add a chart to the PPT.
 The processing pipeline is split into three layers with distinct responsibilities:
 
 **`AgentService` trait** (`src/services/agent.rs`) — Channel-agnostic AI brain:
+
 ```rust
 #[async_trait]
 pub trait AgentService: Send + Sync {
@@ -1494,9 +1523,11 @@ pub struct AgentResult {
     pub reply_text: Option<String>, // Raw AI text for outbound adapter
 }
 ```
+
 Each agent mode implements this trait. Adding a new agent requires only implementing `AgentService` + a match arm in `cli/monitor.rs`.
 
 **ThreadManager** (`src/core/thread_manager.rs`) — Orchestrator:
+
 - Queue management: per-thread mpsc channels, semaphore-bounded concurrency
 - Message storage: append to daily chat log (`chat_history_YYYY-MM-DD.md`), save attachments
 - Command processing: parse/execute/strip email commands, send command results
@@ -1505,21 +1536,24 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 - Does NOT know about: sessions, prompts, SSE, reply formatting, email quoting
 
 **OutboundAdapter** (`src/channels/email/outbound.rs`) — Channel-specific reply lifecycle:
+
 - Builds channel-formatted reply (email: `build_full_reply_text()` with quoted history)
 - Sends via channel transport (SMTP with threading headers + attachments)
- - Appends reply to chat log
+- Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
 **OpenCodeService** (`src/services/opencode/service.rs`) implements `AgentService`:
+
 - Server lifecycle: ensure OpenCode server is running, health check, auto-restart
 - Thread setup: write per-thread `opencode.json` with model, MCP tools, permissions
 - Session management: reuse/create sessions, staleness detection
-- Prompt building: system prompt + user prompt 
+- Prompt building: system prompt + user prompt
 - SSE streaming: activity timeout, tool detection, progress logging
 - Error recovery: ContextOverflow → new session, stale session → retry
 - Returns raw AI text — does NOT format, send, or store replies
 
 **StaticAgentService** (`src/services/static_agent.rs`) implements `AgentService`:
+
 - Returns configured static text — does NOT format, send, or store
 
 ```rust
@@ -1535,6 +1569,7 @@ if !result.reply_sent_by_tool {
 ```
 
 This separation:
+
 - **Agent** is channel-agnostic — returns raw text, no email/FeiShu knowledge
 - **OutboundAdapter** owns the full reply lifecycle — format + send + store
 - **ThreadManager** is a thin orchestrator — dispatch to agent, pass result to outbound
@@ -1544,6 +1579,7 @@ This separation:
 ### Session-Based Thread Management
 
 Each thread has a dedicated OpenCode session persisted in `opencode-session.json`. This enables:
+
 - **Memory** — AI remembers previous replies in the conversation
 - **Coherence** — Consistent responses across the thread
 - **Context** — Conversation history maintained by OpenCode session memory (not injected into prompt)
@@ -1573,6 +1609,7 @@ struct OpenCodeServer {
 ```
 
 **Server lifecycle:**
+
 - Single shared OpenCode server handles all threads
 - Started via `opencode serve --hostname=127.0.0.1 --port=<port>`
 - Readiness detected by parsing stdout for `"opencode server listening on http://..."`
@@ -1582,20 +1619,21 @@ struct OpenCodeServer {
 
 ### OpenCode Server HTTP API Reference
 
-Full API documentation: **https://opencode.ai/docs/server/**
+Full API documentation: **<https://opencode.ai/docs/server/>**
 
 JYC uses the following subset of the OpenCode server API:
 
-| Method | Path | Purpose | Notes |
-|--------|------|---------|-------|
-| `GET` | `/session` | Health check / list sessions | Used for liveness probe |
-| `POST` | `/session` | Create a new session | Body: `{ title }` |
-| `GET` | `/session/:id` | Get session details | Returns 404 if not found |
-| `POST` | `/session/:id/prompt_async` | Send prompt asynchronously | Body: `{ system, agent?, parts }`. Returns 204. |
-| `POST` | `/session/:id/message` | Send prompt and wait (blocking) | Same body format. Returns `{ info, parts }`. |
-| `GET` | `/event` | SSE event stream (global) | First event: `server.connected` |
+| Method | Path                        | Purpose                         | Notes                                           |
+| ------ | --------------------------- | ------------------------------- | ----------------------------------------------- |
+| `GET`  | `/session`                  | Health check / list sessions    | Used for liveness probe                         |
+| `POST` | `/session`                  | Create a new session            | Body: `{ title }`                               |
+| `GET`  | `/session/:id`              | Get session details             | Returns 404 if not found                        |
+| `POST` | `/session/:id/prompt_async` | Send prompt asynchronously      | Body: `{ system, agent?, parts }`. Returns 204. |
+| `POST` | `/session/:id/message`      | Send prompt and wait (blocking) | Same body format. Returns `{ info, parts }`.    |
+| `GET`  | `/event`                    | SSE event stream (global)       | First event: `server.connected`                 |
 
 **Key API conventions:**
+
 - **Directory context**: Passed via `x-opencode-directory` HTTP header (URL-encoded path), NOT as a query parameter
 - **Model selection**: Passed per-prompt via `PromptRequest.model` — session is preserved across model switches
 - **Prompt body**: `{ system: string, model?: string, agent?: "plan", parts: [{ type: "text", text: string }] }`
@@ -1603,17 +1641,18 @@ JYC uses the following subset of the OpenCode server API:
 
 **SSE event types used:**
 
-| Event Type | Purpose | Key Fields |
-|------------|---------|------------|
-| `server.connected` | Stream handshake | — |
-| `message.updated` | Model info | `properties.info.{ sessionID, modelID, providerID }` |
-| `message.part.updated` | Content/tool updates | `properties.part.{ id, sessionID, type, text, tool, state }` |
-| `session.status` | Processing status | `properties.{ sessionID, status.type }` |
-| `session.idle` | Prompt complete | `properties.sessionID` |
-| `session.error` | Session error | `properties.{ sessionID, error.name }` |
-| `step.finish` | Step completion with token counts | `properties.step.{ id, sessionID, cost, inputTokens, outputTokens, reason }` |
+| Event Type             | Purpose                           | Key Fields                                                                   |
+| ---------------------- | --------------------------------- | ---------------------------------------------------------------------------- |
+| `server.connected`     | Stream handshake                  | —                                                                            |
+| `message.updated`      | Model info                        | `properties.info.{ sessionID, modelID, providerID }`                         |
+| `message.part.updated` | Content/tool updates              | `properties.part.{ id, sessionID, type, text, tool, state }`                 |
+| `session.status`       | Processing status                 | `properties.{ sessionID, status.type }`                                      |
+| `session.idle`         | Prompt complete                   | `properties.sessionID`                                                       |
+| `session.error`        | Session error                     | `properties.{ sessionID, error.name }`                                       |
+| `step.finish`          | Step completion with token counts | `properties.step.{ id, sessionID, cost, inputTokens, outputTokens, reason }` |
 
 **Per-thread configuration:**
+
 - Each thread gets its own `opencode.json` with model settings, MCP tool config, and permissions
 - `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` — headless mode, no interactive terminal, no access outside thread directory
 - Staleness check detects changes → rewrites config → restarts server
@@ -1763,6 +1802,7 @@ JYC uses the following subset of the OpenCode server API:
 ```
 
 **Key flow rules:**
+
 1. **Commands are always processed first** — before any AI interaction
 2. **Command results are always sent** as a direct reply (if commands were found)
 3. **Body emptiness is checked AFTER both command stripping AND quoted history stripping** — leftover quoted history from inline reply formats does not count as real content
@@ -1770,6 +1810,7 @@ JYC uses the following subset of the OpenCode server API:
 5. **Non-empty body → dispatch to agent mode** — static text or OpenCode AI
 
 **Session lifecycle:**
+
 - Sessions are created on first use per thread and persisted in `.jyc/opencode-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track input tokens (`total_input_tokens`) and maximum threshold (`max_input_tokens`)
@@ -1782,100 +1823,105 @@ JYC uses the following subset of the OpenCode server API:
 The agent relies on OpenCode's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
 
 1. **OpenCode Session (Primary)** — Conversation memory maintained by OpenCode
-    - Session is reused across messages in the same thread (`opencode-session.json`)
-    - AI remembers previous messages and replies within the session
-    - Session is deleted when token limit is exceeded or on ContextOverflow
-    - New session created on server restart
+   - Session is reused across messages in the same thread (`opencode-session.json`)
+   - AI remembers previous messages and replies within the session
+   - Session is deleted when token limit is exceeded or on ContextOverflow
+   - New session created on server restart
 
- 2. **Token-based Session Management** — Automatic session reset based on input tokens
-    - **Token-based reset**:
-      - Session accumulates input tokens (`total_input_tokens`) from each AI processing step
-      - When accumulated tokens exceed `max_input_tokens` threshold, session is automatically reset
-      - Old session is deleted and a new session is created
-    - **Token tracking**:
-      - Real-time token counting from SSE `step-finish` events
-      - Immediate persistence to `opencode-session.json` after each step
-      - Token usage displayed in reply footer (e.g., `Tokens: 20.7K/122K`)
-    - **Intelligent threshold detection**:
-      - Automatically detects model context limit (e.g., 128K, 200K, 1M tokens)
-      - Uses 95% of model context as default threshold for safety margin
-      - Configurable via `max_input_tokens` setting in `config.toml`
-    - **Standardized units**:
-      - Uses 1024 as K unit basis (1K = 1024 tokens)
-      - Default threshold: 122,880 tokens (120K * 1024)
-      - Display format: `{current}K/{max}K` with 0.1K precision
-    - **Context preservation**:
-      - Chat history is preserved in `chat_history_YYYY-MM-DD.md` files
-      - AI can read chat history for context continuity after session reset
-      - Session reset notification injected into AI prompt to reference chat history
+2. **Token-based Session Management** — Automatic session reset based on input tokens
+   - **Token-based reset**:
+     - Session accumulates input tokens (`total_input_tokens`) from each AI processing step
+     - When accumulated tokens exceed `max_input_tokens` threshold, session is automatically reset
+     - Old session is deleted and a new session is created
+   - **Token tracking**:
+     - Real-time token counting from SSE `step-finish` events
+     - Immediate persistence to `opencode-session.json` after each step
+     - Token usage displayed in reply footer (e.g., `Tokens: 20.7K/122K`)
+   - **Intelligent threshold detection**:
+     - Automatically detects model context limit (e.g., 128K, 200K, 1M tokens)
+     - Uses 95% of model context as default threshold for safety margin
+     - Configurable via `max_input_tokens` setting in `config.toml`
+   - **Standardized units**:
+     - Uses 1024 as K unit basis (1K = 1024 tokens)
+     - Default threshold: 122,880 tokens (120K \* 1024)
+     - Display format: `{current}K/{max}K` with 0.1K precision
+   - **Context preservation**:
+     - Chat history is preserved in `chat_history_YYYY-MM-DD.md` files
+     - AI can read chat history for context continuity after session reset
+     - Session reset notification injected into AI prompt to reference chat history
 
- 3. **Session State Data Structure** (`src/services/opencode/session.rs`)
-    ```rust
-    /// Default maximum input tokens per session before resetting
-    pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
+3. **Session State Data Structure** (`src/services/opencode/session.rs`)
 
-    /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct SessionState {
-        #[serde(rename = "sessionId")]
-        pub session_id: String,
-        #[serde(rename = "createdAt")]
-        pub created_at: String,
-        #[serde(rename = "lastUsedAt")]
-        pub last_used_at: String,
-        /// Current input tokens (from latest step-finish SSE event)
-        #[serde(rename = "totalInputTokens", default)]
-        pub total_input_tokens: u64,
-        /// Resolved max input tokens for this session
-        #[serde(rename = "maxInputTokens", default)]
-        pub max_input_tokens: u64,
-    }
-    ```
+   ```rust
+   /// Default maximum input tokens per session before resetting
+   pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
 
- 4. **Configuration** (`config.toml`):
-    ```toml
-    [opencode]
-    # Optional: Maximum input tokens per session before resetting
-    # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
-    # When not set, automatically detects model context limit and uses 95%
-    max_input_tokens = 122880
-    ```
+   /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct SessionState {
+       #[serde(rename = "sessionId")]
+       pub session_id: String,
+       #[serde(rename = "createdAt")]
+       pub created_at: String,
+       #[serde(rename = "lastUsedAt")]
+       pub last_used_at: String,
+       /// Current input tokens (from latest step-finish SSE event)
+       #[serde(rename = "totalInputTokens", default)]
+       pub total_input_tokens: u64,
+       /// Resolved max input tokens for this session
+       #[serde(rename = "maxInputTokens", default)]
+       pub max_input_tokens: u64,
+   }
+   ```
 
- 5. **User Interface Enhancements**:
-    - **Reply footer display**: Shows current token usage and threshold
-      - Format: `Model: ark/deepseek-v3.2 | Mode: build | Tokens: 20.7K/122K`
-      - Current tokens: Formatted in K units (1024 basis) with 0.1 precision
-      - Max tokens: Shows actual reset threshold (model context 95% or configured value)
-    - **Session reset notification**: When token limit is exceeded:
-      - AI prompt includes notification about session reset
-      - References `chat_history_<date>.md` for previous conversation context
-      - Clear indication that this is a new session with fresh token counter
+4. **Configuration** (`config.toml`):
 
- 6. **Incoming Message (Current)** — Latest message being processed
-    - Body stripped of quoted reply history (`strip_quoted_history()`)
-    - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
-    - Limited to 2,000 chars
+   ```toml
+   [opencode]
+   # Optional: Maximum input tokens per session before resetting
+   # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
+   # When not set, automatically detects model context limit and uses 95%
+   max_input_tokens = 122880
+   ```
 
- 7. **Thread Files (Durable, for quoted history only)** — Markdown files stored in thread folder
-    - Used by `build_full_reply_text()` for quoted history in reply emails
-    - NOT loaded into the AI prompt
+5. **User Interface Enhancements**:
+   - **Reply footer display**: Shows current token usage and threshold
+     - Format: `Model: ark/deepseek-v3.2 | Mode: build | Tokens: 20.7K/122K`
+     - Current tokens: Formatted in K units (1024 basis) with 0.1 precision
+     - Max tokens: Shows actual reset threshold (model context 95% or configured value)
+   - **Session reset notification**: When token limit is exceeded:
+     - AI prompt includes notification about session reset
+     - References `chat_history_<date>.md` for previous conversation context
+     - Clear indication that this is a new session with fresh token counter
 
- **Context Limits:**
+6. **Incoming Message (Current)** — Latest message being processed
+   - Body stripped of quoted reply history (`strip_quoted_history()`)
+   - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
+   - Limited to 2,000 chars
+
+7. **Thread Files (Durable, for quoted history only)** — Markdown files stored in thread folder
+   - Used by `build_full_reply_text()` for quoted history in reply emails
+   - NOT loaded into the AI prompt
+
+**Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
+
 ```
 
 ### ContextOverflow Recovery
 
 ```
+
 AI Prompt → ContextOverflowError (detected via SSE session.error)
-    ↓
+↓
 Log warning with old session_id
-    ↓
+↓
 Create new session (clears history)
-    ↓
+↓
 Retry prompt with new session (blocking fallback)
-    ↓
+↓
 Thread files still provide recent conversation context
+
 ```
 
 ### Fallback Behavior
@@ -1904,44 +1950,54 @@ This ensures all reply emails have the same format regardless of the send path. 
 
 **Reply format:**
 ```
+
 <AI reply text>
 
 ---
+
 ### Sender Name (2026-03-27 10:00)
+
 > Subject
 >
 > Current message body (stripped of nested quotes)...
 
 ---
+
 ### AI Assistant (2026-03-27 09:55)
+
 > Previous AI reply text...
 
 ---
+
 ### Sender Name (2026-03-27 09:50)
+
 > Subject
 >
 > Earlier message body (stripped)...
+
 ```
 
 **Building pipeline:**
 
 ```
-build_full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_ts)
-    │
-    ├── prepare_body_for_quoting(thread_path, current_message, max_history)
-    │       │
-    │       └── Read chat_history_*.md files for conversation context
-    │               │
-    │               ├── Current incoming message (stripped of quoted history)
-    │               │
-    │               └── Previous messages and replies from chat log
-    │                   (interleaved chronologically, newest first)
-    │
-    ├── format_quoted_reply(sender, timestamp, subject, body) for each trail entry
-    │       → "---\n### Sender (timestamp)\n> Subject\n>\n> Body quoted..."
-    │
-    └── Combine: "{reply_text}\n\n{quoted_blocks}"
-```
+
+build*full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_ts)
+│
+├── prepare_body_for_quoting(thread_path, current_message, max_history)
+│ │
+│ └── Read chat_history*\*.md files for conversation context
+│ │
+│ ├── Current incoming message (stripped of quoted history)
+│ │
+│ └── Previous messages and replies from chat log
+│ (interleaved chronologically, newest first)
+│
+├── format_quoted_reply(sender, timestamp, subject, body) for each trail entry
+│ → "---\n### Sender (timestamp)\n> Subject\n>\n> Body quoted..."
+│
+└── Combine: "{reply_text}\n\n{quoted_blocks}"
+
+````
 
 **Trail ordering:** Conversation history is read from `chat_history_*.md` files. Messages and replies are interleaved chronologically, with the most recent entries first.
 
@@ -1957,9 +2013,10 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 **Format:** Single-line JSON
 ```json
 {"sent_at":"2026-03-19T13:09:43Z","channel":"email","recipient":"user@example.com","message_id":"<123@smtp>","attachment_count":1}
-```
+````
 
 **Lifecycle:**
+
 1. **Cleanup**: Before starting a new prompt, `cleanup_stale_signal_file()` deletes any leftover file
 2. Written by MCP reply-tool after successful outbound send
 3. Read by `OpenCodeService::check_signal_file()` as fallback detection
@@ -1968,6 +2025,7 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 ### SSE Event Logging
 
 Events from `prompt_with_progress()` are logged with deduplication:
+
 - **Step start**: Logged at INFO with step number and model name
 - **Step finish**: Logged at DEBUG with cost, token counts, and reason
 - **Tool calls**: Logged at INFO only on status change per part ID (pending → running → completed)
@@ -2026,6 +2084,7 @@ pub async fn cleanup_reply_context(thread_path: &Path)
 ```
 
 **Lifecycle:**
+
 1. `OpenCodeService` saves `.jyc/reply-context.json` before sending the prompt
 2. AI calls `reply_message(message, attachments)` — no token parameter
 3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= thread directory)
@@ -2088,6 +2147,7 @@ Written by `ensure_thread_opencode_setup()` in each thread directory:
 ```
 
 **Tool command resolution** (`get_reply_tool_command()`):
+
 1. Use `std::env::current_exe()` to get current binary path
 2. Return `["/path/to/jyc", "mcp-reply-tool"]`
 3. Fallback: check common paths `/usr/local/bin/jyc`, `/usr/bin/jyc`
@@ -2607,21 +2667,25 @@ timestamp: "2026-03-19T23:02:20Z"
 
 Message body content here (full body including quoted history preserved)
 
-*Attachments:*
-  - **report.pdf** (application/pdf, 52410 bytes) saved
-  - **malware.exe** (application/x-msdownload, 12345 bytes) skipped
+_Attachments:_
+
+- **report.pdf** (application/pdf, 52410 bytes) saved
+- **malware.exe** (application/x-msdownload, 12345 bytes) skipped
+
 ---
 ```
 
 ### Chat Log Storage
 
 Messages and replies are appended to daily chat log files:
+
 ```
 chat_history_2026-03-19.md     # All messages and replies for this date
 chat_history_2026-03-20.md     # Next day's log (auto-rotated by date)
 ```
 
 Each log file contains chronological entries:
+
 - Incoming messages — appended with sender, timestamp, and body
 - AI replies — appended after sending, with model and mode metadata
 - Attachments — saved in the thread directory by the inbound adapter (if allowlist config enabled)
@@ -2632,13 +2696,13 @@ Each log file contains chronological entries:
 
 JYC uses the `tracing` ecosystem for all logging and diagnostics:
 
-| Aspect | Detail |
-|--------|--------|
-| **Crate** | `tracing` 0.1.x + `tracing-subscriber` 0.3.x |
-| **Why not `log`** | `tracing` provides structured fields, async-aware spans, and custom subscriber layers |
+| Aspect                | Detail                                                                                        |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| **Crate**             | `tracing` 0.1.x + `tracing-subscriber` 0.3.x                                                  |
+| **Why not `log`**     | `tracing` provides structured fields, async-aware spans, and custom subscriber layers         |
 | **Span architecture** | Layered spans provide automatic context (component, channel, thread, model) on every log line |
-| **Env filter** | `RUST_LOG=jyc=info,async_imap=warn` controls per-module verbosity |
-| **CLI flags** | `--debug` sets `jyc=debug`, `--verbose` sets `jyc=trace,async_imap=debug` |
+| **Env filter**        | `RUST_LOG=jyc=info,async_imap=warn` controls per-module verbosity                             |
+| **CLI flags**         | `--debug` sets `jyc=debug`, `--verbose` sets `jyc=trace,async_imap=debug`                     |
 
 ### Layered Span Architecture
 
@@ -2653,11 +2717,11 @@ Layer 1: component     (always present — identifies the subsystem)
 
 #### Span Definitions
 
-| Span Name | Layer | Fields | Where Created | Propagation |
-|-----------|-------|--------|---------------|-------------|
-| `inbound` | L1+L2 | `channel` | `cli/monitor.rs` — per IMAP task | `tokio::spawn().instrument()` |
-| `worker` | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
-| `metrics` | L1 | — | `metrics.rs` — background task | `tokio::spawn().instrument()` |
+| Span Name | Layer    | Fields              | Where Created                    | Propagation                   |
+| --------- | -------- | ------------------- | -------------------------------- | ----------------------------- |
+| `inbound` | L1+L2    | `channel`           | `cli/monitor.rs` — per IMAP task | `tokio::spawn().instrument()` |
+| `worker`  | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
+| `metrics` | L1       | —                   | `metrics.rs` — background task   | `tokio::spawn().instrument()` |
 
 Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `opencode/service.rs` called from within a `worker` span shows:
 
@@ -2692,7 +2756,6 @@ cli/monitor.rs:
 INFO inbound{channel=jiny283}: Starting IMAP monitor mode="poll" folder=INBOX
 INFO inbound{channel=jiny283}: IMAP connected and authenticated host=imap.163.com
 INFO inbound{channel=jiny283}: Message received uid=123 sender=kingye@petalmail.com
-INFO inbound{channel=jiny283}: Pattern matched pattern=sap
 INFO worker{channel=jiny283, thread=weather}: Worker started
 INFO worker{channel=jiny283, thread=weather}: Message stored sender=kingye@petalmail.com
 INFO worker{channel=jiny283, thread=weather}: Sending prompt to OpenCode mode=build
@@ -2714,28 +2777,28 @@ INFO worker{channel=jiny283, thread=weather}: Worker finished
 
 ### Log Levels
 
-| Level | Usage |
-|-------|-------|
-| ERROR | Unrecoverable failures, processing errors, MCP tool errors |
-| WARN | Recoverable issues: queue full, stale session, timeout, reconnection |
-| INFO | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start, tool calls |
-| DEBUG | SSE events, session status changes, step finish with costs, AI response text, config details |
-| TRACE | IMAP polling, mailbox select, skipping heartbeat notifications |
+| Level | Usage                                                                                                  |
+| ----- | ------------------------------------------------------------------------------------------------------ |
+| ERROR | Unrecoverable failures, processing errors, MCP tool errors                                             |
+| WARN  | Recoverable issues: queue full, stale session, timeout, reconnection                                   |
+| INFO  | Lifecycle: message received, matched, processed, reply sent, worker start/stop, step start, tool calls |
+| DEBUG | SSE events, session status changes, step finish with costs, AI response text, config details           |
+| TRACE | IMAP polling, mailbox select, skipping heartbeat notifications                                         |
 
 ## Command System
 
 ### Available Commands
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/model <id>` | Switch AI model for this thread | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
-| `/model` | List available models | `/model` |
-| `/model reset` | Reset to default model from config | `/model reset` |
-| `/plan` | Switch to plan mode (read-only, enforced by OpenCode) | `/plan` |
-| `/build` | Switch to build mode (full execution, default) | `/build` |
-| `/reset` | Clear the current OpenCode session (start fresh context) | `/reset` |
-| `/close` | Close the current thread (deletes thread directory and state) | `/close` |
-| `/template` | Re-apply the pattern's thread template files | `/template` |
+| Command        | Description                                                   | Example                                            |
+| -------------- | ------------------------------------------------------------- | -------------------------------------------------- |
+| `/model <id>`  | Switch AI model for this thread                               | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
+| `/model`       | List available models                                         | `/model`                                           |
+| `/model reset` | Reset to default model from config                            | `/model reset`                                     |
+| `/plan`        | Switch to plan mode (read-only, enforced by OpenCode)         | `/plan`                                            |
+| `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
+| `/reset`       | Clear the current OpenCode session (start fresh context)      | `/reset`                                           |
+| `/close`       | Close the current thread (deletes thread directory and state) | `/close`                                           |
+| `/template`    | Re-apply the pattern's thread template files                  | `/template`                                        |
 
 ### Command Handler Trait
 
@@ -2854,6 +2917,7 @@ message.content.text = Some(output.cleaned_body);
 ```
 
 **Key design decisions:**
+
 - **Single pass**: Commands are parsed, executed, and stripped in one scan of the body.
 - **Single responsibility**: All command-related logic (parsing, executing, stripping) lives in `CommandRegistry`. `ThreadManager` only checks `body_empty` and `results`.
 - **Testable**: One function in, one struct out. Easy to unit test without mocking ThreadManager.
@@ -2873,6 +2937,7 @@ The `/model` command writes the model ID to `.jyc/model-override` in the thread 
 Configurable per pattern via `attachments` in the pattern config.
 
 **Processing flow:**
+
 1. `mail-parser` parses MIME and provides attachment bytes
 2. Inbound adapter preserves bytes on the `MessageAttachment` object
 3. Inbound adapter saves attachments before passing message to MessageRouter
@@ -2881,6 +2946,7 @@ Configurable per pattern via `attachments` in the pattern config.
 6. Attachment metadata is logged and included in the chat log entry
 
 **Security measures:**
+
 - Extension allowlist (not blocklist) — only explicitly permitted types saved
 - File size limit per attachment (human-readable: `"25mb"`, `"150kb"`)
 - Max attachments per message (prevents resource exhaustion)
@@ -2892,14 +2958,14 @@ Configurable per pattern via `attachments` in the pattern config.
 
 `strip_quoted_history()` is applied at **AI prompt consumption time**, never at storage or reply time. Cleaning (`clean_email_body`) happens once at the InboundAdapter boundary.
 
-| Stage | Where | Strips history? | Cleans? | Purpose |
-|-------|-------|----|---------|---------|
-| **Inbound** | `EmailInboundAdapter` | No | Yes | Clean at boundary |
-| **Storage** | `MessageStorage::store()` | No | No | Append to daily chat log |
-| **AI Prompt Body** | `PromptBuilder::build_prompt()` | Yes | No | Incoming message for AI |
-| **Reply context** | `.jyc/reply-context.json` | N/A | N/A | Saved to disk before prompt, read by reply tool |
-| **Reply Tool** | `mcp/reply_tool.rs` | No | No | Reads reply-context.json for routing metadata |
-| **Outbound** | `SmtpClient` | No | No | Dumb transport + attachments |
+| Stage              | Where                           | Strips history? | Cleans? | Purpose                                         |
+| ------------------ | ------------------------------- | --------------- | ------- | ----------------------------------------------- |
+| **Inbound**        | `EmailInboundAdapter`           | No              | Yes     | Clean at boundary                               |
+| **Storage**        | `MessageStorage::store()`       | No              | No      | Append to daily chat log                        |
+| **AI Prompt Body** | `PromptBuilder::build_prompt()` | Yes             | No      | Incoming message for AI                         |
+| **Reply context**  | `.jyc/reply-context.json`       | N/A             | N/A     | Saved to disk before prompt, read by reply tool |
+| **Reply Tool**     | `mcp/reply_tool.rs`             | No              | No      | Reads reply-context.json for routing metadata   |
+| **Outbound**       | `SmtpClient`                    | No              | No      | Dumb transport + attachments                    |
 
 ## Security Considerations
 
@@ -2915,32 +2981,32 @@ Configurable per pattern via `attachments` in the pattern config.
 
 ## Crate Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `tokio` | 1.x (features: full) | Async runtime |
-| `clap` | 4.x (features: derive) | CLI argument parsing |
-| `async-imap` | 0.11.x (features: runtime-tokio) | IMAP client with IDLE |
-| `async-native-tls` | 0.5.x | TLS for IMAP |
-| `mail-parser` | 0.9.x | MIME email parsing |
-| `lettre` | 0.11.x (features: tokio1-rustls-tls) | SMTP sending |
-| `comrak` | 0.37.x | Markdown → HTML (GFM) |
-| `htmd` | 0.5.x | HTML → Markdown |
-| `reqwest` | 0.12.x (features: json, stream) | HTTP client |
-| `reqwest-eventsource` | 0.6.x | SSE client |
-| `rmcp` | 0.1.x (features: server, transport-io) | MCP server (stdio) |
-| `serde` | 1.x (features: derive) | Serialization framework |
-| `serde_json` | 1.x | JSON serialization |
-| `toml` | 0.8.x | TOML config parsing |
-| `tracing` | 0.1.x | Structured async-aware logging |
-| `tracing-subscriber` | 0.3.x (features: env-filter, fmt) | Log output formatting + filtering |
-| `anyhow` | 1.x | Application error handling |
-| `thiserror` | 2.x | Typed library errors |
-| `chrono` | 0.4.x (features: serde) | Date/time handling |
-| `base64` | 0.22.x | Base64 encoding/decoding |
-| `regex` | 1.x | Pattern matching |
-| `uuid` | 1.x (features: v4) | Internal message IDs |
-| `tokio-util` | 0.7.x | CancellationToken |
-| `async-trait` | 0.1.x | Async trait support |
+| Crate                 | Version                                | Purpose                           |
+| --------------------- | -------------------------------------- | --------------------------------- |
+| `tokio`               | 1.x (features: full)                   | Async runtime                     |
+| `clap`                | 4.x (features: derive)                 | CLI argument parsing              |
+| `async-imap`          | 0.11.x (features: runtime-tokio)       | IMAP client with IDLE             |
+| `async-native-tls`    | 0.5.x                                  | TLS for IMAP                      |
+| `mail-parser`         | 0.9.x                                  | MIME email parsing                |
+| `lettre`              | 0.11.x (features: tokio1-rustls-tls)   | SMTP sending                      |
+| `comrak`              | 0.37.x                                 | Markdown → HTML (GFM)             |
+| `htmd`                | 0.5.x                                  | HTML → Markdown                   |
+| `reqwest`             | 0.12.x (features: json, stream)        | HTTP client                       |
+| `reqwest-eventsource` | 0.6.x                                  | SSE client                        |
+| `rmcp`                | 0.1.x (features: server, transport-io) | MCP server (stdio)                |
+| `serde`               | 1.x (features: derive)                 | Serialization framework           |
+| `serde_json`          | 1.x                                    | JSON serialization                |
+| `toml`                | 0.8.x                                  | TOML config parsing               |
+| `tracing`             | 0.1.x                                  | Structured async-aware logging    |
+| `tracing-subscriber`  | 0.3.x (features: env-filter, fmt)      | Log output formatting + filtering |
+| `anyhow`              | 1.x                                    | Application error handling        |
+| `thiserror`           | 2.x                                    | Typed library errors              |
+| `chrono`              | 0.4.x (features: serde)                | Date/time handling                |
+| `base64`              | 0.22.x                                 | Base64 encoding/decoding          |
+| `regex`               | 1.x                                    | Pattern matching                  |
+| `uuid`                | 1.x (features: v4)                     | Internal message IDs              |
+| `tokio-util`          | 0.7.x                                  | CancellationToken                 |
+| `async-trait`         | 0.1.x                                  | Async trait support               |
 
 ## Thread Event System
 
@@ -2949,12 +3015,14 @@ The Thread Event System is a core component for handling inter-thread event comm
 ### Architecture
 
 #### Core Components
+
 1. **OpenCode Client** - SSE event conversion layer
 2. **Thread Event Bus** - Thread-isolated event bus (publish/subscribe)
 3. **Thread Manager** - Event listening and heartbeat control layer
 4. **Outbound Adapter** - Heartbeat message sending layer (`send_heartbeat()` — pre-formatted from per-channel template)
 
 #### Data Flow
+
 ```
 SSE Events (OpenCode Server)
     ↓
@@ -2979,11 +3047,13 @@ User receives heartbeat email
 ### Thread Isolation Design
 
 #### Key Features
+
 1. **Per-thread isolated event bus** - Each thread uses a `SimpleThreadEventBus` instance
 2. **No cross-thread event propagation** - Complete isolation
 3. **Independent heartbeat state** - Each thread maintains its own heartbeat timer and state
 
 #### Implementation
+
 ```rust
 // ThreadManager creates isolated event bus for each thread
 let event_bus = Arc::new(SimpleThreadEventBus::new(10));
@@ -2995,18 +3065,23 @@ let mut receiver = event_bus.subscribe().await;
 ### Heartbeat Rhythm Control
 
 #### Control Logic
+
 Heartbeat rhythm is controlled by Thread Manager based on configurable `HeartbeatConfig`:
+
 1. **interval_secs** (default 10 minutes) - Minimum interval between heartbeats
 2. **min_elapsed_secs** (default 1 minute) - Minimum processing time before first heartbeat
 
 #### Heartbeat Conditions
+
 Send heartbeat when ALL conditions are met:
+
 1. ✅ Current message being processed
 2. ✅ Processing state available (from `ProcessingProgress` events)
 3. ✅ Processing elapsed ≥ `min_elapsed_secs` (default 1 minute)
 4. ✅ Time since last heartbeat ≥ `interval_secs` (default 10 minutes)
 
 #### Implementation
+
 ```rust
 // In event_listener_with_heartbeat function
 let interval = Duration::from_secs(heartbeat_config.interval_secs);
@@ -3024,7 +3099,7 @@ _ = heartbeat_timer.tick() => {
                     Some(last_sent) => last_sent.elapsed() >= interval,
                     None => true, // First heartbeat
                 };
-                
+
                 if should_send {
                     let formatted = format_heartbeat(&heartbeat_template, *elapsed_secs, activity, progress);
                     outbound.send_heartbeat(&message, &formatted).await;
@@ -3038,6 +3113,7 @@ _ = heartbeat_timer.tick() => {
 ### ThreadEvent Types
 
 #### Event Enumeration
+
 ```rust
 pub enum ThreadEvent {
     // Heartbeat event (controlled by Thread Manager, pre-formatted message)
@@ -3046,12 +3122,12 @@ pub enum ThreadEvent {
         message: String,
         timestamp: DateTime<Utc>,
     },
-    
+
     // Processing state events (published by OpenCode Client)
     ProcessingStarted { ... },
     ProcessingProgress { ... },
     ProcessingCompleted { ... },
-    
+
     // Tool execution events
     ToolStarted { ... },
     ToolCompleted { ... },
@@ -3059,17 +3135,19 @@ pub enum ThreadEvent {
 ```
 
 #### Event Sources
-| Event Type | Publisher | Purpose |
-|------------|-----------|---------|
-| ProcessingStarted | OpenCode Client | Published when processing starts |
-| ProcessingProgress | OpenCode Client | Periodic progress updates |
-| ProcessingCompleted | OpenCode Client | Published when processing completes |
-| ToolStarted/Completed | OpenCode Client | Tool start/complete events |
-| Heartbeat | Thread Manager | Periodic heartbeat, user notification |
+
+| Event Type            | Publisher       | Purpose                               |
+| --------------------- | --------------- | ------------------------------------- |
+| ProcessingStarted     | OpenCode Client | Published when processing starts      |
+| ProcessingProgress    | OpenCode Client | Periodic progress updates             |
+| ProcessingCompleted   | OpenCode Client | Published when processing completes   |
+| ToolStarted/Completed | OpenCode Client | Tool start/complete events            |
+| Heartbeat             | Thread Manager  | Periodic heartbeat, user notification |
 
 ### Configuration
 
 #### HeartbeatConfig (configurable via `[heartbeat]` TOML section)
+
 ```rust
 /// Heartbeat timing configuration
 pub struct HeartbeatConfig {
@@ -3085,6 +3163,7 @@ pub const MIN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 Per-channel heartbeat message template is configured via `heartbeat_template` field on `ChannelConfig`.
 
 #### Thread Manager Initialization
+
 ```rust
 // Enable Thread Event system by default
 let thread_manager = ThreadManager::new_with_options(
@@ -3103,16 +3182,19 @@ let thread_manager = ThreadManager::new_with_options(
 ### Error Handling
 
 #### Event Publishing Errors
+
 - Event publishing failures do not block the main process
 - Asynchronous non-blocking event publishing
 - Appropriate logging for failures
 
 #### Heartbeat Sending Errors
+
 - Heartbeat sending failures log warning
 - No retry for failed heartbeats
 - Next heartbeat cycle will continue trying
 
 ### Performance Considerations
+
 1. **Asynchronous non-blocking** - All event publishing is asynchronous
 2. **Thread-local state** - Each thread maintains independent heartbeat state
 3. **Lightweight events** - Event structures remain simple
@@ -3121,21 +3203,25 @@ let thread_manager = ThreadManager::new_with_options(
 ### Testing Strategy
 
 #### Unit Tests
+
 - Event type serialization/deserialization
 - Event bus basic functionality
 - Heartbeat condition judgment logic
 
 #### Integration Tests
+
 - SSE event to ThreadEvent conversion
 - Inter-thread event isolation
 - Heartbeat rhythm control
 
 #### End-to-End Tests
+
 - Complete event flow: SSE → ThreadEvent → Heartbeat email
 - Multi-thread concurrent processing
 - Error scenario handling
 
 ### Deployment Notes
+
 1. **Configuration adjustment** - Adjust heartbeat interval based on actual needs
 2. **Monitoring** - Monitor event publishing and heartbeat sending frequency
 3. **Log levels** - Adjust event log levels appropriately in production
@@ -3148,6 +3234,7 @@ requests from non-mainland China IPs. The invoice-processing skill includes a
 download proxy to handle this:
 
 **Architecture:**
+
 ```
 Overseas Server (HK)                    Mainland China Server (Shanghai)
 ┌────────────────────┐                  ┌─────────────────────────┐
@@ -3161,21 +3248,24 @@ Overseas Server (HK)                    Mainland China Server (Shanghai)
 ```
 
 **Components:**
+
 - `scripts/download_proxy.py` — HTTP proxy service on Shanghai server (150.158.50.252:8765).
   Whitelisted domains only. Rate limited. Auto-starts via crontab `@reboot`.
 - `scripts/proxy_download.py` — Client script on the JYC server. Tries direct download
   first; falls back to proxy if direct fails and `INVOICE_DOWNLOAD_PROXY` env var is set.
 
 **Environment variable:**
+
 - `INVOICE_DOWNLOAD_PROXY` — Set on overseas servers only. Not needed on mainland China.
   Example: `export INVOICE_DOWNLOAD_PROXY=http://150.158.50.252:8765`
   Configured in `~/.zshrc.local` on the HK server (sourced by `deploy.sh`).
 
 **Deployment scenarios:**
-| Server Location | Env Var Needed? | Behavior |
-|-----------------|-----------------|----------|
-| Mainland China (e.g., Shanghai) | No | Direct download works |
-| Overseas (e.g., Hong Kong) | Yes | Direct fails → proxy fallback |
+
+| Server Location                 | Env Var Needed? | Behavior                      |
+| ------------------------------- | --------------- | ----------------------------- |
+| Mainland China (e.g., Shanghai) | No              | Direct download works         |
+| Overseas (e.g., Hong Kong)      | Yes             | Direct fails → proxy fallback |
 
 ### Templates & Skills
 
@@ -3184,6 +3274,7 @@ Templates live in the repo under `templates/`, skills under `.opencode/skills/`.
 A deploy script composes them at deploy time.
 
 **Repository structure:**
+
 ```
 templates/                      ← AGENTS.md only (role + instructions)
   invoice-processing/AGENTS.md
@@ -3205,16 +3296,17 @@ templates/                      ← AGENTS.md only (role + instructions)
 
 **Skill → Template mapping:**
 
-| Template | Skills | Purpose |
-|----------|--------|---------|
-| invoice-processing | invoice-processing | Invoice data extraction and Excel recording |
-| jyc-dev | plan-solution, dev-workflow, incremental-dev, jyc-deploy-bare | JYC self-development |
-| jyc-review | pr-review | Code review |
-| github-planner | dev-workflow | Discuss requirements, create PRs |
-| github-developer | incremental-dev, dev-workflow | Implement code from PR spec |
-| github-reviewer | pr-review | Review PRs, approve/request changes |
+| Template           | Skills                                                        | Purpose                                     |
+| ------------------ | ------------------------------------------------------------- | ------------------------------------------- |
+| invoice-processing | invoice-processing                                            | Invoice data extraction and Excel recording |
+| jyc-dev            | plan-solution, dev-workflow, incremental-dev, jyc-deploy-bare | JYC self-development                        |
+| jyc-review         | pr-review                                                     | Code review                                 |
+| github-planner     | dev-workflow                                                  | Discuss requirements, create PRs            |
+| github-developer   | incremental-dev, dev-workflow                                 | Implement code from PR spec                 |
+| github-reviewer    | pr-review                                                     | Review PRs, approve/request changes         |
 
 **Deployment:**
+
 ```bash
 # Compose templates + skills and deploy to server data directory
 ./deploy-templates.sh /home/jiny/projects/jyc-data/templates
@@ -3226,6 +3318,7 @@ a template, the `AGENTS.md` and `.opencode/skills/` are copied to the thread's
 workspace directory.
 
 **Adding a new template:**
+
 1. Create `templates/<name>/AGENTS.md` with role instructions
 2. Add the skill mapping to `deploy-templates.sh` (`get_skills` function)
 3. Run `./deploy-templates.sh <target>` to deploy

@@ -185,13 +185,13 @@ struct ExtraMcpsEntry {
 /// The file format:
 /// ```toml
 /// [[mcps]]
-/// name = "sap-jira"
+/// name = "my-mcp"
 /// type = "remote"
-/// url = "https://mcp.jira.tools.sap/mcp"
+/// url = "https://mcp.example.com/mcp"
 /// enabled = true
 ///
 /// [templates.github-planner]
-/// mcps = ["sap-jira"]
+/// mcps = ["my-mcp"]
 /// ```
 async fn load_extra_mcps_config(path: &Path) -> Result<ExtraMcpsConfig> {
     let content = tokio::fs::read_to_string(path)

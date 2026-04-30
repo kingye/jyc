@@ -37,7 +37,7 @@ folder = "INBOX"
 # enabled = true
 
 [[channels.jiny283.patterns]]
-name = "sap"
+name = "xxx"
 enabled = true
 # Live message injection: when true (default), follow-up messages arriving
 # while AI is processing are injected into the active session immediately.

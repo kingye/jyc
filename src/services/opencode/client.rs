@@ -928,11 +928,11 @@ impl OpenCodeClient {
                                     result.cache_write_tokens = Some(token_info.cache.write);
                                     result.total_cost = part.cost;
 
-                                    // Persist input tokens immediately per step — don't wait
-                                    // for the prompt to complete. This ensures tokens are saved
-                                    // even if the SSE stream exits early (reply tool, timeout).
+                                    // Persist total context size per step — input + cache_read + cache_write
+                                    // represents the full context window the model processes.
+                                    // This is used to detect context degradation and trigger session reset.
                                     crate::services::opencode::session::add_input_tokens(
-                                        directory, token_info.input
+                                        directory, token_info.input + token_info.cache.read + token_info.cache.write
                                     ).await.ok();
                                     
                                     tracing::info!(

@@ -1373,6 +1373,10 @@ async fn process_message(
                 )
                 .await?;
             tracing::info!("Reply delivered via outbound adapter");
+            // Clean up signal files after successful delivery to prevent re-delivery on restart
+            tokio::fs::remove_file(&signal_path).await.ok();
+            let reply_md_path = store_result.thread_path.join(".jyc").join("reply.md");
+            tokio::fs::remove_file(&reply_md_path).await.ok();
             thread_manager.metrics.reply_by_tool(thread_name);
         } else {
             tracing::warn!("MCP tool signaled reply but no reply text available");

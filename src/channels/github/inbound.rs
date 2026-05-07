@@ -511,18 +511,32 @@ impl GithubInboundAdapter {
             format!("assignees: {}\n", assignees.join(", "))
         };
 
+        // For enterprise GitHub (non-default api_url), prefix commands with GH_HOST
+        // so `gh` targets the correct host (e.g., github.tools.sap instead of github.com).
+        let gh_host_prefix = if self.config.api_url != "https://api.github.com" {
+            self.config.api_url
+                .strip_prefix("https://")
+                .and_then(|s| s.split('/').next())
+                .map(|host| format!("GH_HOST={} ", host))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
         let gh_cmd = match github_type {
             "pull_request" => format!(
-                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead PR:\n  gh pr view {}\n  gh pr view {} --comments\n  gh pr diff {}",
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: {gh}gh repo clone {}/{} repo && cd repo\n\nRead PR:\n  {gh}gh pr view {}\n  {gh}gh pr view {} --comments\n  {gh}gh pr diff {}",
                 self.config.owner, self.config.repo,
                 self.config.owner, self.config.repo,
-                number, number, number
+                number, number, number,
+                gh = gh_host_prefix
             ),
             _ => format!(
-                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: gh repo clone {}/{} repo && cd repo\n\nRead issue:\n  gh issue view {}\n  gh issue view {} --comments",
+                "Repository: {}/{}\n\nSetup:\n  cd repo  # or: {gh}gh repo clone {}/{} repo && cd repo\n\nRead issue:\n  {gh}gh issue view {}\n  {gh}gh issue view {} --comments",
                 self.config.owner, self.config.repo,
                 self.config.owner, self.config.repo,
-                number, number
+                number, number,
+                gh = gh_host_prefix
             ),
         };
 
@@ -2115,6 +2129,38 @@ mod tests {
         assert!(text.contains("gh pr view 43"));
         assert!(text.contains("gh pr diff 43"));
         assert!(text.contains("assignees: alice, bob"));
+    }
+
+    #[test]
+    fn test_build_trigger_message_enterprise_gh_host() {
+        let config = GithubConfig {
+            owner: "Climate-21".to_string(),
+            repo: "c21-networkcalculation-srv".to_string(),
+            token: "test".to_string(),
+            api_url: "https://github.tools.sap/api/v3".to_string(),
+            poll_interval_secs: 60,
+            poll_ci_status: true,
+        };
+        let tmpdir = tempfile::tempdir().unwrap();
+        let adapter = GithubInboundAdapter::new(&config, "networkcalc".to_string(), tmpdir.path());
+
+        let msg = adapter.build_trigger_message(
+            "pull_request",
+            7880,
+            "feat: Add mapping",
+            "pull_request",
+            "opened",
+            "d032459",
+            &[],
+            &[],
+            "pr-7880-opened",
+        );
+
+        let text = msg.content.text.unwrap();
+        // Enterprise repos should include GH_HOST prefix
+        assert!(text.contains("GH_HOST=github.tools.sap gh repo clone"), "expected GH_HOST prefix in clone cmd, got: {text}");
+        assert!(text.contains("GH_HOST=github.tools.sap gh pr view 7880"), "expected GH_HOST prefix in pr view cmd");
+        assert!(text.contains("GH_HOST=github.tools.sap gh pr diff 7880"), "expected GH_HOST prefix in pr diff cmd");
     }
 
     // --- Trigger mode tests ---

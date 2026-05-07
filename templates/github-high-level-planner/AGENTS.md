@@ -35,6 +35,11 @@ fi
 cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 ```
 
+> **CRITICAL:** The `repo/` directory may be a symlink to a shared repository used by
+> multiple agents. NEVER run `rm -rf repo` or `rm repo` or replace it with `mkdir repo`.
+> If a clone fails, troubleshoot the issue (e.g., check GH_HOST, network) without
+> recreating the directory. Always clone INTO the existing `repo/` directory.
+
 ## Workflow
 
 ### 0. Check Status (MANDATORY — DO THIS FIRST)

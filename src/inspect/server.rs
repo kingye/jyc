@@ -160,6 +160,7 @@ impl InspectServer {
                 InspectResponse::State(state)
             }
             "reload_config" => Self::handle_reload_config(context).await,
+            "reset_session" => Self::handle_reset_session(request, context).await,
             other => InspectResponse::Error {
                 error: format!("unknown method: {other}"),
             },
@@ -215,6 +216,87 @@ impl InspectServer {
         InspectResponse::ReloadResult {
             success: true,
             message: "configuration reloaded".to_string(),
+        }
+    }
+
+    /// Delete the opencode session file for a given thread.
+    async fn handle_reset_session(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let thread_name = match request.params.as_ref().and_then(|p| p.get("thread_name")) {
+            Some(v) => match v.as_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    return InspectResponse::ResetSessionResult {
+                        success: false,
+                        message: "thread_name must be a string".to_string(),
+                    };
+                }
+            },
+            None => {
+                return InspectResponse::ResetSessionResult {
+                    success: false,
+                    message: "missing thread_name param".to_string(),
+                };
+            }
+        };
+
+        if thread_name.contains("..")
+            || thread_name.contains('/')
+            || thread_name.contains('\\')
+        {
+            return InspectResponse::ResetSessionResult {
+                success: false,
+                message: "invalid thread_name: path traversal not allowed".to_string(),
+            };
+        }
+
+        let session_path = context
+            .workspace_dirs
+            .iter()
+            .map(|d| d.join(&thread_name).join(".jyc").join("opencode-session.json"))
+            .find(|p| p.exists());
+
+        match session_path {
+            Some(path) => {
+                let canonical_ws = context.workspace_dirs.iter().filter_map(|d| d.canonicalize().ok()).collect::<Vec<_>>();
+                let canonical_path = match path.canonicalize() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return InspectResponse::ResetSessionResult {
+                            success: false,
+                            message: format!("failed to resolve session path: {e}"),
+                        };
+                    }
+                };
+                if !canonical_ws.iter().any(|ws| canonical_path.starts_with(ws)) {
+                    return InspectResponse::ResetSessionResult {
+                        success: false,
+                        message: "invalid thread_name: path escapes workspace".to_string(),
+                    };
+                }
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => {
+                        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+                        InspectResponse::ResetSessionResult {
+                            success: true,
+                            message: format!("session deleted for {thread_name}"),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(thread = %thread_name, error = %e, "Failed to delete session file");
+                        InspectResponse::ResetSessionResult {
+                            success: false,
+                            message: format!("failed to delete session: {e}"),
+                        }
+                    }
+                }
+            }
+            None => InspectResponse::ResetSessionResult {
+                success: true,
+                message: format!("no session exists for {thread_name}"),
+            },
         }
     }
 
@@ -805,6 +887,197 @@ mode = "opencode"
         }
 
         assert_eq!(config_swap.load().general.max_concurrent_threads, 10);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reset_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+        let thread_name = "test-thread";
+        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("opencode-session.json"),
+            r#"{"sessionId":"test-id"}"#,
+        )
+        .await
+        .unwrap();
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: vec![],
+            channels: vec![],
+            health_stats: Arc::new(Mutex::new(crate::core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            config: None,
+            workspace_dirs: vec![workspace_dir],
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"test-thread\"}}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => {
+                assert!(success, "reset should succeed: {message}");
+                assert!(message.contains("session deleted"));
+            }
+            other => panic!("expected ResetSessionResult, got {:?}", other),
+        }
+
+        assert!(!jyc_dir.join("opencode-session.json").exists());
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reset_session_missing_param() {
+        let ctx = test_context();
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"reset_session\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => {
+                assert!(!success);
+                assert!(message.contains("missing thread_name"));
+            }
+            other => panic!("expected ResetSessionResult, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reset_session_no_existing_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: vec![],
+            channels: vec![],
+            health_stats: Arc::new(Mutex::new(crate::core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            config: None,
+            workspace_dirs: vec![workspace_dir],
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"nonexistent\"}}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => {
+                assert!(success, "no-session case should still succeed: {message}");
+                assert!(message.contains("no session exists"));
+            }
+            other => panic!("expected ResetSessionResult, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reset_session_path_traversal() {
+        let ctx = test_context();
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => {
+                assert!(!success);
+                assert!(message.contains("path traversal"), "expected path traversal error, got: {message}");
+            }
+            other => panic!("expected ResetSessionResult, got {:?}", other),
+        }
 
         cancel.cancel();
         handle.await.unwrap();

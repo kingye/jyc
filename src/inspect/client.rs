@@ -90,6 +90,7 @@ impl InspectClient {
             InspectResponse::State(state) => Ok(state),
             InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
             InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for get_state"),
+            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for get_state"),
         }
     }
 
@@ -129,6 +130,46 @@ impl InspectClient {
             InspectResponse::ReloadResult { success, message } => Ok((success, message)),
             InspectResponse::Error { error } => Ok((false, error)),
             InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
+            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for reload_config"),
+        }
+    }
+
+    /// Send a `reset_session` command to the inspect server.
+    pub async fn reset_session(&mut self, thread_name: &str) -> Result<(bool, String)> {
+        if self.conn.is_none() {
+            self.connect().await?;
+        }
+
+        let conn = self.conn.as_mut().context("not connected")?;
+
+        let request = InspectRequest {
+            method: "reset_session".to_string(),
+            params: Some(serde_json::json!({ "thread_name": thread_name })),
+        };
+        let mut json = serde_json::to_string(&request)?;
+        json.push('\n');
+        conn.writer.write_all(json.as_bytes()).await?;
+        conn.writer.flush().await?;
+
+        let mut response_line = String::new();
+        let bytes = conn
+            .reader
+            .read_line(&mut response_line)
+            .await
+            .context("failed to read response")?;
+
+        if bytes == 0 {
+            anyhow::bail!("server closed connection");
+        }
+
+        let resp: InspectResponse =
+            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
+
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            InspectResponse::State(_) => anyhow::bail!("unexpected state for reset_session"),
+            InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for reset_session"),
         }
     }
 }
@@ -258,5 +299,56 @@ mod tests {
         let mut client = InspectClient::new("127.0.0.1:1");
         let result = client.get_state().await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_inspect_client_reset_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+        let thread_name = "test-thread";
+        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("opencode-session.json"),
+            r#"{"sessionId":"test-id"}"#,
+        )
+        .await
+        .unwrap();
+
+        let context = Arc::new(InspectContext {
+            thread_managers: vec![],
+            channels: vec![ChannelInfo {
+                name: "test-ch".to_string(),
+                channel_type: "email".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            health_stats: Arc::new(Mutex::new(
+                crate::core::metrics::HealthStats::default(),
+            )),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            config: None,
+            workspace_dirs: vec![workspace_dir],
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
+        let _handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut client = InspectClient::new(&addr.to_string());
+        let (success, message) = client.reset_session("test-thread").await.unwrap();
+
+        assert!(success, "reset should succeed: {message}");
+        assert!(message.contains("session deleted"));
+        assert!(!jyc_dir.join("opencode-session.json").exists());
+
+        cancel.cancel();
     }
 }

@@ -931,14 +931,28 @@ impl GithubInboundAdapter {
         }
 
         // 2b. Fetch and process PR reviews and review comments.
-        // These are per-PR endpoints, so we iterate over open PRs from issue_cache.
+        // Only fetch for PRs with active threads (pr-N or review-pr-N directories exist).
+        // This avoids 2 API calls per open PR for PRs that don't match any pattern,
+        // which would otherwise make the poll cycle take 15+ minutes with many open PRs.
         let open_pr_numbers: Vec<u64> = issue_cache
             .iter()
             .filter(|(_, (_, github_type, _, _))| github_type == "pull_request")
             .map(|(number, _)| *number)
             .collect();
 
+        let active_pr_threads = self.scan_active_pr_threads();
+        tracing::debug!(
+            channel = %self.channel_name,
+            active = active_pr_threads.len(),
+            total = open_pr_numbers.len(),
+            "Review polling: active threads out of open PRs"
+        );
+
         for pr_number in &open_pr_numbers {
+            if !active_pr_threads.contains(pr_number) {
+                continue;
+            }
+
             // Process reviews
             match client.list_reviews(*pr_number).await {
                 Ok(reviews) => {

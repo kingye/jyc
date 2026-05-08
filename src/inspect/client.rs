@@ -90,6 +90,7 @@ impl InspectClient {
             InspectResponse::State(state) => Ok(state),
             InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
             InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for get_state"),
+            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for get_state"),
         }
     }
 
@@ -129,6 +130,7 @@ impl InspectClient {
             InspectResponse::ReloadResult { success, message } => Ok((success, message)),
             InspectResponse::Error { error } => Ok((false, error)),
             InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
+            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for reload_config"),
         }
     }
 }

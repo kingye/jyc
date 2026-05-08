@@ -242,6 +242,16 @@ impl InspectServer {
             }
         };
 
+        if thread_name.contains("..")
+            || thread_name.contains('/')
+            || thread_name.contains('\\')
+        {
+            return InspectResponse::ResetSessionResult {
+                success: false,
+                message: "invalid thread_name: path traversal not allowed".to_string(),
+            };
+        }
+
         let session_path = context
             .workspace_dirs
             .iter()
@@ -249,22 +259,40 @@ impl InspectServer {
             .find(|p| p.exists());
 
         match session_path {
-            Some(path) => match tokio::fs::remove_file(&path).await {
-                Ok(()) => {
-                    tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
-                    InspectResponse::ResetSessionResult {
-                        success: true,
-                        message: format!("session deleted for {thread_name}"),
+            Some(path) => {
+                let canonical_ws = context.workspace_dirs.iter().filter_map(|d| d.canonicalize().ok()).collect::<Vec<_>>();
+                let canonical_path = match path.canonicalize() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return InspectResponse::ResetSessionResult {
+                            success: false,
+                            message: format!("failed to resolve session path: {e}"),
+                        };
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(thread = %thread_name, error = %e, "Failed to delete session file");
-                    InspectResponse::ResetSessionResult {
+                };
+                if !canonical_ws.iter().any(|ws| canonical_path.starts_with(ws)) {
+                    return InspectResponse::ResetSessionResult {
                         success: false,
-                        message: format!("failed to delete session: {e}"),
+                        message: "invalid thread_name: path escapes workspace".to_string(),
+                    };
+                }
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => {
+                        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+                        InspectResponse::ResetSessionResult {
+                            success: true,
+                            message: format!("session deleted for {thread_name}"),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(thread = %thread_name, error = %e, "Failed to delete session file");
+                        InspectResponse::ResetSessionResult {
+                            success: false,
+                            message: format!("failed to delete session: {e}"),
+                        }
                     }
                 }
-            },
+            }
             None => InspectResponse::ResetSessionResult {
                 success: true,
                 message: format!("no session exists for {thread_name}"),
@@ -1008,6 +1036,45 @@ mode = "opencode"
             InspectResponse::ResetSessionResult { success, message } => {
                 assert!(success, "no-session case should still succeed: {message}");
                 assert!(message.contains("no session exists"));
+            }
+            other => panic!("expected ResetSessionResult, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_server_reset_session_path_traversal() {
+        let ctx = test_context();
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => {
+                assert!(!success);
+                assert!(message.contains("path traversal"), "expected path traversal error, got: {message}");
             }
             other => panic!("expected ResetSessionResult, got {:?}", other),
         }

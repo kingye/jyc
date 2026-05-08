@@ -32,8 +32,8 @@ struct App {
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
-    /// Transient status message (e.g., config reload result).
     status_message: Option<(String, std::time::Instant)>,
+    pending_reset: Option<(String, std::time::Instant)>,
 }
 
 impl App {
@@ -44,6 +44,7 @@ impl App {
             table_state: TableState::default(),
             should_quit: false,
             status_message: None,
+            pending_reset: None,
         }
     }
 
@@ -51,11 +52,19 @@ impl App {
         self.status_message = Some((msg, std::time::Instant::now()));
     }
 
-    /// Clear status message after 5 seconds.
+    fn clear_pending_reset(&mut self) {
+        self.pending_reset = None;
+    }
+
     fn tick_status(&mut self) {
         if let Some((_, at)) = &self.status_message {
             if at.elapsed() > Duration::from_secs(5) {
                 self.status_message = None;
+            }
+        }
+        if let Some((_, at)) = &self.pending_reset {
+            if at.elapsed() > Duration::from_secs(3) {
+                self.pending_reset = None;
             }
         }
     }
@@ -157,7 +166,6 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                             match client.reload_config().await {
                                 Ok((true, msg)) => {
                                     app.set_status(format!("Config reloaded: {msg}"));
-                                    // Force refresh to show updated state
                                     last_poll = std::time::Instant::now() - poll_interval;
                                 }
                                 Ok((false, msg)) => {
@@ -168,7 +176,49 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                                 }
                             }
                         }
-                        _ => {}
+                        KeyCode::Char('s') => {
+                            if let Some((ref thread_name, at)) = app.pending_reset {
+                                if at.elapsed() <= Duration::from_secs(3) {
+                                    let name = thread_name.clone();
+                                    app.clear_pending_reset();
+                                    match client.reset_session(&name).await {
+                                        Ok((true, msg)) => {
+                                            app.set_status(format!("Session reset: {msg}"));
+                                            last_poll = std::time::Instant::now() - poll_interval;
+                                        }
+                                        Ok((false, msg)) => {
+                                            app.set_status(format!("Reset failed: {msg}"));
+                                        }
+                                        Err(e) => {
+                                            app.set_status(format!("Reset error: {e:#}"));
+                                        }
+                                    }
+                                } else {
+                                    app.clear_pending_reset();
+                                }
+                            } else {
+                                let thread_name = app
+                                    .state
+                                    .as_ref()
+                                    .and_then(|s| {
+                                        app.table_state
+                                            .selected()
+                                            .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
+                                    });
+                                match thread_name {
+                                    Some(name) => {
+                                        app.pending_reset = Some((name.clone(), std::time::Instant::now()));
+                                        app.set_status(format!("Press `s` again to confirm reset session for {name}"));
+                                    }
+                                    None => {
+                                        app.set_status("No thread selected".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            app.clear_pending_reset();
+                        }
                     }
                 }
             }
@@ -478,7 +528,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = "[q]quit [↑↓]select [r]refresh [R]reload";
+    let help_text = "[q]quit [↑↓]select [r]refresh [R]reload [s]reset session";
 
     let state = match &app.state {
         Some(s) => s,

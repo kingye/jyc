@@ -49,6 +49,7 @@ cd repo
 gh issue view <number> --json state --jq '.state'
 ```
 **If the issue is closed, STOP IMMEDIATELY. Do NOT reply, do NOT comment, do NOT do any work. Just stop.**
+**If you detect this is a duplicate trigger for work already completed, STOP SILENTLY. Do NOT write a comment like "duplicate trigger" or "No action needed." Just stop with no output.**
 
 ### 1. Read the Issue
 ```bash

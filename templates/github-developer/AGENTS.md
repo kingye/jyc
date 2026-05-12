@@ -52,6 +52,17 @@ Examples of when to STOP SILENTLY (no reply):
 - PR review approved with no changes requested
 - Comment from a bot with no failure or actionable finding
 
+## Reply Formatting
+When posting comments on GitHub, ONLY include what matters to the user:
+- What you implemented (summary of changes made)
+- Result (tests pass/fail, build status, remaining work)
+- Questions or blockers if any
+
+NEVER include in your replies:
+- The trigger message metadata (github event, repository, Setup commands, GH_HOST, etc.)
+- Raw internal tool output unless specifically relevant to the user
+- Repetition of the PR title or labels the user already knows
+
 ## Detect Project Type (do this ONCE after checkout)
 
 ```bash

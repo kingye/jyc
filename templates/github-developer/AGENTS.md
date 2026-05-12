@@ -41,6 +41,12 @@ cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 > If a clone fails, troubleshoot the issue (e.g., check GH_HOST, network) without
 > recreating the directory. Always clone INTO the existing `repo/` directory.
 
+## When NOT to Reply
+If after reading the triggering comment you determine there is NO actionable work
+(e.g., CI passed with no issues, PR already complete, duplicate trigger, comment
+is purely informational with no request), STOP SILENTLY without calling the reply tool.
+Do NOT post comments like "No action needed" or "Nothing to do" — just stop.
+
 ## Detect Project Type (do this ONCE after checkout)
 
 ```bash

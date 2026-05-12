@@ -47,8 +47,7 @@ STOP SILENTLY without calling the reply tool. Do NOT post comments like
 
 Examples of when to STOP SILENTLY (no reply):
 - The triggering comment is your own previous reply (starts with `[High-Level Planner]`)
-- Issue already has a plan and no new user request
-- Duplicate trigger (same event already handled)
+- Duplicate trigger (same event already handled, no new user comment since your last reply)
 - Comment from a bot with no failure or actionable finding
 
 ## Workflow

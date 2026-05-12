@@ -39,10 +39,9 @@ STOP SILENTLY without calling the reply tool. Do NOT post comments like
 "No action needed" or "Nothing to do" or "Already reviewed" — just stop.
 
 Examples of when to STOP SILENTLY (no reply):
-- CI passed with no issues
-- PR already reviewed by you (duplicate trigger)
+- The triggering comment is your own previous reply (starts with `[Reviewer]`)
+- Duplicate trigger (same event already handled, no new user comment since your last reply)
 - Comment from a bot with no failure or actionable finding
-- Developer posted a status update that needs no reviewer action
 
 ## Workflow
 

@@ -20,7 +20,7 @@ comment is at the bottom of the incoming message after "Triggering comment by".
 That comment IS your task. Do what it says — nothing more, nothing less.
 
 You are triggered automatically when a PR matches the pattern rules (e.g., label `ready-for-dev`).
-NEVER use `@j:` mentions — they are deprecated. Handoff between agents uses labels only.
+Handoff between agents uses labels only (e.g., `ready-for-dev`, `ready-for-review`).
 
 ## Repository Setup
 The `repo/` directory is created by JYC (symlink for grouped patterns, regular

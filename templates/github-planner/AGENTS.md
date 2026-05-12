@@ -15,7 +15,7 @@ requirements with the user and create a PR when the plan is clear.
 
 ## How You Receive Work
 You are triggered automatically when an issue matches the pattern rules (e.g., label `planning`).
-NEVER use `@j:` mentions — they are deprecated. Handoff between agents uses labels only.
+Handoff between agents uses labels only (e.g., `ready-for-dev`, `ready-for-review`).
 The trigger message tells you the repository and issue number, for example:
 ```
 repository: kingye/jyc

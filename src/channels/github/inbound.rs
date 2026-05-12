@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
@@ -651,7 +650,7 @@ impl InboundAdapter for GithubInboundAdapter {
 
         // Determine poll start time:
         // - Fresh start (no processed-comments.txt): start from "now" to avoid
-        //   replaying old comments that already have @j:<role> mentions.
+        //   replaying old comments.
         // - Restart (file exists): go back 5 minutes to catch events missed
         //   during downtime. Deduplication via processed-comments.txt prevents
         //   re-processing.
@@ -711,7 +710,7 @@ impl InboundAdapter for GithubInboundAdapter {
 }
 
 impl GithubInboundAdapter {
-    /// Execute one poll cycle: fetch comments with @j:<role> mentions.
+    /// Execute one poll cycle: fetch comments and route via pattern matching.
     /// Routes events to threads via on_message callback.
     async fn poll_once(
         &self,
@@ -810,8 +809,6 @@ impl GithubInboundAdapter {
             "Fetched comments"
         );
 
-        let mention_re = Regex::new(r"(?i)@j:(\w+)").unwrap();
-
         for comment in &comments {
             // Build dedup key: id:updated_at — re-processes edited comments
             let comment_key = format!("{}:{}", comment.id, comment.updated_at);
@@ -825,12 +822,6 @@ impl GithubInboundAdapter {
             }
 
             let body_trimmed = comment.body.trim();
-
-            // Extract @j:<role> mention
-            let handover_role = mention_re
-                .captures(body_trimmed)
-                .and_then(|caps| caps.get(1))
-                .map(|m| m.as_str().to_lowercase());
 
             // Extract [Role] prefix for self-loop prevention
             let comment_role = extract_comment_role(body_trimmed);
@@ -888,40 +879,21 @@ impl GithubInboundAdapter {
                 None => message.content.text = Some(comment_section),
             }
 
-            // Add handover_role only if @j:<role> mention exists
-            // Pattern mode patterns can match without handover_role
-            if let Some(ref role) = handover_role {
-                message.metadata.insert(
-                    "handover_role".to_string(),
-                    serde_json::Value::String(role.clone()),
-                );
-
-                tracing::info!(
-                    channel = %self.channel_name,
-                    event = "mention",
-                    comment_id = comment.id,
-                    issue_number = issue_number,
-                    target_role = %role,
-                    user = %comment.user.login,
-                    body_preview = %truncate_str(&comment.body, 80),
-                    "Comment with @j:{} detected → routing", role,
-                );
-            } else {
-                tracing::debug!(
-                    channel = %self.channel_name,
-                    comment_id = comment.id,
-                    issue_number = issue_number,
-                    user = %comment.user.login,
-                    "Comment without @j:<role> mention → routing for Pattern mode"
-                );
-            }
-
+            // Add comment_role for self-loop prevention in pattern matching
             if let Some(ref role) = comment_role {
                 message.metadata.insert(
                     "comment_role".to_string(),
                     serde_json::Value::String(role.clone()),
                 );
             }
+
+            tracing::debug!(
+                channel = %self.channel_name,
+                comment_id = comment.id,
+                issue_number = issue_number,
+                user = %comment.user.login,
+                "Comment detected → routing for Pattern mode"
+            );
 
             if let Err(e) = (options.on_message)(message) {
                 tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
@@ -1459,19 +1431,6 @@ fn extract_comment_role(text: &str) -> Option<String> {
     None
 }
 
-/// Extract @j:<role> mention from comment text.
-///
-/// Examples:
-///   "@j:developer Please implement this" → Some("developer")
-///   "@j:Reviewer Ready for review" → Some("reviewer")
-///   "Normal comment without mention" → None
-fn extract_mention_role(text: &str) -> Option<String> {
-    let re = Regex::new(r"(?i)@j:(\w+)").ok()?;
-    re.captures(text)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_lowercase())
-}
-
 /// Check whether a comment should be processed based on whether its
 /// parent issue/PR is still open.
 ///
@@ -1647,7 +1606,7 @@ mod tests {
     fn test_assignees_rule_blocks_wrong_assignee() {
         // Pattern requires assignee "alice", but issue is assigned to "bob"
         let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1667,7 +1626,7 @@ mod tests {
     fn test_assignees_rule_allows_matching_assignee() {
         // Pattern requires assignee "alice", issue is assigned to "alice"
         let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1688,7 +1647,7 @@ mod tests {
     fn test_assignees_rule_or_logic() {
         // Pattern allows "alice" or "bob", issue assigned to "bob"
         let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1708,7 +1667,7 @@ mod tests {
     fn test_assignees_rule_case_insensitive() {
         // Pattern has "Alice", issue has "alice"
         let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1728,7 +1687,7 @@ mod tests {
     fn test_labels_rule_blocks_wrong_label() {
         // Pattern requires label "bug", but issue has "enhancement"
         let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -1748,7 +1707,7 @@ mod tests {
     fn test_labels_rule_allows_matching_label() {
         // Pattern requires label "bug", issue has "bug"
         let mut msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -1768,7 +1727,7 @@ mod tests {
     fn test_labels_rule_case_insensitive() {
         // Pattern has "Bug", issue has "bug"
         let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -1789,7 +1748,7 @@ mod tests {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
         let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
             enabled: true,
@@ -1811,7 +1770,7 @@ mod tests {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has correct type and label but wrong assignee — should NOT match
         let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("reviewer"));
+
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
             enabled: true,
@@ -1832,7 +1791,7 @@ mod tests {
     fn test_no_rules_always_matches() {
         // Pattern with no rules (all None) — should match purely on role
         let mut msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1848,7 +1807,7 @@ mod tests {
     fn test_no_assignees_on_issue_fails_assignee_rule() {
         // Pattern requires assignee "alice", but issue has no assignees
         let mut msg = make_message_with_rules("issue", 42, &[], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
             enabled: true,
@@ -1870,7 +1829,7 @@ mod tests {
         // First requires assignee "alice", second has no assignee rule.
         // Message has assignee "bob" — should skip first, match second.
         let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![
             ChannelPattern {
                 name: "planner-alice".to_string(),
@@ -1911,24 +1870,6 @@ mod tests {
         assert_eq!(extract_comment_role("normal comment"), None);
         assert_eq!(extract_comment_role("[Unknown] something"), None);
         assert_eq!(extract_comment_role(""), None);
-    }
-
-    #[test]
-    fn test_extract_mention_role() {
-        assert_eq!(extract_mention_role("@j:developer Please implement"), Some("developer".to_string()));
-        assert_eq!(extract_mention_role("@j:Reviewer Ready for review"), Some("reviewer".to_string()));
-        assert_eq!(extract_mention_role("Normal comment"), None);
-        assert_eq!(extract_mention_role("Some text @j:planner more text"), Some("planner".to_string()));
-        assert_eq!(extract_mention_role("[Planner] This is a reply"), None);
-        // Case insensitive — always returns lowercase
-        assert_eq!(extract_mention_role("@j:DEVELOPER"), Some("developer".to_string()));
-        // Old @jyc: format should NOT match
-        assert_eq!(extract_mention_role("@jyc:developer"), None);
-        // Empty and edge cases
-        assert_eq!(extract_mention_role(""), None);
-        assert_eq!(extract_mention_role("@j:"), None);
-        // First match wins
-        assert_eq!(extract_mention_role("@j:developer @j:reviewer"), Some("developer".to_string()));
     }
 
     // --- Persistent comment tracking ---
@@ -2239,7 +2180,7 @@ mod tests {
         // Nested: [["bug", "enhancement"], ["test"]] → (bug OR enhancement) AND test
         // Message has ["bug", "test"] → should match
         let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2259,7 +2200,7 @@ mod tests {
 
         // Message has ["bug", "other"] → should NOT match (missing "test" group)
         let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
-        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_none(), "should not match when second AND group is not satisfied");
     }
@@ -2268,7 +2209,7 @@ mod tests {
     fn test_labels_nested_single_group() {
         // Nested with single group: [["bug"]] behaves same as flat ["bug"]
         let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2290,7 +2231,7 @@ mod tests {
     fn test_labels_nested_all_and() {
         // Nested: [["bug"], ["test"], ["v2"]] → requires all three labels
         let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2311,7 +2252,7 @@ mod tests {
 
         // Missing one label → should NOT match
         let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
-        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_none(), "should not match when one required label is missing");
     }
@@ -2320,7 +2261,7 @@ mod tests {
     fn test_labels_nested_empty_group() {
         // Edge case: empty inner group [[]] should not block matching
         let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2343,7 +2284,7 @@ mod tests {
     fn test_labels_flat_backward_compat() {
         // Verify Flat(vec!["bug", "enhancement"]) still uses OR logic
         let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2360,7 +2301,7 @@ mod tests {
 
         // Neither label present → should NOT match
         let mut msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
-        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("developer"));
+
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_none(), "flat labels OR logic — no matching label");
     }
@@ -2476,7 +2417,7 @@ mod tests {
     fn test_exclude_labels_blocks_matching_label() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
         let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
             enabled: true,
@@ -2496,7 +2437,7 @@ mod tests {
     fn test_exclude_labels_allows_non_matching_label() {
         // Message has "bug", pattern has exclude_labels = ["feature-plan"] → should match
         let mut msg = make_message_with_rules("issue", 42, &["bug"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
             enabled: true,
@@ -2516,7 +2457,7 @@ mod tests {
     fn test_exclude_labels_multiple() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan", "wip"] → should NOT match
         let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
             enabled: true,
@@ -2536,7 +2477,7 @@ mod tests {
     fn test_exclude_labels_case_insensitive() {
         // Message has "Feature-Plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
         let mut msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
             enabled: true,
@@ -2571,7 +2512,7 @@ mod tests {
     fn test_high_level_planner_with_feature_plan_label() {
         // High-level planner pattern: labels = ["feature-plan"]
         let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
-        msg.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![ChannelPattern {
             name: "high-level-planner".to_string(),
             enabled: true,
@@ -2593,7 +2534,7 @@ mod tests {
     fn test_two_level_routing() {
         // Issue with feature-plan → high-level planner
         let mut msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
-        msg1.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let patterns = vec![
             ChannelPattern {
                 name: "high-level-planner".to_string(),
@@ -2626,7 +2567,7 @@ mod tests {
 
         // Issue with bug → detail planner (no feature-plan)
         let mut msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
-        msg2.metadata.insert("handover_role".to_string(), serde_json::json!("planner"));
+
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_some());
         assert_eq!(result2.unwrap().pattern_name, "detail-planner");

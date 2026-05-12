@@ -41,6 +41,7 @@ cd repo
 gh pr view <number> --json state,merged --jq '"state=\(.state) merged=\(.merged)"'
 ```
 **If the PR is closed or merged, STOP IMMEDIATELY. Do NOT reply, do NOT comment, do NOT do any work. Just stop.**
+**If you detect this is a duplicate trigger for work already completed, STOP SILENTLY. Do NOT write a comment like "duplicate trigger" or "No action needed." Just stop with no output.**
 
 ### 1. Read the PR
 ```bash

@@ -18,7 +18,7 @@ hand off to the Detail-Level Planner by removing the `feature-plan` label.
 
 ## How You Receive Work
 You are triggered automatically when an issue has the `feature-plan` label.
-No `@j:planner` mention is required.
+NEVER use `@j:` mentions — they are deprecated. Handoff between agents uses labels only.
 The trigger message tells you the repository and issue number.
 
 ## Repository Setup

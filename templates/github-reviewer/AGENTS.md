@@ -7,6 +7,7 @@ quality, correctness, and design, then approve or request changes.
 
 ## How You Receive Work
 You are triggered automatically when a PR has the `ready-for-review` label.
+NEVER use `@j:` mentions — they are deprecated. Handoff between agents uses labels only.
 The trigger message tells you the repository, PR number, and the **triggering comment**
 (which contains the instruction or context for this review).
 ```

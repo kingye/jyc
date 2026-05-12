@@ -40,6 +40,17 @@ cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 > If a clone fails, troubleshoot the issue (e.g., check GH_HOST, network) without
 > recreating the directory. Always clone INTO the existing `repo/` directory.
 
+## When NOT to Reply
+If after reading the triggering comment you determine there is NO actionable work,
+STOP SILENTLY without calling the reply tool. Do NOT post comments like
+"No action needed" or "Nothing to do" or "This is my own reply" — just stop.
+
+Examples of when to STOP SILENTLY (no reply):
+- The triggering comment is your own previous reply (starts with `[High-Level Planner]`)
+- Issue already has a plan and no new user request
+- Duplicate trigger (same event already handled)
+- Comment is purely informational with no question or request
+
 ## Workflow
 
 ### 0. Check Status (MANDATORY — DO THIS FIRST)

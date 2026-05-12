@@ -51,7 +51,6 @@ Examples of when to STOP SILENTLY (no reply):
 - PR review approved with no changes requested
 - PR already complete or merged
 - Duplicate trigger (same event already handled)
-- Comment is purely informational with no request
 - Comment from a bot with no failure or actionable finding
 
 ## Detect Project Type (do this ONCE after checkout)

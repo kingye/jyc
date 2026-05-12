@@ -41,7 +41,6 @@ STOP SILENTLY without calling the reply tool. Do NOT post comments like
 Examples of when to STOP SILENTLY (no reply):
 - CI passed with no issues
 - PR already reviewed by you (duplicate trigger)
-- Comment is purely informational with no request
 - Comment from a bot with no failure or actionable finding
 - Developer posted a status update that needs no reviewer action
 

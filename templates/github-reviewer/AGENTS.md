@@ -34,10 +34,16 @@ cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 > recreating the directory. Always clone INTO the existing `repo/` directory.
 
 ## When NOT to Reply
-If after reading the triggering comment you determine there is NO actionable work
-(e.g., CI passed with no issues, PR already reviewed, duplicate trigger, comment
-is purely informational with no request), STOP SILENTLY without calling the reply tool.
-Do NOT post comments like "No action needed" or "Nothing to do" — just stop.
+If after reading the triggering comment you determine there is NO actionable work,
+STOP SILENTLY without calling the reply tool. Do NOT post comments like
+"No action needed" or "Nothing to do" or "Already reviewed" — just stop.
+
+Examples of when to STOP SILENTLY (no reply):
+- CI passed with no issues
+- PR already reviewed by you (duplicate trigger)
+- Comment is purely informational with no request
+- Comment from a bot with no failure or actionable finding
+- Developer posted a status update that needs no reviewer action
 
 ## Workflow
 

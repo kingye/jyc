@@ -157,9 +157,8 @@ impl Provider for OpenAiCompatProvider {
                             state.chunks_received += 1;
                             buffer.push_str(&chunk_str);
 
-                            // Parse SSE lines. Standard SSE uses \n\n as event separator,
-                            // but we also handle line-by-line since each "data: ..." line
-                            // is a complete event for OpenAI-compatible APIs.
+                            // Parse SSE lines. Each "data: ..." line is a complete JSON event.
+                            let mut lines_parsed = 0;
                             while let Some(newline_pos) = buffer.find('\n') {
                                 let line = buffer[..newline_pos].to_string();
                                 buffer = buffer[newline_pos + 1..].to_string();
@@ -177,8 +176,19 @@ impl Provider for OpenAiCompatProvider {
                                     }
                                     if let Some(events) = parse_openai_chunk(data, &mut state) {
                                         state.pending_events.extend(events);
+                                        lines_parsed += 1;
                                     }
                                 }
+                            }
+
+                            if state.chunks_received <= 3 {
+                                tracing::debug!(
+                                    chunk_num = state.chunks_received,
+                                    buffer_len = buffer.len(),
+                                    lines_parsed,
+                                    pending_events = state.pending_events.len(),
+                                    "Chunk processed"
+                                );
                             }
 
                             // Return first pending event if available
@@ -195,6 +205,11 @@ impl Provider for OpenAiCompatProvider {
                         None => {
                             // Stream ended — parse any remaining data in buffer
                             if !buffer.is_empty() {
+                                tracing::debug!(
+                                    buffer_remaining = buffer.len(),
+                                    buffer_preview = %&buffer[..buffer.len().min(300)],
+                                    "Stream ended with data in buffer"
+                                );
                                 for line in buffer.lines() {
                                     if let Some(data) = line.strip_prefix("data: ") {
                                         if data.trim() == "[DONE]" {

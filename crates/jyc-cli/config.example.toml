@@ -1,0 +1,344 @@
+# JYC Configuration
+# Fill in your credentials below. Use ${ENV_VAR} syntax for secrets if preferred.
+
+[general]
+max_concurrent_threads = 3
+max_queue_size_per_thread = 10
+
+# --- Channel: jiny283 ---
+
+[channels.jiny283]
+type = "email"
+
+[channels.jiny283.inbound]
+host = "imap.163.com"
+port = 993
+tls = true
+auth_timeout_ms = 30000
+username = "jiny283@163.com"
+password = "xxxxxxxxxxxx"
+
+[channels.jiny283.outbound]
+host = "smtp.163.com"
+port = 465
+secure = true
+username = "jiny283@163.com"
+password = "xxxxxxxx"
+
+[channels.jiny283.monitor]
+mode = "poll"
+poll_interval_secs = 30
+max_retries = 5
+folder = "INBOX"
+
+# Footer configuration: controls whether model/mode/tokens footer is appended to replies.
+# Default is enabled = true when omitted. Set enabled = false to disable the footer.
+# [channels.jiny283.footer]
+# enabled = true
+
+[[channels.jiny283.patterns]]
+name = "xxx"
+enabled = true
+# Live message injection: when true (default), follow-up messages arriving
+# while AI is processing are injected into the active session immediately.
+# When false, messages queue and are processed sequentially (one at a time).
+# live_injection = false
+
+[channels.jiny283.patterns.rules.sender]
+exact = ["kingye@petalmail.com"]
+
+[channels.jiny283.patterns.rules.subject]
+prefix = ["283", "jiny"]
+
+[channels.jiny283.patterns.attachments]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+  ".potx",
+]
+max_file_size = "25mb"
+max_per_message = 10
+
+# --- Channel: jiny283a ---
+
+[channels.jiny283a]
+type = "email"
+
+[channels.jiny283a.inbound]
+host = "imap.163.com"
+port = 993
+tls = true
+auth_timeout_ms = 30000
+username = "jiny283a@163.com"
+password = "xxxxxxxxxx"
+
+[channels.jiny283a.outbound]
+host = "smtp.163.com"
+port = 465
+secure = true
+username = "jiny283a@163.com"
+password = "xxxxxxxxxx"
+
+[channels.jiny283a.monitor]
+mode = "poll"
+poll_interval_secs = 30
+max_retries = 5
+folder = "INBOX"
+
+[[channels.jiny283a.patterns]]
+name = "jiny-m"
+enabled = true
+
+[channels.jiny283a.patterns.rules.sender]
+exact = ["kingye@petalmail.com", "kingye283@163.com"]
+
+[channels.jiny283a.patterns.rules.subject]
+prefix = ["283a", "jiny", "bs"]
+
+[channels.jiny283a.patterns.attachments]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+  ".potx",
+]
+max_file_size = "25mb"
+max_per_message = 10
+
+# --- Feishu Channel Example ---
+# Uncomment and configure for Feishu/Lark integration
+[channels.feishu_bot]
+type = "feishu"
+workspace = "./feishu_workspace"
+#
+[channels.feishu_bot.feishu]
+app_id = "cli_xxxxxxxxx"
+app_secret = "xxxxxxxxxxxx"
+base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
+
+[channels.feishu_bot.feishu.websocket]
+enabled = true
+reconnect_delay_secs = 5
+max_reconnect_attempts = 10
+heartbeat_interval_secs = 30
+
+[[channels.feishu_bot.patterns]]
+name = "feishu_bot"
+enabled = true
+
+# Feishu-specific pattern matching (placeholder - will be implemented)
+[channels.feishu_bot.patterns.rules]
+mentions = ["jyc"]
+
+# --- Agent ---
+
+[agent]
+enabled = true
+mode = "opencode"
+# mode = "static"
+# text = "Thank you for your message."
+
+[agent.opencode]
+# Model identifier (e.g., "SiliconFlow/Pro/zai-org/GLM-4.7")
+# model = "ark/deepseek-v3.2"
+
+# Small model for lightweight tasks (title generation, compaction)
+# small_model = "ark/deepseek-v3.2"
+
+system_prompt = "You are an AI assistant. Respond professionally and concisely."
+include_thread_history = false
+
+# Maximum input tokens per session before resetting.
+# If not set, uses 95% of the model's context window (auto-detected), or 120K as fallback.
+# max_input_tokens = 122880
+
+
+[agent.attachments]
+enabled = true
+max_file_size = "10mb"
+allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md", ".pdf"]
+
+# --- Unified Attachment Configuration ---
+# This is the new unified configuration for both inbound and outbound attachments.
+# It can be used alongside the per-pattern attachments configuration.
+[attachments]
+
+# Inbound attachment configuration (downloading attachments from messages)
+[attachments.inbound]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+]
+max_file_size = "25mb"
+max_per_message = 10
+# save_path = "./downloads"  # Optional: custom path for downloaded attachments
+
+# Outbound attachment configuration (sending attachments with replies)
+[attachments.outbound]
+enabled = true
+allowed_extensions = [
+  ".pdf",
+  ".pptx",
+  ".docx",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".txt",
+  ".md",
+]
+max_file_size = "10mb"
+max_per_message = 5
+
+# --- Inspect Server ---
+# Exposes runtime state via TCP for the TUI dashboard.
+# Run `jyc dashboard` to connect.
+
+[inspect]
+enabled = true
+bind = "127.0.0.1:9876"  # Default; localhost only for security
+
+# --- Vision API ---
+# OpenAI-compatible vision API for image analysis.
+# The AI agent can call the vision_analyze_image MCP tool to analyze images
+# (e.g., attachments saved to thread directories).
+# Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc.
+
+# DEPRECATED: Vision is now configured via [[mcps]] and template mcps lists.
+# See "MCP Servers" section below. This section will be removed in a future release.
+# [vision]
+# enabled = true
+# api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# api_url = "https://api.moonshot.cn/v1/chat/completions"  # Kimi (default)
+# # api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"  # Volcengine/Ark
+# # api_url = "https://api.openai.com/v1/chat/completions"  # OpenAI
+# model = "kimi-k2.5"  # default
+
+# --- MCP Servers ---
+# Named MCP server definitions. Templates reference these by name
+# in their `mcps` list (see templates/templates.toml).
+# Each MCP can be `local` (subprocess) or `remote` (HTTP).
+
+# [[mcps]]
+# name = "jyc_vision"
+# type = "local"
+# command = ["jyc", "mcp-vision-tool"]
+# environment = { "VISION_API_KEY" = "your-api-key", "VISION_API_URL" = "https://api.moonshot.cn/v1/chat/completions" }
+# timeout = 300000
+
+# [[mcps]]
+# name = "remote_mcp"
+# type = "remote"
+# url = "https://mcp.example.com/handler"
+# enabled = true
+
+# --- Channel: GitHub Repository ---
+# Enables multi-agent workflow on GitHub issues and PRs.
+# See GITHUB_CHANNEL.md for full architecture and workflow.
+
+# [channels.my_repo]
+# type = "github"
+#
+# [channels.my_repo.github]
+# owner = "myorg"
+# repo = "myrepo"
+# token = "${GITHUB_TOKEN}"           # PAT scopes: repo, read:user
+# poll_interval_secs = 60
+# # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
+#
+# # Disable footer for GitHub channel (comments don't need model info)
+# [channels.my_repo.footer]
+# enabled = false
+#
+# # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
+# [[channels.my_repo.patterns]]
+# name = "high-level-planner"
+# enabled = true
+# role = "High-Level Planner"
+# template = "github-high-level-planner"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["issue"]
+# labels = ["feature-plan"]
+#
+# # Pattern: Issues without 'feature-plan' label → Detail-Level Planner (technical architect)
+# # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active
+# [[channels.my_repo.patterns]]
+# name = "detail-planner"
+# enabled = true
+# role = "Planner"
+# template = "github-planner"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["issue"]
+# exclude_labels = ["feature-plan"]
+#
+# # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
+# [[channels.my_repo.patterns]]
+# name = "developer"
+# enabled = true
+# role = "Developer"
+# template = "github-developer"
+# live_injection = false
+# repo_group = "pr"  # Share repo clone with other patterns in the same group
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-dev"]
+#
+# # Idle cleanup has been removed — use repo_group shared symlinks instead.
+#
+# # Pattern: PRs with 'ready-for-review' label → Reviewer agent (auto-trigger)
+# [[channels.my_repo.patterns]]
+# name = "reviewer"
+# enabled = true
+# role = "Reviewer"
+# template = "github-reviewer"
+# repo_group = "pr"  # Share repo clone with developer pattern
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-review"]
+#
+# # Pattern: PRs assigned to specific team members → Route to those assignees
+# # Assignee matching: OR logic (matches if ANY assignee is in the list)
+# [[channels.my_repo.patterns]]
+# name = "assignee_routing"
+# enabled = true
+# template = "github-developer"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# assignees = ["alice", "bob"]
+#
+# # Pattern: PRs with 'ready-for-review' label AND assigned to 'alice' → Senior reviewer
+# # This demonstrates AND logic: BOTH labels and assignees must match
+# [[channels.my_repo.patterns]]
+# name = "senior_reviewer"
+# enabled = true
+# role = "Reviewer"
+# template = "github-reviewer"
+#
+# [channels.my_repo.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-review"]
+# assignees = ["alice"]

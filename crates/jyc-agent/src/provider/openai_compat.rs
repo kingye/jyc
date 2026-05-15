@@ -273,14 +273,6 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         }
     };
 
-    // Log raw chunk structure for first few events to debug format issues
-    if state.chunks_received <= 5 {
-        tracing::debug!(
-            chunk = %serde_json::to_string(&value).unwrap_or_default().chars().take(300).collect::<String>(),
-            "Raw SSE chunk"
-        );
-    }
-
     let choices = match value.get("choices").and_then(|c| c.as_array()) {
         Some(c) => c,
         None => return None,
@@ -294,10 +286,31 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             None => continue, // skip choices without delta instead of returning None
         };
 
-        // Text content
+        // Text content (standard OpenAI field)
         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
             if !content.is_empty() {
                 events.push(StreamEvent::TextDelta(content.to_string()));
+            }
+        }
+
+        // Reasoning content (DeepSeek v4-pro style thinking)
+        // Treat as text for now — the LLM's reasoning is part of its response
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+            if !reasoning.is_empty() {
+                // Skip reasoning content — it's the model's internal thinking,
+                // not the final reply. The actual reply comes in "content".
+                // But we still need to consume it to keep the stream flowing.
+            }
+        }
+
+        // Check finish_reason and extract usage from the same chunk
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+            if finish_reason == "tool_calls" || finish_reason == "stop" {
+                // Emit ToolUseEnd for each accumulated tool call
+                for _ in &state.tool_calls {
+                    events.push(StreamEvent::ToolUseEnd);
+                }
+                state.tool_calls.clear();
             }
         }
 
@@ -340,17 +353,6 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
                         },
                     );
                 }
-            }
-        }
-
-        // Check finish_reason for tool_calls end
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
-            if finish_reason == "tool_calls" || finish_reason == "stop" {
-                // Emit ToolUseEnd for each accumulated tool call
-                for _ in &state.tool_calls {
-                    events.push(StreamEvent::ToolUseEnd);
-                }
-                state.tool_calls.clear();
             }
         }
     }

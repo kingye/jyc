@@ -7,6 +7,7 @@ pub mod provider;
 pub mod tools;
 pub mod types;
 pub mod agent_loop;
+pub mod session;
 pub mod service;
 
 pub use service::JycAgentService;

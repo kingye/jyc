@@ -4,8 +4,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::Path;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing;
 
@@ -13,8 +14,9 @@ use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 use jyc_types::{InboundMessage, QueueItem};
 
-use crate::agent_loop;
-use crate::provider::{self, Provider};
+use crate::agent_loop::{self, AgentLoopConfig};
+use crate::provider;
+use crate::session;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
 
@@ -24,12 +26,17 @@ use crate::types::AgentConfig;
 /// directly in-process (no external OpenCode server needed).
 pub struct JycAgentService {
     config: AgentConfig,
+    /// Per-thread event bus map.
+    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
 }
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration.
     pub fn new(config: AgentConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            event_buses: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Build the system prompt for a thread.
@@ -52,6 +59,16 @@ impl JycAgentService {
             }
         }
 
+        // Also check repo/AGENTS.md (common for GitHub threads)
+        let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
+        if repo_agents_md.exists() {
+            if let Ok(content) = std::fs::read_to_string(&repo_agents_md) {
+                prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
+                prompt.push_str(&content);
+                prompt.push_str("\n\n");
+            }
+        }
+
         // Reply instructions
         prompt.push_str(
             "## Reply Instructions\n\
@@ -59,7 +76,14 @@ impl JycAgentService {
              - `message`: Your reply text\n\
              - `attachments`: Optional filenames to attach from the working directory\n\
              After a successful reply, STOP immediately. Do NOT call any other tools.\n\
-             CRITICAL: Always use the jyc_reply_reply_message tool to send your reply.\n"
+             CRITICAL: Always use the jyc_reply_reply_message tool to send your reply.\n\n"
+        );
+
+        // Chat history access instructions
+        prompt.push_str(
+            "## Chat History\n\
+             This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.md`.\n\
+             You can read it with the `read` tool if you need context from prior conversations.\n"
         );
 
         prompt
@@ -98,12 +122,17 @@ impl JycAgentService {
     }
 
     /// Get or create the provider for the current model.
-    fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn Provider>> {
+    fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn provider::Provider>> {
         let model = model_override
             .or(self.config.model.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("No model configured. Set [agent].model in config.toml"))?;
+            .ok_or_else(|| anyhow::anyhow!("No model configured. Set [agent.opencode].model in config.toml"))?;
 
         provider::create_provider(model, &self.config.providers)
+    }
+
+    /// Get event bus for a thread.
+    async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
+        self.event_buses.lock().await.get(thread_name).cloned()
     }
 }
 
@@ -151,22 +180,36 @@ impl AgentService for JycAgentService {
             "Using provider"
         );
 
-        // 3. Build prompts
+        // 3. Load session and prior conversation history
+        let prior_history = session::load_context(thread_path).await;
+
+        tracing::debug!(
+            prior_messages = prior_history.len(),
+            "Loaded prior conversation context"
+        );
+
+        // 4. Build prompts
         let system_prompt = self.build_system_prompt(thread_path);
         let user_prompt = self.build_user_prompt(message);
 
-        // 4. Build tool registry
+        // 5. Build tool registry
         let tools = self.build_tool_registry(thread_path);
 
-        // 5. Run agent loop
-        let result = agent_loop::run(
-            provider.as_ref(),
-            &tools,
-            &system_prompt,
-            &user_prompt,
-            thread_path,
-            thread_cancel,
-        )
+        // 6. Get event bus for this thread
+        let event_bus = self.get_event_bus(thread_name).await;
+
+        // 7. Run agent loop
+        let result = agent_loop::run(AgentLoopConfig {
+            provider: provider.as_ref(),
+            tools: &tools,
+            system_prompt: &system_prompt,
+            user_message: &user_prompt,
+            working_dir: thread_path,
+            cancel: thread_cancel,
+            thread_name,
+            event_bus: event_bus.as_ref(),
+            prior_history,
+        })
         .await?;
 
         tracing::info!(
@@ -177,7 +220,10 @@ impl AgentService for JycAgentService {
             "Agent loop completed"
         );
 
-        // 6. Return result
+        // 8. Update session token tracking
+        session::update_tokens(thread_path, result.input_tokens, result.output_tokens).await;
+
+        // 9. Return result
         if result.reply_sent_by_tool {
             Ok(AgentResult {
                 reply_sent_by_tool: true,
@@ -191,7 +237,11 @@ impl AgentService for JycAgentService {
         }
     }
 
-    async fn set_thread_event_bus(&self, _thread_name: &str, _event_bus: Option<ThreadEventBusRef>) {
-        // TODO: Use event bus for progress reporting
+    async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
+        let mut buses = self.event_buses.lock().await;
+        match event_bus {
+            Some(bus) => { buses.insert(thread_name.to_string(), bus); }
+            None => { buses.remove(thread_name); }
+        }
     }
 }

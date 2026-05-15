@@ -54,7 +54,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
 # Create dummy main.rs for each crate that has a binary to cache dependencies
-RUN for crate in jyc-types jyc-utils jyc-core jyc-services jyc-channels jyc-inspect jyc-mcp; do \
+RUN for crate in jyc-types jyc-utils jyc-core jyc-services jyc-channels jyc-inspect jyc-mcp jyc-agent; do \
       mkdir -p "crates/$crate/src" && echo '' > "crates/$crate/src/lib.rs"; \
     done \
     && mkdir -p crates/jyc-cli/src && echo 'fn main() {}' > crates/jyc-cli/src/main.rs \

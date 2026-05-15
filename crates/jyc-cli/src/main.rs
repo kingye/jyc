@@ -66,11 +66,11 @@ enum Commands {
 
 fn init_tracing(debug: bool, verbose: bool) {
     let filter = if verbose {
-        "jyc=trace,async_imap=debug"
+        "jyc=trace,jyc_agent=trace,async_imap=debug"
     } else if debug {
-        "jyc=debug"
+        "jyc=debug,jyc_agent=debug"
     } else {
-        "jyc=info,async_imap=warn"
+        "jyc=info,jyc_agent=info,async_imap=warn"
     };
 
     let env_filter = EnvFilter::try_from_default_env()

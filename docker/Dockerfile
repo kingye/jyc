@@ -51,15 +51,20 @@ FROM base AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
 
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release
+# Create dummy main.rs for each crate that has a binary to cache dependencies
+RUN for crate in jyc-types jyc-utils jyc-core jyc-services jyc-channels jyc-inspect jyc-mcp; do \
+      mkdir -p "crates/$crate/src" && echo '' > "crates/$crate/src/lib.rs"; \
+    done \
+    && mkdir -p crates/jyc-cli/src && echo 'fn main() {}' > crates/jyc-cli/src/main.rs \
+    && cargo build --release -p jyc-cli
 
-RUN rm -rf src target/release/deps/jyc* target/release/jyc* target/release/.fingerprint/jyc*
+RUN rm -rf crates/*/src
 
-COPY src/ src/
+COPY crates/ crates/
 COPY config.example.toml ./
-RUN cargo build --release
+RUN cargo build --release -p jyc-cli
 
 # ── Stage 3: Production image ────────────────────────────────────────
 # Build: podman build -t jyc:latest -f docker/Dockerfile ..

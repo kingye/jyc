@@ -1,0 +1,38 @@
+[package]
+name = "jyc-agent"
+version.workspace = true
+edition.workspace = true
+description = "In-process AI agent for the JYC framework"
+
+[dependencies]
+jyc-types = { path = "../jyc-types" }
+jyc-utils = { path = "../jyc-utils" }
+jyc-core = { path = "../jyc-core" }
+jyc-mcp = { path = "../jyc-mcp" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+
+# HTTP + streaming
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling + logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+glob = "0.3"
+regex = "1"

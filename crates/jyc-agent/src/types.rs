@@ -150,6 +150,8 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     /// Environment variable name containing the API key
     pub api_key_env: Option<String>,
+    /// Context window size in tokens
+    pub context_window: Option<u64>,
 }
 
 /// Agent configuration section from config.toml.

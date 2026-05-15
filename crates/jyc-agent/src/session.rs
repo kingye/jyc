@@ -21,6 +21,9 @@ pub struct SessionState {
     pub created_at: String,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    /// Max tokens (context window) for the model.
+    #[serde(default)]
+    pub max_input_tokens: u64,
     /// Message dir of the oldest entry to include in context.
     /// If None, includes all available history.
     pub context_start_marker: Option<String>,
@@ -96,12 +99,16 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
 }
 
 /// Update token tracking in the session state.
-pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64) {
+pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64, context_window: Option<u64>) {
     let session_path = thread_path.join(".jyc").join("agent-session.json");
     let mut state = load_session_state(&session_path).await;
 
     state.total_input_tokens += input_tokens;
     state.total_output_tokens += output_tokens;
+
+    if let Some(cw) = context_window {
+        state.max_input_tokens = cw;
+    }
 
     if state.created_at.is_empty() {
         state.created_at = chrono::Utc::now().to_rfc3339();

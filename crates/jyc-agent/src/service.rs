@@ -221,7 +221,12 @@ impl AgentService for JycAgentService {
         );
 
         // 8. Update session token tracking
-        session::update_tokens(thread_path, result.input_tokens, result.output_tokens).await;
+        let context_window = model_override.as_deref()
+            .or(self.config.model.as_deref())
+            .and_then(|m| m.split_once('/'))
+            .and_then(|(provider_name, _)| self.config.providers.get(provider_name))
+            .and_then(|p| p.context_window);
+        session::update_tokens(thread_path, result.input_tokens, result.output_tokens, context_window).await;
 
         // 9. Return result
         if result.reply_sent_by_tool {

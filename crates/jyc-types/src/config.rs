@@ -239,6 +239,8 @@ pub struct ProviderDef {
     pub base_url: Option<String>,
     /// Environment variable name containing the API key
     pub api_key_env: Option<String>,
+    /// Context window size in tokens (used for session token tracking)
+    pub context_window: Option<u64>,
 }
 
 /// OpenCode AI service configuration.

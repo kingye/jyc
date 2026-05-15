@@ -191,6 +191,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             provider_type: def.provider_type.clone(),
                             base_url: def.base_url.clone(),
                             api_key_env: def.api_key_env.clone(),
+                            context_window: def.context_window,
                         })
                     })
                     .collect();

@@ -1,0 +1,599 @@
+use anyhow::Result;
+use clap::Args;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    prelude::CrosstermBackend,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    Frame, Terminal,
+};
+use std::io::stdout;
+use std::time::Duration;
+
+use jyc_inspect::client::InspectClient;
+use jyc_types::{InspectState, Severity, ThreadStatus};
+
+#[derive(Args, Debug)]
+pub struct DashboardArgs {
+    /// Inspect server address
+    #[arg(long, default_value = "127.0.0.1:9876")]
+    pub addr: String,
+}
+
+/// Application state for the TUI.
+struct App {
+    state: Option<InspectState>,
+    error: Option<String>,
+    table_state: TableState,
+    should_quit: bool,
+    status_message: Option<(String, std::time::Instant)>,
+    pending_reset: Option<(String, std::time::Instant)>,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            state: None,
+            error: None,
+            table_state: TableState::default(),
+            should_quit: false,
+            status_message: None,
+            pending_reset: None,
+        }
+    }
+
+    fn set_status(&mut self, msg: String) {
+        self.status_message = Some((msg, std::time::Instant::now()));
+    }
+
+    fn clear_pending_reset(&mut self) {
+        self.pending_reset = None;
+    }
+
+    fn tick_status(&mut self) {
+        if let Some((_, at)) = &self.status_message {
+            if at.elapsed() > Duration::from_secs(5) {
+                self.status_message = None;
+            }
+        }
+        if let Some((_, at)) = &self.pending_reset {
+            if at.elapsed() > Duration::from_secs(3) {
+                self.pending_reset = None;
+            }
+        }
+    }
+
+    fn next_thread(&mut self) {
+        let count = self
+            .state
+            .as_ref()
+            .map(|s| s.threads.len())
+            .unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => (i + 1) % count,
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn prev_thread(&mut self) {
+        let count = self
+            .state
+            .as_ref()
+            .map(|s| s.threads.len())
+            .unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    count - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+}
+
+pub async fn run(args: &DashboardArgs) -> Result<()> {
+    let mut client = InspectClient::new(&args.addr);
+
+    // Setup terminal
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new();
+    let poll_interval = Duration::from_millis(500);
+    let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+
+    let result = loop {
+        // Poll for new state
+        if last_poll.elapsed() >= poll_interval {
+            match client.get_state().await {
+                Ok(state) => {
+                    app.state = Some(state);
+                    app.error = None;
+                }
+                Err(e) => {
+                    app.error = Some(format!("{e:#}"));
+                }
+            }
+            last_poll = std::time::Instant::now();
+        }
+
+        // Clear expired status messages
+        app.tick_status();
+
+        // Draw
+        terminal.draw(|f| ui(f, &mut app))?;
+
+        // Handle input (non-blocking, 50ms timeout)
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.should_quit = true;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.next_thread();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.prev_thread();
+                        }
+                        KeyCode::Char('r') => {
+                            // Force refresh
+                            last_poll =
+                                std::time::Instant::now() - poll_interval;
+                        }
+                        KeyCode::Char('R') => {
+                            // Reload config
+                            match client.reload_config().await {
+                                Ok((true, msg)) => {
+                                    app.set_status(format!("Config reloaded: {msg}"));
+                                    last_poll = std::time::Instant::now() - poll_interval;
+                                }
+                                Ok((false, msg)) => {
+                                    app.set_status(format!("Reload failed: {msg}"));
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Reload error: {e:#}"));
+                                }
+                            }
+                        }
+                        KeyCode::Char('s') => {
+                            if let Some((ref thread_name, at)) = app.pending_reset {
+                                if at.elapsed() <= Duration::from_secs(3) {
+                                    let name = thread_name.clone();
+                                    app.clear_pending_reset();
+                                    match client.reset_session(&name).await {
+                                        Ok((true, msg)) => {
+                                            app.set_status(format!("Session reset: {msg}"));
+                                            last_poll = std::time::Instant::now() - poll_interval;
+                                        }
+                                        Ok((false, msg)) => {
+                                            app.set_status(format!("Reset failed: {msg}"));
+                                        }
+                                        Err(e) => {
+                                            app.set_status(format!("Reset error: {e:#}"));
+                                        }
+                                    }
+                                } else {
+                                    app.clear_pending_reset();
+                                }
+                            } else {
+                                let thread_name = app
+                                    .state
+                                    .as_ref()
+                                    .and_then(|s| {
+                                        app.table_state
+                                            .selected()
+                                            .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
+                                    });
+                                match thread_name {
+                                    Some(name) => {
+                                        app.pending_reset = Some((name.clone(), std::time::Instant::now()));
+                                        app.set_status(format!("Press `s` again to confirm reset session for {name}"));
+                                    }
+                                    None => {
+                                        app.set_status("No thread selected".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            app.clear_pending_reset();
+                        }
+                    }
+                }
+            }
+        }
+
+        if app.should_quit {
+            break Ok(());
+        }
+    };
+
+    // Restore terminal
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    result
+}
+
+fn ui(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+
+    // Main layout: channels bar | threads table | detail panel | status bar
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Channels bar
+            Constraint::Percentage(40), // Threads table
+            Constraint::Percentage(60), // Detail panel + activity log
+            Constraint::Length(1),  // Status bar
+        ])
+        .split(area);
+
+    render_channels(frame, chunks[0], app);
+    render_threads(frame, chunks[1], app);
+    render_details(frame, chunks[2], app);
+    render_status_bar(frame, chunks[3], app);
+}
+
+fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Channels ")
+        .borders(Borders::ALL);
+
+    if let Some(ref error) = app.error {
+        let text = Paragraph::new(Line::from(vec![
+            Span::styled("Not connected: ", Style::default().fg(Color::Red)),
+            Span::raw(error.as_str()),
+        ]))
+        .block(block);
+        frame.render_widget(text, area);
+        return;
+    }
+
+    let state = match &app.state {
+        Some(s) => s,
+        None => {
+            let text = Paragraph::new("Connecting...").block(block);
+            frame.render_widget(text, area);
+            return;
+        }
+    };
+
+    let spans: Vec<Span> = state
+        .channels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, ch)| {
+            let mut parts = vec![];
+            if i > 0 {
+                parts.push(Span::raw("  "));
+            }
+            let free = ch.max_concurrent.saturating_sub(ch.active_workers);
+            let dot_color = if free == 0 {
+                Color::Red
+            } else if free < ch.max_concurrent {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            parts.push(Span::styled("●", Style::default().fg(dot_color)));
+            parts.push(Span::raw(format!(
+                " {} ({} {}/{})",
+                ch.name, ch.channel_type, free, ch.max_concurrent
+            )));
+            parts
+        })
+        .collect();
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let channels_para = Paragraph::new(Line::from(spans));
+    frame.render_widget(channels_para, inner);
+}
+
+fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
+    let state = match &app.state {
+        Some(s) => s,
+        None => {
+            let block = Block::default()
+                .title(" Threads ")
+                .borders(Borders::ALL);
+            frame.render_widget(block, area);
+            return;
+        }
+    };
+
+    let header = Row::new(vec![
+        Cell::from("Thread"),
+        Cell::from("Channel"),
+        Cell::from("Pattern"),
+        Cell::from("Status"),
+        Cell::from("Tokens"),
+        Cell::from("Last Active"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .height(1);
+
+    let rows: Vec<Row> = state
+        .threads
+        .iter()
+        .map(|t| {
+            let status_style = match t.status {
+                ThreadStatus::Processing => Style::default().fg(Color::Green),
+                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
+                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
+                ThreadStatus::Error => Style::default().fg(Color::Red),
+            };
+
+            let tokens = match (t.input_tokens, t.max_tokens) {
+                (Some(cur), Some(max)) => format!("{}K/{}K", cur / 1000, max / 1000),
+                (Some(cur), None) => format!("{}K", cur / 1000),
+                _ => "-".to_string(),
+            };
+
+            Row::new(vec![
+                Cell::from(t.name.clone()),
+                Cell::from(t.channel.clone()),
+                Cell::from(t.pattern.clone().unwrap_or("-".into())),
+                Cell::from(Span::styled(format!("{}", t.status), status_style)),
+                Cell::from(tokens),
+                Cell::from(format_last_active(t.last_active_at.as_deref())),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(12),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" Threads ({}) ", state.threads.len()))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .add_modifier(Modifier::REVERSED),
+        );
+
+    frame.render_stateful_widget(table, area, &mut app.table_state);
+}
+
+fn render_details(frame: &mut Frame, area: Rect, app: &App) {
+    let state = match &app.state {
+        Some(s) => s,
+        None => {
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL);
+            frame.render_widget(block, area);
+            return;
+        }
+    };
+
+    let selected = app
+        .table_state
+        .selected()
+        .and_then(|i| state.threads.get(i));
+
+    let selected = match selected {
+        Some(t) => t,
+        None => {
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL);
+            let text = Paragraph::new("Select a thread with ↑/↓").block(block);
+            frame.render_widget(text, area);
+            return;
+        }
+    };
+
+    // Split detail area: info (4 lines) + activity log (remaining)
+    let detail_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7), // Thread info
+            Constraint::Min(4),   // Activity log
+        ])
+        .split(area);
+
+    // Thread info panel
+    let info_block = Block::default()
+        .title(format!(" {} ", selected.name))
+        .borders(Borders::ALL);
+
+    let mut info_lines = vec![];
+
+    info_lines.push(Line::from(vec![
+        Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(&selected.channel),
+        Span::raw("  "),
+        Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.pattern.as_deref().unwrap_or("-")),
+    ]));
+
+    info_lines.push(Line::from(vec![
+        Span::styled("Model: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.model.as_deref().unwrap_or("(default)")),
+        Span::raw("  "),
+        Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(selected.mode.as_deref().unwrap_or("build")),
+    ]));
+
+    let mut status_line = vec![
+        Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{}", selected.status),
+            match selected.status {
+                ThreadStatus::Processing => Style::default().fg(Color::Green),
+                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
+                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
+                ThreadStatus::Error => Style::default().fg(Color::Red),
+            },
+        ),
+    ];
+
+    if let (Some(cur), Some(max)) = (selected.input_tokens, selected.max_tokens) {
+        let pct = if max > 0 { cur * 100 / max } else { 0 };
+        status_line.push(Span::raw("  "));
+        status_line.push(Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)));
+        status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+    }
+    info_lines.push(Line::from(status_line));
+
+    info_lines.push(Line::from(vec![
+        Span::styled("Last Active: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(format_last_active(selected.last_active_at.as_deref())),
+    ]));
+
+    let info = Paragraph::new(info_lines).block(info_block);
+    frame.render_widget(info, detail_chunks[0]);
+
+    // Activity log panel
+    let activity_block = Block::default()
+        .title(" Activity ")
+        .borders(Borders::ALL);
+
+    if selected.activity.is_empty() {
+        let text = Paragraph::new(Span::styled(
+            "  No activity",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(activity_block);
+        frame.render_widget(text, detail_chunks[1]);
+    } else {
+        // Auto-scroll: show only the last N entries that fit the panel height
+        let inner_height = detail_chunks[1].height.saturating_sub(2) as usize; // subtract borders
+        let skip = selected.activity.len().saturating_sub(inner_height);
+
+        let activity_lines: Vec<Line> = selected
+            .activity
+            .iter()
+            .skip(skip)
+            .map(|entry| {
+                let time_str = entry.timestamp.as_deref().and_then(|ts| {
+                    chrono::DateTime::parse_from_rfc3339(ts)
+                        .ok()
+                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                }).unwrap_or_else(|| "-".to_string());
+                let text_style = match entry.severity {
+                    Severity::Error => Style::default().fg(Color::Red),
+                    Severity::Warning => Style::default().fg(Color::Yellow),
+                    Severity::Info => Style::default(),
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {time_str} "),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(&entry.text, text_style),
+                ])
+            })
+            .collect();
+
+        let text = Paragraph::new(activity_lines).block(activity_block);
+        frame.render_widget(text, detail_chunks[1]);
+    }
+}
+
+fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let help_text = "[q]quit [↑↓]select [r]refresh [R]reload [s]reset session";
+
+    let state = match &app.state {
+        Some(s) => s,
+        None => {
+            let bar = Paragraph::new(format!(" {help_text}"))
+                .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            frame.render_widget(bar, area);
+            return;
+        }
+    };
+
+    let uptime = format_duration(state.uptime_secs);
+    let stats = &state.stats;
+
+    let status_part = if let Some((msg, _)) = &app.status_message {
+        Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
+    } else {
+        Span::raw(format!(
+            "{} active / {} thr │ {} recv │ {} err │ up {} │ v{}",
+            stats.active_workers,
+            stats.total_threads,
+            stats.messages_received,
+            stats.errors,
+            uptime,
+            state.version,
+        ))
+    };
+
+    let bar = Paragraph::new(Line::from(vec![
+        Span::raw(format!(" {help_text}  ")),
+        status_part,
+    ]))
+    .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
+    frame.render_widget(bar, area);
+}
+
+fn format_duration(secs: u64) -> String {
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h{mins:02}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+fn format_last_active(value: Option<&str>) -> String {
+    let value = match value {
+        Some(v) => v,
+        None => return "-".to_string(),
+    };
+    let dt = match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return "-".to_string(),
+    };
+    let now = chrono::Utc::now();
+    let diff = now.signed_duration_since(dt);
+    if diff.num_minutes() <= 60 {
+        let mins = diff.num_minutes();
+        return format!("{}m ago", mins.max(0));
+    }
+    let dt_utc = dt.format("%H:%M").to_string();
+    if dt.date_naive() == now.date_naive() {
+        return dt_utc;
+    }
+    dt.format("%b %d").to_string()
+}

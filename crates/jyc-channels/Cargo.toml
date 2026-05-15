@@ -1,0 +1,33 @@
+[package]
+name = "jyc-channels"
+version = "0.2.1"
+edition = "2024"
+description = "Channel implementations for the JYC AI agent framework"
+
+[dependencies]
+jyc-types = { path = "../jyc-types" }
+jyc-utils = { path = "../jyc-utils" }
+jyc-core = { path = "../jyc-core" }
+jyc-services = { path = "../jyc-services" }
+jyc-mcp = { path = "../jyc-mcp" }
+mail-parser = "0.9"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+anyhow = "1"
+async-trait = "0.1"
+openlark = { version = "0.15.0-rc.2", default-features = false, features = ["auth", "communication", "websocket"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+comrak = "0.37"
+regex = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"
+arc-swap = "1"

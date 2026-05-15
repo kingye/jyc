@@ -1,0 +1,34 @@
+[package]
+name = "jyc-cli"
+version = "0.2.1"
+edition = "2024"
+description = "CLI binary for the JYC AI agent framework"
+
+[[bin]]
+name = "jyc"
+path = "src/main.rs"
+
+[dependencies]
+jyc-types = { path = "../jyc-types" }
+jyc-utils = { path = "../jyc-utils" }
+jyc-core = { path = "../jyc-core" }
+jyc-services = { path = "../jyc-services" }
+jyc-channels = { path = "../jyc-channels" }
+jyc-inspect = { path = "../jyc-inspect" }
+jyc-mcp = { path = "../jyc-mcp" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+arc-swap = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"

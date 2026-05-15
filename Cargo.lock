@@ -1464,7 +1464,127 @@ dependencies = [
 ]
 
 [[package]]
-name = "jyc"
+name = "jyc-channels"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "base64",
+ "chrono",
+ "comrak",
+ "jyc-core",
+ "jyc-mcp",
+ "jyc-services",
+ "jyc-types",
+ "jyc-utils",
+ "mail-parser",
+ "openlark",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "jyc-cli"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "chrono",
+ "clap",
+ "crossterm",
+ "jyc-channels",
+ "jyc-core",
+ "jyc-inspect",
+ "jyc-mcp",
+ "jyc-services",
+ "jyc-types",
+ "jyc-utils",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "jyc-core"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "base64",
+ "chrono",
+ "comrak",
+ "futures",
+ "glob",
+ "jyc-types",
+ "jyc-utils",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "jyc-inspect"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "chrono",
+ "jyc-core",
+ "jyc-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "jyc-mcp"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "jyc-types",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "jyc-services"
 version = "0.2.1"
 dependencies = [
  "anyhow",
@@ -1474,32 +1594,55 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
- "clap",
  "comrak",
- "crossterm",
  "futures",
  "glob",
  "htmd",
+ "jyc-core",
+ "jyc-mcp",
+ "jyc-types",
+ "jyc-utils",
  "lettre",
  "libc",
  "mail-parser",
- "openlark",
- "ratatui",
  "regex",
  "reqwest",
  "reqwest-eventsource",
- "rmcp",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "jyc-types"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "walkdir",
+]
+
+[[package]]
+name = "jyc-utils"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "jyc-types",
+ "regex",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

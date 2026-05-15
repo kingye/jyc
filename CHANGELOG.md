@@ -31,7 +31,24 @@ All notable changes to JYC will be documented in this file.
 - Replace `Arc<AppConfig>` with `ArcSwap` for live config reload support
 - Extend inspect protocol with `reload_config` command and typed responses
 
-## [0.2.0] - 2026-04-23
+## [Unreleased]
+
+### Changed
+
+- **Refactored to Rust workspace structure** (#179) — Split single crate into 8 workspace crates:
+  - `jyc-types` — Shared types (InboundMessage, ChannelPattern, AppConfig, etc.)
+  - `jyc-utils` — Utility functions (helpers, constants, attachment validation)
+  - `jyc-core` — Core business logic (AgentService trait, ThreadManager, MessageRouter, commands)
+  - `jyc-services` — External service integrations (OpenCode, IMAP, SMTP)
+  - `jyc-channels` — Channel adapters (email, feishu, github)
+  - `jyc-inspect` — Runtime inspection server/client
+  - `jyc-mcp` — MCP tools (reply, question, vision)
+  - `jyc-cli` — CLI binary
+- Eliminated config↔channels circular dependency by merging types into jyc-types
+- AgentService trait kept in jyc-core to avoid circular deps with ThreadEventBusRef
+- Dockerfile updated for workspace structure (crate directory layout)
+
+## [0.2.1] - 2026-04-26
 
 ### Added
 

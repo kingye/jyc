@@ -220,11 +220,11 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     }
 
     // Agent
-    if config.agent.mode != "opencode" && config.agent.mode != "static" {
+    if config.agent.mode != "opencode" && config.agent.mode != "static" && config.agent.mode != "agent" {
         errors.push(ValidationError {
             path: "agent.mode".into(),
             message: format!(
-                "must be 'opencode' or 'static', got '{}'",
+                "must be 'opencode', 'agent', or 'static', got '{}'",
                 config.agent.mode
             ),
         });

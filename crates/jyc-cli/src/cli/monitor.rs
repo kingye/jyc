@@ -10,6 +10,7 @@ use jyc_core::agent::AgentService;
 use jyc_services::opencode::OpenCodeServer;
 use jyc_services::opencode::service::OpenCodeService;
 use jyc_core::static_agent::StaticAgentService;
+use jyc_agent::JycAgentService;
 
 use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::email::inbound::EmailMatcher;
@@ -177,6 +178,25 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     config.clone(),
                     workdir.to_path_buf(),
                 ))
+            }
+            "agent" => {
+                // In-process agent — no external OpenCode server needed
+                let model = agent_config.opencode.as_ref()
+                    .and_then(|o| o.model.clone());
+                let providers = agent_config.providers.iter()
+                    .map(|(name, def)| {
+                        (name.clone(), jyc_agent::types::ProviderConfig {
+                            provider_type: def.provider_type.clone(),
+                            base_url: def.base_url.clone(),
+                            api_key_env: def.api_key_env.clone(),
+                        })
+                    })
+                    .collect();
+                let agent_cfg = jyc_agent::types::AgentConfig {
+                    model,
+                    providers,
+                };
+                Arc::new(JycAgentService::new(agent_cfg))
             }
             "static" => {
                 let text = agent_config

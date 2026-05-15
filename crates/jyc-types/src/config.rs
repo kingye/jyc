@@ -223,6 +223,22 @@ pub struct AgentConfig {
 
     /// Outbound attachment configuration
     pub attachments: Option<OutboundAttachmentConfig>,
+
+    /// Provider definitions for the in-process agent (mode = "agent")
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, ProviderDef>,
+}
+
+/// Provider definition for the in-process agent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderDef {
+    /// Provider type: "anthropic" or "openai-compatible"
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    /// API base URL
+    pub base_url: Option<String>,
+    /// Environment variable name containing the API key
+    pub api_key_env: Option<String>,
 }
 
 /// OpenCode AI service configuration.

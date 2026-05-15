@@ -16,6 +16,7 @@ jyc-services = { path = "../jyc-services" }
 jyc-channels = { path = "../jyc-channels" }
 jyc-inspect = { path = "../jyc-inspect" }
 jyc-mcp = { path = "../jyc-mcp" }
+jyc-agent = { path = "../jyc-agent" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

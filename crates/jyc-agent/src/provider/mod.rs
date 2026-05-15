@@ -41,6 +41,13 @@ pub trait Provider: Send + Sync {
 ///
 /// Parses the model string (format: "provider_name/model_id") and creates
 /// the appropriate provider instance.
+///
+/// Supports formats:
+/// - "anthropic/claude-opus-4-6" → provider="anthropic", model="claude-opus-4-6"
+/// - "deepseek/deepseek-v4-pro" → provider="deepseek", model="deepseek-v4-pro"
+/// - "ark/ep-xxxxx" → provider="ark", model="ep-xxxxx"
+///
+/// The provider_name must match a key in the `[agent.providers.*]` config.
 pub fn create_provider(
     model: &str,
     providers: &std::collections::HashMap<String, crate::types::ProviderConfig>,
@@ -55,9 +62,11 @@ pub fn create_provider(
     let config = providers
         .get(provider_name)
         .ok_or_else(|| anyhow::anyhow!(
-            "Provider '{}' not found in config. Available: {:?}",
+            "Provider '{}' not found in [agent.providers]. Available: {:?}. \
+             Add [agent.providers.{}] to config.toml.",
             provider_name,
-            providers.keys().collect::<Vec<_>>()
+            providers.keys().collect::<Vec<_>>(),
+            provider_name
         ))?;
 
     // Read API key from environment

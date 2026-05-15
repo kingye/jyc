@@ -272,6 +272,15 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             return None;
         }
     };
+
+    // Log raw chunk structure for first few events to debug format issues
+    if state.chunks_received <= 5 {
+        tracing::debug!(
+            chunk = %serde_json::to_string(&value).unwrap_or_default().chars().take(300).collect::<String>(),
+            "Raw SSE chunk"
+        );
+    }
+
     let choices = match value.get("choices").and_then(|c| c.as_array()) {
         Some(c) => c,
         None => return None,

@@ -75,7 +75,7 @@ RUN rm -rf crates/*/src target/release/deps/jyc* target/release/.fingerprint/jyc
 
 COPY crates/ crates/
 COPY config.example.toml ./
-RUN cargo build --release
+RUN cargo build --release -p jyc-cli
 
 # ── Stage 3: Production image ────────────────────────────────────────
 # Build: podman build -t jyc:latest -f docker/Dockerfile .

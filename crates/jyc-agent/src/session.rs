@@ -113,6 +113,7 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
 
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist (sets created_at for context cutoff).
+/// Auto-resets the session if total tokens exceed max_input_tokens (context overflow).
 pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64, context_window: Option<u64>) {
     let session_path = thread_path.join(".jyc").join("agent-session.json");
     let mut state = load_session_state(&session_path).await;
@@ -121,11 +122,25 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {
-        state.max_input_tokens = cw;
+        // Use 95% of context window as max input tokens (reserve 5% for output)
+        state.max_input_tokens = (cw as f64 * 0.95) as u64;
     }
 
     // Set created_at on first creation — this becomes the cutoff for context loading
     if state.created_at.is_empty() {
+        state.created_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    // Auto-reset if tokens exceed max context window
+    if state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens {
+        tracing::info!(
+            total_input_tokens = state.total_input_tokens,
+            max_input_tokens = state.max_input_tokens,
+            "Session exceeded max input tokens, auto-resetting"
+        );
+        // Reset: clear tokens and set new created_at (excludes old history from context)
+        state.total_input_tokens = 0;
+        state.total_output_tokens = 0;
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 

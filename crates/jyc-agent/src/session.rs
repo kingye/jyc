@@ -95,12 +95,21 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
                     })
                     .collect();
 
-                if !messages.is_empty() {
+                // Validate: conversation must alternate user/assistant properly.
+                // If it's all user messages (corrupted), discard it.
+                let has_assistant = messages.iter().any(|m| m.role == Role::Assistant);
+                if !messages.is_empty() && has_assistant {
                     tracing::debug!(
                         context_messages = messages.len(),
                         "Loaded conversation from agent-conversation.json"
                     );
                     return messages;
+                } else if !messages.is_empty() {
+                    tracing::warn!(
+                        "Conversation file has no assistant messages (corrupted), ignoring"
+                    );
+                    // Delete corrupted file
+                    tokio::fs::remove_file(&conversation_path).await.ok();
                 }
             }
         }

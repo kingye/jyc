@@ -159,7 +159,7 @@ mod tests {
         CommandContext {
             args: vec![],
             thread_path: tmp_dir.to_path_buf(),
-            config: Arc::new(crate::config::load_config_from_str(
+            config: Arc::new(jyc_types::load_config_from_str(
                 r#"
 [general]
 [channels.test]

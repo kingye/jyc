@@ -79,7 +79,7 @@ mod tests {
             args: vec![],
             thread_path: thread_path.to_path_buf(),
             config: Arc::new(
-                crate::config::load_config_from_str(
+                jyc_types::load_config_from_str(
                     r#"
 [general]
 [channels.test]

@@ -81,7 +81,7 @@ mod tests {
 
     fn test_config() -> Arc<jyc_types::AppConfig> {
         Arc::new(
-            crate::config::load_config_from_str(
+            jyc_types::load_config_from_str(
                 r#"
 [general]
 [channels.test]
@@ -135,7 +135,7 @@ mode = "opencode"
             3,
             10,
             storage,
-            Arc::new(jyc_channels::outbound::EmailOutboundAdapter::new(
+            Arc::new(jyc_channels::email::outbound::EmailOutboundAdapter::new(
                 &jyc_types::SmtpConfig {
                     host: "smtp.example.com".into(),
                     port: 465,
@@ -180,7 +180,7 @@ mode = "opencode"
             3,
             10,
             storage,
-            Arc::new(jyc_channels::outbound::EmailOutboundAdapter::new(
+            Arc::new(jyc_channels::email::outbound::EmailOutboundAdapter::new(
                 &jyc_types::SmtpConfig {
                     host: "smtp.example.com".into(),
                     port: 465,
@@ -222,7 +222,7 @@ mode = "opencode"
             3,
             10,
             storage,
-            Arc::new(jyc_channels::outbound::EmailOutboundAdapter::new(
+            Arc::new(jyc_channels::email::outbound::EmailOutboundAdapter::new(
                 &jyc_types::SmtpConfig {
                     host: "smtp.example.com".into(),
                     port: 465,

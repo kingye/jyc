@@ -25,6 +25,7 @@ impl OpenAiCompatProvider {
     pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
+            .http1_only()  // Force HTTP/1.1 for SSE streaming compatibility
             .build()
             .context("Failed to build HTTP client")?;
 

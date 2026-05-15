@@ -37,12 +37,23 @@ pub struct SessionState {
 ///
 /// Called after each agent_loop::run() completes. Stores the complete
 /// message history including tool calls and results.
+/// Filters out empty messages that would cause API errors on reload.
 pub async fn save_conversation(thread_path: &Path, history: &[Message]) {
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let path = jyc_dir.join(CONVERSATION_FILE);
 
-    match serde_json::to_string(history) {
+    // Filter out empty assistant messages (no text, no tool_use)
+    let filtered: Vec<&Message> = history.iter()
+        .filter(|msg| {
+            match msg.role {
+                Role::Assistant => !msg.content.is_empty(),
+                _ => true,
+            }
+        })
+        .collect();
+
+    match serde_json::to_string(&filtered) {
         Ok(json) => {
             if let Err(e) = tokio::fs::write(&path, json).await {
                 tracing::warn!(error = %e, "Failed to save conversation log");
@@ -74,6 +85,16 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
     if conversation_path.exists() {
         if let Ok(content) = tokio::fs::read_to_string(&conversation_path).await {
             if let Ok(messages) = serde_json::from_str::<Vec<Message>>(&content) {
+                // Filter out any empty assistant messages (from past errors)
+                let messages: Vec<Message> = messages.into_iter()
+                    .filter(|msg| {
+                        match msg.role {
+                            Role::Assistant => !msg.content.is_empty(),
+                            _ => true,
+                        }
+                    })
+                    .collect();
+
                 if !messages.is_empty() {
                     tracing::debug!(
                         context_messages = messages.len(),

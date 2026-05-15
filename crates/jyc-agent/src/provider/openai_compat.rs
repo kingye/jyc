@@ -159,6 +159,7 @@ impl Provider for OpenAiCompatProvider {
 
                             // Parse SSE lines. Each "data: ..." line is a complete JSON event.
                             let mut lines_parsed = 0;
+                            let mut lines_total = 0;
                             while let Some(newline_pos) = buffer.find('\n') {
                                 let line = buffer[..newline_pos].to_string();
                                 buffer = buffer[newline_pos + 1..].to_string();
@@ -170,6 +171,7 @@ impl Provider for OpenAiCompatProvider {
                                 }
 
                                 if let Some(data) = line.strip_prefix("data: ") {
+                                    lines_total += 1;
                                     if data.trim() == "[DONE]" {
                                         state.pending_events.push(StreamEvent::Done);
                                         continue;
@@ -185,6 +187,7 @@ impl Provider for OpenAiCompatProvider {
                                 tracing::debug!(
                                     chunk_num = state.chunks_received,
                                     buffer_len = buffer.len(),
+                                    lines_total,
                                     lines_parsed,
                                     pending_events = state.pending_events.len(),
                                     "Chunk processed"
@@ -262,13 +265,25 @@ struct ToolCallAccumulator {
 
 /// Parse a single OpenAI SSE chunk into StreamEvents.
 fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<StreamEvent>> {
-    let value: serde_json::Value = serde_json::from_str(data).ok()?;
-    let choices = value.get("choices")?.as_array()?;
+    let value: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::trace!(error = %e, data_preview = %&data[..data.len().min(100)], "Failed to parse SSE chunk JSON");
+            return None;
+        }
+    };
+    let choices = match value.get("choices").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return None,
+    };
 
     let mut events = Vec::new();
 
     for choice in choices {
-        let delta = choice.get("delta")?;
+        let delta = match choice.get("delta") {
+            Some(d) => d,
+            None => continue, // skip choices without delta instead of returning None
+        };
 
         // Text content
         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {

@@ -2,6 +2,7 @@
 //!
 //! Defines the `Tool` trait and built-in tool implementations.
 
+pub mod builtin;
 pub mod registry;
 
 use anyhow::Result;

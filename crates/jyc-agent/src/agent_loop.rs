@@ -33,8 +33,10 @@ pub struct AgentLoopConfig<'a> {
     pub thread_name: &'a str,
     /// Optional event bus for dashboard propagation.
     pub event_bus: Option<&'a ThreadEventBusRef>,
-    /// Prior conversation history (from chat_history).
+    /// Prior conversation history (internal format, for logic).
     pub prior_history: Vec<Message>,
+    /// Prior raw context (provider-formatted JSON, for API calls).
+    pub prior_raw_context: Vec<serde_json::Value>,
 }
 
 /// Run the agent loop to completion.
@@ -43,12 +45,16 @@ pub struct AgentLoopConfig<'a> {
 pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
         provider, tools, system_prompt, user_message,
-        working_dir, cancel, thread_name, event_bus, prior_history,
+        working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
     } = config;
 
-    // Build history: prior context + current message
+    // Build internal history: prior context + current message
     let mut history: Vec<Message> = prior_history;
     history.push(Message::user(user_message));
+
+    // Build raw context: prior raw + current user message
+    let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
+    raw_context.push(provider.format_user_message(user_message));
 
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
@@ -72,12 +78,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         tracing::debug!(
             iteration,
             history_len = history.len(),
+            raw_context_len = raw_context.len(),
             "Agent loop iteration"
         );
 
-        // 1. Send to LLM
+        // 1. Send to LLM using raw context (preserves provider-specific fields)
         let stream = provider
-            .complete(&history, &tools.definitions(), system_prompt)
+            .complete_raw(&raw_context, &tools.definitions(), system_prompt)
             .await?;
 
         // 2. Collect the response
@@ -94,10 +101,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             );
         }
 
-        // 4. Add assistant message to history
+        // 4. Add assistant message to internal history AND raw context
         history.push(response.to_message());
+        raw_context.push(response.to_raw_message(provider));
 
-        // 4. If no tool calls, we're done
+        // 5. If no tool calls, we're done
         if response.tool_calls.is_empty() {
             tracing::info!(
                 iteration,
@@ -121,6 +129,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 input_tokens: total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
+                raw_context,
             });
         }
 
@@ -193,8 +202,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 }
             }
 
-            // Add tool result to history
+            // Add tool result to internal history AND raw context
             history.push(Message::tool_result(
+                &tool_call.id,
+                &output.content,
+                output.is_error,
+            ));
+            raw_context.push(provider.format_tool_result(
                 &tool_call.id,
                 &output.content,
                 output.is_error,
@@ -221,6 +235,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 input_tokens: total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
+                raw_context,
             });
         }
 
@@ -257,6 +272,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         input_tokens: total_input_tokens,
         output_tokens: total_output_tokens,
         history,
+        raw_context,
     })
 }
 
@@ -288,13 +304,14 @@ struct ToolCall {
 #[derive(Debug, Default)]
 struct CollectedResponse {
     text: String,
+    reasoning_content: String,
     tool_calls: Vec<ToolCall>,
     input_tokens: u64,
     output_tokens: u64,
 }
 
 impl CollectedResponse {
-    /// Convert to a Message for conversation history.
+    /// Convert to a Message for internal logic (reply detection, text extraction).
     fn to_message(&self) -> Message {
         let mut content = Vec::new();
 
@@ -319,6 +336,18 @@ impl CollectedResponse {
             content,
         }
     }
+
+    /// Build the raw provider JSON for this assistant response.
+    fn to_raw_message(&self, provider: &dyn crate::provider::Provider) -> serde_json::Value {
+        let tool_calls: Vec<(String, String, String)> = self.tool_calls.iter()
+            .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
+            .collect();
+        provider.build_raw_assistant_message(
+            &self.text,
+            &self.reasoning_content,
+            &tool_calls,
+        )
+    }
 }
 
 /// Collect a streaming response into a complete response.
@@ -336,6 +365,9 @@ async fn collect_response(
         match event? {
             StreamEvent::TextDelta(text) => {
                 response.text.push_str(&text);
+            }
+            StreamEvent::ReasoningDelta(text) => {
+                response.reasoning_content.push_str(&text);
             }
             StreamEvent::ToolUseStart { id, name } => {
                 current_tool_id = Some(id);

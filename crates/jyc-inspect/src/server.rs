@@ -267,7 +267,7 @@ impl InspectServer {
         let agent_conversation_path = context
             .workspace_dirs
             .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("agent-conversation.json"))
+            .map(|d| d.join(&thread_name).join(".jyc").join("agent-context.json"))
             .find(|p| p.exists());
 
         // Delete all session files that exist

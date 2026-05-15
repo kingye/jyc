@@ -97,6 +97,8 @@ impl Message {
 pub enum StreamEvent {
     /// A chunk of text from the assistant.
     TextDelta(String),
+    /// A chunk of reasoning/thinking content (provider-specific, e.g., DeepSeek).
+    ReasoningDelta(String),
     /// Start of a tool use block.
     ToolUseStart {
         id: String,
@@ -138,8 +140,11 @@ pub struct AgentLoopResult {
     pub input_tokens: u64,
     /// Total output tokens used across all turns.
     pub output_tokens: u64,
-    /// The full conversation history (for persistence).
+    /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
+    /// Raw provider-formatted context (for persistence in agent-context.json).
+    /// This preserves provider-specific fields like DeepSeek's reasoning_content.
+    pub raw_context: Vec<serde_json::Value>,
 }
 
 /// Provider configuration from config.toml.

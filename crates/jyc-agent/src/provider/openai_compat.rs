@@ -181,6 +181,179 @@ impl Provider for OpenAiCompatProvider {
 
         Ok(Box::pin(stream))
     }
+
+    fn format_user_message(&self, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "role": "user",
+            "content": text,
+        })
+    }
+
+    fn format_tool_result(&self, tool_call_id: &str, content: &str, _is_error: bool) -> serde_json::Value {
+        serde_json::json!({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        })
+    }
+
+    fn build_raw_assistant_message(
+        &self,
+        text: &str,
+        reasoning: &str,
+        tool_calls: &[(String, String, String)],
+    ) -> serde_json::Value {
+        let mut msg = serde_json::json!({ "role": "assistant" });
+
+        // Content
+        if !text.is_empty() {
+            msg["content"] = serde_json::Value::String(text.to_string());
+        } else {
+            msg["content"] = serde_json::Value::Null;
+        }
+
+        // Reasoning content (DeepSeek v4-pro)
+        if !reasoning.is_empty() {
+            msg["reasoning_content"] = serde_json::Value::String(reasoning.to_string());
+        }
+
+        // Tool calls
+        if !tool_calls.is_empty() {
+            let tc_json: Vec<serde_json::Value> = tool_calls.iter().map(|(id, name, args)| {
+                serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": args,
+                    }
+                })
+            }).collect();
+            msg["tool_calls"] = serde_json::Value::Array(tc_json);
+        }
+
+        msg
+    }
+
+    async fn complete_raw(
+        &self,
+        raw_messages: &[serde_json::Value],
+        tools: &[ToolDefinition],
+        system: &str,
+    ) -> Result<EventStream> {
+        let url = format!("{}/chat/completions", self.base_url);
+
+        // Build messages array: system + raw messages
+        let mut api_messages: Vec<serde_json::Value> = Vec::new();
+        if !system.is_empty() {
+            api_messages.push(serde_json::json!({
+                "role": "system",
+                "content": system,
+            }));
+        }
+        api_messages.extend_from_slice(raw_messages);
+
+        // Build request body
+        let mut body = serde_json::json!({
+            "model": &self.model,
+            "stream": true,
+            "messages": api_messages,
+        });
+
+        if !tools.is_empty() {
+            let openai_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                }))
+                .collect();
+            body["tools"] = serde_json::Value::Array(openai_tools);
+        }
+
+        // Merge extra params
+        if let Some(ref params) = self.params {
+            if let Some(params_obj) = params.as_object() {
+                if let Some(body_obj) = body.as_object_mut() {
+                    for (k, v) in params_obj {
+                        body_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
+        // Build and send request
+        let mut req = self.client
+            .post(&url)
+            .header("content-type", "application/json");
+
+        if let Some(ref key) = self.api_key {
+            req = req.header("authorization", format!("Bearer {key}"));
+        }
+
+        tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
+
+        req = req.json(&body);
+
+        let es = EventSource::new(req)
+            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+
+        let stream = futures::stream::unfold(
+            (es, OpenAiStreamState::default()),
+            |(mut es, mut state)| async move {
+                loop {
+                    if let Some(event) = state.pending_events.pop() {
+                        return Some((Ok(event), (es, state)));
+                    }
+
+                    match es.next().await {
+                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Message(msg))) => {
+                            let data = &msg.data;
+                            if data.trim() == "[DONE]" {
+                                state.pending_events.push(StreamEvent::Done);
+                                if let Some(event) = state.pending_events.pop() {
+                                    return Some((Ok(event), (es, state)));
+                                }
+                                return None;
+                            }
+                            if let Some(events) = parse_openai_chunk(data, &mut state) {
+                                state.pending_events.extend(events);
+                            }
+                            if let Some(event) = state.pending_events.pop() {
+                                return Some((Ok(event), (es, state)));
+                            }
+                        }
+                        Some(Err(e)) => {
+                            let err_msg = format!("{e}");
+                            if err_msg.contains("Stream ended") {
+                                if let Some(event) = state.pending_events.pop() {
+                                    return Some((Ok(event), (es, state)));
+                                }
+                                return None;
+                            }
+                            return Some((
+                                Err(anyhow::anyhow!("SSE stream error: {e}")),
+                                (es, state),
+                            ));
+                        }
+                        None => {
+                            if let Some(event) = state.pending_events.pop() {
+                                return Some((Ok(event), (es, state)));
+                            }
+                            return None;
+                        }
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(stream))
+    }
 }
 
 /// Internal state for OpenAI stream parsing.
@@ -231,12 +404,9 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         }
 
         // Reasoning content (DeepSeek v4-pro style thinking)
-        // Treat as text for now — the LLM's reasoning is part of its response
         if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
             if !reasoning.is_empty() {
-                // Skip reasoning content — it's the model's internal thinking,
-                // not the final reply. The actual reply comes in "content".
-                // But we still need to consume it to keep the stream flowing.
+                events.push(StreamEvent::ReasoningDelta(reasoning.to_string()));
             }
         }
 

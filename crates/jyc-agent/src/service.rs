@@ -180,12 +180,13 @@ impl AgentService for JycAgentService {
             "Using provider"
         );
 
-        // 3. Load session and prior conversation history
-        let prior_history = session::load_context(thread_path).await;
+        // 3. Load session and prior raw context
+        let (prior_history, prior_raw_context) = session::load_context(thread_path).await;
 
         tracing::debug!(
             prior_messages = prior_history.len(),
-            "Loaded prior conversation context"
+            prior_raw_context = prior_raw_context.len(),
+            "Loaded prior context"
         );
 
         // 4. Build prompts
@@ -209,6 +210,7 @@ impl AgentService for JycAgentService {
             thread_name,
             event_bus: event_bus.as_ref(),
             prior_history,
+            prior_raw_context,
         })
         .await?;
 
@@ -220,8 +222,8 @@ impl AgentService for JycAgentService {
             "Agent loop completed"
         );
 
-        // 8. Save full conversation history (includes tool calls + results)
-        session::save_conversation(thread_path, &result.history).await;
+        // 8. Save raw context (preserves provider-specific fields for round-tripping)
+        session::save_raw_context(thread_path, &result.raw_context).await;
 
         // 9. Update session token tracking
         // Resolve context_window: per-model override > provider default

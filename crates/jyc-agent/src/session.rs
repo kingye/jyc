@@ -16,7 +16,7 @@ use crate::types::{ContentBlock, Message, Role};
 /// Number of recent user+assistant pairs to keep as summary on reset.
 const SUMMARY_KEEP_PAIRS: usize = 3;
 
-const CONVERSATION_FILE: &str = "agent-conversation.json";
+const CONTEXT_FILE: &str = "agent-context.json";
 const SESSION_FILE: &str = "agent-session.json";
 
 /// Session state persisted to `.jyc/agent-session.json`.
@@ -33,95 +33,109 @@ pub struct SessionState {
 
 // ─── Conversation Persistence ────────────────────────────────────────
 
-/// Save the full conversation history to disk.
+/// Save the raw provider-formatted context to disk.
 ///
-/// Called after each agent_loop::run() completes. Stores the complete
-/// message history including tool calls and results.
-/// Filters out empty messages that would cause API errors on reload.
-pub async fn save_conversation(thread_path: &Path, history: &[Message]) {
+/// Called after each agent_loop::run() completes. Stores the raw API messages
+/// exactly as they were sent/received (preserves provider-specific fields like
+/// DeepSeek's reasoning_content).
+pub async fn save_raw_context(thread_path: &Path, raw_context: &[serde_json::Value]) {
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
-    let path = jyc_dir.join(CONVERSATION_FILE);
+    let path = jyc_dir.join(CONTEXT_FILE);
 
-    // Filter out empty assistant messages (no text, no tool_use)
-    let filtered: Vec<&Message> = history.iter()
-        .filter(|msg| {
-            match msg.role {
-                Role::Assistant => !msg.content.is_empty(),
-                _ => true,
-            }
-        })
-        .collect();
-
-    match serde_json::to_string(&filtered) {
+    match serde_json::to_string(raw_context) {
         Ok(json) => {
             if let Err(e) = tokio::fs::write(&path, json).await {
-                tracing::warn!(error = %e, "Failed to save conversation log");
+                tracing::warn!(error = %e, "Failed to save raw context");
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to serialize conversation");
+            tracing::warn!(error = %e, "Failed to serialize raw context");
         }
     }
 }
 
-/// Load prior conversation context.
+/// Load prior raw context from agent-context.json.
 ///
-/// Priority:
-/// 1. If `.jyc/agent-conversation.json` exists → load it (full fidelity with tool calls)
-/// 2. Fall back to parsing `chat_history_*.md` (text-only, for upgraded threads)
-/// 3. If no session file exists (fresh or after reset) → return empty
-pub async fn load_context(thread_path: &Path) -> Vec<Message> {
+/// Returns (internal_messages, raw_context):
+/// - internal_messages: for logic (reply detection, text extraction)
+/// - raw_context: for sending to the API (preserves provider-specific fields)
+///
+/// If no session file exists (fresh or after reset), returns empty.
+pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::Value>) {
     let jyc_dir = thread_path.join(".jyc");
     let session_path = jyc_dir.join(SESSION_FILE);
-    let conversation_path = jyc_dir.join(CONVERSATION_FILE);
+    let context_path = jyc_dir.join(CONTEXT_FILE);
 
-    // No session file = fresh start (or after full reset). No prior context.
+    // No session file = fresh start. No prior context.
     if !session_path.exists() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
-    // Try loading full conversation log first (includes tool calls)
-    if conversation_path.exists() {
-        if let Ok(content) = tokio::fs::read_to_string(&conversation_path).await {
-            if let Ok(messages) = serde_json::from_str::<Vec<Message>>(&content) {
-                // Filter out any empty assistant messages (from past errors)
-                let messages: Vec<Message> = messages.into_iter()
-                    .filter(|msg| {
-                        match msg.role {
-                            Role::Assistant => !msg.content.is_empty(),
-                            _ => true,
-                        }
-                    })
-                    .collect();
-
-                // Validate: conversation must alternate user/assistant properly.
-                // If it's all user messages (corrupted), discard it.
-                let has_assistant = messages.iter().any(|m| m.role == Role::Assistant);
-                if !messages.is_empty() && has_assistant {
-                    tracing::debug!(
-                        context_messages = messages.len(),
-                        "Loaded conversation from agent-conversation.json"
-                    );
-                    return messages;
-                } else if !messages.is_empty() {
-                    tracing::warn!(
-                        "Conversation file has no assistant messages (corrupted), ignoring"
-                    );
-                    // Delete corrupted file
-                    tokio::fs::remove_file(&conversation_path).await.ok();
+    // Load raw context (provider-formatted JSON)
+    if context_path.exists() {
+        if let Ok(content) = tokio::fs::read_to_string(&context_path).await {
+            if let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                if !raw_context.is_empty() {
+                    // Validate: must contain at least one assistant message
+                    let has_assistant = raw_context.iter().any(|m| {
+                        m.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                    });
+                    if has_assistant {
+                        tracing::debug!(
+                            context_messages = raw_context.len(),
+                            "Loaded raw context from agent-context.json"
+                        );
+                        // Build internal messages from raw context (for reply detection logic)
+                        let internal = raw_context_to_messages(&raw_context);
+                        return (internal, raw_context);
+                    } else {
+                        tracing::warn!("Context file has no assistant messages (corrupted), ignoring");
+                        tokio::fs::remove_file(&context_path).await.ok();
+                    }
                 }
             }
         }
     }
 
-    // Fallback: parse chat_history_*.md (text-only, no tool calls)
-    let session_state = load_session_state(&session_path).await;
-    let cutoff = chrono::DateTime::parse_from_rfc3339(&session_state.created_at)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .ok();
+    // Fallback: no raw context available, start fresh
+    (Vec::new(), Vec::new())
+}
 
-    load_from_chat_history(thread_path, cutoff.as_ref()).await
+/// Convert raw provider JSON context to internal Messages (best-effort).
+/// Used for internal logic only (reply detection, etc.).
+fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
+    raw.iter().filter_map(|m| {
+        let role = m.get("role")?.as_str()?;
+        match role {
+            "user" => {
+                let content = m.get("content")?.as_str()?;
+                Some(Message::user(content.to_string()))
+            }
+            "assistant" => {
+                let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                if content.is_empty() {
+                    // Check for tool_calls
+                    if m.get("tool_calls").is_some() {
+                        Some(Message {
+                            role: Role::Assistant,
+                            content: vec![], // Will be populated if needed
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(Message::assistant(content.to_string()))
+                }
+            }
+            "tool" => {
+                let tool_call_id = m.get("tool_call_id")?.as_str()?;
+                let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                Some(Message::tool_result(tool_call_id.to_string(), content.to_string(), false))
+            }
+            _ => None,
+        }
+    }).collect()
 }
 
 // ─── Token Tracking ──────────────────────────────────────────────────
@@ -154,8 +168,8 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
             "Session exceeded max input tokens, auto-resetting with summary"
         );
 
-        // Summarize the conversation (keep last few turns)
-        summarize_conversation(thread_path).await;
+        // Summarize the context (keep last few turns)
+        summarize_context(thread_path).await;
 
         // Reset token counters
         state.total_input_tokens = 0;
@@ -172,77 +186,70 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
 ///
 /// Called when user triggers a session reset (e.g., from dashboard or /reset command).
 /// - Deletes `agent-session.json` (resets token tracking)
-/// - Summarizes `agent-conversation.json` (keeps last few user+reply pairs, removes tool calls)
+/// - Summarizes `agent-context.json` (keeps last few user+reply pairs, removes tool calls)
 pub async fn reset_session(thread_path: &Path) {
     let jyc_dir = thread_path.join(".jyc");
 
-    // Summarize conversation before deleting session
-    summarize_conversation(thread_path).await;
+    // Summarize context before deleting session
+    summarize_context(thread_path).await;
 
     // Delete session state (triggers fresh start on next invocation)
     let session_path = jyc_dir.join(SESSION_FILE);
     tokio::fs::remove_file(&session_path).await.ok();
 
-    tracing::info!("Agent session reset (conversation summarized)");
+    tracing::info!("Agent session reset (context summarized)");
 }
 
-/// Summarize the conversation log: keep only the last N user+assistant text pairs.
+/// Summarize the raw context: keep only the last N user+assistant text pairs.
 ///
-/// Removes all tool_use and tool_result blocks. Keeps only user text messages
-/// and assistant text responses as a compact summary of recent interactions.
-async fn summarize_conversation(thread_path: &Path) {
-    let conversation_path = thread_path.join(".jyc").join(CONVERSATION_FILE);
+/// Removes tool calls, tool results, and reasoning_content.
+/// Keeps only user messages and assistant text responses for compact context.
+async fn summarize_context(thread_path: &Path) {
+    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
 
-    if !conversation_path.exists() {
+    if !context_path.exists() {
         return;
     }
 
-    let content = match tokio::fs::read_to_string(&conversation_path).await {
+    let content = match tokio::fs::read_to_string(&context_path).await {
         Ok(c) => c,
         Err(_) => return,
     };
 
-    let messages: Vec<Message> = match serde_json::from_str(&content) {
+    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
         Ok(m) => m,
         Err(_) => return,
     };
 
-    // Extract user+assistant text pairs (skip tool_use and tool_result)
-    let mut pairs: Vec<(Message, Message)> = Vec::new();
-    let mut last_user: Option<Message> = None;
+    // Extract user+assistant text pairs (skip tool messages)
+    let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
+    let mut last_user: Option<serde_json::Value> = None;
 
-    for msg in &messages {
-        match msg.role {
-            Role::User => {
-                // Only keep user messages that have text (not tool results)
-                let has_text = msg.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-                if has_text {
-                    last_user = Some(Message {
-                        role: Role::User,
-                        content: msg.content.iter()
-                            .filter(|b| matches!(b, ContentBlock::Text { .. }))
-                            .cloned()
-                            .collect(),
-                    });
-                }
+    for msg in &raw_context {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        match role {
+            "user" => {
+                last_user = Some(msg.clone());
             }
-            Role::Assistant => {
-                // Only keep assistant text (not tool_use blocks)
-                let text = msg.text();
-                if !text.is_empty() {
+            "assistant" => {
+                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                if !content.is_empty() {
                     if let Some(user_msg) = last_user.take() {
-                        pairs.push((user_msg, Message::assistant(text)));
+                        // Keep only role + content (strip reasoning_content, tool_calls)
+                        let clean_assistant = serde_json::json!({
+                            "role": "assistant",
+                            "content": content,
+                        });
+                        pairs.push((user_msg, clean_assistant));
                     }
                 }
             }
-            Role::Tool => {
-                // Skip tool results entirely
-            }
+            _ => {} // Skip tool messages
         }
     }
 
     // Keep only the last N pairs
-    let summary: Vec<Message> = pairs
+    let summary: Vec<serde_json::Value> = pairs
         .into_iter()
         .rev()
         .take(SUMMARY_KEEP_PAIRS)
@@ -253,18 +260,18 @@ async fn summarize_conversation(thread_path: &Path) {
         .collect();
 
     tracing::debug!(
-        original_messages = messages.len(),
+        original_messages = raw_context.len(),
         summary_messages = summary.len(),
-        "Conversation summarized"
+        "Context summarized"
     );
 
     // Write summary back
     if summary.is_empty() {
-        tokio::fs::remove_file(&conversation_path).await.ok();
+        tokio::fs::remove_file(&context_path).await.ok();
     } else {
         match serde_json::to_string(&summary) {
-            Ok(json) => { tokio::fs::write(&conversation_path, json).await.ok(); }
-            Err(_) => { tokio::fs::remove_file(&conversation_path).await.ok(); }
+            Ok(json) => { tokio::fs::write(&context_path, json).await.ok(); }
+            Err(_) => { tokio::fs::remove_file(&context_path).await.ok(); }
         }
     }
 }

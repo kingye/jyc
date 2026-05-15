@@ -162,6 +162,157 @@ impl Provider for AnthropicProvider {
 
         Ok(Box::pin(stream))
     }
+
+    fn format_user_message(&self, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+        })
+    }
+
+    fn format_tool_result(&self, tool_use_id: &str, content: &str, is_error: bool) -> serde_json::Value {
+        let mut result = serde_json::json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            }],
+        });
+        if is_error {
+            result["content"][0]["is_error"] = serde_json::Value::Bool(true);
+        }
+        result
+    }
+
+    fn build_raw_assistant_message(
+        &self,
+        text: &str,
+        _reasoning: &str,
+        tool_calls: &[(String, String, String)],
+    ) -> serde_json::Value {
+        let mut content: Vec<serde_json::Value> = Vec::new();
+
+        if !text.is_empty() {
+            content.push(serde_json::json!({"type": "text", "text": text}));
+        }
+
+        for (id, name, args) in tool_calls {
+            let input: serde_json::Value = serde_json::from_str(args)
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            content.push(serde_json::json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            }));
+        }
+
+        serde_json::json!({
+            "role": "assistant",
+            "content": content,
+        })
+    }
+
+    async fn complete_raw(
+        &self,
+        raw_messages: &[serde_json::Value],
+        tools: &[ToolDefinition],
+        system: &str,
+    ) -> Result<EventStream> {
+        let url = format!("{}/messages", self.base_url);
+
+        let api_tools: Vec<AnthropicTool> = tools
+            .iter()
+            .map(|t| AnthropicTool {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": &self.model,
+            "max_tokens": 16384,
+            "stream": true,
+            "messages": raw_messages,
+        });
+
+        if !system.is_empty() {
+            body["system"] = serde_json::Value::String(system.to_string());
+        }
+
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&api_tools)?;
+        }
+
+        // Merge extra params
+        if let Some(ref params) = self.params {
+            if let Some(params_obj) = params.as_object() {
+                if let Some(body_obj) = body.as_object_mut() {
+                    for (k, v) in params_obj {
+                        body_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
+        let mut req = self.client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01");
+
+        if let Some(ref key) = self.api_key {
+            req = req.header("x-api-key", key);
+        }
+
+        req = req.json(&body);
+
+        let es = EventSource::new(req)
+            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+
+        let stream = futures::stream::unfold(
+            (es, StreamState::default()),
+            |(mut es, mut state)| async move {
+                loop {
+                    match es.next().await {
+                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Message(msg))) => {
+                            match parse_anthropic_sse(&msg.data, &mut state) {
+                                Some(events) => {
+                                    let mut iter = events.into_iter();
+                                    if let Some(first) = iter.next() {
+                                        state.buffered_events.extend(iter);
+                                        return Some((Ok(first), (es, state)));
+                                    }
+                                    continue;
+                                }
+                                None => continue,
+                            }
+                        }
+                        Some(Err(e)) => {
+                            if let Some(event) = state.buffered_events.pop() {
+                                return Some((Ok(event), (es, state)));
+                            }
+                            let err_msg = format!("{e}");
+                            if err_msg.contains("Stream ended") {
+                                return None;
+                            }
+                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
+                        }
+                        None => {
+                            if let Some(event) = state.buffered_events.pop() {
+                                return Some((Ok(event), (es, state)));
+                            }
+                            return None;
+                        }
+                    }
+                }
+            },
+        );
+
+        Ok(Box::pin(stream))
+    }
 }
 
 /// Internal state for parsing the SSE stream.

@@ -20,6 +20,7 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// Trait for LLM providers.
 ///
 /// Minimal interface: send messages with tools, get a streaming response.
+/// Providers also handle raw context serialization for conversation persistence.
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Provider name (e.g., "anthropic", "deepseek").
@@ -32,6 +33,31 @@ pub trait Provider: Send + Sync {
     async fn complete(
         &self,
         messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+    ) -> Result<EventStream>;
+
+    /// Format a user message as raw provider JSON (for context persistence).
+    fn format_user_message(&self, text: &str) -> serde_json::Value;
+
+    /// Format a tool result as raw provider JSON (for context persistence).
+    fn format_tool_result(&self, tool_call_id: &str, content: &str, is_error: bool) -> serde_json::Value;
+
+    /// Build the raw assistant message JSON from a collected streaming response.
+    /// This captures provider-specific fields (e.g., DeepSeek's reasoning_content)
+    /// that must be round-tripped in subsequent API calls.
+    fn build_raw_assistant_message(
+        &self,
+        text: &str,
+        reasoning: &str,
+        tool_calls: &[(String, String, String)],  // (id, name, arguments)
+    ) -> serde_json::Value;
+
+    /// Send raw context messages directly to the API (for replaying persisted context).
+    /// This bypasses the internal Message conversion and sends raw JSON.
+    async fn complete_raw(
+        &self,
+        raw_messages: &[serde_json::Value],
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream>;

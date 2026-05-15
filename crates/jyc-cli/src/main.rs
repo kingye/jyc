@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
 
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 
-    match &cli.command {
+    let result = match &cli.command {
         Commands::Monitor(args) => {
             cli::monitor::run(args, &workdir).await
         }
@@ -145,5 +145,13 @@ async fn main() -> Result<()> {
         Commands::McpVisionTool => {
             cli::mcp_vision::run().await
         }
+    };
+
+    if let Err(ref e) = result {
+        // Log fatal error via tracing (if initialized) AND stderr (always visible)
+        tracing::error!(error = %e, "Fatal error");
+        eprintln!("FATAL: {e:?}");
     }
+
+    result
 }

@@ -108,6 +108,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  5. Dispatch to agent mode:                                              │
 │     - "static" → send configured text via OutboundAdapter                │
 │     - "opencode" → OpenCodeService::generate_reply(msg)                  │
+│     - "agent" → JycAgentService::process(msg) [in-process, no ext. deps] │
 │  6. If agent returns fallback text → send via OutboundAdapter            │
 │  7. Event listener monitors progress and sends heartbeats (default 10min interval, configurable)│
 │  8. Worker picks next message from thread queue                          │
@@ -163,6 +164,30 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │  (jyc_vision MCP, configured via          │                            │
 │  │   templates.toml mcps list)               │                            │
 │  └─────────────────────────────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│         JycAgentService::process() (mode="agent", in-process)            │
+│                                                                          │
+│  1. Read model override (.jyc/model-override) if present                 │
+│  2. Create LLM provider (Anthropic native or OpenAI-compatible)          │
+│  3. Build system prompt (directory rules + AGENTS.md + reply instructions)│
+│  4. Build user prompt (incoming message)                                 │
+│  5. Build tool registry (bash, read, write, edit, glob, grep, webfetch   │
+│     + reply_message bridge)                                              │
+│  6. Run agent loop:                                                      │
+│     a. Send messages to LLM (streaming)                                  │
+│     b. Collect response (text + tool_calls)                              │
+│     c. If tool_calls → execute tools → loop back                         │
+│     d. If text only → done                                               │
+│     e. If reply_message tool called → signal file written → done         │
+│  7. Return AgentResult                                                   │
+│                                                                          │
+│  Advantages over OpenCode mode:                                          │
+│  - No external process (no SSE fragility, no version coupling)           │
+│  - ~10MB per session vs ~300MB (OpenCode per-session overhead)           │
+│  - Instant startup (no server boot)                                      │
+│  - Direct tool execution (no MCP subprocess spawning)                    │
 └─────────────────────────────────────────────────────────────────────────┘
                       │
                       ▼

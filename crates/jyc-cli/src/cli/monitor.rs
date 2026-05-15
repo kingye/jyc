@@ -10,6 +10,7 @@ use jyc_core::agent::AgentService;
 use jyc_services::opencode::OpenCodeServer;
 use jyc_services::opencode::service::OpenCodeService;
 use jyc_core::static_agent::StaticAgentService;
+use jyc_agent::JycAgentService;
 
 use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::email::inbound::EmailMatcher;
@@ -171,12 +172,44 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         // Create agent based on configured mode
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
             "opencode" => {
+                tracing::info!(channel = %channel_name, "Using agent: opencode (external server)");
                 Arc::new(OpenCodeService::new(
                     opencode_server.clone(),
                     agent_config.clone(),
                     config.clone(),
                     workdir.to_path_buf(),
                 ))
+            }
+            "agent" => {
+                // In-process agent — no external OpenCode server needed
+                let model = agent_config.opencode.as_ref()
+                    .and_then(|o| o.model.clone());
+                tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
+                let providers = agent_config.providers.iter()
+                    .map(|(name, def)| {
+                        let models = def.models.iter()
+                            .map(|(model_name, model_def)| {
+                                (model_name.clone(), jyc_agent::types::ModelConfig {
+                                    context_window: model_def.context_window,
+                                    params: model_def.params.clone(),
+                                })
+                            })
+                            .collect();
+                        (name.clone(), jyc_agent::types::ProviderConfig {
+                            provider_type: def.provider_type.clone(),
+                            base_url: def.base_url.clone(),
+                            api_key_env: def.api_key_env.clone(),
+                            context_window: def.context_window,
+                            params: def.params.clone(),
+                            models,
+                        })
+                    })
+                    .collect();
+                let agent_cfg = jyc_agent::types::AgentConfig {
+                    model,
+                    providers,
+                };
+                Arc::new(JycAgentService::new(agent_cfg))
             }
             "static" => {
                 let text = agent_config

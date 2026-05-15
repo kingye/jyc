@@ -1464,6 +1464,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "jyc-agent"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "glob",
+ "jyc-core",
+ "jyc-mcp",
+ "jyc-types",
+ "jyc-utils",
+ "regex",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "jyc-channels"
 version = "0.2.1"
 dependencies = [
@@ -1502,6 +1528,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "jyc-agent",
  "jyc-channels",
  "jyc-core",
  "jyc-inspect",

@@ -95,7 +95,7 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
         
         // Read current input tokens from session state
-        let (input_tokens, max_tokens) = jyc_services::opencode::session::read_input_tokens(thread_path).await;
+        let (input_tokens, max_tokens) = jyc_core::session_state::read_input_tokens(thread_path).await;
         
         // 2. Build footer with model/mode/tokens information
         let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);

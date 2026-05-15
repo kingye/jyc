@@ -50,24 +50,35 @@ VOLUME ["/opt/jyc", "/root/.config/opencode", "/root/.claude/skills", "/root/.ag
 FROM base AS builder
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
 
-# Create dummy main.rs for each crate that has a binary to cache dependencies
-RUN for crate in jyc-types jyc-utils jyc-core jyc-services jyc-channels jyc-inspect jyc-mcp; do \
+# 1. Copy manifests only (for dependency caching)
+COPY Cargo.toml Cargo.lock ./
+COPY crates/jyc-types/Cargo.toml crates/jyc-types/Cargo.toml
+COPY crates/jyc-utils/Cargo.toml crates/jyc-utils/Cargo.toml
+COPY crates/jyc-core/Cargo.toml crates/jyc-core/Cargo.toml
+COPY crates/jyc-mcp/Cargo.toml crates/jyc-mcp/Cargo.toml
+COPY crates/jyc-agent/Cargo.toml crates/jyc-agent/Cargo.toml
+COPY crates/jyc-services/Cargo.toml crates/jyc-services/Cargo.toml
+COPY crates/jyc-channels/Cargo.toml crates/jyc-channels/Cargo.toml
+COPY crates/jyc-inspect/Cargo.toml crates/jyc-inspect/Cargo.toml
+COPY crates/jyc-cli/Cargo.toml crates/jyc-cli/Cargo.toml
+
+# 2. Create empty stubs for all crates to compile dependencies
+RUN for crate in jyc-types jyc-utils jyc-core jyc-mcp jyc-agent jyc-services jyc-channels jyc-inspect; do \
       mkdir -p "crates/$crate/src" && echo '' > "crates/$crate/src/lib.rs"; \
     done \
     && mkdir -p crates/jyc-cli/src && echo 'fn main() {}' > crates/jyc-cli/src/main.rs \
-    && cargo build --release -p jyc-cli
+    && cargo build --release 2>/dev/null || true
 
-RUN rm -rf crates/*/src
+# 3. Remove stubs and fingerprints, copy real source, build
+RUN rm -rf crates/*/src target/release/deps/jyc* target/release/.fingerprint/jyc*
 
 COPY crates/ crates/
 COPY config.example.toml ./
 RUN cargo build --release -p jyc-cli
 
 # ── Stage 3: Production image ────────────────────────────────────────
-# Build: podman build -t jyc:latest -f docker/Dockerfile ..
+# Build: podman build -t jyc:latest -f docker/Dockerfile .
 FROM base AS production
 
 COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc

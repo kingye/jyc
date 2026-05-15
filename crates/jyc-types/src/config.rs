@@ -223,6 +223,40 @@ pub struct AgentConfig {
 
     /// Outbound attachment configuration
     pub attachments: Option<OutboundAttachmentConfig>,
+
+    /// Provider definitions for the in-process agent (mode = "agent")
+    #[serde(default)]
+    pub providers: std::collections::HashMap<String, ProviderDef>,
+}
+
+/// Provider definition for the in-process agent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderDef {
+    /// Provider type: "anthropic" or "openai-compatible"
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    /// API base URL
+    pub base_url: Option<String>,
+    /// Environment variable name containing the API key
+    pub api_key_env: Option<String>,
+    /// Default context window size in tokens (used if model-specific not set)
+    pub context_window: Option<u64>,
+    /// Extra parameters merged into every API request for this provider
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
+    /// Per-model context window overrides
+    #[serde(default)]
+    pub models: std::collections::HashMap<String, ModelDef>,
+}
+
+/// Per-model configuration within a provider.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelDef {
+    /// Context window size in tokens for this specific model
+    pub context_window: Option<u64>,
+    /// Extra parameters merged into API request when using this model (overrides provider params)
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 /// OpenCode AI service configuration.

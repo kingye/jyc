@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest_eventsource::{Event, EventSource};
 use serde_json;
 
 use crate::provider::{EventStream, Provider};
@@ -25,7 +26,6 @@ impl OpenAiCompatProvider {
     pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
-            .http1_only()  // Force HTTP/1.1 for SSE streaming compatibility
             .build()
             .context("Failed to build HTTP client")?;
 
@@ -115,130 +115,68 @@ impl Provider for OpenAiCompatProvider {
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
 
-        // Send request and get streaming response
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send request to OpenAI-compatible API")?;
+        req = req.json(&body);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let error_body = resp.text().await.unwrap_or_default();
-            tracing::error!(status = %status, body = %error_body, "OpenAI-compatible API error");
-            anyhow::bail!("OpenAI-compatible API error ({}): {}", status, error_body);
-        }
+        // Use EventSource for proper SSE streaming (same as Anthropic provider)
+        let es = EventSource::new(req)
+            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
-        // Parse SSE stream from response body
-        let byte_stream = resp.bytes_stream();
-        let model_name = self.model.clone();
+        // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
-            (byte_stream, String::new(), OpenAiStreamState::default()),
-            move |(mut byte_stream, mut buffer, mut state)| {
-                let model_name = model_name.clone();
-                async move {
+            (es, OpenAiStreamState::default()),
+            |(mut es, mut state)| async move {
                 loop {
-                    // Check for buffered events first
+                    // Drain buffered events first
                     if let Some(event) = state.pending_events.pop() {
-                        return Some((Ok(event), (byte_stream, buffer, state)));
+                        return Some((Ok(event), (es, state)));
                     }
 
-                    // Read more data
-                    match byte_stream.next().await {
-                        Some(Ok(chunk)) => {
-                            let chunk_str = String::from_utf8_lossy(&chunk);
-                            if state.chunks_received == 0 {
-                                tracing::debug!(
-                                    model = %model_name,
-                                    first_chunk_len = chunk_str.len(),
-                                    first_chunk_preview = %&chunk_str[..chunk_str.len().min(200)],
-                                    "First SSE chunk received"
-                                );
-                            }
-                            state.chunks_received += 1;
-                            buffer.push_str(&chunk_str);
+                    match es.next().await {
+                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Message(msg))) => {
+                            let data = &msg.data;
 
-                            // Parse SSE lines. Each "data: ..." line is a complete JSON event.
-                            let mut lines_parsed = 0;
-                            let mut lines_total = 0;
-                            while let Some(newline_pos) = buffer.find('\n') {
-                                let line = buffer[..newline_pos].to_string();
-                                buffer = buffer[newline_pos + 1..].to_string();
-
-                                // Skip empty lines (SSE event separators)
-                                let line = line.trim();
-                                if line.is_empty() {
-                                    continue;
+                            if data.trim() == "[DONE]" {
+                                state.pending_events.push(StreamEvent::Done);
+                                if let Some(event) = state.pending_events.pop() {
+                                    return Some((Ok(event), (es, state)));
                                 }
-
-                                if let Some(data) = line.strip_prefix("data: ") {
-                                    lines_total += 1;
-                                    if data.trim() == "[DONE]" {
-                                        state.pending_events.push(StreamEvent::Done);
-                                        continue;
-                                    }
-                                    if let Some(events) = parse_openai_chunk(data, &mut state) {
-                                        state.pending_events.extend(events);
-                                        lines_parsed += 1;
-                                    }
-                                }
+                                return None;
                             }
 
-                            if state.chunks_received <= 3 {
-                                tracing::debug!(
-                                    chunk_num = state.chunks_received,
-                                    buffer_len = buffer.len(),
-                                    lines_total,
-                                    lines_parsed,
-                                    pending_events = state.pending_events.len(),
-                                    "Chunk processed"
-                                );
+                            if let Some(events) = parse_openai_chunk(data, &mut state) {
+                                state.pending_events.extend(events);
                             }
 
-                            // Return first pending event if available
                             if let Some(event) = state.pending_events.pop() {
-                                return Some((Ok(event), (byte_stream, buffer, state)));
+                                return Some((Ok(event), (es, state)));
                             }
+                            // No events from this chunk (e.g., reasoning_content only), continue
                         }
                         Some(Err(e)) => {
+                            let err_msg = format!("{e}");
+                            if err_msg.contains("Stream ended") {
+                                // Drain remaining events
+                                if let Some(event) = state.pending_events.pop() {
+                                    return Some((Ok(event), (es, state)));
+                                }
+                                return None;
+                            }
                             return Some((
-                                Err(anyhow::anyhow!("Stream read error: {e}")),
-                                (byte_stream, buffer, state),
+                                Err(anyhow::anyhow!("SSE stream error: {e}")),
+                                (es, state),
                             ));
                         }
                         None => {
-                            // Stream ended — parse any remaining data in buffer
-                            if !buffer.is_empty() {
-                                tracing::debug!(
-                                    buffer_remaining = buffer.len(),
-                                    buffer_preview = %&buffer[..buffer.len().min(300)],
-                                    "Stream ended with data in buffer"
-                                );
-                                for line in buffer.lines() {
-                                    if let Some(data) = line.strip_prefix("data: ") {
-                                        if data.trim() == "[DONE]" {
-                                            state.pending_events.push(StreamEvent::Done);
-                                            continue;
-                                        }
-                                        if let Some(events) = parse_openai_chunk(data, &mut state) {
-                                            state.pending_events.extend(events);
-                                        }
-                                    }
-                                }
-                                buffer.clear();
-                            }
-                            // Drain pending events
+                            // Drain remaining events
                             if let Some(event) = state.pending_events.pop() {
-                                return Some((Ok(event), (byte_stream, buffer, state)));
-                            }
-                            if state.chunks_received == 0 {
-                                tracing::warn!("OpenAI-compatible stream ended with zero chunks received");
+                                return Some((Ok(event), (es, state)));
                             }
                             return None;
                         }
                     }
                 }
-            }},
+            },
         );
 
         Ok(Box::pin(stream))
@@ -252,8 +190,6 @@ struct OpenAiStreamState {
     tool_calls: Vec<ToolCallAccumulator>,
     /// Events ready to be yielded.
     pending_events: Vec<StreamEvent>,
-    /// Number of byte chunks received from the stream.
-    chunks_received: usize,
 }
 
 #[derive(Default, Clone)]

@@ -241,6 +241,9 @@ pub struct ProviderDef {
     pub api_key_env: Option<String>,
     /// Default context window size in tokens (used if model-specific not set)
     pub context_window: Option<u64>,
+    /// Extra parameters merged into every API request for this provider
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
     /// Per-model context window overrides
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelDef>,
@@ -251,6 +254,9 @@ pub struct ProviderDef {
 pub struct ModelDef {
     /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
+    /// Extra parameters merged into API request when using this model (overrides provider params)
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 /// OpenCode AI service configuration.

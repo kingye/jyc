@@ -152,7 +152,9 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
     /// Default context window size in tokens
     pub context_window: Option<u64>,
-    /// Per-model context window overrides
+    /// Extra parameters merged into every API request for this provider
+    pub params: Option<serde_json::Value>,
+    /// Per-model configuration
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelConfig>,
 }
@@ -162,6 +164,8 @@ pub struct ProviderConfig {
 pub struct ModelConfig {
     /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
+    /// Extra parameters merged into API request (overrides provider params)
+    pub params: Option<serde_json::Value>,
 }
 
 /// Agent configuration section from config.toml.

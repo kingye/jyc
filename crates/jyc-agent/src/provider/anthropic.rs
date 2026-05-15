@@ -18,10 +18,12 @@ pub struct AnthropicProvider {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    /// Extra parameters to merge into the API request body.
+    params: Option<serde_json::Value>,
 }
 
 impl AnthropicProvider {
-    pub fn new(base_url: &str, model: &str, api_key: Option<&str>) -> Result<Self> {
+    pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
@@ -32,6 +34,7 @@ impl AnthropicProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
             api_key: api_key.map(|s| s.to_string()),
+            params,
         })
     }
 }
@@ -84,6 +87,17 @@ impl Provider for AnthropicProvider {
 
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)?;
+        }
+
+        // Merge extra params from config (provider-level + model-level)
+        if let Some(ref params) = self.params {
+            if let Some(params_obj) = params.as_object() {
+                if let Some(body_obj) = body.as_object_mut() {
+                    for (k, v) in params_obj {
+                        body_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
         }
 
         // Build request

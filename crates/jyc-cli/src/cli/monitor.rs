@@ -191,6 +191,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             .map(|(model_name, model_def)| {
                                 (model_name.clone(), jyc_agent::types::ModelConfig {
                                     context_window: model_def.context_window,
+                                    params: model_def.params.clone(),
                                 })
                             })
                             .collect();
@@ -199,6 +200,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             base_url: def.base_url.clone(),
                             api_key_env: def.api_key_env.clone(),
                             context_window: def.context_window,
+                            params: def.params.clone(),
                             models,
                         })
                     })

@@ -89,9 +89,10 @@ impl JycAgentService {
     /// Create the tool registry for a thread.
     fn build_tool_registry(&self, _thread_path: &Path) -> ToolRegistry {
         // Start with all built-in tools
-        let registry = crate::tools::builtin::create_builtin_registry();
+        let mut registry = crate::tools::builtin::create_builtin_registry();
 
-        // TODO: Add MCP bridge tools (reply_message, vision, question)
+        // Add MCP bridge tools (reply_message, etc.)
+        crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
         registry
     }

@@ -172,6 +172,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         // Create agent based on configured mode
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
             "opencode" => {
+                tracing::info!(channel = %channel_name, "Using agent: opencode (external server)");
                 Arc::new(OpenCodeService::new(
                     opencode_server.clone(),
                     agent_config.clone(),
@@ -183,6 +184,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 // In-process agent — no external OpenCode server needed
                 let model = agent_config.opencode.as_ref()
                     .and_then(|o| o.model.clone());
+                tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
                 let providers = agent_config.providers.iter()
                     .map(|(name, def)| {
                         (name.clone(), jyc_agent::types::ProviderConfig {

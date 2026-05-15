@@ -192,18 +192,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ));
         }
 
-        // Publish progress
-        let elapsed = start_time.elapsed();
-        publish_event(event_bus, ThreadEvent::ProcessingProgress {
-            thread_name: thread_name.to_string(),
-            elapsed_secs: elapsed.as_secs(),
-            activity: "tool execution".to_string(),
-            progress: Some(format!("iteration {}, {} tokens used", iteration + 1, total_input_tokens)),
-            parts_count: iteration + 1,
-            output_length: total_output_tokens as usize,
-            timestamp: Utc::now(),
-        }).await;
-
         // If reply was sent by tool, we can stop early
         if reply_sent_by_tool {
             tracing::info!(iteration, "Reply sent by MCP tool, stopping loop");
@@ -225,6 +213,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 output_tokens: total_output_tokens,
             });
         }
+
+        // Publish progress (only when continuing the loop — not after completion)
+        let elapsed = start_time.elapsed();
+        publish_event(event_bus, ThreadEvent::ProcessingProgress {
+            thread_name: thread_name.to_string(),
+            elapsed_secs: elapsed.as_secs(),
+            activity: "tool execution".to_string(),
+            progress: Some(format!("iteration {}, {} tokens used", iteration + 1, total_input_tokens)),
+            parts_count: iteration + 1,
+            output_length: total_output_tokens as usize,
+            timestamp: Utc::now(),
+        }).await;
 
         // 6. Loop back to LLM with tool results
     }

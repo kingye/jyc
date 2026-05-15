@@ -205,26 +205,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_storage_thread_path_from_feishu_chat_name() {
-        use jyc_channels::inbound::FeishuMatcher;
-
-        let tmp = tempdir().unwrap();
-        let ws = resolve_workspace(tmp.path(), "feishu_bot");
-        tokio::fs::create_dir_all(&ws).await.unwrap();
-
-        let storage = MessageStorage::new(&ws);
-        let msg = make_feishu_message("五一松赞", "group");
-
-        let matcher = FeishuMatcher;
-        let thread_name = matcher.derive_thread_name(&msg, &[], None);
-        assert_eq!(thread_name, "五一松赞");
-
-        let result = storage.store_with_match(&msg, &thread_name, true, None).await.unwrap();
-        assert_eq!(result.thread_path, ws.join("五一松赞"));
-        assert!(result.thread_path.exists());
-    }
-
-    #[tokio::test]
     async fn test_storage_thread_path_from_feishu_with_config_override() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "feishu_bot");

@@ -6,12 +6,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use jyc_services::agent::AgentService;
+use jyc_core::agent::AgentService;
 use jyc_services::opencode::OpenCodeServer;
 use jyc_services::opencode::service::OpenCodeService;
-use jyc_services::static_agent::StaticAgentService;
+use jyc_core::static_agent::StaticAgentService;
 
 use jyc_channels::email::outbound::EmailOutboundAdapter;
+use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
@@ -281,6 +282,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         router,
                         state_manager,
                         cancel_child,
+                        Arc::new(EmailMatcher),
                     );
 
                     if let Err(e) = monitor.start().await {

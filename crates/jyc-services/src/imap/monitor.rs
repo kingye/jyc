@@ -287,7 +287,7 @@ impl ImapMonitor {
         &self,
         email: &crate::imap::client::FetchedEmail,
     ) -> Result<()> {
-        let mut message = inbound::parse_raw_email(&email.body, email.uid)?;
+        let mut message = crate::imap::parse_email::parse_raw_email(&email.body, email.uid)?;
 
         // Set channel to the config channel name (e.g., "jiny283"), not the type ("email")
         message.channel = self.channel_name.clone();

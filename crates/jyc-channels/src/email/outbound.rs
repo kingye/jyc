@@ -146,7 +146,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // 1. Read model/mode from reply context file (if available)
-        let reply_ctx = crate::mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 

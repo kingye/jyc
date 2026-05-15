@@ -1473,6 +1473,7 @@ dependencies = [
  "chrono",
  "comrak",
  "jyc-core",
+ "jyc-mcp",
  "jyc-services",
  "jyc-types",
  "jyc-utils",
@@ -1611,6 +1612,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

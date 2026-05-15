@@ -1,0 +1,15 @@
+[package]
+name = "jyc-utils"
+version = "0.2.1"
+edition = "2024"
+description = "Utility functions for the JYC AI agent framework"
+
+[dependencies]
+jyc-types = { path = "../jyc-types" }
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

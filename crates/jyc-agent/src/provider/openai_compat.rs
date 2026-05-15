@@ -112,6 +112,8 @@ impl Provider for OpenAiCompatProvider {
             req = req.header("authorization", format!("Bearer {key}"));
         }
 
+        tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
+
         // Send request and get streaming response
         let resp = req
             .json(&body)
@@ -122,14 +124,18 @@ impl Provider for OpenAiCompatProvider {
         let status = resp.status();
         if !status.is_success() {
             let error_body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %error_body, "OpenAI-compatible API error");
             anyhow::bail!("OpenAI-compatible API error ({}): {}", status, error_body);
         }
 
         // Parse SSE stream from response body
         let byte_stream = resp.bytes_stream();
+        let model_name = self.model.clone();
         let stream = futures::stream::unfold(
             (byte_stream, String::new(), OpenAiStreamState::default()),
-            |(mut byte_stream, mut buffer, mut state)| async move {
+            move |(mut byte_stream, mut buffer, mut state)| {
+                let model_name = model_name.clone();
+                async move {
                 loop {
                     // Check for buffered events first
                     if let Some(event) = state.pending_events.pop() {
@@ -139,9 +145,19 @@ impl Provider for OpenAiCompatProvider {
                     // Read more data
                     match byte_stream.next().await {
                         Some(Ok(chunk)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&chunk));
+                            let chunk_str = String::from_utf8_lossy(&chunk);
+                            if state.chunks_received == 0 {
+                                tracing::debug!(
+                                    model = %model_name,
+                                    first_chunk_len = chunk_str.len(),
+                                    first_chunk_preview = %&chunk_str[..chunk_str.len().min(200)],
+                                    "First SSE chunk received"
+                                );
+                            }
+                            state.chunks_received += 1;
+                            buffer.push_str(&chunk_str);
 
-                            // Parse complete SSE lines
+                            // Parse complete SSE lines (separated by \n\n)
                             while let Some(pos) = buffer.find("\n\n") {
                                 let line_block = buffer[..pos].to_string();
                                 buffer = buffer[pos + 2..].to_string();
@@ -175,11 +191,14 @@ impl Provider for OpenAiCompatProvider {
                             if let Some(event) = state.pending_events.pop() {
                                 return Some((Ok(event), (byte_stream, buffer, state)));
                             }
+                            if state.chunks_received == 0 {
+                                tracing::warn!("OpenAI-compatible stream ended with zero chunks received");
+                            }
                             return None;
                         }
                     }
                 }
-            },
+            }},
         );
 
         Ok(Box::pin(stream))
@@ -193,6 +212,8 @@ struct OpenAiStreamState {
     tool_calls: Vec<ToolCallAccumulator>,
     /// Events ready to be yielded.
     pending_events: Vec<StreamEvent>,
+    /// Number of byte chunks received from the stream.
+    chunks_received: usize,
 }
 
 #[derive(Default, Clone)]

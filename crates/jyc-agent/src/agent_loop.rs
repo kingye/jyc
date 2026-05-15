@@ -86,7 +86,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
 
-        // 3. Add assistant message to history
+        // 3. Check for empty response (likely an API error we didn't catch)
+        if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0 {
+            tracing::warn!(
+                iteration,
+                "LLM returned empty response (no text, no tools, 0 tokens) — possible API error"
+            );
+        }
+
+        // 4. Add assistant message to history
         history.push(response.to_message());
 
         // 4. If no tool calls, we're done

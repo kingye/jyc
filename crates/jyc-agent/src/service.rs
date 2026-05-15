@@ -221,11 +221,20 @@ impl AgentService for JycAgentService {
         );
 
         // 8. Update session token tracking
-        let context_window = model_override.as_deref()
+        // Resolve context_window: per-model override > provider default
+        let model_str = model_override.as_deref()
             .or(self.config.model.as_deref())
-            .and_then(|m| m.split_once('/'))
-            .and_then(|(provider_name, _)| self.config.providers.get(provider_name))
-            .and_then(|p| p.context_window);
+            .unwrap_or("");
+        let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
+            self.config.providers.get(provider_name).and_then(|p| {
+                // Check per-model override first, then provider default
+                p.models.get(model_id)
+                    .and_then(|m| m.context_window)
+                    .or(p.context_window)
+            })
+        } else {
+            None
+        };
         session::update_tokens(thread_path, result.input_tokens, result.output_tokens, context_window).await;
 
         // 9. Return result

@@ -150,7 +150,17 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     /// Environment variable name containing the API key
     pub api_key_env: Option<String>,
-    /// Context window size in tokens
+    /// Default context window size in tokens
+    pub context_window: Option<u64>,
+    /// Per-model context window overrides
+    #[serde(default)]
+    pub models: std::collections::HashMap<String, ModelConfig>,
+}
+
+/// Per-model configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
 }
 

@@ -187,11 +187,19 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
                 let providers = agent_config.providers.iter()
                     .map(|(name, def)| {
+                        let models = def.models.iter()
+                            .map(|(model_name, model_def)| {
+                                (model_name.clone(), jyc_agent::types::ModelConfig {
+                                    context_window: model_def.context_window,
+                                })
+                            })
+                            .collect();
                         (name.clone(), jyc_agent::types::ProviderConfig {
                             provider_type: def.provider_type.clone(),
                             base_url: def.base_url.clone(),
                             api_key_env: def.api_key_env.clone(),
                             context_window: def.context_window,
+                            models,
                         })
                     })
                     .collect();

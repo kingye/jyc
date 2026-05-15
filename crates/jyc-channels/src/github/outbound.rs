@@ -78,8 +78,8 @@ impl OutboundAdapter for GithubOutboundAdapter {
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
-        // Read current input tokens from session state
-        let (input_tokens, max_tokens) = jyc_services::opencode::session::read_input_tokens(thread_path).await;
+        // Read current input tokens from session state (agent-agnostic)
+        let (input_tokens, max_tokens) = jyc_core::session_state::read_input_tokens(thread_path).await;
 
         // Build footer with model/mode/tokens information
         let footer = jyc_core::email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);

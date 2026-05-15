@@ -157,20 +157,26 @@ impl Provider for OpenAiCompatProvider {
                             state.chunks_received += 1;
                             buffer.push_str(&chunk_str);
 
-                            // Parse complete SSE lines (separated by \n\n)
-                            while let Some(pos) = buffer.find("\n\n") {
-                                let line_block = buffer[..pos].to_string();
-                                buffer = buffer[pos + 2..].to_string();
+                            // Parse SSE lines. Standard SSE uses \n\n as event separator,
+                            // but we also handle line-by-line since each "data: ..." line
+                            // is a complete event for OpenAI-compatible APIs.
+                            while let Some(newline_pos) = buffer.find('\n') {
+                                let line = buffer[..newline_pos].to_string();
+                                buffer = buffer[newline_pos + 1..].to_string();
 
-                                for line in line_block.lines() {
-                                    if let Some(data) = line.strip_prefix("data: ") {
-                                        if data.trim() == "[DONE]" {
-                                            state.pending_events.push(StreamEvent::Done);
-                                            continue;
-                                        }
-                                        if let Some(events) = parse_openai_chunk(data, &mut state) {
-                                            state.pending_events.extend(events);
-                                        }
+                                // Skip empty lines (SSE event separators)
+                                let line = line.trim();
+                                if line.is_empty() {
+                                    continue;
+                                }
+
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if data.trim() == "[DONE]" {
+                                        state.pending_events.push(StreamEvent::Done);
+                                        continue;
+                                    }
+                                    if let Some(events) = parse_openai_chunk(data, &mut state) {
+                                        state.pending_events.extend(events);
                                     }
                                 }
                             }
@@ -187,7 +193,22 @@ impl Provider for OpenAiCompatProvider {
                             ));
                         }
                         None => {
-                            // Stream ended, drain pending
+                            // Stream ended — parse any remaining data in buffer
+                            if !buffer.is_empty() {
+                                for line in buffer.lines() {
+                                    if let Some(data) = line.strip_prefix("data: ") {
+                                        if data.trim() == "[DONE]" {
+                                            state.pending_events.push(StreamEvent::Done);
+                                            continue;
+                                        }
+                                        if let Some(events) = parse_openai_chunk(data, &mut state) {
+                                            state.pending_events.extend(events);
+                                        }
+                                    }
+                                }
+                                buffer.clear();
+                            }
+                            // Drain pending events
                             if let Some(event) = state.pending_events.pop() {
                                 return Some((Ok(event), (byte_stream, buffer, state)));
                             }

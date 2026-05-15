@@ -258,45 +258,53 @@ impl InspectServer {
             .map(|d| d.join(&thread_name).join(".jyc").join("opencode-session.json"))
             .find(|p| p.exists());
 
-        match session_path {
-            Some(path) => {
-                let canonical_ws = context.workspace_dirs.iter().filter_map(|d| d.canonicalize().ok()).collect::<Vec<_>>();
-                let canonical_path = match path.canonicalize() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return InspectResponse::ResetSessionResult {
-                            success: false,
-                            message: format!("failed to resolve session path: {e}"),
-                        };
-                    }
-                };
-                if !canonical_ws.iter().any(|ws| canonical_path.starts_with(ws)) {
-                    return InspectResponse::ResetSessionResult {
-                        success: false,
-                        message: "invalid thread_name: path escapes workspace".to_string(),
-                    };
-                }
-                match tokio::fs::remove_file(&path).await {
-                    Ok(()) => {
-                        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
-                        InspectResponse::ResetSessionResult {
-                            success: true,
-                            message: format!("session deleted for {thread_name}"),
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(thread = %thread_name, error = %e, "Failed to delete session file");
-                        InspectResponse::ResetSessionResult {
-                            success: false,
-                            message: format!("failed to delete session: {e}"),
-                        }
+        let agent_session_path = context
+            .workspace_dirs
+            .iter()
+            .map(|d| d.join(&thread_name).join(".jyc").join("agent-session.json"))
+            .find(|p| p.exists());
+
+        let agent_conversation_path = context
+            .workspace_dirs
+            .iter()
+            .map(|d| d.join(&thread_name).join(".jyc").join("agent-conversation.json"))
+            .find(|p| p.exists());
+
+        // Delete all session files that exist
+        let mut deleted = false;
+
+        if let Some(path) = session_path {
+            let canonical_ws = context.workspace_dirs.iter().filter_map(|d| d.canonicalize().ok()).collect::<Vec<_>>();
+            if let Ok(canonical_path) = path.canonicalize() {
+                if canonical_ws.iter().any(|ws| canonical_path.starts_with(ws)) {
+                    if tokio::fs::remove_file(&path).await.is_ok() {
+                        deleted = true;
                     }
                 }
             }
-            None => InspectResponse::ResetSessionResult {
+        }
+
+        if let Some(path) = agent_session_path {
+            tokio::fs::remove_file(&path).await.ok();
+            deleted = true;
+        }
+
+        if let Some(path) = agent_conversation_path {
+            tokio::fs::remove_file(&path).await.ok();
+            deleted = true;
+        }
+
+        if deleted {
+            tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+            InspectResponse::ResetSessionResult {
+                success: true,
+                message: format!("session deleted for {thread_name}"),
+            }
+        } else {
+            InspectResponse::ResetSessionResult {
                 success: true,
                 message: format!("no session exists for {thread_name}"),
-            },
+            }
         }
     }
 

@@ -138,6 +138,8 @@ pub struct AgentLoopResult {
     pub input_tokens: u64,
     /// Total output tokens used across all turns.
     pub output_tokens: u64,
+    /// The full conversation history (for persistence).
+    pub history: Vec<Message>,
 }
 
 /// Provider configuration from config.toml.

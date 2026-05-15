@@ -22,6 +22,7 @@ impl CommandHandler for ResetCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let opencode_path = context.thread_path.join(".jyc/opencode-session.json");
         let agent_path = context.thread_path.join(".jyc/agent-session.json");
+        let conversation_path = context.thread_path.join(".jyc/agent-conversation.json");
 
         let mut deleted = false;
         if opencode_path.exists() {
@@ -30,6 +31,10 @@ impl CommandHandler for ResetCommandHandler {
         }
         if agent_path.exists() {
             tokio::fs::remove_file(&agent_path).await?;
+            deleted = true;
+        }
+        if conversation_path.exists() {
+            tokio::fs::remove_file(&conversation_path).await?;
             deleted = true;
         }
 

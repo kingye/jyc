@@ -120,6 +120,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 reply_text_from_tool,
                 input_tokens: total_input_tokens,
                 output_tokens: total_output_tokens,
+                history,
             });
         }
 
@@ -219,6 +220,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 reply_text_from_tool,
                 input_tokens: total_input_tokens,
                 output_tokens: total_output_tokens,
+                history,
             });
         }
 
@@ -254,6 +256,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         reply_text_from_tool,
         input_tokens: total_input_tokens,
         output_tokens: total_output_tokens,
+        history,
     })
 }
 

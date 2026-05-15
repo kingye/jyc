@@ -220,7 +220,10 @@ impl AgentService for JycAgentService {
             "Agent loop completed"
         );
 
-        // 8. Update session token tracking
+        // 8. Save full conversation history (includes tool calls + results)
+        session::save_conversation(thread_path, &result.history).await;
+
+        // 9. Update session token tracking
         // Resolve context_window: per-model override > provider default
         let model_str = model_override.as_deref()
             .or(self.config.model.as_deref())

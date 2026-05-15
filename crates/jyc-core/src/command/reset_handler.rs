@@ -20,10 +20,20 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let session_path = context.thread_path.join(".jyc/opencode-session.json");
+        let opencode_path = context.thread_path.join(".jyc/opencode-session.json");
+        let agent_path = context.thread_path.join(".jyc/agent-session.json");
 
-        if session_path.exists() {
-            tokio::fs::remove_file(&session_path).await?;
+        let mut deleted = false;
+        if opencode_path.exists() {
+            tokio::fs::remove_file(&opencode_path).await?;
+            deleted = true;
+        }
+        if agent_path.exists() {
+            tokio::fs::remove_file(&agent_path).await?;
+            deleted = true;
+        }
+
+        if deleted {
             Ok(CommandResult {
                 success: true,
                 message: "/reset: session deleted. Next AI prompt will start with a fresh session.".into(),

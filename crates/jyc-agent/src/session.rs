@@ -18,25 +18,38 @@ const MAX_CONTEXT_CHARS: usize = 100_000;
 /// Session state persisted to `.jyc/agent-session.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionState {
+    /// When this session was created (ISO 8601). Only messages after this
+    /// timestamp are included in the conversation context.
     pub created_at: String,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
-    /// Message dir of the oldest entry to include in context.
-    /// If None, includes all available history.
-    pub context_start_marker: Option<String>,
 }
 
 /// Load prior conversation context from chat_history files.
 ///
 /// Reads the latest chat history entries and converts them into
 /// Message objects for the LLM's conversation context.
+///
+/// Only includes entries created AFTER the session's `created_at` timestamp.
+/// If no agent-session.json exists (fresh thread or after reset),
+/// returns empty history — the agent starts with no prior context.
 pub async fn load_context(thread_path: &Path) -> Vec<Message> {
-    // Check if session was reset (no session file = fresh start)
     let session_path = thread_path.join(".jyc").join("agent-session.json");
+
+    // No session file = fresh start (or after reset). No prior context.
+    if !session_path.exists() {
+        return Vec::new();
+    }
+
     let session_state = load_session_state(&session_path).await;
+
+    // Parse session created_at as cutoff timestamp
+    let cutoff = chrono::DateTime::parse_from_rfc3339(&session_state.created_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .ok();
 
     // Find chat history files
     let mut history_files: Vec<_> = match std::fs::read_dir(thread_path) {
@@ -65,7 +78,7 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
             Err(_) => continue,
         };
 
-        let entries = parse_chat_entries(&content, session_state.context_start_marker.as_deref());
+        let entries = parse_chat_entries(&content, cutoff.as_ref());
 
         for entry in entries.into_iter().rev() {
             if messages.len() >= MAX_CONTEXT_MESSAGES {
@@ -99,6 +112,7 @@ pub async fn load_context(thread_path: &Path) -> Vec<Message> {
 }
 
 /// Update token tracking in the session state.
+/// Creates the session file if it doesn't exist (sets created_at for context cutoff).
 pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64, context_window: Option<u64>) {
     let session_path = thread_path.join(".jyc").join("agent-session.json");
     let mut state = load_session_state(&session_path).await;
@@ -110,6 +124,7 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
         state.max_input_tokens = cw;
     }
 
+    // Set created_at on first creation — this becomes the cutoff for context loading
     if state.created_at.is_empty() {
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
@@ -151,7 +166,7 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 ///
 /// Chat history format:
 /// ```
-/// <!-- timestamp | type:received | sender:... -->
+/// <!-- 2026-05-15T03:15:29+00:00 | type:received | sender:... -->
 /// **FROM:** ...
 /// **SUBJECT:** ...
 ///
@@ -159,18 +174,20 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 ///
 /// ---
 /// ```
-fn parse_chat_entries(content: &str, context_start_marker: Option<&str>) -> Vec<Message> {
+///
+/// Only includes entries with timestamps >= cutoff (if provided).
+fn parse_chat_entries(content: &str, cutoff: Option<&chrono::DateTime<chrono::Utc>>) -> Vec<Message> {
     let mut messages = Vec::new();
     let mut current_type: Option<&str> = None;
     let mut current_text = String::new();
-    let mut past_marker = context_start_marker.is_none(); // If no marker, include all
+    let mut current_after_cutoff = cutoff.is_none(); // If no cutoff, include all
 
     for line in content.lines() {
         // Check for metadata comment
         if line.starts_with("<!-- ") && line.ends_with(" -->") {
             // If we have accumulated text from a previous entry, save it
             if let Some(msg_type) = current_type {
-                if past_marker && !current_text.trim().is_empty() {
+                if current_after_cutoff && !current_text.trim().is_empty() {
                     let msg = if msg_type == "received" {
                         Message::user(current_text.trim().to_string())
                     } else {
@@ -190,16 +207,16 @@ fn parse_chat_entries(content: &str, context_start_marker: Option<&str>) -> Vec<
             };
             current_text.clear();
 
-            // Check for context_start_marker in the metadata line
-            if let Some(marker) = context_start_marker {
-                if line.contains(marker) {
-                    past_marker = true;
-                }
+            // Check timestamp against cutoff
+            if let Some(cutoff_ts) = cutoff {
+                current_after_cutoff = extract_timestamp(line)
+                    .map(|ts| ts >= *cutoff_ts)
+                    .unwrap_or(false);
             }
         } else if line == "---" {
             // Entry separator — flush current entry
             if let Some(msg_type) = current_type {
-                if past_marker && !current_text.trim().is_empty() {
+                if current_after_cutoff && !current_text.trim().is_empty() {
                     let msg = if msg_type == "received" {
                         Message::user(current_text.trim().to_string())
                     } else {
@@ -221,7 +238,7 @@ fn parse_chat_entries(content: &str, context_start_marker: Option<&str>) -> Vec<
 
     // Flush last entry if any
     if let Some(msg_type) = current_type {
-        if past_marker && !current_text.trim().is_empty() {
+        if current_after_cutoff && !current_text.trim().is_empty() {
             let msg = if msg_type == "received" {
                 Message::user(current_text.trim().to_string())
             } else {
@@ -232,4 +249,14 @@ fn parse_chat_entries(content: &str, context_start_marker: Option<&str>) -> Vec<
     }
 
     messages
+}
+
+/// Extract timestamp from a chat history metadata comment line.
+/// Format: `<!-- 2026-05-15T03:15:29+00:00 | type:received | ... -->`
+fn extract_timestamp(line: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let inner = line.strip_prefix("<!-- ")?.strip_suffix(" -->")?;
+    let ts_str = inner.split('|').next()?.trim();
+    chrono::DateTime::parse_from_rfc3339(ts_str)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .ok()
 }

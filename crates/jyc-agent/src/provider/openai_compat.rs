@@ -339,9 +339,13 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
                 _ => None,
             }).collect();
 
+            // Always set content (some APIs require it even when tool_calls are present)
             if !text.is_empty() {
                 result["content"] = serde_json::Value::String(text);
+            } else {
+                result["content"] = serde_json::Value::Null;
             }
+
             if !tool_uses.is_empty() {
                 result["tool_calls"] = serde_json::Value::Array(tool_uses);
             }

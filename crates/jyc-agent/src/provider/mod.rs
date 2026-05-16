@@ -17,6 +17,43 @@ use crate::types::{Message, StreamEvent, ToolDefinition};
 /// Stream of events from an LLM provider.
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 
+/// Filter raw messages before sending to any LLM API.
+///
+/// Removes assistant messages that have no meaningful content and no tool_calls.
+/// Such messages are invalid for replay — even if they have reasoning_content
+/// (DeepSeek) or other provider-specific fields.
+///
+/// Handles both formats:
+/// - OpenAI: `"content": "text"` + `"tool_calls": [...]`
+/// - Anthropic: `"content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]`
+pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    raw_messages.iter()
+        .filter(|m| {
+            if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                return true;
+            }
+            // OpenAI format: content as non-empty string
+            let has_string_content = m.get("content")
+                .and_then(|c| c.as_str())
+                .is_some_and(|s| !s.is_empty());
+            // Anthropic format: content as array with meaningful blocks
+            let has_array_content = m.get("content")
+                .and_then(|c| c.as_array())
+                .is_some_and(|blocks| blocks.iter().any(|b| {
+                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    t == "tool_use" || (t == "text" && b.get("text").and_then(|x| x.as_str()).is_some_and(|s| !s.is_empty()))
+                }));
+            // OpenAI format: tool_calls array
+            let has_tool_calls = m.get("tool_calls")
+                .and_then(|t| t.as_array())
+                .is_some_and(|a| !a.is_empty());
+
+            has_string_content || has_array_content || has_tool_calls
+        })
+        .cloned()
+        .collect()
+}
+
 /// Trait for LLM providers.
 ///
 /// Minimal interface: send messages with tools, get a streaming response.

@@ -251,21 +251,7 @@ impl Provider for OpenAiCompatProvider {
                 "content": system,
             }));
         }
-        // Skip assistant messages with null/empty content and no tool_calls
-        for msg in raw_messages {
-            if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                let has_content = msg.get("content")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|s| !s.is_empty());
-                let has_tool_calls = msg.get("tool_calls")
-                    .and_then(|t| t.as_array())
-                    .is_some_and(|a| !a.is_empty());
-                if !has_content && !has_tool_calls {
-                    continue;
-                }
-            }
-            api_messages.push(msg.clone());
-        }
+        api_messages.extend(super::filter_valid_messages(raw_messages));
 
         // Build request body
         let mut body = serde_json::json!({

@@ -231,11 +231,13 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
+        let filtered_messages = super::filter_valid_messages(raw_messages);
+
         let mut body = serde_json::json!({
             "model": &self.model,
             "max_tokens": 16384,
             "stream": true,
-            "messages": raw_messages,
+            "messages": filtered_messages,
         });
 
         if !system.is_empty() {

@@ -30,6 +30,9 @@ mod integration_tests {
             provider_type: "anthropic".to_string(),
             base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
             api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+            context_window: None,
+            params: None,
+            models: HashMap::new(),
         });
 
         let provider = provider::create_provider("anthropic/claude-opus-4-6", &providers).unwrap();
@@ -60,6 +63,9 @@ mod integration_tests {
             provider_type: "anthropic".to_string(),
             base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
             api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+            context_window: None,
+            params: None,
+            models: HashMap::new(),
         });
 
         let provider = provider::create_provider("anthropic/claude-opus-4-6", &providers).unwrap();
@@ -71,14 +77,18 @@ mod integration_tests {
         let registry = tools::builtin::create_builtin_registry();
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result = agent_loop::run(
-            provider.as_ref(),
-            &registry,
-            "You are a helpful assistant. Reply concisely.",
-            "What is 2+2? Use the bash tool to compute it with `echo $((2+2))`",
-            tmp.path(),
+        let result = agent_loop::run(agent_loop::AgentLoopConfig {
+            provider: provider.as_ref(),
+            tools: &registry,
+            system_prompt: "You are a helpful assistant. Reply concisely.",
+            user_message: "What is 2+2? Use the bash tool to compute it with `echo $((2+2))`",
+            working_dir: tmp.path(),
             cancel,
-        ).await.unwrap();
+            thread_name: "test",
+            event_bus: None,
+            prior_history: Vec::new(),
+            prior_raw_context: Vec::new(),
+        }).await.unwrap();
 
         println!("Text: {}", result.text);
         println!("Input tokens: {}", result.input_tokens);

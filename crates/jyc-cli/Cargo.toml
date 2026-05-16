@@ -1,6 +1,6 @@
 [package]
 name = "jyc-cli"
-version = "0.2.1"
+version.workspace = true
 edition = "2024"
 description = "CLI binary for the JYC AI agent framework"
 

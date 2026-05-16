@@ -219,7 +219,7 @@ impl InspectServer {
         }
     }
 
-    /// Delete the opencode session file for a given thread.
+    /// Delete the agent session file for a given thread.
     async fn handle_reset_session(
         request: &InspectRequest,
         context: &InspectContext,
@@ -252,19 +252,13 @@ impl InspectServer {
             };
         }
 
-        let session_path = context
-            .workspace_dirs
-            .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("opencode-session.json"))
-            .find(|p| p.exists());
-
         let agent_session_path = context
             .workspace_dirs
             .iter()
             .map(|d| d.join(&thread_name).join(".jyc").join("agent-session.json"))
             .find(|p| p.exists());
 
-        let agent_conversation_path = context
+        let agent_context_path = context
             .workspace_dirs
             .iter()
             .map(|d| d.join(&thread_name).join(".jyc").join("agent-context.json"))
@@ -273,23 +267,12 @@ impl InspectServer {
         // Delete all session files that exist
         let mut deleted = false;
 
-        if let Some(path) = session_path {
-            let canonical_ws = context.workspace_dirs.iter().filter_map(|d| d.canonicalize().ok()).collect::<Vec<_>>();
-            if let Ok(canonical_path) = path.canonicalize() {
-                if canonical_ws.iter().any(|ws| canonical_path.starts_with(ws)) {
-                    if tokio::fs::remove_file(&path).await.is_ok() {
-                        deleted = true;
-                    }
-                }
-            }
-        }
-
         if let Some(path) = agent_session_path {
             tokio::fs::remove_file(&path).await.ok();
             deleted = true;
         }
 
-        if let Some(path) = agent_conversation_path {
+        if let Some(path) = agent_context_path {
             tokio::fs::remove_file(&path).await.ok();
             deleted = true;
         }
@@ -828,7 +811,7 @@ password = "p"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
         std::fs::write(&config_path, config_toml).unwrap();
 
@@ -908,8 +891,8 @@ mode = "opencode"
         let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("opencode-session.json"),
-            r#"{"sessionId":"test-id"}"#,
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();
@@ -956,7 +939,7 @@ mode = "opencode"
             other => panic!("expected ResetSessionResult, got {:?}", other),
         }
 
-        assert!(!jyc_dir.join("opencode-session.json").exists());
+        assert!(!jyc_dir.join("agent-session.json").exists());
 
         cancel.cancel();
         handle.await.unwrap();

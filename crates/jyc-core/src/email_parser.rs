@@ -709,7 +709,7 @@ Hello, I need help with X.
 
     #[test]
     fn test_build_footer_disabled_returns_empty() {
-        let footer = build_footer(Some("test-model"), Some("opencode"), Some(5000), Some(120000), false);
+        let footer = build_footer(Some("test-model"), Some("agent"), Some(5000), Some(120000), false);
         assert!(footer.is_empty());
     }
 
@@ -721,9 +721,9 @@ Hello, I need help with X.
 
     #[test]
     fn test_build_footer_enabled_all_fields() {
-        let footer = build_footer(Some("gpt-4"), Some("opencode"), Some(10240), Some(122880), true);
+        let footer = build_footer(Some("gpt-4"), Some("agent"), Some(10240), Some(122880), true);
         assert!(footer.contains("Model: gpt-4"));
-        assert!(footer.contains("Mode: opencode"));
+        assert!(footer.contains("Mode: agent"));
         assert!(footer.contains("Tokens:"));
     }
 
@@ -740,7 +740,7 @@ Hello, I need help with X.
             "body",
             "msg",
             Some("model"),
-            Some("opencode"),
+            Some("agent"),
             Some(5000),
             Some(120000),
             false,
@@ -761,7 +761,7 @@ Hello, I need help with X.
             "body",
             "msg",
             Some("model"),
-            Some("opencode"),
+            Some("agent"),
             Some(5000),
             Some(120000),
             true,

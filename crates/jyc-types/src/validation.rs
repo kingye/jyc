@@ -220,11 +220,11 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     }
 
     // Agent
-    if config.agent.mode != "opencode" && config.agent.mode != "static" && config.agent.mode != "agent" {
+    if config.agent.mode != "agent" && config.agent.mode != "static" {
         errors.push(ValidationError {
             path: "agent.mode".into(),
             message: format!(
-                "must be 'opencode', 'agent', or 'static', got '{}'",
+                "must be 'agent' or 'static', got '{}'",
                 config.agent.mode
             ),
         });
@@ -472,7 +472,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#
     }
 
@@ -489,7 +489,7 @@ mode = "opencode"
 [general]
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
@@ -516,7 +516,7 @@ password = "p"
 mode = "websocket"
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
@@ -547,7 +547,7 @@ regex = "[invalid"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
@@ -602,7 +602,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 
 [attachments]
 
@@ -668,7 +668,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 
 [attachments]
 
@@ -716,7 +716,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 
 [agent.opencode]
 "#;

@@ -22,7 +22,7 @@ pub struct AgentResult {
 
 /// Trait for agent services that generate AI responses.
 ///
-/// Each agent mode ("opencode", "static", future modes) implements this trait.
+/// Each agent mode ("agent", "static") implements this trait.
 /// The agent is channel-agnostic — it does NOT know about email, FeiShu, etc.
 ///
 /// The agent is responsible for:

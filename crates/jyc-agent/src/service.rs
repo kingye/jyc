@@ -125,7 +125,7 @@ impl JycAgentService {
     fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn provider::Provider>> {
         let model = model_override
             .or(self.config.model.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("No model configured. Set [agent.opencode].model in config.toml"))?;
+            .ok_or_else(|| anyhow::anyhow!("No model configured. Set [agent].model in config.toml"))?;
 
         provider::create_provider(model, &self.config.providers)
     }

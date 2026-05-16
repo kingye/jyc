@@ -2,6 +2,51 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.0] - 2026-05-16
+
+### Added
+
+- **In-process AI agent (`jyc-agent` crate)** — replaces external OpenCode server dependency
+  - Native Anthropic Messages API provider (streaming via SSE)
+  - OpenAI-compatible provider (DeepSeek, GPT, Groq, etc.)
+  - 7 built-in tools: bash, read, write, edit, glob, grep, webfetch
+  - MCP reply_message bridge (in-process signal files, no subprocess)
+  - Core agent loop: prompt → tool_call → execute → repeat
+  - Flexible `params` config for provider/model API parameters (thinking, temperature, etc.)
+  - Per-model `context_window` configuration
+- **Raw context persistence** (`agent-context.json`) — stores provider-formatted conversation
+  exactly as sent/received, preserving provider-specific fields (DeepSeek reasoning_content, etc.)
+- **Session management** — token tracking, auto-reset at 95% context window, summarize-on-reset
+- **Event bus integration** — agent publishes ProcessingStarted/Completed, ToolStarted/ToolCompleted
+  to dashboard ActivityTracker
+- **Workspace crate structure** — project refactored into 8 workspace crates for faster incremental builds
+
+### Changed
+
+- Default agent mode changed from `"opencode"` to `"agent"`
+- Config: `model` and `system_prompt` moved from `[agent.opencode]` to `[agent]` directly
+- Config: provider definitions in `[agent.providers.*]` with per-model settings
+- `read_input_tokens()` unified — works for both old OpenCode and new agent session files
+- Token display: stores latest input_tokens (not accumulated) since full context is sent each turn
+
+### Removed
+
+- **OpenCode dependency** — no longer requires external OpenCode server process
+  - Removed `crates/jyc-services/src/opencode/` module (6 files)
+  - Removed OpenCode installation from Dockerfile
+  - Removed OpenCode volumes from docker-compose.yml
+  - Removed `model_handler.rs` (queried OpenCode's provider endpoint)
+  - Removed `reqwest-eventsource` dependency from jyc-services
+- Config: `mode = "opencode"` no longer supported (use `mode = "agent"`)
+- Config: `OpenCodeConfig` struct removed (fields moved to `AgentConfig` top level)
+
+### Fixed
+
+- DeepSeek v4-pro SSE streaming (uses EventSource instead of raw bytes_stream)
+- DeepSeek reasoning_content properly captured and round-tripped in raw context
+- Assistant messages with null content filtered on save/load/send (prevents 400 errors)
+- Empty response detection and logging for debugging provider issues
+
 ## [0.2.1] - 2026-04-26
 
 ### Added

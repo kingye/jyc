@@ -211,22 +211,43 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Reply mode: "opencode" or "static"
-    #[serde(default = "default_opencode")]
+    /// Reply mode: "agent" or "static"
+    #[serde(default = "default_agent_mode")]
     pub mode: String,
+
+    /// Model identifier in "provider/model-id" format (e.g., "anthropic/claude-opus-4-6")
+    pub model: Option<String>,
+
+    /// System prompt for the AI
+    pub system_prompt: Option<String>,
 
     /// Static reply text (used when mode = "static")
     pub text: Option<String>,
 
-    /// OpenCode AI configuration
-    pub opencode: Option<OpenCodeConfig>,
-
     /// Outbound attachment configuration
     pub attachments: Option<OutboundAttachmentConfig>,
 
-    /// Provider definitions for the in-process agent (mode = "agent")
+    /// Provider definitions for the in-process agent
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderDef>,
+
+    /// Legacy: OpenCode config (ignored, kept for backward-compatible deserialization)
+    #[serde(default)]
+    pub opencode: Option<LegacyOpenCodeConfig>,
+}
+
+/// Legacy OpenCode config — kept only for backward-compatible deserialization.
+/// These fields are ignored; use top-level `model` and `system_prompt` instead.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LegacyOpenCodeConfig {
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub include_thread_history: bool,
+    #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default = "default_true")]
+    pub kill_lsp_after_prompt: bool,
 }
 
 /// Provider definition for the in-process agent.
@@ -257,29 +278,6 @@ pub struct ModelDef {
     /// Extra parameters merged into API request when using this model (overrides provider params)
     #[serde(default)]
     pub params: Option<serde_json::Value>,
-}
-
-/// OpenCode AI service configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct OpenCodeConfig {
-    /// Model identifier (e.g., "SiliconFlow/Pro/zai-org/GLM-4.7")
-    pub model: Option<String>,
-
-    /// Small model for lightweight tasks (title generation, compaction)
-    pub small_model: Option<String>,
-
-    /// System prompt for the AI
-    pub system_prompt: Option<String>,
-
-    /// Maximum input tokens per session before resetting.
-    /// If not set, uses 95% of the model's context window, or 120K as fallback.
-    pub max_input_tokens: Option<u64>,
-
-    /// Kill LSP server processes after each prompt completed to free memory.
-    /// Default is `true`. When `true`, LSP processes are killed after each
-    /// prompt completes.
-    #[serde(default = "default_true")]
-    pub kill_lsp_after_prompt: bool,
 }
 
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.
@@ -401,8 +399,8 @@ fn default_idle() -> String {
 fn default_inbox() -> String {
     "INBOX".to_string()
 }
-fn default_opencode() -> String {
-    "opencode".to_string()
+fn default_agent_mode() -> String {
+    "agent".to_string()
 }
 
 fn default_60() -> u64 {
@@ -599,7 +597,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
 
         let config = load_config_from_str(toml).unwrap();
@@ -607,7 +605,7 @@ mode = "opencode"
         assert!(config.channels.contains_key("work"));
         assert_eq!(config.channels["work"].channel_type, "email");
         assert!(config.agent.enabled);
-        assert_eq!(config.agent.mode, "opencode");
+        assert_eq!(config.agent.mode, "agent");
     }
 
     #[test]
@@ -632,7 +630,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#;
 
         let config = load_config_from_str(toml).unwrap();
@@ -662,7 +660,7 @@ password = "pass"
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 
 [[mcps]]
 name = "jyc_vision"

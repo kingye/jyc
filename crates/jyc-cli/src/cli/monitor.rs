@@ -7,8 +7,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use jyc_core::agent::AgentService;
-use jyc_services::opencode::OpenCodeServer;
-use jyc_services::opencode::service::OpenCodeService;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_agent::JycAgentService;
 
@@ -81,7 +79,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
-    let opencode_server = Arc::new(OpenCodeServer::new());
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -171,19 +168,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
         // Create agent based on configured mode
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
-            "opencode" => {
-                tracing::info!(channel = %channel_name, "Using agent: opencode (external server)");
-                Arc::new(OpenCodeService::new(
-                    opencode_server.clone(),
-                    agent_config.clone(),
-                    config.clone(),
-                    workdir.to_path_buf(),
-                ))
-            }
             "agent" => {
-                // In-process agent — no external OpenCode server needed
-                let model = agent_config.opencode.as_ref()
-                    .and_then(|o| o.model.clone());
+                // In-process agent
+                let model = agent_config.model.clone();
                 tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
                 let providers = agent_config.providers.iter()
                     .map(|(name, def)| {
@@ -527,9 +514,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     for task in tasks {
         task.await.ok();
     }
-
-    // Stop the OpenCode server
-    opencode_server.stop().await.ok();
 
     // Wait for inspect server to stop
     if let Some(task) = inspect_task {

@@ -9,13 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust toolchain (needed by OpenCode agent for cargo build/test)
+# Install Rust toolchain (needed by AI agent for cargo build/test)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install OpenCode
-RUN curl -fsSL https://opencode.ai/install | bash \
-    && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -37,14 +33,11 @@ ENV PATH="/root/.local/share/fnm/aliases/default/bin:${PATH}"
 RUN npm install -g oauth2-forwarder
 
 # Directories and workdir
-RUN mkdir -p /root/.claude/skills /root/.agents/skills \
-    /root/.config/opencode /root/.config/gh \
-    /root/.local/share/opencode \
-    /opt/jyc
+RUN mkdir -p /root/.config/gh /opt/jyc
 
 WORKDIR /opt/jyc
 
-VOLUME ["/opt/jyc", "/root/.config/opencode", "/root/.claude/skills", "/root/.agents/skills"]
+VOLUME ["/opt/jyc"]
 
 # ── Stage 2: Build jyc (changes when source changes) ─────────────────
 FROM base AS builder

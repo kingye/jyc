@@ -10,33 +10,12 @@ services:
       - .env
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OAUTH2_FORWARDER_PORT=${OAUTH2_FORWARDER_PORT:-9191}
-      - OAUTH2_FORWARDER_SERVER=${OAUTH2_FORWARDER_SERVER:-localhost}:${OAUTH2_FORWARDER_PORT:-9191}
-      - BROWSER=${OAUTH2_FORWARDER_BROWSER:-o2f-browser}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
     volumes:
       # JYC data directory (config.toml, .env, channels, workspace)
       - ${JYC_DATA_DIR:-./}:/opt/jyc
-
-      # OpenCode global config (API keys, providers, model settings)
-      - ${OPENCODE_CONFIG}:/root/.config/opencode/opencode.jsonc:ro
-
-      # OpenCode data (sessions DB, logs, snapshots — persisted across restarts)
-      - ${OPENCODE_DATA_DIR:-opencode-data}:/root/.local/share/opencode
-
-      # Skills (read-only — used by OpenCode AI)
-      - ${CLAUDE_SKILLS_DIR:-~/.claude/skills}:/root/.claude/skills:ro
-      - ${AGENT_SKILLS_DIR:-~/.agents/skills}:/root/.agents/skills:ro
-
-      # Project source directories (mounted into thread workspaces for AI access)
-      # The AI's working directory is the thread dir, so source must be inside the workspace.
-      # Customize per your channel/thread layout. Example:
-      #   - /path/to/project:/opt/jyc/<channel>/workspace/<thread>/project
 
       # Git/GitHub credentials
       - ${JYC_DATA_DIR}/.netrc:/root/.netrc
       - ${JYC_DATA_DIR}/gh_hosts.yml:/root/.config/gh/hosts.yml
     restart: unless-stopped
-
-# Named volumes
-volumes:
-  opencode-data:    # OpenCode sessions, logs

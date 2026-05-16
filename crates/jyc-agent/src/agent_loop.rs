@@ -108,8 +108,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 4. Add assistant message to internal history AND raw context
         history.push(response.to_message());
         // Only save raw assistant message if it has content or tool_calls
-        // (skip empty responses that would cause 400 errors on replay)
-        if !response.text.is_empty() || !response.tool_calls.is_empty() || !response.reasoning_content.is_empty() {
+        // (reasoning_content alone is not accepted by DeepSeek on replay)
+        if !response.text.is_empty() || !response.tool_calls.is_empty() {
             raw_context.push(response.to_raw_message(provider));
         }
 

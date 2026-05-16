@@ -76,7 +76,8 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
     if context_path.exists() {
         if let Ok(content) = tokio::fs::read_to_string(&context_path).await {
             if let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-                // Filter out empty assistant messages (no content, no tool_calls, no reasoning)
+                // Filter out invalid assistant messages:
+                // DeepSeek requires content OR tool_calls (reasoning_content alone is not accepted)
                 let raw_context: Vec<serde_json::Value> = raw_context.into_iter()
                     .filter(|m| {
                         if m.get("role").and_then(|r| r.as_str()) == Some("assistant") {
@@ -86,10 +87,7 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
                             let has_tool_calls = m.get("tool_calls")
                                 .and_then(|t| t.as_array())
                                 .is_some_and(|a| !a.is_empty());
-                            let has_reasoning = m.get("reasoning_content")
-                                .and_then(|r| r.as_str())
-                                .is_some_and(|s| !s.is_empty());
-                            has_content || has_tool_calls || has_reasoning
+                            has_content || has_tool_calls
                         } else {
                             true
                         }

@@ -90,7 +90,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 2. Collect the response
         let response = collect_response(stream).await?;
 
-        total_input_tokens += response.input_tokens;
+        // Track tokens: input_tokens from last call is the current context size
+        // (each call sends full context, so latest = total). Output tokens accumulate.
+        if response.input_tokens > 0 {
+            total_input_tokens = response.input_tokens;
+        }
         total_output_tokens += response.output_tokens;
 
         // 3. Check for empty response (likely an API error we didn't catch)

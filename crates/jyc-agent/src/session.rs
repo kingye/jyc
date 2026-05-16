@@ -163,11 +163,15 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
 /// Auto-resets (with summary) if total tokens exceed max_input_tokens.
+///
+/// `input_tokens` is the tokens reported by the last API call — this already
+/// includes all prior context, so we store it directly (not accumulated).
 pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64, context_window: Option<u64>) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
-    state.total_input_tokens += input_tokens;
+    // Store the latest input tokens (not accumulated — each API call includes full context)
+    state.total_input_tokens = input_tokens;
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {

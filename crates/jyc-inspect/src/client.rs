@@ -309,8 +309,8 @@ mod tests {
         let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("opencode-session.json"),
-            r#"{"sessionId":"test-id"}"#,
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();
@@ -347,7 +347,7 @@ mod tests {
 
         assert!(success, "reset should succeed: {message}");
         assert!(message.contains("session deleted"));
-        assert!(!jyc_dir.join("opencode-session.json").exists());
+        assert!(!jyc_dir.join("agent-session.json").exists());
 
         cancel.cancel();
     }

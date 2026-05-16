@@ -172,7 +172,7 @@ sender = { email = "test@example.com" }
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#
             ).unwrap()),
             channel: "test".into(),

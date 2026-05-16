@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-agent"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-channels"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-inspect"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-mcp"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1612,10 +1612,9 @@ dependencies = [
 
 [[package]]
 name = "jyc-services"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
- "arc-swap",
  "async-imap",
  "async-native-tls",
  "async-trait",
@@ -1623,18 +1622,13 @@ dependencies = [
  "chrono",
  "comrak",
  "futures",
- "glob",
  "htmd",
  "jyc-core",
- "jyc-mcp",
  "jyc-types",
  "jyc-utils",
  "lettre",
- "libc",
  "mail-parser",
  "regex",
- "reqwest",
- "reqwest-eventsource",
  "serde",
  "serde_json",
  "tempfile",
@@ -1646,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-types"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1662,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-utils"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "jyc-types",

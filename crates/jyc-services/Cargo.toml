@@ -1,6 +1,6 @@
 [package]
 name = "jyc-services"
-version = "0.2.1"
+version.workspace = true
 edition = "2024"
 description = "External service integrations for the JYC AI agent framework"
 
@@ -8,7 +8,6 @@ description = "External service integrations for the JYC AI agent framework"
 jyc-types = { path = "../jyc-types" }
 jyc-utils = { path = "../jyc-utils" }
 jyc-core = { path = "../jyc-core" }
-jyc-mcp = { path = "../jyc-mcp" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "compat"] }
 serde = { version = "1", features = ["derive"] }
@@ -17,20 +16,15 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 anyhow = "1"
 async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-reqwest-eventsource = "0.6"
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = "0.5"
 mail-parser = "0.9"
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 comrak = "0.37"
 htmd = "0.5"
-libc = "0.2"
 regex = "1"
 base64 = "0.22"
 futures = "0.3"
-arc-swap = "1"
-glob = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

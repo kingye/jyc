@@ -96,7 +96,7 @@ username = "u"
 password = "p"
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#,
                 )
                 .unwrap(),
@@ -145,7 +145,7 @@ mode = "opencode"
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("opencode-session.json"), r#"{"sessionId":"test"}"#)
+        tokio::fs::write(jyc_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","total_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
             .await
             .unwrap();
 
@@ -154,6 +154,6 @@ mode = "opencode"
         handler.execute(ctx).await.unwrap();
 
         // Session file should still exist
-        assert!(jyc_dir.join("opencode-session.json").exists());
+        assert!(jyc_dir.join("agent-session.json").exists());
     }
 }

@@ -200,7 +200,7 @@ username = "u"
 password = "p"
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 "#,
             ).unwrap()),
             channel: "test".into(),

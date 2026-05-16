@@ -243,7 +243,7 @@ impl Provider for OpenAiCompatProvider {
     ) -> Result<EventStream> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        // Build messages array: system + raw messages
+        // Build messages array: system + raw messages (filtered)
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {
             api_messages.push(serde_json::json!({
@@ -251,7 +251,21 @@ impl Provider for OpenAiCompatProvider {
                 "content": system,
             }));
         }
-        api_messages.extend_from_slice(raw_messages);
+        // Skip assistant messages with null/empty content and no tool_calls
+        for msg in raw_messages {
+            if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                let has_content = msg.get("content")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                let has_tool_calls = msg.get("tool_calls")
+                    .and_then(|t| t.as_array())
+                    .is_some_and(|a| !a.is_empty());
+                if !has_content && !has_tool_calls {
+                    continue;
+                }
+            }
+            api_messages.push(msg.clone());
+        }
 
         // Build request body
         let mut body = serde_json::json!({

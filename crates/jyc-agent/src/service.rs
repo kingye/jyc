@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing;
@@ -20,6 +20,58 @@ use crate::session;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
 
+/// Metadata for a discovered skill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillMeta {
+    /// Skill name (e.g., "coding-principles")
+    name: String,
+    /// Human-readable description
+    description: String,
+    /// Path to the skill's directory (contains SKILL.md)
+    source_path: PathBuf,
+}
+
+/// Parse frontmatter from a SKILL.md file.
+///
+/// Frontmatter is delimited by `---` lines. Supports `name:` and `description:` fields.
+/// Returns `None` if the file has no valid frontmatter or missing required fields.
+fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
+    let mut lines = content.lines();
+
+    // First line must be "---"
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let mut name = None;
+    let mut description = None;
+
+    for line in &mut lines {
+        let trimmed = line.trim();
+        // End of frontmatter
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("name:") {
+            name = Some(value.trim().to_string());
+        } else if let Some(value) = trimmed.strip_prefix("description:") {
+            description = Some(value.trim().to_string());
+        }
+    }
+
+    let name = name?;
+    let description = description?;
+    if name.is_empty() || description.is_empty() {
+        return None;
+    }
+
+    Some(SkillMeta {
+        name,
+        description,
+        source_path: PathBuf::new(), // caller fills this in
+    })
+}
+
 /// In-process AI agent service.
 ///
 /// Implements `AgentService` by running LLM inference and tool execution
@@ -28,16 +80,99 @@ pub struct JycAgentService {
     config: AgentConfig,
     /// Per-thread event bus map.
     event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    /// JYC workdir (for discovering global skills).
+    workdir: PathBuf,
 }
 
 impl JycAgentService {
-    /// Create a new agent service with the given configuration.
-    pub fn new(config: AgentConfig) -> Self {
+    /// Create a new agent service with the given configuration and workdir.
+    pub fn new(config: AgentConfig, workdir: PathBuf) -> Self {
         Self {
             config,
             event_buses: Mutex::new(HashMap::new()),
+            workdir,
         }
     }
+
+    /// Discover skills from multiple paths, with priority-based deduplication.
+    ///
+    /// Scans paths from lowest to highest priority (later paths override earlier ones
+    /// when skills share the same name).
+    fn discover_skills(&self, thread_path: &Path) -> Vec<SkillMeta> {
+        let mut skills: HashMap<String, SkillMeta> = HashMap::new();
+
+        // Build scan paths from low to high priority
+        let scan_paths: Vec<PathBuf> = {
+            let mut paths = Vec::new();
+
+            // $HOME/.config/opencode/skills/
+            if let Ok(home) = std::env::var("HOME") {
+                paths.push(PathBuf::from(&home).join(".config/opencode/skills"));
+                // $HOME/.claude/skills/
+                paths.push(PathBuf::from(&home).join(".claude/skills"));
+            }
+
+            // {jyc-data}/skills/ (via workdir)
+            paths.push(self.workdir.join("skills"));
+
+            // {thread_path}/repo/.claude/skills/
+            paths.push(thread_path.join("repo/.claude/skills"));
+            // {thread_path}/repo/.opencode/skills/
+            paths.push(thread_path.join("repo/.opencode/skills"));
+            // {thread_path}/repo/.jyc/skills/
+            paths.push(thread_path.join("repo/.jyc/skills"));
+
+            // {thread_path}/.claude/skills/
+            paths.push(thread_path.join(".claude/skills"));
+            // {thread_path}/.opencode/skills/
+            paths.push(thread_path.join(".opencode/skills"));
+            // {thread_path}/.jyc/skills/
+            paths.push(thread_path.join(".jyc/skills"));
+
+            paths
+        };
+
+        for scan_dir in &scan_paths {
+            if !scan_dir.exists() || !scan_dir.is_dir() {
+                continue;
+            }
+
+            let entries = match std::fs::read_dir(scan_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for entry in entries.flatten() {
+                let skill_dir = entry.path();
+                if !skill_dir.is_dir() {
+                    continue;
+                }
+
+                let skill_md = skill_dir.join("SKILL.md");
+                if !skill_md.exists() {
+                    continue;
+                }
+
+                let content = match std::fs::read_to_string(&skill_md) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                if let Some(mut meta) = parse_skill_frontmatter(&content) {
+                    meta.source_path = skill_dir;
+                    // HashMap insert: later (higher-priority) paths overwrite earlier ones
+                    skills.insert(meta.name.clone(), meta);
+                }
+            }
+        }
+
+        let mut result: Vec<SkillMeta> = skills.into_values().collect();
+        // Sort by name for deterministic output
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        result
+    }
+
+    /// Build the system prompt for a thread.
 
     /// Build the system prompt for a thread.
     fn build_system_prompt(&self, thread_path: &Path) -> String {
@@ -67,6 +202,12 @@ impl JycAgentService {
                 prompt.push_str(&content);
                 prompt.push_str("\n\n");
             }
+        }
+
+        // Discover and inject skill metadata
+        let skills = self.discover_skills(thread_path);
+        if !skills.is_empty() {
+            prompt.push_str(&format_skills_section(&skills));
         }
 
         // Reply instructions
@@ -134,6 +275,36 @@ impl JycAgentService {
     async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
         self.event_buses.lock().await.get(thread_name).cloned()
     }
+}
+
+/// Format the skills section for inclusion in the system prompt.
+///
+/// Produces a markdown-formatted list of available skills with their paths.
+/// Returns an empty string if the skills list is empty.
+fn format_skills_section(skills: &[SkillMeta]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::new();
+    section.push_str("## Available Skills\n\n");
+
+    for skill in skills {
+        section.push_str(&format!(
+            "- **{}** (at {})\n  {}\n\n",
+            skill.name,
+            skill.source_path.display(),
+            skill.description
+        ));
+    }
+
+    section.push_str(
+        "To load a skill's full instructions, use `read <skill-path>/SKILL.md`.\n\
+         All file paths within a SKILL.md are relative to that skill's directory.\n\
+         When running skill scripts: cd <skill-path> && <command>\n\n"
+    );
+
+    section
 }
 
 #[async_trait]

@@ -196,7 +196,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     model,
                     providers,
                 };
-                Arc::new(JycAgentService::new(agent_cfg))
+                Arc::new(JycAgentService::new(agent_cfg, workdir.to_path_buf()))
             }
             "static" => {
                 let text = agent_config

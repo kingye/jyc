@@ -563,9 +563,11 @@ mod skills {
         // but leave them empty so no system skills leak
         std::fs::create_dir_all(tmp.join(".config/opencode/skills")).ok();
         std::fs::create_dir_all(tmp.join(".claude/skills")).ok();
+        // SAFETY: guarded by HOME_LOCK mutex and restored after f() returns
         unsafe { std::env::set_var("HOME", tmp.as_os_str()); }
         f();
         if let Some(old) = old_home {
+            // SAFETY: restoring original value within same lock scope
             unsafe { std::env::set_var("HOME", old); }
         }
     }

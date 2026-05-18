@@ -173,8 +173,6 @@ impl JycAgentService {
     }
 
     /// Build the system prompt for a thread.
-
-    /// Build the system prompt for a thread.
     fn build_system_prompt(&self, thread_path: &Path) -> String {
         let mut prompt = String::new();
 

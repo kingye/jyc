@@ -22,20 +22,20 @@ use crate::types::AgentConfig;
 
 /// Metadata for a discovered skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillMeta {
+pub struct SkillMeta {
     /// Skill name (e.g., "coding-principles")
-    name: String,
+    pub name: String,
     /// Human-readable description
-    description: String,
+    pub description: String,
     /// Path to the skill's directory (contains SKILL.md)
-    source_path: PathBuf,
+    pub source_path: PathBuf,
 }
 
 /// Parse frontmatter from a SKILL.md file.
 ///
 /// Frontmatter is delimited by `---` lines. Supports `name:` and `description:` fields.
 /// Returns `None` if the file has no valid frontmatter or missing required fields.
-fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
+pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
     let mut lines = content.lines();
 
     // First line must be "---"
@@ -98,7 +98,7 @@ impl JycAgentService {
     ///
     /// Scans paths from lowest to highest priority (later paths override earlier ones
     /// when skills share the same name).
-    fn discover_skills(&self, thread_path: &Path) -> Vec<SkillMeta> {
+    pub fn discover_skills(&self, thread_path: &Path) -> Vec<SkillMeta> {
         let mut skills: HashMap<String, SkillMeta> = HashMap::new();
 
         // Build scan paths from low to high priority
@@ -281,7 +281,7 @@ impl JycAgentService {
 ///
 /// Produces a markdown-formatted list of available skills with their paths.
 /// Returns an empty string if the skills list is empty.
-fn format_skills_section(skills: &[SkillMeta]) -> String {
+pub fn format_skills_section(skills: &[SkillMeta]) -> String {
     if skills.is_empty() {
         return String::new();
     }

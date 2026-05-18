@@ -78,20 +78,17 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
+## [0.3.1] - 2026-05-18
 
-- **Refactored to Rust workspace structure** (#179) — Split single crate into 8 workspace crates:
-  - `jyc-types` — Shared types (InboundMessage, ChannelPattern, AppConfig, etc.)
-  - `jyc-utils` — Utility functions (helpers, constants, attachment validation)
-  - `jyc-core` — Core business logic (AgentService trait, ThreadManager, MessageRouter, commands)
-  - `jyc-services` — External service integrations (OpenCode, IMAP, SMTP)
-  - `jyc-channels` — Channel adapters (email, feishu, github)
-  - `jyc-inspect` — Runtime inspection server/client
-  - `jyc-mcp` — MCP tools (reply, question, vision)
-  - `jyc-cli` — CLI binary
-- Eliminated config↔channels circular dependency by merging types into jyc-types
-- AgentService trait kept in jyc-core to avoid circular deps with ThreadEventBusRef
-- Dockerfile updated for workspace structure (crate directory layout)
+### Added
+- **Multi-path skill discovery** (#182) — Skills are now loaded from 9 priority paths (`.jyc/skills/` → `.claude/skills/` → `.opencode/skills/` → user home → system), with higher-priority paths overriding same-named skills from lower-priority paths. Supports YAML frontmatter with block scalar descriptions.
+- **Dashboard skills display** (#184) — Dashboard TUI detail panel now shows the list of skills loaded for each thread.
+
+### Fixed
+- **Read tool symlink support** — `read` tool now follows symlinks within the working directory (previously rejected symlinks as "outside working directory").
+
+### Changed
+- **40 unit tests** added for jyc-agent regression coverage (skill parsing, discovery, and formatting).
 
 ## [0.2.1] - 2026-04-26
 

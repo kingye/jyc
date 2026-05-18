@@ -543,3 +543,237 @@ mod mcp_bridge {
         );
     }
 }
+
+mod skills {
+    use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
+    use jyc_agent::JycAgentService;
+    use jyc_agent::types::AgentConfig;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Ensure HOME is set to a temp dir so system-level skills don't leak into tests.
+    /// Returns the guard that keeps the override alive.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_home(tmp: &std::path::Path, f: impl FnOnce()) {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        // Create .config/opencode/skills and .claude/skills in the temp dir
+        // but leave them empty so no system skills leak
+        std::fs::create_dir_all(tmp.join(".config/opencode/skills")).ok();
+        std::fs::create_dir_all(tmp.join(".claude/skills")).ok();
+        // SAFETY: guarded by HOME_LOCK mutex and restored after f() returns
+        unsafe { std::env::set_var("HOME", tmp.as_os_str()); }
+        f();
+        if let Some(old) = old_home {
+            // SAFETY: restoring original value within same lock scope
+            unsafe { std::env::set_var("HOME", old); }
+        }
+    }
+
+    /// Helper: create a JycAgentService with a specific workdir.
+    fn make_service(workdir: PathBuf) -> JycAgentService {
+        JycAgentService::new(
+            AgentConfig {
+                model: None,
+                providers: HashMap::new(),
+            },
+            workdir,
+        )
+    }
+
+    #[test]
+    fn no_skills_dir_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert!(skills.is_empty());
+        });
+    }
+
+    #[test]
+    fn single_skill_parsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create .jyc/skills/test-skill/SKILL.md
+        let skill_dir = tmp.path().join(".jyc/skills/test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: A test skill\n---\n\n# Full content here\n",
+        ).unwrap();
+
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "test-skill");
+            assert_eq!(skills[0].description, "A test skill");
+            assert!(skills[0].source_path.ends_with("test-skill"));
+        });
+    }
+
+    #[test]
+    fn empty_skills_dir_handled() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create the directory but leave it empty
+        std::fs::create_dir_all(tmp.path().join(".jyc/skills")).unwrap();
+
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert!(skills.is_empty());
+        });
+    }
+
+    #[test]
+    fn malformed_skill_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a valid skill
+        let good_dir = tmp.path().join(".jyc/skills/good-skill");
+        std::fs::create_dir_all(&good_dir).unwrap();
+        std::fs::write(
+            good_dir.join("SKILL.md"),
+            "---\nname: good-skill\ndescription: Valid\n---\n",
+        ).unwrap();
+
+        // Create a malformed skill (no frontmatter)
+        let bad_dir = tmp.path().join(".jyc/skills/bad-skill");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        std::fs::write(bad_dir.join("SKILL.md"), "Just some text, no frontmatter").unwrap();
+
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "good-skill");
+        });
+    }
+
+    #[test]
+    fn same_name_priority() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create .claude/skills/my-skill/ (lower priority — scanned earlier)
+        let claude_dir = tmp.path().join(".claude/skills/my-skill");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: From claude\n---\n",
+        ).unwrap();
+
+        // Create .jyc/skills/my-skill/ (higher priority — scanned later, overwrites)
+        let jyc_dir = tmp.path().join(".jyc/skills/my-skill");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: From JYC (overrides)\n---\n",
+        ).unwrap();
+
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert_eq!(skills.len(), 1);
+            // Should take the .jyc version (higher priority)
+            assert_eq!(skills[0].description, "From JYC (overrides)");
+        });
+    }
+
+    #[test]
+    fn multi_path_discovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Skill 1 in .jyc/skills/
+        let d1 = tmp.path().join(".jyc/skills/skill-one");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::write(d1.join("SKILL.md"), "---\nname: skill-one\ndescription: One\n---\n").unwrap();
+
+        // Skill 2 in repo/.opencode/skills/
+        let d2 = tmp.path().join("repo/.opencode/skills/skill-two");
+        std::fs::create_dir_all(&d2).unwrap();
+        std::fs::write(d2.join("SKILL.md"), "---\nname: skill-two\ndescription: Two\n---\n").unwrap();
+
+        with_temp_home(tmp.path(), || {
+            let svc = make_service(tmp.path().to_path_buf());
+            let skills = svc.discover_skills(tmp.path());
+            assert_eq!(skills.len(), 2);
+            let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+            assert!(names.contains(&"skill-one"));
+            assert!(names.contains(&"skill-two"));
+        });
+    }
+
+    #[test]
+    fn format_includes_path() {
+        let meta = SkillMeta {
+            name: "test-skill".to_string(),
+            description: "A test skill".to_string(),
+            source_path: PathBuf::from("/some/path/to/test-skill"),
+        };
+        let section = format_skills_section(&[meta]);
+        assert!(section.contains("(at /some/path/to/test-skill)"));
+        assert!(section.contains("**test-skill**"));
+        assert!(section.contains("A test skill"));
+        assert!(section.contains("## Available Skills"));
+        assert!(section.contains("read <skill-path>/SKILL.md"));
+    }
+
+    #[test]
+    fn format_section_empty_returns_empty_string() {
+        let section = format_skills_section(&[]);
+        assert!(section.is_empty());
+    }
+
+    #[test]
+    fn parse_frontmatter_valid() {
+        let content = "---\nname: my-skill\ndescription: Does something useful\n---\n\nBody text here";
+        let meta = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "my-skill");
+        assert_eq!(meta.description, "Does something useful");
+    }
+
+    #[test]
+    fn parse_frontmatter_no_delimiter_returns_none() {
+        assert!(parse_skill_frontmatter("no frontmatter here").is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_missing_name_returns_none() {
+        assert!(parse_skill_frontmatter("---\ndescription: desc\n---\n").is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_missing_description_returns_none() {
+        assert!(parse_skill_frontmatter("---\nname: n\n---\n").is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_empty_values_returns_none() {
+        assert!(parse_skill_frontmatter("---\nname: \ndescription: d\n---\n").is_none());
+        assert!(parse_skill_frontmatter("---\nname: n\ndescription: \n---\n").is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_pipe() {
+        // Multi-line description using YAML block scalar |
+        let content = "---\nname: my-skill\ndescription: |\n  Line one\n  Line two\n---\n\nBody";
+        let meta = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "my-skill");
+        assert_eq!(meta.description, "Line one Line two");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_greater_than() {
+        // Folded block scalar >
+        let content = "---\nname: fs\ndescription: >\n  Folded line one\n  Folded line two\n---\n";
+        let meta = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "fs");
+        assert_eq!(meta.description, "Folded line one Folded line two");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_empty_returns_none() {
+        // Block scalar with no content lines → empty description → None
+        let content = "---\nname: n\ndescription: |\n---\n";
+        assert!(parse_skill_frontmatter(content).is_none());
+    }
+}

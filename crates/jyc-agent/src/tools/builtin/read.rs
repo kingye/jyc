@@ -63,23 +63,37 @@ impl Tool for ReadTool {
             ctx.working_dir.join(file_path)
         };
 
-        // Security: ensure path is within working directory
-        let canonical = path.canonicalize()
-            .map_err(|e| anyhow::anyhow!("Path not found: {} ({})", file_path, e))?;
-
-        let working_canonical = ctx.working_dir.canonicalize()
-            .unwrap_or_else(|_| ctx.working_dir.to_path_buf());
-
-        if !canonical.starts_with(&working_canonical) {
+        // Check the path exists
+        if !path.exists() {
             return Ok(ToolOutput::error(format!(
-                "Access denied: path '{}' is outside the working directory", file_path
+                "Path not found: '{}'", file_path
             )));
         }
 
-        if canonical.is_dir() {
+        // Security: ensure path is within working directory.
+        // Skip this check if path traverses a symlink (e.g., repo/ -> /other/path),
+        // since JYC's repo_group feature uses symlinks within the working directory.
+        let has_symlink = path.ancestors().any(|ancestor| {
+            ancestor != ctx.working_dir && ancestor.is_symlink()
+        });
+
+        if !has_symlink {
+            let canonical = path.canonicalize()
+                .unwrap_or_else(|_| path.clone());
+            let working_canonical = ctx.working_dir.canonicalize()
+                .unwrap_or_else(|_| ctx.working_dir.to_path_buf());
+
+            if !canonical.starts_with(&working_canonical) {
+                return Ok(ToolOutput::error(format!(
+                    "Access denied: path '{}' is outside the working directory", file_path
+                )));
+            }
+        }
+
+        if path.is_dir() {
             // Read directory listing
             let mut entries = Vec::new();
-            let mut read_dir = tokio::fs::read_dir(&canonical).await
+            let mut read_dir = tokio::fs::read_dir(&path).await
                 .map_err(|e| anyhow::anyhow!("Failed to read directory: {e}"))?;
 
             while let Some(entry) = read_dir.next_entry().await? {
@@ -96,7 +110,7 @@ impl Tool for ReadTool {
             Ok(ToolOutput::success(entries.join("\n")))
         } else {
             // Read file contents
-            let content = tokio::fs::read_to_string(&canonical).await
+            let content = tokio::fs::read_to_string(&path).await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
 
             let lines: Vec<&str> = content.lines().collect();

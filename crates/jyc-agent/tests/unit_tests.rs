@@ -751,4 +751,29 @@ mod skills {
         assert!(parse_skill_frontmatter("---\nname: \ndescription: d\n---\n").is_none());
         assert!(parse_skill_frontmatter("---\nname: n\ndescription: \n---\n").is_none());
     }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_pipe() {
+        // Multi-line description using YAML block scalar |
+        let content = "---\nname: my-skill\ndescription: |\n  Line one\n  Line two\n---\n\nBody";
+        let meta = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "my-skill");
+        assert_eq!(meta.description, "Line one Line two");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_greater_than() {
+        // Folded block scalar >
+        let content = "---\nname: fs\ndescription: >\n  Folded line one\n  Folded line two\n---\n";
+        let meta = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(meta.name, "fs");
+        assert_eq!(meta.description, "Folded line one Folded line two");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_empty_returns_none() {
+        // Block scalar with no content lines → empty description → None
+        let content = "---\nname: n\ndescription: |\n---\n";
+        assert!(parse_skill_frontmatter(content).is_none());
+    }
 }

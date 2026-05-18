@@ -46,7 +46,7 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
     let mut name = None;
     let mut description = None;
 
-    for line in &mut lines {
+    while let Some(line) = lines.next() {
         let trimmed = line.trim();
         // End of frontmatter
         if trimmed == "---" {
@@ -55,7 +55,28 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
         if let Some(value) = trimmed.strip_prefix("name:") {
             name = Some(value.trim().to_string());
         } else if let Some(value) = trimmed.strip_prefix("description:") {
-            description = Some(value.trim().to_string());
+            let val = value.trim();
+            if val == "|" || val == "|-" || val == ">" {
+                // YAML block scalar: collect indented lines until --- or non-indented line
+                let mut desc = String::new();
+                while let Some(line) = lines.next() {
+                    let trimmed = line.trim();
+                    if trimmed == "---" {
+                        // Put back the --- terminator so the outer loop can handle it
+                        // Actually we've already consumed it; just break
+                        break;
+                    }
+                    if !trimmed.is_empty() {
+                        if !desc.is_empty() {
+                            desc.push(' ');
+                        }
+                        desc.push_str(trimmed);
+                    }
+                }
+                description = Some(desc);
+            } else if !val.is_empty() {
+                description = Some(val.to_string());
+            }
         }
     }
 
@@ -169,6 +190,13 @@ impl JycAgentService {
         let mut result: Vec<SkillMeta> = skills.into_values().collect();
         // Sort by name for deterministic output
         result.sort_by(|a, b| a.name.cmp(&b.name));
+
+        tracing::info!(
+            thread_path = %thread_path.display(),
+            skills = ?result.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            "Discovered {} skill(s)", result.len()
+        );
+
         result
     }
 

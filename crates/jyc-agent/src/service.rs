@@ -236,6 +236,12 @@ impl JycAgentService {
             prompt.push_str(&format_skills_section(&skills));
         }
 
+        // Persist skill names to .jyc/skills.json for dashboard inspection
+        let skill_names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        if let Err(e) = persist_skill_names(thread_path, &skill_names) {
+            tracing::warn!(error = %e, "Failed to persist skill names to skills.json");
+        }
+
         // Reply instructions
         prompt.push_str(
             "## Reply Instructions\n\
@@ -301,6 +307,20 @@ impl JycAgentService {
     async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
         self.event_buses.lock().await.get(thread_name).cloned()
     }
+}
+
+/// Persist skill names to the thread's .jyc/skills.json file.
+///
+/// This allows the dashboard to read the skills list without re-scanning directories.
+fn persist_skill_names(thread_path: &Path, skill_names: &[&str]) -> Result<()> {
+    let jyc_dir = thread_path.join(".jyc");
+    std::fs::create_dir_all(&jyc_dir)
+        .with_context(|| format!("Failed to create .jyc dir: {}", jyc_dir.display()))?;
+    let skills_path = jyc_dir.join("skills.json");
+    let json = serde_json::to_string_pretty(skill_names)?;
+    std::fs::write(&skills_path, json)
+        .with_context(|| format!("Failed to write skills.json: {}", skills_path.display()))?;
+    Ok(())
 }
 
 /// Format the skills section for inclusion in the system prompt.

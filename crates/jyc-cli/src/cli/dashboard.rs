@@ -422,7 +422,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7), // Thread info
+            Constraint::Length(8), // Thread info
             Constraint::Min(4),   // Activity log
         ])
         .split(area);
@@ -449,6 +449,22 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(selected.mode.as_deref().unwrap_or("build")),
     ]));
+
+    // Skills line
+    if selected.skills.is_empty() {
+        info_lines.push(Line::from(vec![
+            Span::styled("Skills: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("(none)", Style::default().fg(Color::DarkGray)),
+        ]));
+    } else {
+        info_lines.push(Line::from(vec![
+            Span::styled(
+                format!("Skills ({}): ", selected.skills.len()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(selected.skills.join(", ")),
+        ]));
+    }
 
     let mut status_line = vec![
         Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),

@@ -702,6 +702,9 @@ impl ThreadManager {
             let model = read_model_override(&thread_path).await;
             let mode = read_mode_override(&thread_path).await;
 
+            // Read skills from .jyc/skills.json
+            let skills = read_skills(&thread_path).await;
+
             // Determine status
             let status = if thread_path.join(".jyc").join("question-sent.flag").exists() {
                 ThreadStatus::WaitingForAnswer
@@ -736,6 +739,7 @@ impl ThreadManager {
                 max_tokens,
                 activity: vec![],  // Filled by InspectServer from event bus
                 last_active_at,  // Filled by activity tracker; falls back to .jyc mtime
+                skills,
             });
         }
 
@@ -1430,6 +1434,17 @@ async fn read_signal_attachments(
         .collect();
 
     Some(attachments)
+}
+
+/// Read skills from thread's .jyc/skills.json file.
+async fn read_skills(thread_path: &Path) -> Vec<String> {
+    let skills_path = thread_path.join(".jyc").join("skills.json");
+    match tokio::fs::read_to_string(&skills_path).await {
+        Ok(content) => {
+            serde_json::from_str::<Vec<String>>(&content).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

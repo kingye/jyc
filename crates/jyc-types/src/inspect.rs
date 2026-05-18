@@ -88,6 +88,9 @@ pub struct ThreadInfo {
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
+    /// Skills loaded for this thread
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// Severity level for an activity entry.
@@ -224,6 +227,7 @@ mod tests {
                 max_tokens: Some(120000),
                 activity: vec![],
                 last_active_at: None,
+                skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
             }],
             stats: GlobalStats {
                 active_workers: 2,

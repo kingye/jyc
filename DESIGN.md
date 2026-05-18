@@ -3295,8 +3295,9 @@ Overseas Server (HK)                    Mainland China Server (Shanghai)
 ### Templates & Skills
 
 Agent templates define the role, instructions, and skills for each thread type.
-Templates live in the repo under `templates/`, skills under `.opencode/skills/`.
-A deploy script composes them at deploy time.
+Templates live in the repo under `templates/`. Skills are discovered from multiple
+priority paths at runtime, with thread-local paths overriding repo paths, which
+override system paths. A deploy script composes them at deploy time.
 
 **Repository structure:**
 
@@ -3309,7 +3310,7 @@ templates/                      ← AGENTS.md only (role + instructions)
   github-developer/AGENTS.md
   github-reviewer/AGENTS.md
 
-.opencode/skills/               ← Single source of truth for all skills
+.opencode/skills/               ← Default in-repo skills (lowest priority per-thread)
   invoice-processing/           ← Invoice extraction workflow
   dev-workflow/                 ← Branching, commits, releases
   incremental-dev/              ← Small-step development methodology
@@ -3317,7 +3318,34 @@ templates/                      ← AGENTS.md only (role + instructions)
   pr-review/                    ← Read-only PR review
   jyc-deploy-bare/              ← Bare metal deployment
   jyc-deploy-docker/            ← Docker deployment
+
+.claude/skills/                 ← Alternative in-repo skills (overrides .opencode/)
+.jyc/skills/                    ← Thread-local override (highest in-repo priority)
 ```
+
+**Multi-path skill discovery:**
+
+When building an agent's system prompt, `discover_skills()` scans 9 paths in
+priority order (lowest first, highest last). Same-named skills from
+higher-priority paths override those from lower-priority paths, so a
+`.jyc/skills/coding-principles/SKILL.md` completely replaces one in
+`.opencode/skills/coding-principles/SKILL.md`.
+
+| Priority | Path | Scope |
+|----------|------|-------|
+| 1 (lowest) | `$HOME/.config/opencode/skills/` | User system |
+| 2 | `$HOME/.claude/skills/` | User system |
+| 3 | `{jyc-data}/skills/` | JYC data directory |
+| 4 | `{thread}/repo/.claude/skills/` | Thread repo |
+| 5 | `{thread}/repo/.opencode/skills/` | Thread repo |
+| 6 | `{thread}/repo/.jyc/skills/` | Thread repo (highest in repo) |
+| 7 | `{thread}/.claude/skills/` | Thread-local |
+| 8 | `{thread}/.opencode/skills/` | Thread-local |
+| 9 (highest) | `{thread}/.jyc/skills/` | Thread-local override |
+
+Thread-local `.jyc/skills/` is the highest priority path — it provides a
+mechanism for overriding any skill on a per-thread basis without modifying the
+shared repository.
 
 **Skill → Template mapping:**
 
@@ -3338,9 +3366,11 @@ templates/                      ← AGENTS.md only (role + instructions)
 ```
 
 The script copies each template's `AGENTS.md` and its referenced skills from
-`.opencode/skills/` into the target directory. When a thread is created with
-a template, the `AGENTS.md` and `.opencode/skills/` are copied to the thread's
-workspace directory.
+the repository's skill directories into the target directory. When a thread is
+created with a template, the `AGENTS.md` is copied to the thread workspace.
+Skills are then discovered at runtime from all 9 priority paths (see table above)
+via `discover_skills()`, with thread-local paths overriding any repo or system
+skills of the same name.
 
 **Adding a new template:**
 

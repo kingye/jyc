@@ -42,14 +42,17 @@ cp -rn .opencode/skills/* ../.opencode/skills/ 2>/dev/null || true
 > recreating the directory. Always clone INTO the existing `repo/` directory.
 
 ## When NOT to Reply
-If after reading the triggering comment you determine there is NO actionable work,
-STOP SILENTLY without calling the reply tool. Do NOT post comments like
-"No action needed" or "Nothing to do" or "This is my own reply" — just stop.
 
-Examples of when to STOP SILENTLY (no reply):
+If after reading the triggering comment you determine there is NO actionable work,
+end your turn immediately. Do NOT call the `jyc_reply_reply_message` tool. Do NOT
+call any other tools. Do NOT produce any text output explaining why you are
+stopping — simply end your response with nothing.
+
+Skip-and-end-turn cases (no tool calls, no text):
 - The triggering comment is your own previous reply (starts with `[Planner]`)
-- Duplicate trigger (same event already handled, no new user comment since your last reply)
-- Comment from a bot with no failure or actionable finding
+- Same event already handled and no new user comment since your last reply
+- Comment from a bot or CI system with no actionable finding
+- Comment from a service account / system user with no actionable finding
 
 ## Workflow
 
@@ -58,8 +61,8 @@ Examples of when to STOP SILENTLY (no reply):
 cd repo
 gh issue view <number> --json state --jq '.state'
 ```
-**If the issue is closed, STOP IMMEDIATELY. Do NOT reply, do NOT comment, do NOT do any work. Just stop.**
-**If you detect this is a duplicate trigger for work already completed, STOP SILENTLY. Do NOT write a comment like "duplicate trigger" or "No action needed." Just stop with no output.**
+**If the issue is closed, end your turn immediately with no tool calls and no text output.**
+**If this is a duplicate trigger for work already completed, end your turn immediately with no tool calls and no text output.**
 
 ### 1. Read the Issue
 ```bash

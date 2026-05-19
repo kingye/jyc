@@ -171,7 +171,12 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                                                                          │
 │  1. Read model override (.jyc/model-override) if present                 │
 │  2. Create LLM provider (Anthropic native or OpenAI-compatible)          │
-│  3. Build system prompt (directory rules + AGENTS.md + reply instructions)│
+│  3. Build system prompt:                                                 │
+│     - Directory boundary rules                                           │
+│     - AGENTS.md (thread-local + repo/AGENTS.md if exist)                 │
+│     - Discovered skills section (lazy: name + description, full content  │
+│       loaded on demand via read tool)                                    │
+│     - Reply instructions                                                 │
 │  4. Build user prompt (incoming message)                                 │
 │  5. Build tool registry (bash, read, write, edit, glob, grep, webfetch   │
 │     + reply_message bridge)                                              │
@@ -3346,6 +3351,54 @@ higher-priority paths override those from lower-priority paths, so a
 Thread-local `.jyc/skills/` is the highest priority path — it provides a
 mechanism for overriding any skill on a per-thread basis without modifying the
 shared repository.
+
+**Runtime skill injection (lazy loading):**
+
+Each `SKILL.md` must start with YAML frontmatter (delimited by `---`) containing
+`name:` and `description:` fields. The frontmatter is parsed into `SkillMeta`:
+- `name` — from frontmatter `name:` field
+- `description` — from frontmatter `description:` field (supports `|`, `|-`, `>` block scalars)
+- `source_path` — absolute path to the skill directory (filled in by the discoverer)
+
+Skills without valid frontmatter are skipped silently.
+
+Example `SKILL.md` header:
+```yaml
+---
+name: plan-solution
+description: |
+  Create structured implementation plans with incremental steps.
+  Use when: in plan mode, creating implementation plans, analyzing requirements.
+---
+```
+
+When building the system prompt, `format_skills_section()` injects an `## Available Skills`
+section that lists each discovered skill with name + description + path:
+
+```markdown
+## Available Skills
+
+- **plan-solution** (at /home/jiny/.opencode/skills/plan-solution)
+  Create structured implementation plans with incremental steps.
+
+- **invoice-processing** (at /home/jiny/projects/jyc-data/feishu_bot/workspace/invoice-processing/.jyc/skills/invoice-processing)
+  Process invoices from messages (PDF/image attachments or URLs).
+
+To load a skill's full instructions, use `read <skill-path>/SKILL.md`.
+All file paths within a SKILL.md are relative to that skill's directory.
+When running skill scripts: cd <skill-path> && <command>
+```
+
+This is **lazy loading**: only skill names + descriptions appear in the system
+prompt, keeping it small. The LLM reads the full `SKILL.md` content on demand
+via the `read` tool when it determines a skill is relevant. Skills with full
+content can be 10-50KB each — embedding them all would bloat the prompt.
+
+**Persistence for dashboard inspection:**
+
+Discovered skill names are persisted to `.jyc/skills.json` per thread, allowing
+the inspect server / dashboard to display which skills are active for each
+thread without re-running discovery.
 
 **Skill → Template mapping:**
 

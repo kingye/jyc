@@ -28,7 +28,15 @@ async fn copy_template_files_inner(
     tokio::fs::create_dir_all(target_dir).await?;
     
     let mut copied = 0;
-    for entry in WalkDir::new(template_src).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(template_src)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| {
+            // Skip .git directories
+            e.file_name().to_str().map(|s| s != ".git").unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
         let relative = entry.path().strip_prefix(template_src)?;
         let target = target_dir.join(relative);
         
@@ -38,7 +46,10 @@ async fn copy_template_files_inner(
         
         if entry.file_type().is_dir() {
             tokio::fs::create_dir_all(&target).await?;
-        } else {
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
             tokio::fs::copy(entry.path(), &target).await?;
             copied += 1;
         }

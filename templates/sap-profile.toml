@@ -1,0 +1,66 @@
+[[mcps]]
+type = "remote"
+url = "https://mcp.jira.tools.sap/mcp"
+name = "sap.tools.jira.mcp/mcp"
+enabled = true
+
+[[mcps]]
+type = "local"
+name = "ui5-mcp"
+command = ["npx", "-y", "@ui5/mcp-server@latest"]
+timeout = 300000
+
+[[mcps]]
+type = "local"
+name = "fiori-tools"
+command = ["npx", "-y", "@sap-ux/fiori-mcp-server@0.6.47", "fiori-mcp"]
+timeout = 300000
+
+[[mcps]]
+type = "local"
+name = "figma"
+command = ["npx", "-y", "figma-developer-mcp@latest", "--stdio"]
+timeout = 300000
+
+# Chrome DevTools — browser inspection, performance tracing, accessibility audits
+[[mcps]]
+name = "chrome-devtools"
+type = "local"
+command = ["npx", "-y", "@anthropic-ai/chrome-devtools-mcp@latest"]
+timeout = 300000
+
+# SAP CAP — CDS model search, CAP documentation lookup
+[[mcps]]
+name = "cap-mcp"
+type = "local"
+command = ["npx", "-y", "@cap-js/mcp-server@latest"]
+timeout = 300000
+
+# Playwright — browser automation, UI testing, screenshot capture
+[[mcps]]
+name = "playwright"
+type = "local"
+command = ["npx", "-y", "@executeautomation/playwright-mcp-server"]
+timeout = 300000
+
+# Planner: Jira for requirements context, Figma for design reading
+[templates.github-planner]
+mcps = ["sap.tools.jira.mcp/mcp", "figma"]
+skills = ["sap-cap-ui5-dev"]
+context_files = ["context/sap-project-background.md"]
+
+[templates.github-high-level-planner]
+mcps = ["sap.tools.jira.mcp/mcp"]
+skills = ["sap-cap-ui5-dev"]
+
+# Developer: common SAP capabilities
+[templates.github-developer]
+mcps = ["ui5-mcp", "fiori-tools", "cap-mcp", "chrome-devtools"]
+skills = ["sap-cap-ui5-dev"]
+context_files = ["context/sap-project-background.md"]
+
+# Reviewer: common SAP capabilities
+[templates.github-reviewer]
+mcps = ["sap.tools.jira.mcp/mcp", "ui5-mcp", "cap-mcp"]
+skills = ["sap-cap-ui5-dev", "sap-fiori-review"]
+context_files = ["context/sap-project-background.md"]

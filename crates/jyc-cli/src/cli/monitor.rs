@@ -195,6 +195,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let agent_cfg = jyc_agent::types::AgentConfig {
                     model,
                     providers,
+                    max_iterations: agent_config.max_iterations,
                 };
                 Arc::new(JycAgentService::new(agent_cfg, workdir.to_path_buf()))
             }

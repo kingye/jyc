@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-agent"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1485,13 +1485,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "jyc-channels"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1521,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1549,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1577,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-inspect"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1594,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1612,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-services"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-imap",
@@ -1640,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-types"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1656,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-utils"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "jyc-types",

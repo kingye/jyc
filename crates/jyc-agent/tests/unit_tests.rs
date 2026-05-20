@@ -575,10 +575,7 @@ mod skills {
     /// Helper: create a JycAgentService with a specific workdir.
     fn make_service(workdir: PathBuf) -> JycAgentService {
         JycAgentService::new(
-            AgentConfig {
-                model: None,
-                providers: HashMap::new(),
-            },
+            AgentConfig::default(),
             workdir,
         )
     }
@@ -775,5 +772,35 @@ mod skills {
         // Block scalar with no content lines → empty description → None
         let content = "---\nname: n\ndescription: |\n---\n";
         assert!(parse_skill_frontmatter(content).is_none());
+    }
+}
+
+mod max_iterations {
+    use jyc_agent::types::AgentConfig;
+
+    #[test]
+    fn default_is_100() {
+        let cfg = AgentConfig::default();
+        assert_eq!(cfg.max_iterations, 100);
+    }
+
+    #[test]
+    fn deserializes_from_toml_default() {
+        // No max_iterations in TOML → default 100
+        let toml = r#"
+            model = "anthropic/claude-3"
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.max_iterations, 100);
+    }
+
+    #[test]
+    fn deserializes_explicit_value() {
+        let toml = r#"
+            model = "anthropic/claude-3"
+            max_iterations = 200
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.max_iterations, 200);
     }
 }

@@ -88,6 +88,7 @@ mod integration_tests {
             event_bus: None,
             prior_history: Vec::new(),
             prior_raw_context: Vec::new(),
+            max_iterations: None,
         }).await.unwrap();
 
         println!("Text: {}", result.text);

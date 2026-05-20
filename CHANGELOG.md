@@ -2,6 +2,43 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.2] - 2026-05-20
+
+### Added
+
+- **Configurable max iterations** (`[agent].max_iterations`, default 100) — controls how many
+  tool-call loops the agent can run per message before exiting (was hardcoded at 50)
+- **Graceful fallback reply on max-iterations** — when the agent hits its iteration limit,
+  it now sends a partial reply explaining the limit was reached, instead of failing silently
+- **System prompt iteration budget guidance** — agent is told its iteration budget and
+  encouraged to send partial replies for complex tasks rather than exhausting the budget
+
+### Fixed
+
+- Templates: rephrased "STOP SILENTLY" to action-only language (`end your turn`,
+  `Do NOT call the reply tool`, `Do NOT produce any text output`) — Claude was verbalizing
+  the meta-instruction by replying with text like "Stopping silently with no reply."
+  DeepSeek/GLM didn't have this issue; specific to Claude's instruction-following.
+- Service-account / system-user comments now explicitly listed as skip-and-end-turn cases
+
+### Documentation
+
+- DESIGN.md: documented runtime skills injection (lazy loading, YAML frontmatter,
+  `format_skills_section`, `.jyc/skills.json` persistence)
+
+## [0.3.1] - 2026-05-19
+
+### Added
+
+- Multi-path skill discovery for `jyc-agent` (#182) — 9-path priority order
+  (system → repo → thread-local), with thread-local `.jyc/skills/` overriding all others
+- Dashboard displays loaded skills per thread (#184)
+
+### Fixed
+
+- `read` tool now follows symlinks within the working directory — JYC's `repo_group`
+  feature uses `repo/` symlinks, which were being rejected by the canonicalize check
+
 ## [0.3.0] - 2026-05-16
 
 ### Added

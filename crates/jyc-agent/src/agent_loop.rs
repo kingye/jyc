@@ -18,8 +18,9 @@ use crate::provider::Provider;
 use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent};
 
-/// Maximum number of tool-call iterations before giving up.
-const MAX_ITERATIONS: usize = 50;
+/// Default maximum number of tool-call iterations before giving up.
+/// Can be overridden via AgentLoopConfig.max_iterations.
+const DEFAULT_MAX_ITERATIONS: usize = 100;
 
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
@@ -37,6 +38,8 @@ pub struct AgentLoopConfig<'a> {
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
     pub prior_raw_context: Vec<serde_json::Value>,
+    /// Maximum loop iterations. Defaults to DEFAULT_MAX_ITERATIONS.
+    pub max_iterations: Option<usize>,
 }
 
 /// Run the agent loop to completion.
@@ -46,7 +49,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
         provider, tools, system_prompt, user_message,
         working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
+        max_iterations,
     } = config;
+
+    let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
     // Build internal history: prior context + current message
     let mut history: Vec<Message> = prior_history;
@@ -69,7 +75,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         timestamp: Utc::now(),
     }).await;
 
-    for iteration in 0..MAX_ITERATIONS {
+    for iteration in 0..max_iter {
         if cancel.is_cancelled() {
             tracing::info!(iteration, "Agent loop cancelled");
             break;
@@ -262,7 +268,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 6. Loop back to LLM with tool results
     }
 
-    tracing::warn!("Agent loop reached maximum iterations ({})", MAX_ITERATIONS);
+    tracing::warn!(
+        max_iterations = max_iter,
+        input_tokens = total_input_tokens,
+        output_tokens = total_output_tokens,
+        "Agent loop reached maximum iterations"
+    );
 
     let duration = start_time.elapsed();
     publish_event(event_bus, ThreadEvent::ProcessingCompleted {
@@ -273,8 +284,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         timestamp: Utc::now(),
     }).await;
 
+    // Graceful degradation: provide a fallback reply text instead of empty silent failure.
+    // This way the user knows the agent tried but the task was too complex.
+    let fallback_text = format!(
+        "I reached my maximum exploration limit ({} iterations) while working on your request. \
+         I gathered context across {} input tokens but couldn't complete a full reply. \
+         Please try splitting your request into smaller, more focused steps, or use `/reset` \
+         and rephrase the request.",
+        max_iter, total_input_tokens
+    );
+
     Ok(AgentLoopResult {
-        text: String::new(),
+        text: fallback_text,
         reply_sent_by_tool,
         reply_text_from_tool,
         input_tokens: total_input_tokens,

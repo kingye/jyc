@@ -176,11 +176,28 @@ pub struct ModelConfig {
 }
 
 /// Agent configuration section from config.toml.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Default model in "provider/model-id" format
     pub model: Option<String>,
     /// Provider definitions
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderConfig>,
+    /// Maximum agent loop iterations per message. Default: 100.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            providers: std::collections::HashMap::new(),
+            max_iterations: default_max_iterations(),
+        }
+    }
+}
+
+fn default_max_iterations() -> usize {
+    100
 }

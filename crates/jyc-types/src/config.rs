@@ -221,6 +221,12 @@ pub struct AgentConfig {
     /// System prompt for the AI
     pub system_prompt: Option<String>,
 
+    /// Maximum agent loop iterations (tool calls + LLM responses) per message.
+    /// When exceeded, the agent sends a partial reply and exits gracefully.
+    /// Default: 100.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+
     /// Static reply text (used when mode = "static")
     pub text: Option<String>,
 
@@ -401,6 +407,10 @@ fn default_inbox() -> String {
 }
 fn default_agent_mode() -> String {
     "agent".to_string()
+}
+
+fn default_max_iterations() -> usize {
+    100
 }
 
 fn default_60() -> u64 {

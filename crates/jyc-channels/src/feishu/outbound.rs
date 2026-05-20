@@ -227,30 +227,4 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
             message_id: result.message_id,
         })
     }
-
-    /// Send a heartbeat/progress update to the user via Feishu.
-    ///
-    /// The `message` is pre-formatted from the per-channel heartbeat_template.
-    async fn send_heartbeat(
-        &self,
-        original: &InboundMessage,
-        message: &str,
-    ) -> Result<SendResult> {
-        // Ensure client is initialized
-        self.client.initialize().await
-            .context("Failed to initialize Feishu client before sending heartbeat")?;
-        
-        // Extract chat ID from original message
-        let chat_id = original.channel_uid.as_str();
-        
-        // Send heartbeat using Feishu client
-        let result = self.client.send_text_message(chat_id, message).await
-            .context("Failed to send Feishu heartbeat")?;
-        
-        tracing::debug!("Feishu heartbeat sent to {}", chat_id);
-        
-        Ok(SendResult {
-            message_id: result.message_id,
-        })
-    }
 }

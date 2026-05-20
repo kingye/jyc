@@ -7,23 +7,6 @@ use serde::{Deserialize, Serialize};
 /// isolated from events in other threads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ThreadEvent {
-    /// Heartbeat event indicating the agent is still processing.
-    ///
-    /// Sent at regular intervals during long-running tasks to
-    /// let users know the agent is still working.
-    Heartbeat {
-        /// Name of the thread (for identification)
-        thread_name: String,
-        /// How long the agent has been running (in seconds)
-        elapsed_secs: u64,
-        /// Current activity (e.g., "generating", "tool:bash", "tool:git")
-        activity: String,
-        /// Progress summary (e.g., "processed 5 parts, generated 1200 chars")
-        progress: String,
-        /// When the heartbeat was generated
-        timestamp: DateTime<Utc>,
-    },
-
     /// Processing started event.
     ///
     /// Sent when the agent begins processing a message.
@@ -142,7 +125,6 @@ impl ThreadEvent {
     /// Get the thread name from the event.
     pub fn thread_name(&self) -> &str {
         match self {
-            ThreadEvent::Heartbeat { thread_name, .. } => thread_name,
             ThreadEvent::ProcessingStarted { thread_name, .. } => thread_name,
             ThreadEvent::ProcessingProgress { thread_name, .. } => thread_name,
             ThreadEvent::ProcessingCompleted { thread_name, .. } => thread_name,
@@ -157,7 +139,6 @@ impl ThreadEvent {
     #[allow(dead_code)]
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
-            ThreadEvent::Heartbeat { timestamp, .. } => *timestamp,
             ThreadEvent::ProcessingStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ProcessingProgress { timestamp, .. } => *timestamp,
             ThreadEvent::ProcessingCompleted { timestamp, .. } => *timestamp,

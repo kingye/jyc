@@ -10,7 +10,7 @@ use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
-use jyc_types::{AppConfig, HeartbeatConfig, SmtpConfig, load_config_from_str};
+use jyc_types::{AppConfig, SmtpConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {
     Arc::new(
@@ -82,8 +82,6 @@ async fn test_close_command_deletes_thread_directory() {
         )),
         Arc::new(StaticAgentService::new("test reply")),
         tokio_util::sync::CancellationToken::new(),
-        HeartbeatConfig::default(),
-        "".into(),
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),
@@ -127,8 +125,6 @@ async fn test_close_command_nonexistent_thread_succeeds() {
         )),
         Arc::new(StaticAgentService::new("test reply")),
         tokio_util::sync::CancellationToken::new(),
-        HeartbeatConfig::default(),
-        "".into(),
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),
@@ -169,8 +165,6 @@ async fn test_close_command_invalid_thread_path() {
         )),
         Arc::new(StaticAgentService::new("test reply")),
         tokio_util::sync::CancellationToken::new(),
-        HeartbeatConfig::default(),
-        "".into(),
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),

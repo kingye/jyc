@@ -43,22 +43,19 @@ impl SimpleThreadEventBus {
     }
     
     /// Internal method to forward events to all subscribers.
+    ///
+    /// Sends events sequentially (awaited) to preserve ordering. The mpsc channel
+    /// capacity (10) provides backpressure — if a subscriber falls behind, the
+    /// agent will slow down rather than send events out of order.
     async fn forward_to_subscribers(&self, event: ThreadEvent) {
         let mut subscribers = self.subscribers.lock().await;
-        
+
         // Remove closed subscribers
         subscribers.retain(|subscriber| !subscriber.is_closed());
-        
-        // Forward event to all active subscribers
+
+        // Forward event to all active subscribers IN ORDER
         for subscriber in subscribers.iter() {
-            // Clone the event for each subscriber
-            let event_clone = event.clone();
-            let subscriber_clone = subscriber.clone();
-            
-            // Spawn a task to send without blocking
-            tokio::spawn(async move {
-                let _ = subscriber_clone.send(event_clone).await;
-            });
+            let _ = subscriber.send(event.clone()).await;
         }
     }
 }
@@ -87,3 +84,72 @@ impl ThreadEventBus for SimpleThreadEventBus {
 
 /// Type alias for Arc-wrapped thread event bus.
 pub type ThreadEventBusRef = Arc<dyn ThreadEventBus>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::sync::Arc;
+
+    fn make_event(name: &str) -> ThreadEvent {
+        ThreadEvent::ProcessingStarted {
+            thread_name: name.to_string(),
+            message_id: "test".to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Regression test: events must be delivered in publication order.
+    /// Previously used tokio::spawn per event, causing out-of-order delivery
+    /// (e.g., ProcessingCompleted arriving before ToolStarted).
+    #[tokio::test]
+    async fn events_delivered_in_order() {
+        let bus: Arc<dyn ThreadEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+
+        // Publish 5 events rapidly
+        for i in 0..5 {
+            bus.publish(make_event(&format!("event-{}", i))).await.unwrap();
+        }
+
+        // Verify order
+        for i in 0..5 {
+            let event = rx.recv().await.expect("Expected event");
+            match event {
+                ThreadEvent::ProcessingStarted { thread_name, .. } => {
+                    assert_eq!(thread_name, format!("event-{}", i), "Event {} out of order", i);
+                }
+                _ => panic!("Unexpected event type"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_receive_all_events() {
+        let bus: Arc<dyn ThreadEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx1 = bus.subscribe().await.unwrap();
+        let mut rx2 = bus.subscribe().await.unwrap();
+
+        bus.publish(make_event("first")).await.unwrap();
+        bus.publish(make_event("second")).await.unwrap();
+
+        for rx in [&mut rx1, &mut rx2] {
+            let e1 = rx.recv().await.unwrap();
+            let e2 = rx.recv().await.unwrap();
+            assert!(matches!(&e1, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "first"));
+            assert!(matches!(&e2, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "second"));
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_subscribers_are_pruned() {
+        let bus = Arc::new(SimpleThreadEventBus::new(10));
+
+        // Create a subscriber and immediately drop it
+        {
+            let _rx = bus.subscribe().await.unwrap();
+        }
+
+        // Publish — closed subscriber should be pruned without error
+        bus.publish(make_event("test")).await.unwrap();
+    }
+}

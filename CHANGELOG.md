@@ -2,6 +2,18 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.3] - 2026-05-20
+
+### Fixed
+
+- **Event ordering bug** — `SimpleThreadEventBus::forward_to_subscribers` was using
+  `tokio::spawn` per event, which delivered events to the dashboard out of order.
+  This caused the dashboard to show `Completed` BEFORE `ToolStarted` for the
+  reply tool, making it look like the agent replied without finishing.
+  Fixed by sending events sequentially (awaited) — preserves order, mpsc channel
+  capacity (10) provides backpressure if a subscriber is slow.
+- Added 3 regression tests for event bus ordering and multi-subscriber delivery
+
 ## [0.3.2] - 2026-05-20
 
 ### Added

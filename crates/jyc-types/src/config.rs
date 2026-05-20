@@ -5,12 +5,12 @@ use crate::channel::ChannelPattern;
 use crate::feishu_config::FeishuConfig;
 use crate::github_config::GithubConfig;
 
-/// MCP server configuration for template-driven MCP tool setup.
+/// MCP server configuration for agent dynamic tool loading.
 ///
 /// Supports both `local` (subprocess) and `remote` (HTTP) MCP server types.
-/// Named MCPs are defined in `config.toml` `[[mcps]]` and referenced by
-/// templates in `templates.toml` to determine which MCPs appear in each
-/// thread's `opencode.json`.
+/// Named MCPs are defined in `config.toml` `[[mcps]]` and loaded by the
+/// agent at startup. Each MCP server's tools are dynamically discovered
+/// via `list_tools()` and registered in the agent's tool registry.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub name: String,
@@ -27,18 +27,12 @@ pub enum McpServerKind {
         command: Vec<String>,
         #[serde(default)]
         environment: HashMap<String, String>,
-        #[serde(default = "default_mcp_timeout")]
-        timeout: u64,
     },
     Remote {
         url: String,
         #[serde(default = "default_true")]
         enabled: bool,
     },
-}
-
-fn default_mcp_timeout() -> u64 {
-    300000
 }
 
 /// Top-level application configuration, deserialized from config.toml.
@@ -627,7 +621,6 @@ name = "jyc_vision"
 type = "local"
 command = ["jyc", "mcp-vision-tool"]
 environment = { "VISION_API_KEY" = "secret", "VISION_API_URL" = "https://api.example.com" }
-timeout = 300000
 
 [[mcps]]
 name = "remote_mcp"
@@ -645,11 +638,9 @@ enabled = true
             super::McpServerKind::Local {
                 command,
                 environment,
-                timeout,
             } => {
                 assert_eq!(command, &["jyc", "mcp-vision-tool"]);
                 assert_eq!(environment.get("VISION_API_KEY").unwrap(), "secret");
-                assert_eq!(*timeout, 300000);
             }
             _ => panic!("Expected Local variant for jyc_vision"),
         }

@@ -56,7 +56,6 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
         jyc_types::McpServerKind::Local {
             command,
             environment,
-            timeout: _,
         } => {
             let mut cmd = tokio::process::Command::new(&command[0]);
             if command.len() > 1 {

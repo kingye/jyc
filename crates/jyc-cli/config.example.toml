@@ -217,10 +217,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Each MCP can be `local` (subprocess) or `remote` (HTTP).
 
 # [[mcps]]
-# name = "jyc_vision"
+# name = "jyc_reply"
 # type = "local"
-# command = ["jyc", "mcp-vision-tool"]
-# environment = { "VISION_API_KEY" = "your-api-key", "VISION_API_URL" = "https://api.moonshot.cn/v1/chat/completions" }
+# command = ["jyc", "mcp-reply-tool"]
+# # environment = { "JYC_THREAD_DIR" = "/path/to/thread" }
 # timeout = 300000
 
 # [[mcps]]

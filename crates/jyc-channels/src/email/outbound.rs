@@ -19,7 +19,7 @@ use jyc_services::smtp::client::{EmailAttachment, SmtpClient};
 /// - Send via SMTP with threading headers and attachments
 /// - Store reply to chat log
 ///
-/// This is the channel-specific component. The agent (OpenCodeService) and
+/// This is the channel-specific component. The agent (JycAgentService) and
 /// ThreadManager are channel-agnostic — they pass raw AI text to this adapter.
 pub struct EmailOutboundAdapter {
     smtp: Arc<Mutex<SmtpClient>>,

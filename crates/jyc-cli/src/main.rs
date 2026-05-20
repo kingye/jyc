@@ -51,15 +51,15 @@ enum Commands {
         action: cli::templates::TemplatesAction,
     },
 
-    /// MCP reply tool server (internal — spawned by OpenCode)
+    /// MCP reply tool server (internal — spawned by agent)
     #[command(hide = true)]
     McpReplyTool,
 
-    /// MCP question tool server (internal — spawned by OpenCode)
+    /// MCP question tool server (internal — spawned by agent)
     #[command(hide = true)]
     McpQuestionTool,
 
-    /// MCP vision tool server (internal — spawned by OpenCode)
+    /// MCP vision tool server (internal — spawned by agent)
     #[command(hide = true)]
     McpVisionTool,
 }

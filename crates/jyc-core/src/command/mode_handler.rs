@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
-/// /plan command — switch to plan mode (read-only, enforced by OpenCode).
+/// /plan command — switch to plan mode (read-only).
 pub struct PlanCommandHandler;
 
 #[async_trait]

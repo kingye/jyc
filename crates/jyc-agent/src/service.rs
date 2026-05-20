@@ -1,6 +1,6 @@
 //! AgentService implementation using the in-process agent loop.
 //!
-//! Replaces the OpenCode HTTP/SSE client with direct LLM calls and tool execution.
+//! Uses direct LLM calls and tool execution instead of external server.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -96,7 +96,7 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 /// In-process AI agent service.
 ///
 /// Implements `AgentService` by running LLM inference and tool execution
-/// directly in-process (no external OpenCode server needed).
+/// directly in-process.
 pub struct JycAgentService {
     config: AgentConfig,
     /// Per-thread event bus map.

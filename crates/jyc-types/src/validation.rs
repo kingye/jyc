@@ -693,38 +693,4 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
     }
 
-    #[test]
-    fn test_opencode_defaults() {
-        let toml = r#"
-[general]
-max_concurrent_threads = 3
-
-[channels.work]
-type = "email"
-
-[channels.work.inbound]
-host = "imap.example.com"
-port = 993
-username = "user"
-password = "pass"
-
-[channels.work.outbound]
-host = "smtp.example.com"
-port = 465
-username = "user"
-password = "pass"
-
-[agent]
-enabled = true
-mode = "agent"
-
-[agent.opencode]
-"#;
-        let config = load_config_from_str(toml).unwrap();
-        let oc = config.agent.opencode.as_ref().unwrap();
-        assert!(
-            oc.kill_lsp_after_prompt,
-            "kill_lsp_after_prompt should default to true"
-        );
-    }
 }

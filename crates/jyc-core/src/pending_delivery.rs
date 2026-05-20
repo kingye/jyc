@@ -125,14 +125,6 @@ mod tests {
         ) -> anyhow::Result<SendResult> {
             Ok(SendResult { message_id: "mock-id".to_string() })
         }
-
-        async fn send_heartbeat(
-            &self,
-            _original: &InboundMessage,
-            _text: &str,
-        ) -> anyhow::Result<SendResult> {
-            Ok(SendResult { message_id: "mock-id".to_string() })
-        }
     }
 
     fn test_message() -> InboundMessage {

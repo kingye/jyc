@@ -52,10 +52,6 @@ pub struct AppConfig {
     /// Inspect server configuration (exposes runtime state for dashboard)
     pub inspect: Option<InspectConfig>,
 
-    /// Heartbeat configuration (progress updates during long AI processing)
-    #[serde(default)]
-    pub heartbeat: HeartbeatConfig,
-
     /// Unified attachment configuration (inbound downloading and outbound sending)
     #[serde(default)]
     pub attachments: Option<UnifiedAttachmentConfig>,
@@ -122,11 +118,6 @@ pub struct ChannelConfig {
 
     /// Patterns for this channel
     pub patterns: Option<Vec<ChannelPattern>>,
-
-    /// Per-channel heartbeat message template.
-    /// Supports `{elapsed}` placeholder (e.g., "3m 20s").
-    /// If not set, defaults to "Still working on your request... ({elapsed} elapsed)"
-    pub heartbeat_template: Option<String>,
 
     /// Channel-specific agent config override
     pub agent: Option<AgentConfig>,
@@ -212,9 +203,11 @@ pub struct AgentConfig {
     /// System prompt for the AI
     pub system_prompt: Option<String>,
 
-    /// Maximum agent loop iterations (tool calls + LLM responses) per message.
-    /// When exceeded, the agent sends a partial reply and exits gracefully.
-    /// Default: 100.
+    /// Maximum agent loop iterations per cycle. When exceeded, the agent sends a
+    /// progress reply, resets the iteration counter, and continues working.
+    /// There is no upper bound on cycles — the agent runs until it produces a
+    /// final reply or the user resets the session.
+    /// Default: 200.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
 
@@ -354,7 +347,7 @@ fn default_agent_mode() -> String {
 }
 
 fn default_max_iterations() -> usize {
-    100
+    200
 }
 
 fn default_60() -> u64 {

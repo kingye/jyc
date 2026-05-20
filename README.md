@@ -201,7 +201,6 @@ Key sections:
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address)
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
-- **`[heartbeat]`** -- Heartbeat settings (enabled, interval_secs, min_elapsed_secs)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 
 See [DESIGN.md](DESIGN.md) for full configuration reference and architecture details.

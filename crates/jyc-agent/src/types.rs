@@ -183,7 +183,8 @@ pub struct AgentConfig {
     /// Provider definitions
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderConfig>,
-    /// Maximum agent loop iterations per message. Default: 100.
+    /// Maximum agent loop iterations per cycle. Default: 200.
+    /// When exceeded, agent sends progress reply, resets counter, and continues.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
 }
@@ -199,5 +200,5 @@ impl Default for AgentConfig {
 }
 
 fn default_max_iterations() -> usize {
-    100
+    200
 }

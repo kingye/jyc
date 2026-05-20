@@ -437,7 +437,6 @@ impl ActivityTracker {
                                                                     ThreadEvent::ProcessingStarted { .. }
                                                                     | ThreadEvent::ProcessingProgress { .. }
                                                                     | ThreadEvent::ToolStarted { .. }
-                                                                    | ThreadEvent::Heartbeat { .. }
                                                                 );
                                                                 let is_completed = matches!(
                                                                     &event,
@@ -544,13 +543,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                     None => format!("Tool: {tool_name} (FAILED, {duration_secs}s)"),
                 }
             }
-        }
-        ThreadEvent::Heartbeat {
-            elapsed_secs,
-            activity,
-            ..
-        } => {
-            format!("Heartbeat: {activity} ({elapsed_secs}s)")
         }
         ThreadEvent::Thinking { text, full_length, .. } => {
             let oneline = text.replace('\n', " ");

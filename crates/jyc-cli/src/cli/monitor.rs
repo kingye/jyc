@@ -211,11 +211,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             }
         };
 
-        let heartbeat_template = channel_config
-            .heartbeat_template
-            .clone()
-            .unwrap_or_else(|| "Still working on your request... ({elapsed} elapsed)".to_string());
-
         let template_dir = workdir.join("templates");
         
         let thread_manager = Arc::new(ThreadManager::new_with_options(
@@ -226,8 +221,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             agent,
             cancel.clone(),
             true, // enable_events: true for Thread Event system
-            config_snapshot.heartbeat.clone(),
-            heartbeat_template,
             template_dir,
             config.clone(),
             channel_name.clone(),

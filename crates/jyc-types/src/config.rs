@@ -237,23 +237,6 @@ pub struct AgentConfig {
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderDef>,
 
-    /// Legacy: OpenCode config (ignored, kept for backward-compatible deserialization)
-    #[serde(default)]
-    pub opencode: Option<LegacyOpenCodeConfig>,
-}
-
-/// Legacy OpenCode config — kept only for backward-compatible deserialization.
-/// These fields are ignored; use top-level `model` and `system_prompt` instead.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct LegacyOpenCodeConfig {
-    pub model: Option<String>,
-    pub system_prompt: Option<String>,
-    #[serde(default)]
-    pub include_thread_history: bool,
-    #[serde(default)]
-    pub max_input_tokens: Option<u64>,
-    #[serde(default = "default_true")]
-    pub kill_lsp_after_prompt: bool,
 }
 
 /// Provider definition for the in-process agent.

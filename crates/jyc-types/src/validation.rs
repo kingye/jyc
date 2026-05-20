@@ -268,36 +268,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // Vision config
-    if let Some(ref vision) = config.vision {
-        if vision.enabled {
-            if vision.api_key.trim().is_empty() {
-                errors.push(ValidationError {
-                    path: "vision.api_key".into(),
-                    message: "required when vision is enabled".into(),
-                });
-            }
-            if vision.api_url.trim().is_empty() {
-                errors.push(ValidationError {
-                    path: "vision.api_url".into(),
-                    message: "required when vision is enabled".into(),
-                });
-            }
-            if !vision.api_url.starts_with("http://") && !vision.api_url.starts_with("https://") {
-                errors.push(ValidationError {
-                    path: "vision.api_url".into(),
-                    message: "must be a valid HTTP(S) URL".into(),
-                });
-            }
-            if vision.model.trim().is_empty() {
-                errors.push(ValidationError {
-                    path: "vision.model".into(),
-                    message: "required when vision is enabled".into(),
-                });
-            }
-        }
-    }
-
     errors
 }
 
@@ -671,38 +641,4 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
     }
 
-    #[test]
-    fn test_opencode_defaults() {
-        let toml = r#"
-[general]
-max_concurrent_threads = 3
-
-[channels.work]
-type = "email"
-
-[channels.work.inbound]
-host = "imap.example.com"
-port = 993
-username = "user"
-password = "pass"
-
-[channels.work.outbound]
-host = "smtp.example.com"
-port = 465
-username = "user"
-password = "pass"
-
-[agent]
-enabled = true
-mode = "agent"
-
-[agent.opencode]
-"#;
-        let config = load_config_from_str(toml).unwrap();
-        let oc = config.agent.opencode.as_ref().unwrap();
-        assert!(
-            oc.kill_lsp_after_prompt,
-            "kill_lsp_after_prompt should default to true"
-        );
-    }
 }

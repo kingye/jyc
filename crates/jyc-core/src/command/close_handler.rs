@@ -41,7 +41,6 @@ impl CommandHandler for CloseCommandHandler {
                     context.thread_path
                 ),
                 error: Some("Thread directory name could not be extracted".into()),
-                requires_restart: false,
             });
         }
 
@@ -55,14 +54,12 @@ impl CommandHandler for CloseCommandHandler {
                         thread_name
                     ),
                     error: None,
-                    requires_restart: false,
                 })
             }
             Err(e) => Ok(CommandResult {
                 success: false,
                 message: format!("Failed to close thread '{}'", thread_name),
                 error: Some(e.context("close_thread failed").to_string()),
-                requires_restart: false,
             }),
         }
     }

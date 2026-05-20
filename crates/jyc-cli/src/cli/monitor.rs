@@ -197,7 +197,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     providers,
                     max_iterations: agent_config.max_iterations,
                 };
-                Arc::new(JycAgentService::new(agent_cfg, workdir.to_path_buf()))
+                Arc::new(JycAgentService::new(agent_cfg, workdir.to_path_buf(), config_snapshot.mcps.clone()))
             }
             "static" => {
                 let text = agent_config

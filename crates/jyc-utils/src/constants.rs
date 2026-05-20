@@ -29,12 +29,6 @@ pub const SMTP_RETRY_BASE_DELAY_SECS: u64 = 5;
 /// Maximum delay for SMTP retry backoff (seconds)
 pub const SMTP_RETRY_MAX_DELAY_SECS: u64 = 60;
 
-// --- OpenCode ---
-pub const OPENCODE_PORT_RANGE_START: u16 = 49152;
-pub const OPENCODE_PORT_RANGE_END: u16 = 49252;
-pub const OPENCODE_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
-pub const OPENCODE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
-
 // --- SSE / Timeout ---
 /// Activity-based timeout: silence threshold (default, no tool running)
 /// 30 min allows for models with long thinking pauses (e.g., minimax)

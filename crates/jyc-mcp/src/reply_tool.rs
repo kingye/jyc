@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::context::{load_reply_context, resolve_thread_dir};
 
-const EXCLUDED_DIRS: &[&str] = &[".opencode", ".jyc"];
+const EXCLUDED_DIRS: &[&str] = &[".jyc"];
 
 /// File-based logger for the MCP tool (stdout is used for MCP protocol).
 struct McpLogger {

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
-/// /reset command — reset opencode session for this thread.
+/// /reset command — reset agent session for this thread.
 ///
 /// Usage:
 ///   /reset    Delete the session state file; next AI prompt will start fresh
@@ -16,7 +16,7 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Reset opencode session for this thread"
+        "Reset agent session for this thread"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
@@ -38,14 +38,12 @@ impl CommandHandler for ResetCommandHandler {
                 success: true,
                 message: "/reset: session deleted. Next AI prompt will start with a fresh session.".into(),
                 error: None,
-                requires_restart: false,
             })
         } else {
             Ok(CommandResult {
                 success: true,
                 message: "/reset: no session exists. Next AI prompt will start with a fresh session.".into(),
                 error: None,
-                requires_restart: false,
             })
         }
     }
@@ -107,7 +105,6 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!result.requires_restart);
         assert!(!jyc_dir.join("agent-session.json").exists());
         assert!(result.message.contains("session deleted"));
     }
@@ -121,7 +118,6 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!result.requires_restart);
         assert!(result.message.contains("no session exists"));
     }
 }

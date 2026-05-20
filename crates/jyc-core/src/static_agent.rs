@@ -29,7 +29,7 @@ impl StaticAgentService {
 #[async_trait]
 impl AgentService for StaticAgentService {
     async fn base_url(&self) -> Result<String> {
-        anyhow::bail!("Static agent mode does not use OpenCode server")
+        anyhow::bail!("Static agent mode does not support base_url")
     }
 
     async fn process(

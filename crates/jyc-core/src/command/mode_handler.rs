@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
-/// /plan command — switch to plan mode (read-only, enforced by OpenCode).
+/// /plan command — switch to plan mode (read-only).
 pub struct PlanCommandHandler;
 
 #[async_trait]
@@ -30,7 +30,6 @@ impl CommandHandler for PlanCommandHandler {
             success: true,
             message: "/plan: switched to plan mode (read-only)".into(),
             error: None,
-            requires_restart: false,
         })
     }
 }
@@ -63,7 +62,6 @@ impl CommandHandler for BuildCommandHandler {
             success: true,
             message: "/build: switched to build mode (full execution)".into(),
             error: None,
-            requires_restart: false,
         })
     }
 }
@@ -115,7 +113,6 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!result.requires_restart);
 
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/mode-override"))
             .await

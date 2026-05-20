@@ -577,6 +577,7 @@ mod skills {
         JycAgentService::new(
             AgentConfig::default(),
             workdir,
+            vec![],
         )
     }
 

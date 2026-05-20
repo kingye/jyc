@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 use jyc_core::template_utils::overwrite_template_files;
-use jyc_types::McpServerConfig;
 
 /// Actions for the `templates` subcommand.
 #[derive(Debug, Subcommand)]
@@ -33,10 +32,6 @@ pub enum TemplatesAction {
         #[arg(long)]
         model: Option<String>,
 
-        /// Extra MCPs config file (TOML) with per-template MCP mappings
-        #[arg(long)]
-        mcps: Option<PathBuf>,
-
         /// Path to the source directory containing templates/ and .opencode/skills/
         #[arg(long)]
         source_dir: Option<PathBuf>,
@@ -47,8 +42,6 @@ pub enum TemplatesAction {
 #[derive(Debug, Deserialize)]
 struct TemplateEntry {
     skills: Vec<String>,
-    #[serde(default)]
-    mcps: Vec<String>,
 }
 
 /// Top-level structure of `templates/templates.toml`.
@@ -66,7 +59,6 @@ pub async fn run(action: &TemplatesAction, _workdir: &Path) -> Result<()> {
             template_name,
             as_name,
             model,
-            mcps,
             source_dir,
         } => {
             run_deploy(
@@ -74,7 +66,6 @@ pub async fn run(action: &TemplatesAction, _workdir: &Path) -> Result<()> {
                 template_name.as_deref(),
                 as_name.as_deref(),
                 model.as_deref(),
-                mcps.as_deref(),
                 source_dir.as_deref(),
             )
             .await
@@ -150,57 +141,11 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
             .get(name.as_str())
             .map(|e| e.skills.join(", "))
             .unwrap_or_else(|| "(no skills)".to_string());
-        let mcps = config
-            .templates
-            .get(name.as_str())
-            .map(|e| e.mcps.join(", "))
-            .unwrap_or_default();
         println!("{name}: {skills}");
-        if !mcps.is_empty() {
-            println!("  mcps: {mcps}");
-        }
     }
 
     println!("\n{} template(s) total.", names.len());
     Ok(())
-}
-
-/// Extra MCPs config: MCP definitions + per-template mappings from a TOML file.
-#[derive(Debug, Deserialize, Default)]
-struct ExtraMcpsConfig {
-    /// MCP server definitions to be written into deployed templates.
-    #[serde(default)]
-    mcps: Vec<McpServerConfig>,
-    #[serde(default)]
-    templates: HashMap<String, ExtraMcpsEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExtraMcpsEntry {
-    #[serde(default)]
-    mcps: Vec<String>,
-}
-
-/// Load extra MCPs config from a TOML file.
-///
-/// The file format:
-/// ```toml
-/// [[mcps]]
-/// name = "my-mcp"
-/// type = "remote"
-/// url = "https://mcp.example.com/mcp"
-/// enabled = true
-///
-/// [templates.github-planner]
-/// mcps = ["my-mcp"]
-/// ```
-async fn load_extra_mcps_config(path: &Path) -> Result<ExtraMcpsConfig> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let config: ExtraMcpsConfig =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(config)
 }
 
 /// Deploy one or all templates to the target directory.
@@ -209,7 +154,6 @@ async fn run_deploy(
     template_name: Option<&str>,
     as_name: Option<&str>,
     model: Option<&str>,
-    mcps_file: Option<&Path>,
     source_dir_arg: Option<&Path>,
 ) -> Result<()> {
     let source_dir = resolve_source_dir(source_dir_arg)?;
@@ -247,12 +191,6 @@ async fn run_deploy(
     if let Some(m) = model {
         println!("Model override:  {m}");
     }
-    let extra_mcps = if let Some(path) = mcps_file {
-        println!("MCPs file:       {}", path.display());
-        load_extra_mcps_config(path).await?
-    } else {
-        ExtraMcpsConfig::default()
-    };
     println!();
 
     // Collect and sort template directories
@@ -354,65 +292,6 @@ async fn run_deploy(
                 .await
                 .with_context(|| format!("failed to write model-override for {tpl_name}"))?;
             println!("  model-override: {m}");
-        }
-
-        // Write mcps.json for template (merge templates.toml + extra mcps file)
-        let mut mcps: Vec<String> = config
-            .templates
-            .get(tpl_name.as_str())
-            .map(|e| e.mcps.clone())
-            .unwrap_or_default();
-
-        // Merge extra MCPs from --mcps file (per-template)
-        if let Some(extra) = extra_mcps.templates.get(tpl_name.as_str()) {
-            for name in &extra.mcps {
-                if !mcps.contains(name) {
-                    mcps.push(name.clone());
-                }
-            }
-        }
-
-        if !mcps.is_empty() {
-            let jyc_dir = target.join(".jyc");
-            tokio::fs::create_dir_all(&jyc_dir)
-                .await
-                .with_context(|| format!("failed to create .jyc dir for {tpl_name}"))?;
-            let mcps_json = serde_json::to_string_pretty(&mcps)?;
-            tokio::fs::write(jyc_dir.join("mcps.json"), mcps_json)
-                .await
-                .with_context(|| format!("failed to write mcps.json for {tpl_name}"))?;
-            println!("  mcps: {}", mcps.join(", "));
-        } else {
-            // Remove stale mcps.json from previous deploys
-            let stale = target.join(".jyc").join("mcps.json");
-            if stale.exists() {
-                tokio::fs::remove_file(&stale).await.ok();
-            }
-        }
-
-        // Write MCP definitions from --mcps file into .jyc/mcp-defs.json
-        // Only include definitions referenced by this template's MCP names.
-        let extra_defs: Vec<_> = extra_mcps.mcps.iter()
-            .filter(|def| mcps.contains(&def.name))
-            .collect();
-
-        if !extra_defs.is_empty() {
-            let jyc_dir = target.join(".jyc");
-            tokio::fs::create_dir_all(&jyc_dir)
-                .await
-                .with_context(|| format!("failed to create .jyc dir for {tpl_name}"))?;
-            let defs_json = serde_json::to_string_pretty(&extra_defs)?;
-            tokio::fs::write(jyc_dir.join("mcp-defs.json"), defs_json)
-                .await
-                .with_context(|| format!("failed to write mcp-defs.json for {tpl_name}"))?;
-            let def_names: Vec<_> = extra_defs.iter().map(|d| d.name.as_str()).collect();
-            println!("  mcp-defs: {}", def_names.join(", "));
-        } else {
-            // Remove stale mcp-defs.json from previous deploys
-            let stale = target.join(".jyc").join("mcp-defs.json");
-            if stale.exists() {
-                tokio::fs::remove_file(&stale).await.ok();
-            }
         }
     }
 

@@ -43,9 +43,6 @@ pub struct CommandResult {
     pub message: String,
     /// Error message (if !success)
     pub error: Option<String>,
-    /// Whether the OpenCode server needs to be restarted
-    #[allow(dead_code)]
-    pub requires_restart: bool,
 }
 
 /// Output of unified command processing (parse + execute + strip).
@@ -77,12 +74,6 @@ impl CommandOutput {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    /// Whether any command requires an OpenCode server restart.
-    #[allow(dead_code)]
-    pub fn requires_restart(&self) -> bool {
-        self.results.iter().any(|r| r.requires_restart)
     }
 }
 

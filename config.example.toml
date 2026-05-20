@@ -147,23 +147,17 @@ mentions = ["jyc"]
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 # mode = "static"
 # text = "Thank you for your message."
 
-[agent.opencode]
 # Model identifier (e.g., "SiliconFlow/Pro/zai-org/GLM-4.7")
 # model = "ark/deepseek-v3.2"
 
-# Small model for lightweight tasks (title generation, compaction)
-# small_model = "ark/deepseek-v3.2"
-
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
-include_thread_history = false
 
-# Maximum input tokens per session before resetting.
-# If not set, uses 95% of the model's context window (auto-detected), or 120K as fallback.
-# max_input_tokens = 122880
+# Maximum iterations per message (default: 100)
+# max_iterations = 100
 
 
 [agent.attachments]
@@ -217,33 +211,16 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
-# --- Vision API ---
-# OpenAI-compatible vision API for image analysis.
-# The AI agent can call the vision_analyze_image MCP tool to analyze images
-# (e.g., attachments saved to thread directories).
-# Provider-agnostic: works with Kimi, Volcengine/Ark, OpenAI, etc.
-
-# DEPRECATED: Vision is now configured via [[mcps]] and template mcps lists.
-# See "MCP Servers" section below. This section will be removed in a future release.
-# [vision]
-# enabled = true
-# api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# api_url = "https://api.moonshot.cn/v1/chat/completions"  # Kimi (default)
-# # api_url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"  # Volcengine/Ark
-# # api_url = "https://api.openai.com/v1/chat/completions"  # OpenAI
-# model = "kimi-k2.5"  # default
-
 # --- MCP Servers ---
-# Named MCP server definitions. Templates reference these by name
-# in their `mcps` list (see templates/templates.toml).
-# Each MCP can be `local` (subprocess) or `remote` (HTTP).
+# Named MCP server definitions are configured here and loaded by the agent at startup.
+# Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).
+# Tools from each MCP server are dynamically discovered and registered in the agent.
 
 # [[mcps]]
-# name = "jyc_vision"
+# name = "jyc_reply"
 # type = "local"
-# command = ["jyc", "mcp-vision-tool"]
-# environment = { "VISION_API_KEY" = "your-api-key", "VISION_API_URL" = "https://api.moonshot.cn/v1/chat/completions" }
-# timeout = 300000
+# command = ["jyc", "mcp-reply-tool"]
+# # environment = { "JYC_THREAD_DIR" = "/path/to/thread" }
 
 # [[mcps]]
 # name = "remote_mcp"

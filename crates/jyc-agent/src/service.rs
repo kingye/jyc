@@ -1,6 +1,6 @@
 //! AgentService implementation using the in-process agent loop.
 //!
-//! Replaces the OpenCode HTTP/SSE client with direct LLM calls and tool execution.
+//! Uses direct LLM calls and tool execution instead of external server.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_types::{InboundMessage, QueueItem};
+use jyc_types::{InboundMessage, QueueItem, McpServerConfig};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
@@ -96,22 +96,25 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 /// In-process AI agent service.
 ///
 /// Implements `AgentService` by running LLM inference and tool execution
-/// directly in-process (no external OpenCode server needed).
+/// directly in-process.
 pub struct JycAgentService {
     config: AgentConfig,
     /// Per-thread event bus map.
     event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
     /// JYC workdir (for discovering global skills).
     workdir: PathBuf,
+    /// MCP server configurations for dynamic tool loading.
+    mcp_configs: Vec<McpServerConfig>,
 }
 
 impl JycAgentService {
-    /// Create a new agent service with the given configuration and workdir.
-    pub fn new(config: AgentConfig, workdir: PathBuf) -> Self {
+    /// Create a new agent service with the given configuration, workdir, and MCP configs.
+    pub fn new(config: AgentConfig, workdir: PathBuf, mcp_configs: Vec<McpServerConfig>) -> Self {
         Self {
             config,
             event_buses: Mutex::new(HashMap::new()),
             workdir,
+            mcp_configs,
         }
     }
 
@@ -286,12 +289,24 @@ impl JycAgentService {
     }
 
     /// Create the tool registry for a thread.
-    fn build_tool_registry(&self, _thread_path: &Path) -> ToolRegistry {
+    async fn build_tool_registry(&self, _thread_path: &Path) -> ToolRegistry {
         // Start with all built-in tools
         let mut registry = crate::tools::builtin::create_builtin_registry();
 
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
+
+        // Load external MCP tools from config.toml [[mcps]]
+        if !self.mcp_configs.is_empty() {
+            tracing::info!(
+                mcp_count = self.mcp_configs.len(),
+                "Loading external MCP tools"
+            );
+            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&self.mcp_configs).await;
+            for tool in mcp_tools {
+                registry.register(tool);
+            }
+        }
 
         registry
     }
@@ -413,7 +428,7 @@ impl AgentService for JycAgentService {
         let user_prompt = self.build_user_prompt(message);
 
         // 5. Build tool registry
-        let tools = self.build_tool_registry(thread_path);
+        let tools = self.build_tool_registry(thread_path).await;
 
         // 6. Get event bus for this thread
         let event_bus = self.get_event_bus(thread_name).await;

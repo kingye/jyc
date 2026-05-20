@@ -6,7 +6,7 @@ const REPLY_CONTEXT_FILENAME: &str = "reply-context.json";
 
 /// Reply context — saved to disk per-thread, read by the MCP reply tool.
 ///
-/// Written by OpenCodeService before sending the prompt.
+/// Written by the agent service before sending the prompt.
 /// Read by reply_tool from cwd (= thread directory).
 /// Overwritten on each new incoming message; persists between replies
 /// to allow multiple replies in the same thread.
@@ -39,7 +39,7 @@ pub struct ReplyContext {
 
 /// Save reply context to `.jyc/reply-context.json` in the thread directory.
 ///
-/// Called by OpenCodeService before sending the prompt.
+/// Called by agent service before sending the prompt.
 pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Result<()> {
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await?;
@@ -94,7 +94,7 @@ pub async fn cleanup_reply_context(thread_path: &Path) {
 
 /// Resolve the thread directory for MCP tools.
 ///
-/// Reads `JYC_THREAD_DIR` environment variable (set by opencode.json MCP config).
+/// Reads `JYC_THREAD_DIR` environment variable (set by agent MCP config).
 /// Falls back to `std::env::current_dir()` for backward compatibility.
 /// Returns an empty PathBuf only if both fail (should never happen in practice).
 pub fn resolve_thread_dir() -> PathBuf {

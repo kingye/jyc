@@ -114,7 +114,6 @@ impl CommandRegistry {
                                     success: false,
                                     message: format!("{cmd_name}: error"),
                                     error: Some(e.to_string()),
-                                    requires_restart: false,
                                 });
                             }
                         }
@@ -174,7 +173,6 @@ mod tests {
                 success: true,
                 message: format!("{}: args={:?}", self.name, ctx.args),
                 error: None,
-                requires_restart: false,
             })
         }
     }
@@ -304,20 +302,17 @@ mode = "agent"
                     success: true,
                     message: "/model: switched to GPT-4".into(),
                     error: None,
-                    requires_restart: true,
                 },
                 CommandResult {
                     success: false,
                     message: "/plan: failed".into(),
                     error: Some("mode not supported".into()),
-                    requires_restart: false,
                 },
             ],
             cleaned_body: String::new(),
             body_empty: true,
         };
 
-        assert!(output.requires_restart());
         let summary = output.results_summary();
         assert!(summary.contains("/model: switched to GPT-4"));
         assert!(summary.contains("Error: mode not supported"));

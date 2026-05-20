@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

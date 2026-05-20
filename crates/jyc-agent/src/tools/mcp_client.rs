@@ -163,14 +163,21 @@ impl Tool for McpToolWrapper {
         // RunningService derefs to Peer<RoleClient> which has call_tool
         match self.service.call_tool(params).await {
             Ok(result) => {
-                // Extract text content from the result
-                let content = result
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .map(|t| t.text.clone())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                // Extract text content from the result.
+                // Non-text content (images, resources) is logged but not included.
+                let mut texts = Vec::new();
+                for c in &result.content {
+                    if let Some(t) = c.as_text() {
+                        texts.push(t.text.clone());
+                    } else {
+                        tracing::warn!(
+                            server = %self.server_name,
+                            tool = %self.tool_name,
+                            "MCP tool returned non-text content, ignoring"
+                        );
+                    }
+                }
+                let content = texts.join("\n");
 
                 Ok(ToolOutput::success(content))
             }

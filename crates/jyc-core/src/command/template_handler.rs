@@ -39,7 +39,6 @@ impl TemplateCommandHandler {
                 success: false,
                 message: "/template: pattern file not found. Cannot determine template.".into(),
                 error: Some("No .jyc/pattern file".to_string()),
-                requires_restart: false,
             });
         };
         
@@ -56,7 +55,6 @@ impl TemplateCommandHandler {
                     success: false,
                     message: format!("/template: pattern '{}' has no template configured", pattern_name),
                     error: Some("No template in pattern config".to_string()),
-                    requires_restart: false,
                 });
             }
         };
@@ -67,7 +65,6 @@ impl TemplateCommandHandler {
                 success: false,
                 message: format!("/template: template '{}' not found in templates/", template_name),
                 error: Some(format!("Path does not exist: {}", template_src.display())),
-                requires_restart: false,
             });
         }
         
@@ -77,7 +74,6 @@ impl TemplateCommandHandler {
             success: true,
             message: format!("/template: applied '{}' template ({} files copied, existing files skipped)", template_name, copied),
             error: None,
-            requires_restart: false,
         })
     }
 
@@ -93,7 +89,6 @@ impl TemplateCommandHandler {
                 success: false,
                 message: "/template update: pattern file not found. Cannot determine template.".into(),
                 error: Some("No .jyc/pattern file".to_string()),
-                requires_restart: false,
             });
         };
         
@@ -123,7 +118,6 @@ impl TemplateCommandHandler {
                     success: false,
                     message: format!("/template update: pattern '{}' has no template configured", pattern_name),
                     error: Some("No template in pattern config".to_string()),
-                    requires_restart: false,
                 });
             }
         };
@@ -134,7 +128,6 @@ impl TemplateCommandHandler {
                 success: false,
                 message: format!("/template update: template '{}' not found in templates/", template_name),
                 error: Some(format!("Path does not exist: {}", template_src.display())),
-                requires_restart: false,
             });
         }
         
@@ -144,7 +137,6 @@ impl TemplateCommandHandler {
             success: true,
             message: format!("/template update: applied '{}' template ({} files overwritten)", template_name, copied),
             error: None,
-            requires_restart: false,
         })
     }
 }

@@ -278,41 +278,6 @@ fn default_inspect_bind() -> String {
     "127.0.0.1:9876".to_string()
 }
 
-/// Heartbeat configuration — controls progress updates sent during long-running AI processing.
-///
-/// When enabled, heartbeat emails/messages are sent periodically while the AI is working
-/// on a message, so the sender knows their request is being processed.
-#[derive(Debug, Clone, Deserialize)]
-pub struct HeartbeatConfig {
-    /// Whether heartbeat updates are enabled (default: true)
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Interval between heartbeat updates in seconds (default: 600 = 10 minutes)
-    ///
-    /// Controls both the timer tick rate and the minimum interval between
-    /// consecutive heartbeat sends. Set higher to avoid SMTP rate limits.
-    #[serde(default = "default_600")]
-    pub interval_secs: u64,
-
-    /// Minimum processing time before the first heartbeat is sent (default: 60)
-    ///
-    /// Prevents heartbeats for quick-to-process messages. The AI must have been
-    /// processing for at least this many seconds before the first heartbeat fires.
-    #[serde(default = "default_60")]
-    pub min_elapsed_secs: u64,
-}
-
-impl Default for HeartbeatConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            interval_secs: 600,
-            min_elapsed_secs: 60,
-        }
-    }
-}
-
 // --- Default value functions ---
 
 fn default_true() -> bool {
@@ -348,14 +313,6 @@ fn default_agent_mode() -> String {
 
 fn default_max_iterations() -> usize {
     200
-}
-
-fn default_60() -> u64 {
-    60
-}
-
-fn default_600() -> u64 {
-    600
 }
 
 #[allow(dead_code)]

@@ -68,6 +68,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut reply_text_from_tool: Option<String> = None;
     let start_time = Instant::now();
 
+    // Cycle tracking: when iter_in_cycle reaches max_iter, send a progress reply,
+    // reset the counter, and continue. No upper bound on cycles.
+    let mut iter_in_cycle: usize = 0;
+    let mut cycle_count: usize = 0;
+    let mut total_iterations: usize = 0;
+
     // Publish ProcessingStarted
     publish_event(event_bus, ThreadEvent::ProcessingStarted {
         thread_name: thread_name.to_string(),
@@ -75,14 +81,111 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         timestamp: Utc::now(),
     }).await;
 
-    for iteration in 0..max_iter {
+    loop {
         if cancel.is_cancelled() {
-            tracing::info!(iteration, "Agent loop cancelled");
+            tracing::info!(total_iterations, "Agent loop cancelled");
             break;
         }
 
+        // Check for cycle boundary: send progress reply and reset counter
+        if iter_in_cycle >= max_iter {
+            cycle_count += 1;
+            tracing::info!(
+                cycle = cycle_count,
+                total_iterations,
+                input_tokens = total_input_tokens,
+                "Cycle boundary reached, sending progress reply and continuing"
+            );
+
+            // Generate progress summary via separate LLM call
+            let progress_text = generate_progress_summary(
+                provider,
+                &raw_context,
+                cycle_count,
+                total_iterations,
+            ).await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to generate progress summary, using fallback");
+                format!(
+                    "Still working on this task. Cycle {}, ~{} iterations completed. Will continue.",
+                    cycle_count, total_iterations
+                )
+            });
+
+            // Synthetically execute reply_message tool
+            let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
+            let synthetic_args = serde_json::json!({"message": &progress_text}).to_string();
+
+            // Publish ToolStarted for the progress reply
+            publish_event(event_bus, ThreadEvent::ToolStarted {
+                thread_name: thread_name.to_string(),
+                tool_name: "jyc_reply_reply_message".to_string(),
+                input: Some(truncate_str(&synthetic_args, 200)),
+                timestamp: Utc::now(),
+            }).await;
+
+            let tool_start = Instant::now();
+            let ctx = ToolContext { working_dir };
+            let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let synthetic_output = match tools.execute("jyc_reply_reply_message", synthetic_input, &ctx).await {
+                Ok(output) => output,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Synthetic reply tool execution failed");
+                    ToolOutput::error(format!("Tool error: {e}"))
+                }
+            };
+
+            publish_event(event_bus, ThreadEvent::ToolCompleted {
+                thread_name: thread_name.to_string(),
+                tool_name: "jyc_reply_reply_message".to_string(),
+                success: !synthetic_output.is_error,
+                duration_secs: tool_start.elapsed().as_secs(),
+                output: if synthetic_output.is_error { Some(truncate_str(&synthetic_output.content, 200)) } else { None },
+                timestamp: Utc::now(),
+            }).await;
+
+            // Append synthetic assistant message + tool result to raw_context
+            // so the LLM sees the progress was sent and can continue from there.
+            let synthetic_tool_calls = vec![(
+                synthetic_call_id.clone(),
+                "jyc_reply_reply_message".to_string(),
+                synthetic_args.clone(),
+            )];
+            raw_context.push(provider.build_raw_assistant_message(
+                "",
+                "",
+                &synthetic_tool_calls,
+            ));
+            raw_context.push(provider.format_tool_result(
+                &synthetic_call_id,
+                &synthetic_output.content,
+                synthetic_output.is_error,
+            ));
+
+            // Also append to internal history for completeness
+            history.push(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: synthetic_call_id.clone(),
+                    name: "jyc_reply_reply_message".to_string(),
+                    input: serde_json::json!({"message": &progress_text}),
+                }],
+            });
+            history.push(Message::tool_result(
+                &synthetic_call_id,
+                &synthetic_output.content,
+                synthetic_output.is_error,
+            ));
+
+            // Reset iteration counter for next cycle
+            iter_in_cycle = 0;
+            continue;
+        }
+
         tracing::debug!(
-            iteration,
+            iteration = total_iterations,
+            iter_in_cycle,
+            cycle = cycle_count,
             history_len = history.len(),
             raw_context_len = raw_context.len(),
             "Agent loop iteration"
@@ -106,7 +209,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 3. Check for empty response (likely an API error we didn't catch)
         if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0 {
             tracing::warn!(
-                iteration,
+                iteration = total_iterations,
                 "LLM returned empty response (no text, no tools, 0 tokens) — possible API error"
             );
         }
@@ -122,7 +225,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 5. If no tool calls, we're done
         if response.tool_calls.is_empty() {
             tracing::info!(
-                iteration,
+                total_iterations,
+                cycle = cycle_count,
                 text_len = response.text.len(),
                 "Agent loop complete (text-only response)"
             );
@@ -147,9 +251,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             });
         }
 
-        // 5. Execute tool calls
+        // 6. Execute tool calls
         tracing::info!(
-            iteration,
+            iteration = total_iterations,
             tool_count = response.tool_calls.len(),
             tools = ?response.tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
             "Executing tool calls"
@@ -231,7 +335,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         // If reply was sent by tool, we can stop early
         if reply_sent_by_tool {
-            tracing::info!(iteration, "Reply sent by MCP tool, stopping loop");
+            tracing::info!(total_iterations, "Reply sent by MCP tool, stopping loop");
 
             let duration = start_time.elapsed();
             publish_event(event_bus, ThreadEvent::ProcessingCompleted {
@@ -243,7 +347,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }).await;
 
             return Ok(AgentLoopResult {
-                text: response.text,
+                text: String::new(),
                 reply_sent_by_tool: true,
                 reply_text_from_tool,
                 input_tokens: total_input_tokens,
@@ -253,28 +357,26 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             });
         }
 
-        // Publish progress (only when continuing the loop — not after completion)
+        // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
         publish_event(event_bus, ThreadEvent::ProcessingProgress {
             thread_name: thread_name.to_string(),
             elapsed_secs: elapsed.as_secs(),
             activity: "tool execution".to_string(),
-            progress: Some(format!("iteration {}, {} tokens used", iteration + 1, total_input_tokens)),
-            parts_count: iteration + 1,
+            progress: Some(format!(
+                "cycle {}, iteration {} ({}), {} tokens",
+                cycle_count + 1, total_iterations + 1, iter_in_cycle + 1, total_input_tokens
+            )),
+            parts_count: total_iterations + 1,
             output_length: total_output_tokens as usize,
             timestamp: Utc::now(),
         }).await;
 
-        // 6. Loop back to LLM with tool results
+        iter_in_cycle += 1;
+        total_iterations += 1;
     }
 
-    tracing::warn!(
-        max_iterations = max_iter,
-        input_tokens = total_input_tokens,
-        output_tokens = total_output_tokens,
-        "Agent loop reached maximum iterations"
-    );
-
+    // Loop ended (cancellation only — there's no max-cycles limit)
     let duration = start_time.elapsed();
     publish_event(event_bus, ThreadEvent::ProcessingCompleted {
         thread_name: thread_name.to_string(),
@@ -284,18 +386,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         timestamp: Utc::now(),
     }).await;
 
-    // Graceful degradation: provide a fallback reply text instead of empty silent failure.
-    // This way the user knows the agent tried but the task was too complex.
-    let fallback_text = format!(
-        "I reached my maximum exploration limit ({} iterations) while working on your request. \
-         I gathered context across {} input tokens but couldn't complete a full reply. \
-         Please try splitting your request into smaller, more focused steps, or use `/reset` \
-         and rephrase the request.",
-        max_iter, total_input_tokens
-    );
-
     Ok(AgentLoopResult {
-        text: fallback_text,
+        text: String::new(),
         reply_sent_by_tool,
         reply_text_from_tool,
         input_tokens: total_input_tokens,
@@ -303,6 +395,42 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         history,
         raw_context,
     })
+}
+
+/// Generate a progress summary using a separate LLM call.
+///
+/// Asks the same provider/model to produce a 2-3 sentence progress update
+/// based on the current conversation context. Used at cycle boundaries to
+/// inform the user that work is still in progress.
+async fn generate_progress_summary(
+    provider: &dyn Provider,
+    raw_context: &[serde_json::Value],
+    cycle_count: usize,
+    total_iterations: usize,
+) -> Result<String> {
+    let summary_system = format!(
+        "You are summarizing in-progress work for the user. Based on the conversation so far, \
+         write a concise 2-3 sentence progress update in the user's language. Format:\n\
+         - What you've done (e.g., \"Implemented X, Y, refactored Z\")\n\
+         - What you're still working on\n\
+         - End with: \"Will continue and reply again when complete.\" (or equivalent in user's language)\n\n\
+         This is progress update #{} after {} iterations of work.\n\n\
+         Reply with ONLY the progress text. No preamble, no markdown headers, no tool calls.",
+        cycle_count, total_iterations
+    );
+
+    // Use complete_raw with no tools — just want a text response
+    let stream = provider
+        .complete_raw(raw_context, &[], &summary_system)
+        .await?;
+
+    let response = collect_response(stream).await?;
+
+    if response.text.is_empty() {
+        anyhow::bail!("LLM returned empty progress summary");
+    }
+
+    Ok(response.text)
 }
 
 /// Publish an event to the event bus (if available).

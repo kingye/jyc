@@ -221,9 +221,11 @@ pub struct AgentConfig {
     /// System prompt for the AI
     pub system_prompt: Option<String>,
 
-    /// Maximum agent loop iterations (tool calls + LLM responses) per message.
-    /// When exceeded, the agent sends a partial reply and exits gracefully.
-    /// Default: 100.
+    /// Maximum agent loop iterations per cycle. When exceeded, the agent sends a
+    /// progress reply, resets the iteration counter, and continues working.
+    /// There is no upper bound on cycles — the agent runs until it produces a
+    /// final reply or the user resets the session.
+    /// Default: 200.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
 
@@ -410,7 +412,7 @@ fn default_agent_mode() -> String {
 }
 
 fn default_max_iterations() -> usize {
-    100
+    200
 }
 
 fn default_60() -> u64 {

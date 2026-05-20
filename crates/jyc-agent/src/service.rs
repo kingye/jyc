@@ -243,21 +243,16 @@ impl JycAgentService {
         }
 
         // Reply instructions
-        prompt.push_str(&format!(
+        prompt.push_str(
             "## Reply Instructions\n\
              When you have your answer ready, use the jyc_reply_reply_message tool:\n\
              - `message`: Your reply text\n\
              - `attachments`: Optional filenames to attach from the working directory\n\
              After a successful reply, STOP immediately. Do NOT call any other tools.\n\
              CRITICAL: Always use the jyc_reply_reply_message tool to send your reply.\n\n\
-             ## Iteration Budget\n\
-             You have a maximum of {} tool-call iterations per message. Plan your work efficiently:\n\
-             - Avoid exploratory rabbit holes — focus on what's needed to answer the user.\n\
-             - For complex tasks, break the work across multiple replies. Send a partial reply\n\
-               with what you've done so far rather than exhausting the iteration budget.\n\
-             - If you've used >70% of your iterations, prioritize sending a reply over more exploration.\n\n",
-            self.config.max_iterations
-        ));
+             For long-running tasks, send periodic progress replies so the user knows you're\n\
+             still working. Each reply marks a checkpoint; you can continue working after sending one.\n\n"
+        );
 
         // Chat history access instructions
         prompt.push_str(

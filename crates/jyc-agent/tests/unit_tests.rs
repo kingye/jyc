@@ -779,28 +779,28 @@ mod max_iterations {
     use jyc_agent::types::AgentConfig;
 
     #[test]
-    fn default_is_100() {
+    fn default_is_200() {
         let cfg = AgentConfig::default();
-        assert_eq!(cfg.max_iterations, 100);
+        assert_eq!(cfg.max_iterations, 200);
     }
 
     #[test]
     fn deserializes_from_toml_default() {
-        // No max_iterations in TOML → default 100
+        // No max_iterations in TOML → default 200
         let toml = r#"
             model = "anthropic/claude-3"
         "#;
         let cfg: AgentConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.max_iterations, 100);
+        assert_eq!(cfg.max_iterations, 200);
     }
 
     #[test]
     fn deserializes_explicit_value() {
         let toml = r#"
             model = "anthropic/claude-3"
-            max_iterations = 200
+            max_iterations = 500
         "#;
         let cfg: AgentConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.max_iterations, 200);
+        assert_eq!(cfg.max_iterations, 500);
     }
 }

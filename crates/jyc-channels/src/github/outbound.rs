@@ -137,15 +137,4 @@ impl OutboundAdapter for GithubOutboundAdapter {
             message_id: "github-alert-noop".to_string(),
         })
     }
-
-    async fn send_heartbeat(
-        &self,
-        _original: &jyc_types::InboundMessage,
-        _message: &str,
-    ) -> Result<SendResult> {
-        // GitHub doesn't need heartbeats — comments are discrete
-        Ok(SendResult {
-            message_id: "github-heartbeat-noop".to_string(),
-        })
-    }
 }

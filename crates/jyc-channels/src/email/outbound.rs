@@ -224,40 +224,4 @@ impl OutboundAdapter for EmailOutboundAdapter {
             .await?;
         Ok(SendResult { message_id })
     }
-
-    /// Send a heartbeat/progress update to the user via email.
-    ///
-    /// The `message` is pre-formatted from the per-channel heartbeat_template.
-    /// Sent as a threaded reply to the original email.
-    async fn send_heartbeat(
-        &self,
-        original: &InboundMessage,
-        message: &str,
-    ) -> Result<SendResult> {
-        let subject = format!("[Processing Update] {}", original.topic);
-
-        let mut smtp = self.smtp.lock().await;
-        let mut refs: Vec<String> = original
-            .thread_refs
-            .clone()
-            .unwrap_or_default();
-        if let Some(ref ext_id) = original.external_id {
-            refs.push(ext_id.clone());
-        }
-
-        let message_id = smtp
-            .send_reply(
-                &self.from_address,
-                self.from_name.as_deref(),
-                &original.sender_address,
-                &subject,
-                message,
-                original.external_id.as_deref(),
-                if refs.is_empty() { None } else { Some(&refs) },
-                None,
-            )
-            .await?;
-
-        Ok(SendResult { message_id })
-    }
 }

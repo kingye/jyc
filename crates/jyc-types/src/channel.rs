@@ -227,17 +227,6 @@ pub trait OutboundAdapter: Send + Sync {
         subject: &str,
         body: &str,
     ) -> Result<SendResult>;
-
-    /// Send a heartbeat/progress update to the user.
-    ///
-    /// Called periodically by the Thread Event system during long-running AI
-    /// processing. The `message` parameter is pre-formatted from the per-channel
-    /// heartbeat_template config (e.g., "正在处理中，请稍候... (已用时 3m 20s)").
-    async fn send_heartbeat(
-        &self,
-        original: &InboundMessage,
-        message: &str,
-    ) -> Result<SendResult>;
 }
 
 // --- Pattern Types ---

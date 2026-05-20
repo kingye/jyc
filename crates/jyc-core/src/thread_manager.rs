@@ -13,7 +13,7 @@ use crate::thread_event::ThreadEvent;
 use crate::thread_event_bus::{ThreadEventBusRef, SimpleThreadEventBus};
 
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
-use jyc_types::{HeartbeatConfig, InboundAttachmentConfig};
+use jyc_types::InboundAttachmentConfig;
 use crate::agent::AgentService;
 use crate::command::handler::CommandContext;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
@@ -64,12 +64,6 @@ pub struct ThreadManager {
     // Per-thread cancellation tokens (used by close_thread to stop workers)
     pub(crate) thread_cancels: Mutex<HashMap<String, CancellationToken>>,
 
-    // Heartbeat configuration
-    heartbeat_config: HeartbeatConfig,
-
-    // Per-channel heartbeat message template (supports {elapsed} placeholder)
-    heartbeat_template: String,
-
     // Template directory for thread initialization
     template_dir: PathBuf,
 
@@ -101,8 +95,6 @@ impl ThreadManager {
         outbound: Arc<dyn OutboundAdapter>,
         agent: Arc<dyn AgentService>,
         cancel: CancellationToken,
-        heartbeat_config: HeartbeatConfig,
-        heartbeat_template: String,
         template_dir: PathBuf,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
@@ -117,8 +109,6 @@ impl ThreadManager {
             agent,
             cancel,
             true,
-            heartbeat_config,
-            heartbeat_template,
             template_dir,
             config,
             channel_name,
@@ -136,8 +126,6 @@ impl ThreadManager {
         agent: Arc<dyn AgentService>,
         cancel: CancellationToken,
         enable_events: bool,
-        heartbeat_config: HeartbeatConfig,
-        heartbeat_template: String,
         template_dir: PathBuf,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
@@ -154,8 +142,6 @@ impl ThreadManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
-            heartbeat_config,
-            heartbeat_template,
             template_dir,
             channel_name,
             workspace_dir,
@@ -275,8 +261,6 @@ impl ThreadManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
-            heartbeat_config: self.heartbeat_config.clone(),
-            heartbeat_template: self.heartbeat_template.clone(),
             template_dir: self.template_dir.clone(),
             channel_name: self.channel_name.clone(),
             workspace_dir: self.workspace_dir.clone(),
@@ -312,8 +296,6 @@ impl ThreadManager {
         let storage = thread_manager.storage.clone();
         let outbound = thread_manager.outbound.clone();
         let agent = thread_manager.agent.clone();
-        let heartbeat_config = thread_manager.heartbeat_config.clone();
-        let heartbeat_template = thread_manager.heartbeat_template.clone();
         let template_dir = thread_manager.template_dir.clone();
         let config = thread_manager.config.clone();
         let tm = thread_manager;
@@ -334,46 +316,8 @@ impl ThreadManager {
             // Set thread event bus for agent service
             let _ = agent.set_thread_event_bus(&thread_name, event_bus.clone()).await;
 
-            // Create a channel to pass the current message to the event listener
-            let (current_message_tx, current_message_rx) = tokio::sync::watch::channel(None);
-
-            // Start event listener if event bus is provided and heartbeat is enabled
-            let thread_cancel_for_listener = thread_cancel.clone();
+            // Keep event_bus available for error propagation in the dispatch path below
             let event_bus_for_error = event_bus.clone();
-            let event_listener_handle = if heartbeat_config.enabled {
-                if let Some(event_bus) = event_bus {
-                    tracing::trace!(thread = %thread_name, "Creating event listener with heartbeat control");
-                    let outbound_clone = outbound.clone();
-                    let thread_name_clone = thread_name.clone();
-                    let current_message_rx_clone = current_message_rx.clone();
-                    let hb_config = heartbeat_config.clone();
-                    let hb_template = heartbeat_template.clone();
-                    
-                    {
-                        let thread_name_for_finish = thread_name_clone.clone();
-                        Some(tokio::spawn(async move {
-                            tracing::trace!(thread = %thread_name_clone, "Event listener started");
-                            // Start event listener with heartbeat timing control
-                            Self::event_listener_with_heartbeat(
-                                event_bus,
-                                thread_name_clone,
-                                outbound_clone,
-                                current_message_rx_clone,
-                                hb_config,
-                                hb_template,
-                                thread_cancel_for_listener,
-                            ).await;
-                             tracing::trace!(thread = %thread_name_for_finish, "Event listener finished");
-                        }))
-                    }
-                } else {
-                    tracing::trace!(thread = %thread_name, "No event bus provided, event listener disabled");
-                    None
-                }
-            } else {
-                tracing::trace!(thread = %thread_name, "Heartbeat disabled by config");
-                None
-            };
 
             let mut pending: Option<QueueItem> = None;
 
@@ -452,9 +396,6 @@ impl ThreadManager {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
                 }
-
-                // Update current message for event listeners
-                let _ = current_message_tx.send(Some(item.message.clone()));
 
                 // Acquire repo group lock to prevent concurrent initialization
                 // of the shared repo directory. If the shared dir is already
@@ -578,8 +519,6 @@ impl ThreadManager {
                 }
 
                 // Clear current message after processing
-                let _ = current_message_tx.send(None);
-
                 drop(_permit);
 
                 let next = tokio::select! {
@@ -613,12 +552,6 @@ impl ThreadManager {
                 };
 
                 pending = Some(next);
-            }
-
-            // Wait for event listener to finish
-            if let Some(handle) = event_listener_handle {
-                let _ = handle.await;
-                tracing::debug!("Event listener finished");
             }
 
             tracing::info!("Worker finished");
@@ -746,181 +679,6 @@ impl ThreadManager {
         threads
     }
     
-    /// Event listener that controls heartbeat timing based on HeartbeatConfig.
-    /// Each thread has its own isolated event listener.
-    async fn event_listener_with_heartbeat(
-        event_bus: crate::thread_event_bus::ThreadEventBusRef,
-        thread_name: String,
-        outbound: Arc<dyn OutboundAdapter>,
-        current_message_rx: tokio::sync::watch::Receiver<Option<jyc_types::InboundMessage>>,
-        heartbeat_config: HeartbeatConfig,
-        heartbeat_template: String,
-        thread_cancel: CancellationToken,
-    ) {
-    use std::time::{Instant, Duration};
-    
-    let heartbeat_interval = Duration::from_secs(heartbeat_config.interval_secs);
-    let min_heartbeat_elapsed = Duration::from_secs(heartbeat_config.min_elapsed_secs);
-
-    tracing::debug!(
-        thread = %thread_name,
-        interval_secs = heartbeat_config.interval_secs,
-        min_elapsed_secs = heartbeat_config.min_elapsed_secs,
-        "Heartbeat config loaded"
-    );
-    
-    // Subscribe to this thread's event bus
-    let mut receiver = match event_bus.subscribe().await {
-        Ok(receiver) => receiver,
-        Err(e) => {
-            tracing::warn!(thread = %thread_name, error = %e, "Failed to subscribe to event bus");
-            return;
-        }
-    };
-    
-    // State for this thread's heartbeat control
-    let mut last_heartbeat_sent: Option<Instant> = None;
-    let mut last_processing_state: Option<(u64, String, String)> = None; // (elapsed_secs, activity, progress)
-    
-    // Heartbeat timer for this thread
-    let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
-    heartbeat_timer.tick().await; // Skip immediate tick
-    
-    loop {
-        tokio::select! {
-            // Receive events from this thread's event bus
-            event = receiver.recv() => {
-                if let Some(event) = event {
-                    // Clone event for logging (since we might partially move it)
-                    let event_clone = event.clone();
-                    
-                    // Update processing state based on ProcessingProgress events
-                    if let ThreadEvent::ProcessingProgress {
-                        thread_name: event_thread_name,
-                        elapsed_secs,
-                        activity,
-                        progress,
-                        parts_count: _,
-                        output_length: _,
-                        timestamp: _,
-                    } = &event {
-                        // Verify this event is for our thread (should always be true due to isolation)
-                        if event_thread_name == &thread_name {
-                            let progress_str = progress.clone().unwrap_or_else(|| "Processing...".to_string());
-                            last_processing_state = Some((*elapsed_secs, activity.clone(), progress_str));
-                            tracing::trace!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                activity = %activity,
-                                "Updated processing state"
-                            );
-                        }
-                    }
-                    
-                    // Log other events for debugging
-                    tracing::trace!(
-                        thread = %thread_name,
-                        event = ?event_clone,
-                        "Received thread event"
-                    );
-                } else {
-                    tracing::trace!(thread = %thread_name, "Event bus channel closed");
-                    break;
-                }
-            }
-            
-            // Heartbeat timer tick - check if we should send a heartbeat
-            _ = heartbeat_timer.tick() => {
-                // Get current message for this thread
-                let current_message = current_message_rx.borrow().clone();
-                
-                if let Some(message) = current_message {
-                    tracing::trace!(thread = %thread_name, "Current message available for heartbeat check");
-                    // Check if we have processing state and should send heartbeat
-                    if let Some((elapsed_secs, activity, progress)) = &last_processing_state {
-                        tracing::debug!(
-                            thread = %thread_name,
-                            elapsed_secs = elapsed_secs,
-                            activity = %activity,
-                            progress = %progress,
-                            "Processing state available"
-                        );
-                        // Check minimum elapsed time
-                        let processing_elapsed = Duration::from_secs(*elapsed_secs);
-                        if processing_elapsed < min_heartbeat_elapsed {
-                        tracing::trace!(
-                            thread = %thread_name,
-                            elapsed_secs = elapsed_secs,
-                            "Processing just started, skipping heartbeat (elapsed < min_elapsed_secs)"
-                        );
-                            continue;
-                        }
-                        
-                        // Check heartbeat interval
-                        let should_send = match last_heartbeat_sent {
-                            Some(last_sent) => last_sent.elapsed() >= heartbeat_interval,
-                            None => true, // First heartbeat
-                        };
-                        
-                        if should_send {
-                            // Format the heartbeat message from per-channel template
-                            let minutes = elapsed_secs / 60;
-                            let seconds = elapsed_secs % 60;
-                            let elapsed_str = format!("{}m {}s", minutes, seconds);
-                            let heartbeat_msg = heartbeat_template.replace("{elapsed}", &elapsed_str);
-
-                            tracing::info!(
-                                thread = %thread_name,
-                                elapsed_secs = elapsed_secs,
-                                "Sending heartbeat"
-                            );
-                            
-                            match outbound.send_heartbeat(&message, &heartbeat_msg).await {
-                                Ok(result) => {
-                                    tracing::info!(
-                                        thread = %thread_name,
-                                        message_id = %result.message_id,
-                                        "Heartbeat sent successfully"
-                                    );
-                                    last_heartbeat_sent = Some(Instant::now());
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        thread = %thread_name,
-                                        error = %e,
-                                        "Failed to send heartbeat"
-                                    );
-                                }
-                            }
-                        } else {
-                            tracing::debug!(
-                                thread = %thread_name,
-                                "Heartbeat interval not yet reached"
-                            );
-                        }
-                    } else {
-                        tracing::trace!(
-                            thread = %thread_name,
-                            "No processing state yet, skipping heartbeat (need ProcessingProgress event)"
-                        );
-                    }
-                } else {
-                    tracing::trace!(
-                        thread = %thread_name,
-                        "No current message, skipping heartbeat"
-                    );
-                }
-            }
-            // Thread closed — stop the event listener
-            _ = thread_cancel.cancelled() => {
-                tracing::debug!(thread = %thread_name, "Event listener cancelled (thread closed)");
-                break;
-            }
-        }
-    }
-    
-    tracing::debug!(thread = %thread_name, "Event listener with heartbeat finished");
-}
     /// Get the event bus for a specific thread.
     /// 
     /// Returns None if event support is disabled or the thread doesn't have an event bus.

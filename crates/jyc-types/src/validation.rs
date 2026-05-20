@@ -252,28 +252,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // Heartbeat
-    if config.heartbeat.enabled {
-        if config.heartbeat.interval_secs == 0 {
-            errors.push(ValidationError {
-                path: "heartbeat.interval_secs".into(),
-                message: "must be at least 1 second".into(),
-            });
-        }
-        if config.heartbeat.interval_secs > 0 && config.heartbeat.interval_secs < 30 {
-            errors.push(ValidationError {
-                path: "heartbeat.interval_secs".into(),
-                message: "must be at least 30 seconds to avoid rate limits".into(),
-            });
-        }
-        if config.heartbeat.min_elapsed_secs == 0 {
-            errors.push(ValidationError {
-                path: "heartbeat.min_elapsed_secs".into(),
-                message: "must be at least 1 second".into(),
-            });
-        }
-    }
-
     // Inspect server
     if let Some(ref inspect) = config.inspect {
         if inspect.enabled && inspect.bind.is_empty() {

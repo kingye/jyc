@@ -76,7 +76,6 @@ Add the feishu channel to your `config.toml`:
 ```toml
 [channels.feishu_bot]
 type = "feishu"
-heartbeat_template = "正在处理中，请稍候... (已用时 {elapsed})"
 
 [channels.feishu_bot.feishu]
 app_id = "cli_xxxxxxxxxxxxx"       # Your App ID from Step 1
@@ -101,7 +100,6 @@ mentions = ["jyc"]                     # Your bot's display name
 ### Configuration Notes
 
 - **`mentions = ["jyc"]`**: Only messages that @-mention the bot are processed. Without this, the bot would respond to every message in the group.
-- **`heartbeat_template`**: Customizes the progress message sent during long AI processing. Use the language your users prefer.
 - **`base_url`**: Use `https://open.feishu.cn` for Feishu (China), `https://open.larksuite.com` for Lark (international).
 - **Environment variables**: Use `${ENV_VAR}` syntax for secrets:
   ```toml

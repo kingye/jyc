@@ -24,9 +24,6 @@ pub enum JycError {
     #[error("SMTP error: {0}")]
     Smtp(String),
 
-    #[error("OpenCode error: {0}")]
-    OpenCode(String),
-
     #[error("MCP error: {0}")]
     Mcp(String),
 

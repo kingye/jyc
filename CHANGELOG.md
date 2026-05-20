@@ -2,6 +2,52 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.4] - 2026-05-20
+
+### Added
+
+- **Infinite cycle agent loop with progress checkpoints** — the agent loop is no longer
+  a bounded `for 0..max_iter` over tool calls. It now wraps an inner per-cycle counter
+  in an unbounded outer loop. When `iter_in_cycle` reaches `max_iterations`, the agent:
+  1. Issues a separate LLM completion to summarize progress so far
+  2. Synthetically invokes the `jyc_reply_reply_message` tool with that summary
+  3. Appends the synthetic assistant + tool_result to `raw_context`
+  4. Resets `iter_in_cycle` to 0 and continues working
+  No upper bound on cycles; the existing 95 % context-window auto-reset still applies.
+  If the progress-summary LLM call fails, a static template is used as fallback.
+
+### Changed
+
+- **Default `max_iterations`** raised from 100 to 200 (per cycle).
+- **Agent system prompt** — removed the "Iteration Budget" section. Replaced with a
+  brief note that long-running tasks should send periodic progress replies as
+  checkpoints; the agent no longer needs to ration tool calls against a hard limit.
+
+### Removed
+
+- **Legacy heartbeat infrastructure**, fully superseded by the cycle loop:
+  - `HeartbeatConfig` struct and `[heartbeat]` config section
+  - `AppConfig.heartbeat` field
+  - `ChannelConfig.heartbeat_template` per-channel field
+  - `OutboundAdapter::send_heartbeat()` trait method and all impls
+    (email, feishu, github, plus the test mock)
+  - `ThreadManager::event_listener_with_heartbeat` (~170 LOC) and the
+    per-worker `tokio::sync::watch` channel that fed it
+  - `ThreadEvent::Heartbeat` enum variant and its handlers in `jyc-inspect`
+  - Dead heartbeat constants in `jyc-utils::constants`
+  - Heartbeat validation block in `jyc-types::validation`
+  - Documentation in DESIGN.md, FEISHU.md, README.md
+- **Kept** (unrelated, network-level keepalives):
+  - WebSocket `heartbeat_interval_secs` in `feishu_config`
+  - OpenCode SSE `server.heartbeat` ignore-rule (it's a TCP-level keepalive)
+
+### Migration
+
+If your `config.toml` contains a `[heartbeat]` section or any channel uses
+`heartbeat_template = "..."`, those fields are now silently ignored. Remove
+them to keep configs clean. No behavior change is needed — the cycle loop
+will produce progress replies automatically for long-running tasks.
+
 ## [0.3.3] - 2026-05-20
 
 ### Fixed

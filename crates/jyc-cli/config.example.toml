@@ -212,16 +212,15 @@ enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- MCP Servers ---
-# Named MCP server definitions. Templates reference these by name
-# in their `mcps` list (see templates/templates.toml).
-# Each MCP can be `local` (subprocess) or `remote` (HTTP).
+# Named MCP server definitions are configured here and loaded by the agent at startup.
+# Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).
+# Tools from each MCP server are dynamically discovered and registered in the agent.
 
 # [[mcps]]
 # name = "jyc_reply"
 # type = "local"
 # command = ["jyc", "mcp-reply-tool"]
 # # environment = { "JYC_THREAD_DIR" = "/path/to/thread" }
-# timeout = 300000
 
 # [[mcps]]
 # name = "remote_mcp"

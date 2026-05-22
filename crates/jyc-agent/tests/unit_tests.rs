@@ -228,6 +228,52 @@ mod session {
     use jyc_agent::session;
     use std::path::Path;
 
+    /// Minimal stub provider that panics if any LLM method is invoked.
+    /// Used by `update_tokens` tests where the auto-reset threshold is NOT
+    /// crossed, so the provider's LLM is never actually called.
+    struct StubProvider;
+
+    #[async_trait::async_trait]
+    impl jyc_agent::provider::Provider for StubProvider {
+        fn name(&self) -> &str { "stub" }
+        fn model(&self) -> &str { "stub" }
+
+        async fn complete(
+            &self,
+            _messages: &[jyc_agent::types::Message],
+            _tools: &[jyc_agent::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<jyc_agent::provider::EventStream> {
+            panic!("stub provider should not be invoked in these tests")
+        }
+
+        fn format_user_message(&self, _text: &str) -> serde_json::Value {
+            panic!("stub")
+        }
+
+        fn format_tool_result(&self, _id: &str, _content: &str, _is_error: bool) -> serde_json::Value {
+            panic!("stub")
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            _text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            panic!("stub")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[jyc_agent::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<jyc_agent::provider::EventStream> {
+            panic!("stub provider should not be invoked in these tests")
+        }
+    }
+
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -324,7 +370,7 @@ mod session {
         let jyc_dir = tmp.path().join(".jyc");
 
         assert!(!jyc_dir.join("agent-session.json").exists());
-        session::update_tokens(tmp.path(), 1000, 200, Some(100000)).await;
+        session::update_tokens(tmp.path(), 1000, 200, Some(100000), &StubProvider).await;
         assert!(jyc_dir.join("agent-session.json").exists());
 
         // Verify content
@@ -340,9 +386,9 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
 
         // First call
-        session::update_tokens(tmp.path(), 1000, 100, Some(100000)).await;
+        session::update_tokens(tmp.path(), 1000, 100, Some(100000), &StubProvider).await;
         // Second call — input_tokens should be latest, not accumulated
-        session::update_tokens(tmp.path(), 2000, 150, Some(100000)).await;
+        session::update_tokens(tmp.path(), 2000, 150, Some(100000), &StubProvider).await;
 
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json")).await.unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -835,5 +881,38 @@ mod max_iterations {
         "#;
         let cfg: AgentConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.max_iterations, 1000);
+    }
+}
+
+mod small_model {
+    use jyc_agent::types::AgentConfig;
+
+    #[test]
+    fn default_is_none() {
+        let cfg = AgentConfig::default();
+        assert!(cfg.small_model.is_none());
+    }
+
+    #[test]
+    fn deserializes_when_absent() {
+        // No small_model in TOML → None.
+        let toml = r#"
+            model = "anthropic/claude-3"
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.small_model.is_none());
+    }
+
+    #[test]
+    fn deserializes_when_present() {
+        let toml = r#"
+            model = "deepseek/deepseek-v4-pro"
+            small_model = "deepseek/deepseek-v4-flash"
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.small_model.as_deref(),
+            Some("deepseek/deepseek-v4-flash"),
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 All notable changes to JYC will be documented in this file.
 
-## [Unreleased]
+## [0.3.5] - 2026-05-22
 
 ### Added
 

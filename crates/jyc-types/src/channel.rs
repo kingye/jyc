@@ -256,6 +256,21 @@ pub struct ChannelPattern {
     /// Channel-agnostic: works for email, Feishu, or any channel.
     #[serde(default)]
     pub thread_name: Option<String>,
+    /// Thread name prefix for channels that derive thread names from message
+    /// identity (e.g. GitHub issue/PR number). Combined as `{prefix}-{id}`.
+    ///
+    /// When two patterns can match the same identity (e.g. distinguished by
+    /// labels on the same issue), they MUST declare distinct `thread_prefix`
+    /// values, otherwise both patterns route to the same thread directory and
+    /// the second pattern's template / AGENTS.md is silently dropped.
+    ///
+    /// If unset, the channel's default derivation is used (e.g. GitHub uses
+    /// `issue-{N}` or `pr-{N}` based on event type).
+    ///
+    /// Distinct from `thread_name`, which forces a single fixed thread name
+    /// regardless of message identity.
+    #[serde(default)]
+    pub thread_prefix: Option<String>,
     /// Agent role name for this pattern (e.g., "Planner", "Developer", "Reviewer").
     /// Used by GitHub OutboundAdapter to prefix comments with `[Role]`.
     /// Also used to filter out the agent's own comments during polling.
@@ -285,6 +300,7 @@ impl Default for ChannelPattern {
             attachments: None,
             template: None,
             thread_name: None,
+            thread_prefix: None,
             role: None,
             live_injection: true,
             repo_group: None,

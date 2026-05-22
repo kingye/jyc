@@ -246,19 +246,35 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [channels.my_repo.footer]
 # enabled = false
 #
+# # Thread naming
+# # -------------
+# # By default, GitHub threads are named:
+# #     issue-{N}      for issue events
+# #     pr-{N}         for pull_request events
+# # When two patterns can match the same issue/PR (e.g. distinguished by labels),
+# # they MUST declare distinct `thread_prefix` values — otherwise both patterns
+# # route to the same workspace dir, and the second pattern's template /
+# # AGENTS.md is silently dropped (jyc will refuse and log a TemplateMismatch
+# # error if this happens). `thread_prefix` is combined with the GitHub number
+# # as `{prefix}-{N}`. Omit it to keep the default behavior.
+#
 # # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
+# # Lives in workspace/plan-{N}/ in parallel with any later detail-planner thread,
+# # so the detail-planner can read this thread's output via the filesystem.
 # [[channels.my_repo.patterns]]
 # name = "high-level-planner"
 # enabled = true
 # role = "High-Level Planner"
 # template = "github-high-level-planner"
+# thread_prefix = "plan"               # → workspace/plan-42/
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
 # labels = ["feature-plan"]
 #
 # # Pattern: Issues without 'feature-plan' label → Detail-Level Planner (technical architect)
-# # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active
+# # Uses the default `issue-{N}` thread name (no prefix needed).
+# # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active.
 # [[channels.my_repo.patterns]]
 # name = "detail-planner"
 # enabled = true
@@ -270,6 +286,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # exclude_labels = ["feature-plan"]
 #
 # # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
+# # Uses the default `pr-{N}` thread name.
 # [[channels.my_repo.patterns]]
 # name = "developer"
 # enabled = true
@@ -285,12 +302,15 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # Idle cleanup has been removed — use repo_group shared symlinks instead.
 #
 # # Pattern: PRs with 'ready-for-review' label → Reviewer agent (auto-trigger)
+# # MUST declare a distinct prefix because the `developer` pattern already
+# # owns `pr-{N}` for the same PR. Reviewer and developer can run in parallel.
 # [[channels.my_repo.patterns]]
 # name = "reviewer"
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
-# repo_group = "pr"  # Share repo clone with developer pattern
+# thread_prefix = "review-pr"          # → workspace/review-pr-43/
+# repo_group = "pr"                    # Share repo clone with developer pattern
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]

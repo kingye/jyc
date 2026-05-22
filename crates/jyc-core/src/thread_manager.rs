@@ -343,17 +343,34 @@ impl ThreadManager {
                 if let Some(ref template_name) = item.template {
                     let workspace = storage.workspace();
                     let thread_path = workspace.join(&thread_name);
-                    
-                    if let Err(e) = initialize_thread_from_template(
+
+                    match initialize_thread_from_template(
                         &thread_path,
                         template_name,
                         &template_dir,
                     ).await {
-                        tracing::warn!(
-                            error = %e,
-                            template = %template_name,
-                            "Failed to initialize thread from template"
-                        );
+                        Ok(()) => {}
+                        Err(e) => {
+                            // Distinguish template-mismatch from generic init
+                            // failures: mismatch is a hard configuration error
+                            // we refuse to silently recover from.
+                            if e.downcast_ref::<TemplateMismatch>().is_some() {
+                                tracing::error!(
+                                    error = %e,
+                                    thread = %thread_name,
+                                    template = %template_name,
+                                    "Template mismatch on existing thread; dropping message. \
+                                     Two patterns likely share a thread_prefix but use different templates."
+                                );
+                                tm.metrics.processing_error(&thread_name, "template_mismatch");
+                                continue;
+                            }
+                            tracing::warn!(
+                                error = %e,
+                                template = %template_name,
+                                "Failed to initialize thread from template"
+                            );
+                        }
                     }
                     
                     if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
@@ -1204,13 +1221,54 @@ async fn read_skills(thread_path: &Path) -> Vec<String> {
     }
 }
 
+/// Error returned when an existing thread directory was created from a
+/// different template than the one the current message is requesting. The
+/// thread manager surfaces this and drops the message rather than risk
+/// overwriting AGENTS.md / template files in place.
+#[derive(Debug, thiserror::Error)]
+#[error("thread '{thread}' was initialized from template '{existing}' but pattern requires template '{requested}'; refusing to overwrite. Configure distinct `thread_prefix` values for these patterns.")]
+pub struct TemplateMismatch {
+    pub thread: String,
+    pub existing: String,
+    pub requested: String,
+}
+
 async fn initialize_thread_from_template(
     thread_path: &Path,
     template_name: &str,
     template_dir: &Path,
 ) -> Result<()> {
+    let jyc_dir = thread_path.join(".jyc");
+    let template_marker = jyc_dir.join("template");
+
     if thread_path.exists() {
-        return Ok(());
+        // Thread already exists. Verify the recorded template matches the
+        // one the current pattern requests; refuse if they differ to avoid
+        // silently running with the wrong AGENTS.md.
+        match tokio::fs::read_to_string(&template_marker).await {
+            Ok(existing) => {
+                let existing = existing.trim();
+                if existing == template_name {
+                    return Ok(());
+                }
+                let thread_label = thread_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| thread_path.display().to_string());
+                return Err(TemplateMismatch {
+                    thread: thread_label,
+                    existing: existing.to_string(),
+                    requested: template_name.to_string(),
+                }
+                .into());
+            }
+            Err(_) => {
+                // No marker file. Either the thread was created before this
+                // mechanism existed or by a path that doesn't use templates.
+                // Don't overwrite — preserve existing behavior.
+                return Ok(());
+            }
+        }
     }
 
     let template_src = template_dir.join(template_name);
@@ -1225,14 +1283,107 @@ async fn initialize_thread_from_template(
 
     copy_template_files(&template_src, thread_path).await?;
 
-    let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await?;
 
-    tokio::fs::write(jyc_dir.join("template"), template_name)
+    tokio::fs::write(&template_marker, template_name)
         .await
         .context("failed to write template name")?;
 
     tracing::info!(template = %template_name, "Thread initialized from template");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod template_init_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    async fn make_template(template_dir: &Path, name: &str, body: &str) {
+        let dir = template_dir.join(name);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("AGENTS.md"), body).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_thread_writes_marker() {
+        let tmp = tempdir().unwrap();
+        let template_dir = tmp.path().join("templates");
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        make_template(&template_dir, "github-planner", "PLANNER").await;
+
+        let thread_path = workspace.join("issue-1");
+        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
+            .await
+            .unwrap();
+
+        let marker = tokio::fs::read_to_string(thread_path.join(".jyc/template"))
+            .await
+            .unwrap();
+        assert_eq!(marker.trim(), "github-planner");
+        assert_eq!(
+            tokio::fs::read_to_string(thread_path.join("AGENTS.md")).await.unwrap(),
+            "PLANNER"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_template_is_idempotent() {
+        let tmp = tempdir().unwrap();
+        let template_dir = tmp.path().join("templates");
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        make_template(&template_dir, "github-planner", "PLANNER").await;
+
+        let thread_path = workspace.join("issue-1");
+        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
+            .await
+            .unwrap();
+
+        // Second call with the same template is a no-op.
+        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn template_mismatch_is_refused() {
+        let tmp = tempdir().unwrap();
+        let template_dir = tmp.path().join("templates");
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        make_template(&template_dir, "github-high-level-planner", "HLP").await;
+        make_template(&template_dir, "github-planner", "PLANNER").await;
+
+        let thread_path = workspace.join("issue-1");
+        // First, init with HLP.
+        initialize_thread_from_template(
+            &thread_path,
+            "github-high-level-planner",
+            &template_dir,
+        )
+        .await
+        .unwrap();
+
+        // Then, request a different template for the same thread → must error.
+        let err = initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir,
+        )
+        .await
+        .expect_err("expected TemplateMismatch");
+        assert!(
+            err.downcast_ref::<TemplateMismatch>().is_some(),
+            "expected TemplateMismatch, got: {:#}",
+            err
+        );
+
+        // AGENTS.md must not have been overwritten.
+        let body = tokio::fs::read_to_string(thread_path.join("AGENTS.md"))
+            .await
+            .unwrap();
+        assert_eq!(body, "HLP");
+    }
 }

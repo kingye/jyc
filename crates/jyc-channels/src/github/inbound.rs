@@ -23,7 +23,7 @@ impl ChannelMatcher for GithubMatcher {
     fn derive_thread_name(
         &self,
         message: &InboundMessage,
-        _patterns: &[ChannelPattern],
+        patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
         let github_type = message
@@ -37,14 +37,20 @@ impl ChannelMatcher for GithubMatcher {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        // Check if this is a hand-over with a specific role
-        // Reviewer gets a separate thread prefix: review-pr-{N}
-        if let Some(ref pm) = pattern_match {
-            if pm.pattern_name == "reviewer" {
-                return format!("review-pr-{}", number);
+        // If the matched pattern declares an explicit thread_prefix, use it.
+        // This is the configurable mechanism that lets two patterns matching
+        // the same GitHub identity (e.g. issue + label combinations) live in
+        // separate workspace directories so each can carry its own template
+        // and AGENTS.md without collision.
+        if let Some(pm) = pattern_match {
+            if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name) {
+                if let Some(prefix) = pattern.thread_prefix.as_deref() {
+                    return format!("{}-{}", prefix, number);
+                }
             }
         }
 
+        // Default derivation by event type.
         match github_type {
             "pull_request" => format!("pr-{}", number),
             _ => format!("issue-{}", number),
@@ -174,6 +180,11 @@ pub struct GithubInboundAdapter {
     state_dir: PathBuf,
     /// Workdir for workspace resolution: <workdir>/
     workdir: PathBuf,
+    /// Configured patterns for this channel. Used to derive the set of
+    /// pull-request thread prefixes when scanning the workspace for active PR
+    /// threads. May be empty (e.g., in unit tests), in which case the default
+    /// `pr` prefix is used.
+    patterns: Vec<ChannelPattern>,
 }
 
 impl GithubInboundAdapter {
@@ -184,7 +195,16 @@ impl GithubInboundAdapter {
             channel_name,
             state_dir,
             workdir: workdir.to_path_buf(),
+            patterns: Vec::new(),
         }
+    }
+
+    /// Inject the configured patterns. Used so disk scans can recognize all
+    /// pull-request thread directory prefixes (e.g. `pr-`, `review-pr-`, plus
+    /// any user-defined `thread_prefix` for PR-typed patterns).
+    pub fn with_patterns(mut self, patterns: Vec<ChannelPattern>) -> Self {
+        self.patterns = patterns;
+        self
     }
 
     /// Load processed comment keys from persistent storage.
@@ -454,10 +474,42 @@ impl GithubInboundAdapter {
         }
     }
 
+    /// Compute the set of thread-name prefixes that correspond to PR-typed
+    /// patterns in the configuration. Always includes the default `pr` prefix
+    /// (used by patterns without an explicit `thread_prefix`). Patterns whose
+    /// `rules.github_type` lists `pull_request` and that declare an explicit
+    /// `thread_prefix` contribute that prefix.
+    ///
+    /// Examples for a config with `developer` (default) and
+    /// `reviewer` (`thread_prefix = "review-pr"`): `{"pr", "review-pr"}`.
+    fn pr_thread_prefixes(&self) -> HashSet<String> {
+        let mut prefixes: HashSet<String> = HashSet::new();
+        prefixes.insert("pr".to_string());
+
+        for pattern in &self.patterns {
+            // Only consider patterns that can match pull_request events.
+            let matches_pr = match pattern.rules.github_type.as_ref() {
+                Some(types) => types.iter().any(|t| t == "pull_request"),
+                None => false,
+            };
+            if !matches_pr {
+                continue;
+            }
+            if let Some(prefix) = pattern.thread_prefix.as_deref() {
+                if !prefix.is_empty() {
+                    prefixes.insert(prefix.to_string());
+                }
+            }
+        }
+        prefixes
+    }
+
     /// Scan workspace directory for active PR thread directories.
     ///
-    /// Returns a set of PR numbers that have an active thread directory
-    /// (matching `pr-{N}` or `review-pr-{N}` prefixes) in the workspace.
+    /// Returns a set of PR numbers that have an active thread directory.
+    /// A directory is recognized as a PR thread when its name has the form
+    /// `{prefix}-{N}` where `{prefix}` is one of the configured PR thread
+    /// prefixes (see `pr_thread_prefixes`) and `{N}` is a valid `u64`.
     /// Returns an empty set if the workspace directory does not exist.
     fn scan_active_pr_threads(&self) -> HashSet<u64> {
         let workspace = jyc_core::thread_path::resolve_workspace(&self.workdir, &self.channel_name);
@@ -466,22 +518,58 @@ impl GithubInboundAdapter {
             return HashSet::new();
         };
 
+        // Sort prefixes longest-first so that for a name like `review-pr-43`
+        // we match `review-pr-` before the shorter `pr-`.
+        let mut prefixes: Vec<String> = self.pr_thread_prefixes().into_iter().collect();
+        prefixes.sort_by_key(|p| std::cmp::Reverse(p.len()));
+
         let mut pr_numbers = HashSet::new();
         for entry in entries.flatten() {
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy();
-            let suffix = if let Some(s) = name.strip_prefix("pr-") {
-                s
-            } else if let Some(s) = name.strip_prefix("review-pr-") {
-                s
-            } else {
-                continue;
-            };
-            if let Ok(num) = suffix.parse::<u64>() {
-                pr_numbers.insert(num);
+            for prefix in &prefixes {
+                let with_dash = format!("{}-", prefix);
+                if let Some(suffix) = name.strip_prefix(with_dash.as_str()) {
+                    if let Ok(num) = suffix.parse::<u64>() {
+                        pr_numbers.insert(num);
+                    }
+                    break;
+                }
             }
         }
         pr_numbers
+    }
+
+    /// Enumerate all thread directories in the workspace whose name has the
+    /// strict form `{anything}-{N}` for the given GitHub number.
+    ///
+    /// Used on issue/PR close to close every thread that is associated with
+    /// that GitHub identity, regardless of which `thread_prefix` patterns
+    /// happen to be configured. The match is strict: the directory name must
+    /// end with `-{N}` and the trailing `{N}` must parse cleanly to the same
+    /// `u64`. This avoids false matches like `feature-plan-43-extra`.
+    ///
+    /// Returns an empty Vec if the workspace directory does not exist.
+    fn scan_threads_for_number(&self, number: u64) -> Vec<String> {
+        let workspace = jyc_core::thread_path::resolve_workspace(&self.workdir, &self.channel_name);
+
+        let Ok(entries) = std::fs::read_dir(&workspace) else {
+            return Vec::new();
+        };
+
+        let suffix = format!("-{}", number);
+        let mut matches = Vec::new();
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy().to_string();
+            // Require strict suffix `-{N}` AND a non-empty prefix before it.
+            if let Some(prefix) = name.strip_suffix(&suffix) {
+                if !prefix.is_empty() {
+                    matches.push(name);
+                }
+            }
+        }
+        matches
     }
 
     /// Build a minimal InboundMessage from a GitHub event.
@@ -1316,14 +1404,15 @@ impl GithubInboundAdapter {
                         );
 
                         if let Some(ref on_close) = options.on_thread_close {
-                            match github_type.as_str() {
-                                "pull_request" => {
-                                    let _ = (on_close)(format!("pr-{}", cached_number));
-                                    let _ = (on_close)(format!("review-pr-{}", cached_number));
-                                }
-                                _ => {
-                                    let _ = (on_close)(format!("issue-{}", cached_number));
-                                }
+                            // Close every thread directory whose name ends with
+                            // `-{N}`. This catches default prefixes (issue/pr/
+                            // review-pr) as well as any user-defined prefix.
+                            // For PRs we also include the linked issue thread
+                            // (any directory matching `*-{N}` regardless of
+                            // event type).
+                            let thread_names = self.scan_threads_for_number(cached_number);
+                            for thread_name in thread_names {
+                                let _ = (on_close)(thread_name);
                             }
                         }
 
@@ -1367,21 +1456,16 @@ impl GithubInboundAdapter {
                 "GitHub close event detected → closing threads"
             );
 
-            // Close threads (Phase 6 will delete directories)
+            // Close threads (Phase 6 will delete directories).
+            // Enumerate every thread directory whose name ends with `-{N}` so
+            // that user-defined `thread_prefix` values (e.g. `plan`, `qa-pr`)
+            // are also closed alongside the defaults (`issue`, `pr`, `review-pr`).
             if let Some(ref on_close) = options.on_thread_close {
-                match github_type {
-                    "pull_request" => {
-                        // Close PR thread and review thread
-                        let _ = (on_close)(format!("pr-{}", item.number));
-                        let _ = (on_close)(format!("review-pr-{}", item.number));
-                        // If merged, also close linked issue thread
-                        // (GitHub auto-closes the linked issue)
-                        // TODO: detect linked issue number from PR body "Fixes #N"
-                    }
-                    _ => {
-                        // Close issue thread
-                        let _ = (on_close)(format!("issue-{}", item.number));
-                    }
+                let _ = github_type; // event-type no longer drives the prefix list
+                let _ = is_merged;   // merge state currently doesn't change cleanup
+                let thread_names = self.scan_threads_for_number(item.number);
+                for thread_name in thread_names {
+                    let _ = (on_close)(thread_name);
                 }
             }
 
@@ -1533,14 +1617,104 @@ mod tests {
 
     #[test]
     fn test_derive_thread_name_reviewer() {
+        // The reviewer pattern no longer has a hardcoded special case; it
+        // must declare `thread_prefix = "review-pr"` in config to keep the
+        // historical thread name. With the prefix configured, the resolver
+        // returns `review-pr-{N}`.
         let msg = make_message("pull_request", 43);
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            template: Some("github-reviewer".to_string()),
+            thread_prefix: Some("review-pr".to_string()),
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
         let pm = PatternMatch {
             pattern_name: "reviewer".to_string(),
             channel: "github".to_string(),
             matches: HashMap::new(),
         };
-        let name = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+        let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
         assert_eq!(name, "review-pr-43");
+    }
+
+    #[test]
+    fn test_derive_thread_name_reviewer_without_prefix_falls_back_to_pr() {
+        // If a user removes/forgets `thread_prefix` from the reviewer pattern,
+        // the resolver falls back to the github_type default (`pr-{N}`).
+        // This proves the previous hardcoded `pattern_name == "reviewer"`
+        // special case has been removed.
+        let msg = make_message("pull_request", 43);
+        let patterns = vec![ChannelPattern {
+            name: "reviewer".to_string(),
+            template: Some("github-reviewer".to_string()),
+            // No thread_prefix.
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let pm = PatternMatch {
+            pattern_name: "reviewer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
+        assert_eq!(name, "pr-43");
+    }
+
+    #[test]
+    fn test_derive_thread_name_high_level_planner_prefix() {
+        // Two issue patterns, distinguished by labels, must declare distinct
+        // `thread_prefix` values to avoid sharing a workspace dir.
+        let msg = make_message("issue", 42);
+        let patterns = vec![
+            ChannelPattern {
+                name: "high-level-planner".to_string(),
+                template: Some("github-high-level-planner".to_string()),
+                thread_prefix: Some("plan".to_string()),
+                rules: PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "detail-planner".to_string(),
+                template: Some("github-planner".to_string()),
+                rules: PatternRules {
+                    github_type: Some(vec!["issue".to_string()]),
+                    exclude_labels: Some(vec!["feature-plan".to_string()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        let pm_hl = PatternMatch {
+            pattern_name: "high-level-planner".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        assert_eq!(
+            GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm_hl)),
+            "plan-42"
+        );
+
+        // Same issue + detail-planner pattern → default `issue-{N}`.
+        let pm_detail = PatternMatch {
+            pattern_name: "detail-planner".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        assert_eq!(
+            GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm_detail)),
+            "issue-42"
+        );
     }
 
     #[test]
@@ -2860,7 +3034,20 @@ mod tests {
     fn test_scan_active_pr_threads_with_pr_dirs() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        // Inject a reviewer pattern with `thread_prefix = "review-pr"` so the
+        // scan recognizes `review-pr-{N}` directories. Without the pattern,
+        // only the default `pr-{N}` prefix is recognized.
+        let reviewer_pattern = ChannelPattern {
+            name: "reviewer".to_string(),
+            thread_prefix: Some("review-pr".to_string()),
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
+            .with_patterns(vec![reviewer_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
@@ -2872,6 +3059,25 @@ mod tests {
         assert!(result.contains(&42));
         assert!(result.contains(&43));
         assert!(!result.contains(&5), "issue dirs should not be included");
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_review_prefix_requires_pattern() {
+        // Without a reviewer pattern declaring `thread_prefix = "review-pr"`,
+        // a `review-pr-{N}` directory is ignored. This is the no-magic
+        // behavior: prefixes must be configured explicitly.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&42));
+        assert!(!result.contains(&43), "review-pr is unknown without pattern config");
     }
 
     #[test]
@@ -2891,7 +3097,18 @@ mod tests {
     fn test_ci_polling_filters_by_active_threads() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        // Reviewer pattern is required for `review-pr-` to be recognized.
+        let reviewer_pattern = ChannelPattern {
+            name: "reviewer".to_string(),
+            thread_prefix: Some("review-pr".to_string()),
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
+            .with_patterns(vec![reviewer_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
@@ -2907,7 +3124,9 @@ mod tests {
             .copied()
             .collect();
 
-        assert_eq!(polled, vec![42, 43], "only PRs with active thread dirs should be polled");
+        let mut sorted = polled.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![42, 43], "only PRs with active thread dirs should be polled");
     }
 
     #[test]
@@ -2927,5 +3146,56 @@ mod tests {
             .collect();
 
         assert!(polled.is_empty(), "no workspace dirs means no PRs should be polled");
+    }
+
+    // --- scan_threads_for_number tests ---
+
+    #[test]
+    fn test_scan_threads_for_number_matches_all_prefixes() {
+        // Closing an issue/PR should enumerate every workspace dir whose name
+        // ends in `-{N}`, regardless of which prefix patterns are configured.
+        // This is the channel-agnostic close-thread enumeration used by the
+        // GitHub close path.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("plan-42")).unwrap();
+        std::fs::create_dir_all(workspace.join("issue-99")).unwrap();
+        // Tricky: ends in -42 but with empty prefix should be ignored if it
+        // happens to materialize as a literal "-42" dir; here we add a normal
+        // unrelated one to confirm the strict suffix match.
+        std::fs::create_dir_all(workspace.join("unrelated-43")).unwrap();
+
+        let mut result = adapter.scan_threads_for_number(42);
+        result.sort();
+        assert_eq!(result, vec!["issue-42".to_string(), "plan-42".to_string()]);
+    }
+
+    #[test]
+    fn test_scan_threads_for_number_empty_workspace() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let result = adapter.scan_threads_for_number(42);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_scan_threads_for_number_no_substring_false_match() {
+        // A directory ending in -420 must NOT match number 42.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("issue-420")).unwrap();
+        std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
+
+        let mut result = adapter.scan_threads_for_number(42);
+        result.sort();
+        assert_eq!(result, vec!["issue-42".to_string()]);
     }
 }

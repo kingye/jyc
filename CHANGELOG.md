@@ -2,6 +2,48 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Per-pattern `thread_prefix` configuration** for GitHub channels. Each
+  `[[channels.<ch>.patterns]]` entry can now declare an explicit
+  `thread_prefix`, which is combined with the GitHub number as
+  `{prefix}-{N}` to derive the thread name. This lets two patterns that match
+  the same issue/PR (e.g., split by labels) live in distinct workspace
+  directories so each can carry its own template / `AGENTS.md` without
+  collision. Omit `thread_prefix` to keep the default behavior (`issue-{N}`
+  for issue events, `pr-{N}` for PR events).
+
+- **Template-mismatch guard.** When a message is routed to an existing thread
+  whose recorded template differs from the matched pattern's template, jyc
+  now refuses to dispatch the message and logs a `TemplateMismatch` error
+  along with a `template_mismatch` processing-error metric, instead of
+  silently running the agent with the wrong `AGENTS.md`.
+
+### Changed
+
+- GitHub close-event handling now enumerates the workspace and closes every
+  thread directory whose name matches `{anything}-{N}` for the closed
+  GitHub identity, rather than hardcoding the `pr-{N}` and `review-pr-{N}`
+  prefixes. This makes cleanup correct for any user-defined `thread_prefix`.
+
+### Breaking
+
+- **The hardcoded `pattern_name == "reviewer"` thread-name special case has
+  been removed.** Reviewer patterns must now declare `thread_prefix =
+  "review-pr"` explicitly to keep using `review-pr-{N}` thread directories.
+  Without the explicit prefix, a reviewer pattern's PR events route to
+  `pr-{N}` (the default), which collides with the developer pattern. Update
+  your config:
+
+  ```toml
+  [[channels.my_repo.patterns]]
+  name = "reviewer"
+  template = "github-reviewer"
+  thread_prefix = "review-pr"   # ← add this line
+  ```
+
 ## [0.3.4] - 2026-05-20
 
 ### Added

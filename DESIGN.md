@@ -783,13 +783,27 @@ github_type = ["pull_request"]
 
 ### Thread Naming
 
-| GitHub Type  | Pattern   | Thread Name     |
-| ------------ | --------- | --------------- |
-| Issue        | any       | `issue-{N}`     |
-| Pull Request | developer | `pr-{N}`        |
-| Pull Request | reviewer  | `review-pr-{N}` |
+Thread name is `{prefix}-{N}` where `{prefix}` comes from the matched
+pattern's optional `thread_prefix` config field, falling back to a default
+based on event type when no prefix is configured.
 
-The reviewer gets a separate thread prefix so developer and reviewer can work on the same PR concurrently without context collision.
+| GitHub Type  | Pattern config              | Thread Name     |
+| ------------ | --------------------------- | --------------- |
+| Issue        | (no `thread_prefix`)        | `issue-{N}`     |
+| Pull Request | (no `thread_prefix`)        | `pr-{N}`        |
+| any          | `thread_prefix = "plan"`    | `plan-{N}`      |
+| any          | `thread_prefix = "review-pr"` | `review-pr-{N}` |
+
+When two patterns can match the same GitHub identity (e.g., both target
+issues but are distinguished by labels), they MUST declare distinct
+`thread_prefix` values. Otherwise both patterns route to the same workspace
+directory; the second pattern's template / `AGENTS.md` would silently be
+dropped. jyc detects this on the second message and refuses to dispatch it
+with a `TemplateMismatch` error.
+
+The reviewer pattern in particular must declare `thread_prefix = "review-pr"`
+explicitly so it does not collide with the developer pattern (default
+`pr-{N}`) on the same PR.
 
 ### Testing
 
@@ -1018,7 +1032,7 @@ Each channel's `ChannelMatcher` implements `derive_thread_name(message, patterns
 
 - **Email**: Strip reply prefixes (Re:, Fwd:, 回复:, 转发:), strip configured subject prefix (e.g., "Jiny:"), sanitize for filesystem. Supports broad separator recognition (`:`, `-`, `_`, `~`, `|`, `/`, `&`, `$`, etc.)
 - **FeiShu**: Derive from chat name (via `get_chat_name` with caching) or message content
-- **GitHub**: `issue-{N}`, `pr-{N}`, or `review-pr-{N}` (for reviewer pattern). Thread name is derived from issue/PR number and type.
+- **GitHub**: `{prefix}-{N}` where `{prefix}` is the matched pattern's `thread_prefix` config value, or `issue` / `pr` by default based on event type. See "Thread Naming" above for the full rule.
 - **Slack** (future): Derive from channel name + thread topic
 
 ## Async Event Queue Architecture

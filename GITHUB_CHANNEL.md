@@ -97,7 +97,8 @@ GitHub API (polling)
 │                                                                 │
 │ Route via ChannelMatcher                                        │
 │   ├─ Match by github_type + labels                             │
-│   └─ Derive thread name: issue-{N}, pr-{N}, review-pr-{N}     │
+│   └─ Derive thread name from pattern's `thread_prefix` (or     │
+│      default `issue-{N}`/`pr-{N}` based on event type)         │
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -182,8 +183,8 @@ InboundMessage {
 | pr.review_submitted | — | `pr-{N}` | Trigger developer agent |
 | pr.review_comment | — | `pr-{N}` | Trigger developer agent (inline feedback) |
 | pr.ci_failure | Check run conclusion = "failure" | `pr-{N}` | Trigger developer agent (auto-fix CI failures) |
-| pr.merged | — | `pr-{N}`, `review-pr-{N}`, linked `issue-{N}` | **Close + delete all** |
-| pr.closed (not merged) | — | `pr-{N}`, `review-pr-{N}` | **Close + delete** (keep issue thread) |
+| pr.merged | — | every `*-{N}` thread (default `pr-{N}`, `review-pr-{N}`, plus any user-defined prefix) | **Close + delete all** |
+| pr.closed (not merged) | — | every `*-{N}` thread for this PR | **Close + delete all** |
 
 **Label change detection**: On each poll cycle, the adapter compares the current
 labels on each issue/PR against the previously cached labels. If new labels were
@@ -300,11 +301,26 @@ github_type = ["pull_request"]
 
 ## Thread Naming
 
-| Event Type | Thread Name | Example |
-|-----------|------------|---------|
-| Issue | `issue-{number}` | `issue-42` |
-| Pull Request (developer) | `pr-{number}` | `pr-43` |
-| Pull Request (reviewer) | `review-pr-{number}` | `review-pr-43` |
+Thread name is `{prefix}-{N}` where `{prefix}` comes from the matched
+pattern's `thread_prefix` config field, falling back to `issue` for issue
+events and `pr` for pull-request events when no prefix is configured.
+
+| Pattern config                 | Thread Name           | Example          |
+| ------------------------------ | --------------------- | ---------------- |
+| Issue, no `thread_prefix`      | `issue-{number}`      | `issue-42`       |
+| PR, no `thread_prefix`         | `pr-{number}`         | `pr-43`          |
+| `thread_prefix = "plan"`       | `plan-{number}`       | `plan-42`        |
+| `thread_prefix = "review-pr"`  | `review-pr-{number}`  | `review-pr-43`   |
+
+Two patterns that can match the same GitHub identity (e.g., both target
+issues but are split by labels) MUST declare distinct `thread_prefix` values.
+If they don't, both patterns route to the same workspace directory and the
+second pattern's template / `AGENTS.md` would be silently dropped — jyc
+detects this and refuses to dispatch with a `TemplateMismatch` error.
+
+The reviewer pattern is the canonical example: developer (default `pr-{N}`)
+and reviewer (`thread_prefix = "review-pr"`) both run on the same PR in
+parallel, each with its own workspace and AGENTS.md.
 
 Each thread gets its own directory:
 ```
@@ -418,12 +434,17 @@ thread directory is deleted.
 
 ### Close Event Matrix
 
+On any close event, jyc enumerates the workspace and closes every thread
+directory whose name matches `*-{N}` for the closed identity. This works
+uniformly across the default prefixes (`issue`, `pr`, `review-pr`) and any
+user-defined `thread_prefix` values.
+
 | Event | Threads Closed & Deleted |
 |-------|--------------------------|
-| Issue closed (manually) | `issue-{N}` |
-| Issue closed (by PR merge "Fixes #N") | `issue-{N}` |
-| PR merged | `pr-{N}` + `review-pr-{N}` + linked `issue-{N}` |
-| PR closed (not merged) | `pr-{N}` + `review-pr-{N}` (keep `issue-{N}` open) |
+| Issue closed (manually) | every `*-{N}` for that issue (e.g. `issue-{N}`, `plan-{N}`) |
+| Issue closed (by PR merge "Fixes #N") | every `*-{N}` for that issue |
+| PR merged | every `*-{N}` for that PR (e.g. `pr-{N}`, `review-pr-{N}`) |
+| PR closed (not merged) | every `*-{N}` for that PR |
 
 ### Close Flow
 

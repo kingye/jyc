@@ -407,6 +407,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .clone();
 
                 let patterns_for_callback = patterns.clone();
+                let patterns_for_adapter = patterns.clone();
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
 
@@ -414,7 +415,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     use jyc_channels::github::inbound::GithubInboundAdapter;
                     use jyc_types::InboundAdapter;
 
-                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned);
+                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned)
+                        .with_patterns(patterns_for_adapter);
 
                     let thread_manager_clone = thread_manager.clone();
                     let options = jyc_types::InboundAdapterOptions {

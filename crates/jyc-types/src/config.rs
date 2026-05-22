@@ -200,6 +200,13 @@ pub struct AgentConfig {
     /// Model identifier in "provider/model-id" format (e.g., "anthropic/claude-opus-4-6")
     pub model: Option<String>,
 
+    /// Optional small/fast model used for ancillary LLM work (cycle-boundary
+    /// progress summary and between-message context-reset summary). Falls
+    /// back to the main `model` if unset or if provider construction fails
+    /// (logged as a warning, the agent continues).
+    #[serde(default)]
+    pub small_model: Option<String>,
+
     /// System prompt for the AI
     pub system_prompt: Option<String>,
 

@@ -78,6 +78,7 @@ mod integration_tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = agent_loop::run(agent_loop::AgentLoopConfig {
             provider: provider.as_ref(),
+            small_provider: None,
             tools: &registry,
             system_prompt: "You are a helpful assistant. Reply concisely.",
             user_message: "What is 2+2? Use the bash tool to compute it with `echo $((2+2))`",

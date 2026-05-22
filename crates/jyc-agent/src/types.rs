@@ -180,10 +180,17 @@ pub struct ModelConfig {
 pub struct AgentConfig {
     /// Default model in "provider/model-id" format
     pub model: Option<String>,
+    /// Optional small/fast model used for ancillary LLM work — currently:
+    /// - cycle-boundary progress summary (in `agent_loop`)
+    /// - between-messages context reset summary (in `session::summarize_context`)
+    /// Falls back to the main `model` if unset, or if provider construction
+    /// fails (logged as a warning, the agent loop continues).
+    #[serde(default)]
+    pub small_model: Option<String>,
     /// Provider definitions
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderConfig>,
-    /// Maximum agent loop iterations per cycle. Default: 200.
+    /// Maximum agent loop iterations per cycle. Default: 500.
     /// When exceeded, agent sends progress reply, resets counter, and continues.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
@@ -193,6 +200,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: None,
+            small_model: None,
             providers: std::collections::HashMap::new(),
             max_iterations: default_max_iterations(),
         }

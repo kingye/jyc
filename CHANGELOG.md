@@ -2,6 +2,70 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.8] - 2026-05-22
+
+### Added
+
+- **`[agent].small_model` configuration option.** Lets you assign a smaller /
+  faster / cheaper model to ancillary LLM work, distinct from the main task
+  model. Currently used by:
+
+  1. **Cycle-boundary progress summary** in `agent_loop` — the call that
+     produces the user-visible progress reply every `max_iterations` rounds.
+  2. **Between-message context-reset summary** in `session::summarize_context`
+     — the call that compacts `agent-context.json` when input tokens cross
+     95% of the model's context window.
+
+  Both code paths are isolated from the main loop's structured `raw_context`:
+  they render the prior conversation to a plain-text transcript, send it as
+  a single user message with a "summarize this" system prompt (no tools, no
+  prior assistant turns, no `reasoning_content` round-trip), and consume the
+  reply text. The main loop's `raw_context` is never touched.
+
+  Falls back to the main `model` if `small_model` is unset, or if the small
+  provider fails to construct (logged as a warning, the agent continues).
+
+  Example:
+
+  ```toml
+  [agent]
+  model = "deepseek/deepseek-v4-pro"
+  small_model = "deepseek/deepseek-v4-flash"
+  ```
+
+  Cross-provider works the same way — `small_model = "ark/glm-5.1"` is
+  resolved through `[agent.providers.ark]`.
+
+### Changed
+
+- **`session::summarize_context` now uses an LLM call** when `small_model` (or
+  the main model as fallback) is provided. The previous heuristic
+  ("keep the last 3 user+assistant text pairs") is preserved as
+  `summarize_context_heuristic` and used as a fallback when the LLM call
+  fails. The user-triggered `reset_session` (via inspect server / dashboard
+  `/reset`) continues to use the heuristic since that path has no provider
+  context.
+
+- `session::update_tokens` now takes a `summary_provider: &dyn Provider`
+  parameter (caller-supplied so the function stays sync-friendly and
+  testable).
+
+- `agent_loop::AgentLoopConfig` gains an `small_provider:
+  Option<&dyn Provider>` field. When `None`, the cycle-boundary summary
+  reuses the main `provider`.
+
+- `jyc_types::AgentConfig` gains a `small_model: Option<String>` field
+  (channel-agnostic, lives in the [agent] section).
+
+### Tests
+
+- 3 new tests for `AgentConfig.small_model` (default `None`, TOML deserialize
+  with and without the field).
+- Existing `update_tokens` tests updated to pass a stub provider that panics
+  if invoked (the auto-reset threshold is not crossed in those tests, so the
+  stub is never called).
+- All 425+ workspace tests pass.
+
 ## [0.3.7] - 2026-05-22
 
 ### Fixed

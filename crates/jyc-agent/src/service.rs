@@ -414,6 +414,31 @@ impl AgentService for JycAgentService {
             "Using provider"
         );
 
+        // 2b. Optionally create the small provider for ancillary calls
+        //     (cycle-boundary progress summary, between-message context
+        //     reset). Construction failures are non-fatal — log a warning
+        //     and fall back to the main provider for those calls.
+        let small_provider: Option<Box<dyn provider::Provider>> = self.config.small_model
+            .as_deref()
+            .and_then(|m| match provider::create_provider(m, &self.config.providers) {
+                Ok(p) => {
+                    tracing::info!(
+                        small_provider = %p.name(),
+                        small_model = %p.model(),
+                        "Using small model for ancillary LLM calls"
+                    );
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        small_model = m,
+                        "Failed to construct small_model provider; falling back to main model"
+                    );
+                    None
+                }
+            });
+
         // 3. Load session and prior raw context
         let (prior_history, prior_raw_context) = session::load_context(thread_path).await;
 
@@ -436,6 +461,7 @@ impl AgentService for JycAgentService {
         // 7. Run agent loop
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
+            small_provider: small_provider.as_deref().map(|p| p as &dyn provider::Provider),
             tools: &tools,
             system_prompt: &system_prompt,
             user_message: &user_prompt,
@@ -475,7 +501,21 @@ impl AgentService for JycAgentService {
         } else {
             None
         };
-        session::update_tokens(thread_path, result.input_tokens, result.output_tokens, context_window).await;
+        // Provider used for the between-message context-reset summary (when
+        // input_tokens crosses the 95 % auto-reset threshold). Same fallback
+        // rule as the cycle-boundary summary: small_model if configured,
+        // else the main model.
+        let summary_provider: &dyn provider::Provider = small_provider
+            .as_deref()
+            .map(|p| p as &dyn provider::Provider)
+            .unwrap_or(provider.as_ref());
+        session::update_tokens(
+            thread_path,
+            result.input_tokens,
+            result.output_tokens,
+            context_window,
+            summary_provider,
+        ).await;
 
         // 9. Return result
         if result.reply_sent_by_tool {

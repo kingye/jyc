@@ -25,6 +25,10 @@ const DEFAULT_MAX_ITERATIONS: usize = 100;
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
     pub provider: &'a dyn Provider,
+    /// Optional smaller/faster provider for ancillary LLM calls (e.g.,
+    /// cycle-boundary progress summary). When `None`, the main `provider`
+    /// is reused for those calls.
+    pub small_provider: Option<&'a dyn Provider>,
     pub tools: &'a ToolRegistry,
     pub system_prompt: &'a str,
     pub user_message: &'a str,
@@ -47,10 +51,15 @@ pub struct AgentLoopConfig<'a> {
 /// Returns the final text response and metadata about tool usage.
 pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
-        provider, tools, system_prompt, user_message,
+        provider, small_provider, tools, system_prompt, user_message,
         working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
         max_iterations,
     } = config;
+
+    // Provider used for the cycle-boundary progress summary. Falls back to
+    // the main provider when `small_model` is unconfigured or its provider
+    // failed to construct (logged at construction time in the service).
+    let summary_provider: &dyn Provider = small_provider.unwrap_or(provider);
 
     let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
@@ -105,8 +114,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             //    DeepSeek's thinking mode requires (every assistant turn that
             //    came from the model must be replayed with its
             //    reasoning_content intact on subsequent requests).
+            //
+            //    `summary_provider` is the small/fast model from
+            //    `[agent].small_model` if configured, else the main provider.
             let progress_text = generate_summary_from_joined_history(
-                provider,
+                summary_provider,
                 &raw_context,
                 cycle_count,
                 total_iterations,

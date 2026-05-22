@@ -154,10 +154,18 @@ mode = "agent"
 # Model identifier (e.g., "SiliconFlow/Pro/zai-org/GLM-4.7")
 # model = "ark/deepseek-v3.2"
 
+# Optional: a smaller / faster model used for ancillary LLM work, currently:
+#   - cycle-boundary progress summary (every `max_iterations` rounds)
+#   - between-message context-reset summary (when input tokens cross 95% of
+#     the model's context window)
+# Falls back to `model` if unset, or if provider construction fails (logged
+# as a warning, the agent continues).
+# small_model = "deepseek/deepseek-v4-flash"
+
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 
-# Maximum iterations per message (default: 100)
-# max_iterations = 100
+# Maximum iterations per cycle (default: 500)
+# max_iterations = 500
 
 
 [agent.attachments]

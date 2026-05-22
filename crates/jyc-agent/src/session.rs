@@ -145,11 +145,22 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
 
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
-/// Auto-resets (with summary) if total tokens exceed max_input_tokens.
+/// Auto-resets (with LLM-generated summary) if total tokens exceed max_input_tokens.
 ///
 /// `input_tokens` is the tokens reported by the last API call — this already
 /// includes all prior context, so we store it directly (not accumulated).
-pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens: u64, context_window: Option<u64>) {
+///
+/// `summary_provider` is the provider used to generate the LLM summary when
+/// the auto-reset threshold is crossed. Callers should pass the small model's
+/// provider when configured (`[agent].small_model`), otherwise the main
+/// provider — falling back is the caller's responsibility.
+pub async fn update_tokens(
+    thread_path: &Path,
+    input_tokens: u64,
+    output_tokens: u64,
+    context_window: Option<u64>,
+    summary_provider: &dyn crate::provider::Provider,
+) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
@@ -172,11 +183,13 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
         tracing::info!(
             total_input_tokens = state.total_input_tokens,
             max_input_tokens = state.max_input_tokens,
+            summary_provider = %summary_provider.name(),
+            summary_model = %summary_provider.model(),
             "Session exceeded max input tokens, auto-resetting with summary"
         );
 
-        // Summarize the context (keep last few turns)
-        summarize_context(thread_path).await;
+        // Summarize the context using the (small) summary provider.
+        summarize_context(thread_path, summary_provider).await;
 
         // Reset token counters
         state.total_input_tokens = 0;
@@ -194,11 +207,16 @@ pub async fn update_tokens(thread_path: &Path, input_tokens: u64, output_tokens:
 /// Called when user triggers a session reset (e.g., from dashboard or /reset command).
 /// - Deletes `agent-session.json` (resets token tracking)
 /// - Summarizes `agent-context.json` (keeps last few user+reply pairs, removes tool calls)
+///
+/// Uses the heuristic compaction (no LLM call) because the inspect server's
+/// `reset_session` handler doesn't have a provider context to pass through.
+/// The auto-reset path in `update_tokens` uses the LLM-based summarizer when
+/// a provider is configured.
 pub async fn reset_session(thread_path: &Path) {
     let jyc_dir = thread_path.join(".jyc");
 
-    // Summarize context before deleting session
-    summarize_context(thread_path).await;
+    // Summarize context before deleting session (heuristic; no provider).
+    summarize_context_heuristic(thread_path).await;
 
     // Delete session state (triggers fresh start on next invocation)
     let session_path = jyc_dir.join(SESSION_FILE);
@@ -207,11 +225,218 @@ pub async fn reset_session(thread_path: &Path) {
     tracing::info!("Agent session reset (context summarized)");
 }
 
-/// Summarize the raw context: keep only the last N user+assistant text pairs.
+/// Summarize the raw context using an LLM call, then replace
+/// `agent-context.json` with a compact `[task_anchor, summary_user_message]`
+/// pair so the next message starts from a small, valid context.
 ///
-/// Removes tool calls, tool results, and reasoning_content.
-/// Keeps only user messages and assistant text responses for compact context.
-async fn summarize_context(thread_path: &Path) {
+/// On any failure (no context file, JSON parse error, LLM call error, empty
+/// reply) this falls back to `summarize_context_heuristic` which keeps the
+/// last few user+assistant text pairs without touching the LLM.
+///
+/// `provider` should be the small/fast model when configured
+/// (`[agent].small_model`); the caller is responsible for passing the right
+/// provider.
+async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::Provider) {
+    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
+
+    if !context_path.exists() {
+        return;
+    }
+
+    let content = match tokio::fs::read_to_string(&context_path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    if raw_context.is_empty() {
+        return;
+    }
+
+    // Find the original task anchor — the first user message — so we can
+    // preserve it in the compacted output. Without it the model would lose
+    // the task description on the next message.
+    let first_user = raw_context
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .cloned();
+
+    // Render the entire context to plain text and ask the LLM to summarize.
+    // Mirrors the cycle-boundary helper in `agent_loop`.
+    let joined = render_raw_context_as_text(&raw_context);
+    let summary_text = match generate_context_summary(provider, &joined).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "LLM context summary failed, falling back to heuristic compaction"
+            );
+            summarize_context_heuristic(thread_path).await;
+            return;
+        }
+    };
+
+    // Build the compacted context: [task_anchor, synthetic_user_with_summary].
+    // The synthetic user message uses a tagged delimiter so the model can
+    // recognize it as machine-generated context.
+    let summary_user = serde_json::json!({
+        "role": "user",
+        "content": format!(
+            "<jyc-context-summary>\nPrior conversation summary (auto-generated when token budget was exceeded):\n\n{}\n</jyc-context-summary>",
+            summary_text
+        ),
+    });
+
+    let mut compacted: Vec<serde_json::Value> = Vec::with_capacity(2);
+    if let Some(fu) = first_user {
+        compacted.push(fu);
+    }
+    compacted.push(summary_user);
+
+    tracing::info!(
+        original_messages = raw_context.len(),
+        summary_messages = compacted.len(),
+        provider = %provider.name(),
+        model = %provider.model(),
+        "Context summarized via LLM"
+    );
+
+    match serde_json::to_string(&compacted) {
+        Ok(json) => { tokio::fs::write(&context_path, json).await.ok(); }
+        Err(_) => { tokio::fs::remove_file(&context_path).await.ok(); }
+    }
+}
+
+/// Issue an isolated LLM call to produce a context summary.
+///
+/// The conversation transcript is sent as a single user message — no tools,
+/// no prior assistant turns, no `reasoning_content` round-trip. This decouples
+/// the summary call from the main conversation's contract (e.g., DeepSeek's
+/// thinking mode requirements).
+async fn generate_context_summary(
+    provider: &dyn crate::provider::Provider,
+    joined_history: &str,
+) -> anyhow::Result<String> {
+    let system_prompt = "You are summarizing a conversation between a user and an AI agent. \
+        Based on the transcript below, produce a faithful, concise summary in the language used \
+        in the transcript. Cover:\n\
+        - The original task / user goal\n\
+        - Key decisions made and why\n\
+        - What was implemented (files changed, commands run, tools used)\n\
+        - Outstanding work and next steps\n\n\
+        Reply with ONLY the summary text. No preamble, no markdown headers, no tool calls.";
+
+    let user_msg = provider.format_user_message(joined_history);
+    let stream = provider
+        .complete_raw(&[user_msg], &[], system_prompt)
+        .await?;
+
+    let mut text = String::new();
+    use futures::StreamExt;
+    let mut stream = std::pin::pin!(stream);
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(crate::types::StreamEvent::TextDelta(t)) => text.push_str(&t),
+            Ok(crate::types::StreamEvent::Done) => break,
+            Ok(crate::types::StreamEvent::Error(msg)) => {
+                anyhow::bail!("LLM error during summary: {msg}");
+            }
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    if text.is_empty() {
+        anyhow::bail!("LLM returned empty context summary");
+    }
+    Ok(text)
+}
+
+/// Render `raw_context` as a single plain-text transcript suitable for
+/// one-shot summarization. Lossy by design — used only by the summary call,
+/// never replayed to the main loop.
+fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
+    let mut out = String::with_capacity(raw_context.len() * 256);
+    out.push_str("=== Conversation transcript ===\n\n");
+    for msg in raw_context {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+        match role {
+            "user" => {
+                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                if !text.is_empty() {
+                    out.push_str("USER: ");
+                    out.push_str(text);
+                    out.push_str("\n\n");
+                }
+            }
+            "assistant" => {
+                out.push_str("ASSISTANT");
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+                    if !text.is_empty() {
+                        out.push_str(": ");
+                        out.push_str(text);
+                    }
+                }
+                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                    for block in blocks {
+                        let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match t {
+                            "text" => {
+                                if let Some(s) = block.get("text").and_then(|x| x.as_str()) {
+                                    out.push_str(": ");
+                                    out.push_str(s);
+                                }
+                            }
+                            "tool_use" => {
+                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                out.push_str(&format!("\n  [tool_use: {}]", name));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+                    for tc in tcs {
+                        let name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("?");
+                        out.push_str(&format!("\n  [tool_call: {}]", name));
+                    }
+                }
+                out.push_str("\n\n");
+            }
+            "tool" => {
+                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let truncated = if text.len() > 500 {
+                    let cut = text.floor_char_boundary(500);
+                    format!("{}…", &text[..cut])
+                } else {
+                    text.to_string()
+                };
+                out.push_str("TOOL_RESULT: ");
+                out.push_str(&truncated);
+                out.push_str("\n\n");
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Heuristic context compaction: keep only the last N user+assistant text
+/// pairs.
+///
+/// Removes tool calls, tool results, and reasoning_content. Used as a
+/// fallback when the LLM-based summarizer is unavailable or fails, and as
+/// the primary path for user-triggered `reset_session` (which has no
+/// provider context).
+async fn summarize_context_heuristic(thread_path: &Path) {
     let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
 
     if !context_path.exists() {
@@ -269,7 +494,7 @@ async fn summarize_context(thread_path: &Path) {
     tracing::debug!(
         original_messages = raw_context.len(),
         summary_messages = summary.len(),
-        "Context summarized"
+        "Context summarized (heuristic)"
     );
 
     // Write summary back

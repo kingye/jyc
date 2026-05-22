@@ -194,6 +194,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .collect();
                 let agent_cfg = jyc_agent::types::AgentConfig {
                     model,
+                    small_model: agent_config.small_model.clone(),
                     providers,
                     max_iterations: agent_config.max_iterations,
                 };

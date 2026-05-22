@@ -48,6 +48,21 @@ impl ChannelMatcher for GithubMatcher {
                     return format!("{}-{}", prefix, number);
                 }
             }
+
+            // Backwards-compatible fallback: a pattern named "reviewer"
+            // without an explicit `thread_prefix` keeps the historical
+            // `review-pr-{N}` thread name. Emit a deprecation warning so
+            // users migrate to declaring `thread_prefix = "review-pr"`
+            // explicitly. New patterns should not rely on this.
+            if pm.pattern_name == "reviewer" {
+                tracing::warn!(
+                    pattern = %pm.pattern_name,
+                    "Pattern 'reviewer' has no `thread_prefix` configured; falling back to legacy 'review-pr-{{N}}'. \
+                     Add `thread_prefix = \"review-pr\"` to the pattern config to silence this warning. \
+                     The implicit fallback will be removed in a future release."
+                );
+                return format!("review-pr-{}", number);
+            }
         }
 
         // Default derivation by event type.
@@ -480,6 +495,13 @@ impl GithubInboundAdapter {
     /// `rules.github_type` lists `pull_request` and that declare an explicit
     /// `thread_prefix` contribute that prefix.
     ///
+    /// As a backwards-compatible fallback, if any PR-typed pattern is named
+    /// `"reviewer"` and does NOT declare an explicit `thread_prefix`, the
+    /// legacy `review-pr` prefix is added so disk scans continue to recognize
+    /// thread directories produced by the implicit fallback in
+    /// `derive_thread_name`. Mirror this with the matching `derive_thread_name`
+    /// branch.
+    ///
     /// Examples for a config with `developer` (default) and
     /// `reviewer` (`thread_prefix = "review-pr"`): `{"pr", "review-pr"}`.
     fn pr_thread_prefixes(&self) -> HashSet<String> {
@@ -495,9 +517,15 @@ impl GithubInboundAdapter {
             if !matches_pr {
                 continue;
             }
-            if let Some(prefix) = pattern.thread_prefix.as_deref() {
-                if !prefix.is_empty() {
+            match pattern.thread_prefix.as_deref() {
+                Some(prefix) if !prefix.is_empty() => {
                     prefixes.insert(prefix.to_string());
+                }
+                _ => {
+                    // Legacy fallback for the unconfigured "reviewer" pattern.
+                    if pattern.name == "reviewer" {
+                        prefixes.insert("review-pr".to_string());
+                    }
                 }
             }
         }
@@ -1642,16 +1670,16 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name_reviewer_without_prefix_falls_back_to_pr() {
-        // If a user removes/forgets `thread_prefix` from the reviewer pattern,
-        // the resolver falls back to the github_type default (`pr-{N}`).
-        // This proves the previous hardcoded `pattern_name == "reviewer"`
-        // special case has been removed.
+    fn test_derive_thread_name_reviewer_legacy_fallback() {
+        // Backwards-compat: a pattern literally named "reviewer" without an
+        // explicit `thread_prefix` still routes to `review-pr-{N}` so existing
+        // deployments don't break. A deprecation warning is logged at runtime;
+        // users should migrate to `thread_prefix = "review-pr"` explicitly.
         let msg = make_message("pull_request", 43);
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
             template: Some("github-reviewer".to_string()),
-            // No thread_prefix.
+            // No thread_prefix → legacy fallback kicks in.
             rules: PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
                 ..Default::default()
@@ -1660,6 +1688,30 @@ mod tests {
         }];
         let pm = PatternMatch {
             pattern_name: "reviewer".to_string(),
+            channel: "github".to_string(),
+            matches: HashMap::new(),
+        };
+        let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
+        assert_eq!(name, "review-pr-43");
+    }
+
+    #[test]
+    fn test_derive_thread_name_non_reviewer_no_prefix_falls_back_to_default() {
+        // The legacy fallback is scoped to the literal pattern name "reviewer".
+        // Any other pattern name without `thread_prefix` falls through to the
+        // event-type default.
+        let msg = make_message("pull_request", 43);
+        let patterns = vec![ChannelPattern {
+            name: "qa".to_string(),
+            template: Some("github-qa".to_string()),
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let pm = PatternMatch {
+            pattern_name: "qa".to_string(),
             channel: "github".to_string(),
             matches: HashMap::new(),
         };
@@ -3062,13 +3114,52 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_active_pr_threads_review_prefix_requires_pattern() {
-        // Without a reviewer pattern declaring `thread_prefix = "review-pr"`,
-        // a `review-pr-{N}` directory is ignored. This is the no-magic
-        // behavior: prefixes must be configured explicitly.
+    fn test_scan_active_pr_threads_review_prefix_legacy_fallback() {
+        // A pattern named "reviewer" without an explicit `thread_prefix` still
+        // contributes `review-pr` to the recognized PR prefix set, mirroring
+        // the legacy fallback in derive_thread_name. This keeps disk scans
+        // consistent for existing deployments that haven't migrated yet.
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let reviewer_pattern = ChannelPattern {
+            name: "reviewer".to_string(),
+            // No thread_prefix.
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
+            .with_patterns(vec![reviewer_pattern]);
+
+        let workspace = tmpdir.path().join("test_ch").join("workspace");
+        std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
+        std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
+
+        let result = adapter.scan_active_pr_threads();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&42));
+        assert!(result.contains(&43));
+    }
+
+    #[test]
+    fn test_scan_active_pr_threads_review_prefix_unknown_pattern_ignored() {
+        // The legacy fallback is keyed on the pattern name "reviewer" only.
+        // For any other pattern name without `thread_prefix`, `review-pr-{N}`
+        // dirs are not recognized.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let config = make_ci_test_config();
+        let qa_pattern = ChannelPattern {
+            name: "qa".to_string(),
+            rules: PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
+            .with_patterns(vec![qa_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
@@ -3077,7 +3168,7 @@ mod tests {
         let result = adapter.scan_active_pr_threads();
         assert_eq!(result.len(), 1);
         assert!(result.contains(&42));
-        assert!(!result.contains(&43), "review-pr is unknown without pattern config");
+        assert!(!result.contains(&43));
     }
 
     #[test]

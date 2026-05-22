@@ -28,20 +28,28 @@ All notable changes to JYC will be documented in this file.
   GitHub identity, rather than hardcoding the `pr-{N}` and `review-pr-{N}`
   prefixes. This makes cleanup correct for any user-defined `thread_prefix`.
 
+### Deprecated
+
+- The implicit fallback that routes a pattern named `reviewer` (with no
+  `thread_prefix`) to `review-pr-{N}` is deprecated. Existing deployments
+  continue to work but log a deprecation warning. New configs should declare
+  `thread_prefix = "review-pr"` explicitly. The implicit fallback will be
+  removed in a future release.
+
 ### Breaking
 
-- **The hardcoded `pattern_name == "reviewer"` thread-name special case has
-  been removed.** Reviewer patterns must now declare `thread_prefix =
-  "review-pr"` explicitly to keep using `review-pr-{N}` thread directories.
-  Without the explicit prefix, a reviewer pattern's PR events route to
-  `pr-{N}` (the default), which collides with the developer pattern. Update
-  your config:
+- None in this release. The hardcoded `pattern_name == "reviewer"` thread-name
+  special case has been replaced with a configurable `thread_prefix` mechanism,
+  but a backwards-compatible deprecation fallback preserves the legacy
+  `review-pr-{N}` thread name for unmigrated configs.
+
+  Recommended migration:
 
   ```toml
   [[channels.my_repo.patterns]]
   name = "reviewer"
   template = "github-reviewer"
-  thread_prefix = "review-pr"   # ← add this line
+  thread_prefix = "review-pr"   # ← add this line to silence the warning
   ```
 
 ## [0.3.4] - 2026-05-20

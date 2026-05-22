@@ -147,90 +147,34 @@ mod filter_valid_messages {
         assert_eq!(result.len(), 5);  // user, assistant+tool_calls, tool, assistant+content, user
     }
 
-    // --- reasoning_content stripping (Piece 2 of v0.3.6 fix) ---
-
-    /// `reasoning_content` is OUTPUT-only for DeepSeek reasoner models.
-    /// Replaying it across many prior turns triggered HTTP 400 in pr-6.
-    /// We strip it from every assistant message except the most recent.
+    /// Regression test for v0.3.7. The v0.3.6 release introduced
+    /// `reasoning_content` stripping on non-final assistant turns, which broke
+    /// DeepSeek `thinking = enabled` mode with HTTP 400:
+    ///   "The reasoning_content in the thinking mode must be passed back to the API."
+    /// v0.3.7 reverted the strip; this test pins the contract: every assistant
+    /// turn that already carries `reasoning_content` must still carry it after
+    /// `filter_valid_messages` returns.
     #[test]
-    fn strips_reasoning_content_from_prior_assistant_turns() {
+    fn preserves_reasoning_content_on_all_assistant_turns() {
         let messages = vec![
             json!({"role": "user", "content": "task"}),
             json!({
                 "role": "assistant",
                 "content": "step 1",
-                "reasoning_content": "old thinking",
+                "reasoning_content": "thinking 1",
                 "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]
             }),
             json!({"role": "tool", "tool_call_id": "1", "content": "ok"}),
             json!({
                 "role": "assistant",
                 "content": "step 2",
-                "reasoning_content": "latest thinking"
+                "reasoning_content": "thinking 2"
             }),
         ];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 4);
-        // Older assistant: reasoning_content removed; tool_calls + content preserved.
-        assert!(result[1].get("reasoning_content").is_none(),
-            "older assistant turn should have reasoning_content stripped, got {:?}", result[1]);
-        assert_eq!(result[1]["content"], "step 1");
-        assert_eq!(result[1]["tool_calls"][0]["id"], "1");
-        // Latest assistant: reasoning_content preserved.
-        assert_eq!(result[3]["reasoning_content"], "latest thinking");
-        assert_eq!(result[3]["content"], "step 2");
-    }
-
-    #[test]
-    fn keeps_reasoning_content_when_only_one_assistant_message() {
-        // Single assistant turn IS the most recent — keep its reasoning_content.
-        let messages = vec![
-            json!({"role": "user", "content": "task"}),
-            json!({
-                "role": "assistant",
-                "content": "answer",
-                "reasoning_content": "my thinking"
-            }),
-        ];
-        let result = filter_valid_messages(&messages);
-        assert_eq!(result[1]["reasoning_content"], "my thinking");
-    }
-
-    #[test]
-    fn strips_reasoning_content_across_many_prior_turns() {
-        // Simulates the pr-6 scenario: lots of assistant turns with
-        // reasoning_content. After filtering, only the last one should
-        // retain reasoning_content.
-        let mut messages = vec![json!({"role": "user", "content": "long task"})];
-        for i in 0..10 {
-            messages.push(json!({
-                "role": "assistant",
-                "content": format!("turn {}", i),
-                "reasoning_content": format!("reasoning {}", i),
-                "tool_calls": [{"id": format!("t{}", i),"type":"function","function":{"name":"bash","arguments":"{}"}}]
-            }));
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": format!("t{}", i),
-                "content": format!("result {}", i)
-            }));
-        }
-        let result = filter_valid_messages(&messages);
-        // Walk all assistant messages: only the last should have reasoning_content.
-        let assistant_indices: Vec<usize> = result.iter()
-            .enumerate()
-            .filter(|(_, m)| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(assistant_indices.len(), 10);
-        for &idx in &assistant_indices[..assistant_indices.len() - 1] {
-            assert!(
-                result[idx].get("reasoning_content").is_none(),
-                "assistant at index {idx} should have reasoning_content stripped"
-            );
-        }
-        let last = *assistant_indices.last().unwrap();
-        assert_eq!(result[last]["reasoning_content"], "reasoning 9");
+        assert_eq!(result[1]["reasoning_content"], "thinking 1");
+        assert_eq!(result[3]["reasoning_content"], "thinking 2");
     }
 }
 

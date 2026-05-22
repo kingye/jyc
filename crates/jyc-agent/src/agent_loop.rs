@@ -97,8 +97,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 "Cycle boundary reached, sending progress reply and continuing"
             );
 
-            // Generate progress summary via separate LLM call
-            let progress_text = generate_progress_summary(
+            // 1. Generate the progress text via a separate, isolated LLM call.
+            //    This call joins raw_context into a single plain-text
+            //    transcript and asks the model to summarize. It is fully
+            //    out-of-band: the main loop's `raw_context` is NEVER mutated
+            //    by it. That preserves the reasoning_content contract that
+            //    DeepSeek's thinking mode requires (every assistant turn that
+            //    came from the model must be replayed with its
+            //    reasoning_content intact on subsequent requests).
+            let progress_text = generate_summary_from_joined_history(
                 provider,
                 &raw_context,
                 cycle_count,
@@ -111,11 +118,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 )
             });
 
-            // Synthetically execute reply_message tool
+            // 2. Post the progress reply to the user via the reply tool.
+            //    This sends the GitHub comment / IM message. We do NOT push
+            //    a synthetic assistant turn into `raw_context` — doing so
+            //    would inject an assistant turn the model never produced
+            //    (and thus has no reasoning_content), violating DeepSeek's
+            //    thinking-mode contract on the next request.
             let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
             let synthetic_args = serde_json::json!({"message": &progress_text}).to_string();
 
-            // Publish ToolStarted for the progress reply
             publish_event(event_bus, ThreadEvent::ToolStarted {
                 thread_name: thread_name.to_string(),
                 tool_name: "jyc_reply_reply_message".to_string(),
@@ -144,25 +155,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 timestamp: Utc::now(),
             }).await;
 
-            // Append synthetic assistant message + tool result to raw_context
-            // so the LLM sees the progress was sent and can continue from there.
-            let synthetic_tool_calls = vec![(
-                synthetic_call_id.clone(),
-                "jyc_reply_reply_message".to_string(),
-                synthetic_args.clone(),
-            )];
-            raw_context.push(provider.build_raw_assistant_message(
-                "",
-                "",
-                &synthetic_tool_calls,
-            ));
-            raw_context.push(provider.format_tool_result(
-                &synthetic_call_id,
-                &synthetic_output.content,
-                synthetic_output.is_error,
-            ));
-
-            // Also append to internal history for completeness
+            // 3. Append the synthetic event to internal `history` for
+            //    diagnostics only. `history` is used for chat-log rendering
+            //    and is NEVER replayed to the LLM.
             history.push(Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
@@ -177,27 +172,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 synthetic_output.is_error,
             ));
 
-            // Compact raw_context in place: keep the original task anchor
-            // (first user message), drop tool clutter from the cycle, and
-            // preserve the synthetic assistant tool_call + tool_result we
-            // just appended above so the next cycle starts with a small,
-            // valid context. Without this the request size grows
-            // unboundedly and providers like DeepSeek return HTTP 400
-            // around iteration 200+.
-            let summary_before = raw_context.len();
-            summarize_raw_context_in_place(
-                &mut raw_context,
-                &progress_text,
-                provider,
-            );
-            tracing::info!(
-                cycle = cycle_count,
-                before = summary_before,
-                after = raw_context.len(),
-                "raw_context summarized at cycle boundary"
-            );
-
-            // Reset iteration counter for next cycle
+            // 4. Reset iteration counter for next cycle. raw_context is
+            //    intentionally left unchanged so the next API call replays
+            //    the model's own last assistant turn (with reasoning_content)
+            //    followed by its tool_result, and the model continues from
+            //    where it left off.
             iter_in_cycle = 0;
             continue;
         }
@@ -417,19 +396,31 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     })
 }
 
-/// Generate a progress summary using a separate LLM call.
+/// Generate a progress summary using a separate, isolated LLM call.
 ///
-/// Asks the same provider/model to produce a 2-3 sentence progress update
-/// based on the current conversation context. Used at cycle boundaries to
-/// inform the user that work is still in progress.
-async fn generate_progress_summary(
+/// The conversation transcript is rendered into a single plain-text string
+/// and sent as a single user message. This is intentionally NOT a replay of
+/// `raw_context`'s structured messages — that would replay assistant turns
+/// with their `reasoning_content` fields, alternation rules, and tool-call
+/// schema, which couples the summary call to the main loop's contract.
+///
+/// Joining to text decouples the call:
+/// - No `tool_calls` in the request, so no schema dependency.
+/// - No prior assistant turns, so no `reasoning_content` replay requirements
+///   (DeepSeek `thinking = enabled` mode requires reasoning_content to be
+///   round-tripped on every assistant turn it produced; an isolated text
+///   call sidesteps that contract entirely).
+/// - The main loop's `raw_context` is untouched.
+///
+/// Used at cycle boundaries to inform the user that work is still in progress.
+async fn generate_summary_from_joined_history(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],
     cycle_count: usize,
     total_iterations: usize,
 ) -> Result<String> {
     let summary_system = format!(
-        "You are summarizing in-progress work for the user. Based on the conversation so far, \
+        "You are summarizing in-progress work for the user. Based on the transcript below, \
          write a concise 2-3 sentence progress update in the user's language. Format:\n\
          - What you've done (e.g., \"Implemented X, Y, refactored Z\")\n\
          - What you're still working on\n\
@@ -439,9 +430,11 @@ async fn generate_progress_summary(
         cycle_count, total_iterations
     );
 
-    // Use complete_raw with no tools — just want a text response
+    let joined = render_raw_context_as_text(raw_context);
+    let user_msg = provider.format_user_message(&joined);
+
     let stream = provider
-        .complete_raw(raw_context, &[], &summary_system)
+        .complete_raw(&[user_msg], &[], &summary_system)
         .await?;
 
     let response = collect_response(stream).await?;
@@ -453,64 +446,82 @@ async fn generate_progress_summary(
     Ok(response.text)
 }
 
-/// Compact `raw_context` in place at a cycle boundary.
+/// Render `raw_context` (a list of OpenAI/Anthropic-shaped JSON messages)
+/// as a single plain-text transcript suitable for one-shot summarization.
 ///
-/// Strategy:
-/// 1. Keep the **first user message** if present — this anchors the original
-///    task description so the model doesn't lose context of what it's doing.
-/// 2. Drop everything between the first user message and the trailing two
-///    entries (the synthetic assistant tool_call + tool_result that the
-///    cycle-boundary block just appended).
-/// 3. Insert a synthetic user message tagged `<jyc-cycle-summary>` carrying
-///    the progress text so the model sees what was accomplished in the
-///    previous cycle.
-/// 4. Keep the trailing two entries as-is, preserving the alternation
-///    invariant providers expect (assistant tool_call → tool result).
-///
-/// The output is always a small, valid 4-message context regardless of how
-/// long the previous cycle was. Without this, providers like DeepSeek return
-/// HTTP 400 once the per-request payload grows past their validation limits.
-///
-/// Caller contract: the last two entries of `raw_context` MUST be the
-/// synthetic assistant tool_call and the matching tool_result that the
-/// cycle-boundary block produces. If `raw_context` has fewer than 2 entries,
-/// the function is a no-op (defensive).
-pub(crate) fn summarize_raw_context_in_place(
-    raw_context: &mut Vec<serde_json::Value>,
-    progress_text: &str,
-    provider: &dyn Provider,
-) {
-    if raw_context.len() < 2 {
-        return;
+/// The output is best-effort and lossy by design — it is consumed only by
+/// the summarization LLM call, never replayed to the main loop. Tool calls,
+/// tool results, and reasoning_content are flattened into readable lines.
+fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
+    let mut out = String::with_capacity(raw_context.len() * 256);
+    out.push_str("=== Conversation transcript ===\n\n");
+    for msg in raw_context {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+        match role {
+            "user" => {
+                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                if !text.is_empty() {
+                    out.push_str("USER: ");
+                    out.push_str(text);
+                    out.push_str("\n\n");
+                }
+            }
+            "assistant" => {
+                out.push_str("ASSISTANT");
+                // OpenAI: content as string
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+                    if !text.is_empty() {
+                        out.push_str(": ");
+                        out.push_str(text);
+                    }
+                }
+                // Anthropic: content as array of blocks
+                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                    for block in blocks {
+                        let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match t {
+                            "text" => {
+                                if let Some(s) = block.get("text").and_then(|x| x.as_str()) {
+                                    out.push_str(": ");
+                                    out.push_str(s);
+                                }
+                            }
+                            "tool_use" => {
+                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                out.push_str(&format!("\n  [tool_use: {}]", name));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // OpenAI: tool_calls array
+                if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+                    for tc in tcs {
+                        let name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("?");
+                        out.push_str(&format!("\n  [tool_call: {}]", name));
+                    }
+                }
+                out.push_str("\n\n");
+            }
+            "tool" => {
+                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let truncated = if text.len() > 500 {
+                    format!("{}…", &text[..text.floor_char_boundary(500)])
+                } else {
+                    text.to_string()
+                };
+                out.push_str("TOOL_RESULT: ");
+                out.push_str(&truncated);
+                out.push_str("\n\n");
+            }
+            _ => {}
+        }
     }
-
-    // Lift the trailing two entries out (synthetic assistant tool_call + tool_result).
-    let trailing_tool_result = raw_context.pop().unwrap();
-    let trailing_assistant = raw_context.pop().unwrap();
-
-    // Find the first user message in what remains (the original task anchor).
-    let first_user = raw_context
-        .iter()
-        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        .cloned();
-
-    // Build the summary user message.
-    let summary_text = format!(
-        "<jyc-cycle-summary>\nProgress so far (auto-generated at cycle boundary):\n\n{}\n</jyc-cycle-summary>",
-        progress_text
-    );
-    let summary_user = provider.format_user_message(&summary_text);
-
-    // Replace raw_context with the compacted version.
-    let mut compacted: Vec<serde_json::Value> = Vec::with_capacity(4);
-    if let Some(fu) = first_user {
-        compacted.push(fu);
-    }
-    compacted.push(summary_user);
-    compacted.push(trailing_assistant);
-    compacted.push(trailing_tool_result);
-
-    *raw_context = compacted;
+    out
 }
 
 /// Publish an event to the event bus (if available).
@@ -638,164 +649,55 @@ async fn collect_response(
 }
 
 #[cfg(test)]
-mod summarize_raw_context_tests {
+mod render_raw_context_tests {
     use super::*;
-    use crate::provider::Provider;
-    use crate::types::{ToolDefinition, Message};
-    use anyhow::Result;
-    use async_trait::async_trait;
     use serde_json::json;
 
-    /// Minimal stub provider for unit-testing `summarize_raw_context_in_place`.
-    /// Implements `format_user_message`, `build_raw_assistant_message`, and
-    /// `format_tool_result` with the OpenAI shape; everything else is panicking
-    /// stubs because the test never invokes them.
-    struct StubProvider;
-
-    #[async_trait]
-    impl Provider for StubProvider {
-        fn name(&self) -> &str { "stub" }
-        fn model(&self) -> &str { "stub" }
-
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _system: &str,
-        ) -> Result<crate::provider::EventStream> {
-            panic!("not used in tests")
-        }
-
-        fn format_user_message(&self, text: &str) -> serde_json::Value {
-            json!({"role": "user", "content": text})
-        }
-
-        fn format_tool_result(&self, tool_call_id: &str, content: &str, _is_error: bool) -> serde_json::Value {
-            json!({"role": "tool", "tool_call_id": tool_call_id, "content": content})
-        }
-
-        fn build_raw_assistant_message(
-            &self,
-            text: &str,
-            _reasoning: &str,
-            tool_calls: &[(String, String, String)],
-        ) -> serde_json::Value {
-            let mut msg = json!({"role": "assistant"});
-            if !text.is_empty() {
-                msg["content"] = json!(text);
-            } else {
-                msg["content"] = serde_json::Value::Null;
-            }
-            if !tool_calls.is_empty() {
-                let arr: Vec<serde_json::Value> = tool_calls.iter().map(|(id, name, args)| {
-                    json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}})
-                }).collect();
-                msg["tool_calls"] = json!(arr);
-            }
-            msg
-        }
-
-        async fn complete_raw(
-            &self,
-            _raw_messages: &[serde_json::Value],
-            _tools: &[ToolDefinition],
-            _system: &str,
-        ) -> Result<crate::provider::EventStream> {
-            panic!("not used in tests")
-        }
-    }
-
-    fn synthetic_pair() -> (serde_json::Value, serde_json::Value) {
-        let assistant = json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{
-                "id": "progress-cycle-1",
-                "type": "function",
-                "function": {"name": "jyc_reply_reply_message", "arguments": "{\"message\":\"progress\"}"}
-            }]
-        });
-        let tool_result = json!({
-            "role": "tool",
-            "tool_call_id": "progress-cycle-1",
-            "content": "Reply queued for delivery"
-        });
-        (assistant, tool_result)
-    }
-
     #[test]
-    fn compacts_long_context_to_4_messages() {
-        let (assist, tres) = synthetic_pair();
-        let mut ctx = vec![
-            json!({"role": "user", "content": "fix bug X"}),
-            json!({"role": "assistant", "content": "I'll start", "reasoning_content": "old"}),
-            json!({"role": "tool", "tool_call_id": "x", "content": "out"}),
-            json!({"role": "assistant", "content": null, "tool_calls": [{"id":"y","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
-            json!({"role": "tool", "tool_call_id": "y", "content": "more"}),
-            assist.clone(),
-            tres.clone(),
+    fn renders_user_assistant_tool_sequence() {
+        let ctx = vec![
+            json!({"role": "user", "content": "fix bug"}),
+            json!({
+                "role": "assistant",
+                "content": "I'll start",
+                "reasoning_content": "thinking...",
+                "tool_calls": [{
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "{}"}
+                }]
+            }),
+            json!({"role": "tool", "tool_call_id": "1", "content": "output"}),
+            json!({"role": "assistant", "content": "Done."}),
         ];
-        summarize_raw_context_in_place(&mut ctx, "did A then B", &StubProvider);
-        assert_eq!(ctx.len(), 4);
-        assert_eq!(ctx[0]["role"], "user");
-        assert_eq!(ctx[0]["content"], "fix bug X", "first user message must be preserved as task anchor");
-        assert_eq!(ctx[1]["role"], "user");
-        assert!(ctx[1]["content"].as_str().unwrap().contains("<jyc-cycle-summary>"));
-        assert!(ctx[1]["content"].as_str().unwrap().contains("did A then B"));
-        // Trailing pair preserved.
-        assert_eq!(ctx[2], assist);
-        assert_eq!(ctx[3], tres);
+        let rendered = render_raw_context_as_text(&ctx);
+        assert!(rendered.contains("USER: fix bug"));
+        assert!(rendered.contains("ASSISTANT: I'll start"));
+        assert!(rendered.contains("[tool_call: bash]"));
+        assert!(rendered.contains("TOOL_RESULT: output"));
+        assert!(rendered.contains("ASSISTANT: Done."));
     }
 
     #[test]
-    fn preserves_alternation_invariant() {
-        // After compaction the sequence must be valid for an OpenAI-style API:
-        // user → user → assistant(tool_call) → tool(tool_result).
-        // (The two consecutive user messages are acceptable; only assistant→tool
-        // alternation matters for tool-call/result pairs.)
-        let (assist, tres) = synthetic_pair();
-        let mut ctx = vec![
-            json!({"role": "user", "content": "task"}),
-            json!({"role": "assistant", "content": "ack"}),
-            assist,
-            tres,
+    fn truncates_long_tool_results() {
+        let long = "x".repeat(2000);
+        let ctx = vec![json!({"role": "tool", "tool_call_id": "1", "content": long})];
+        let rendered = render_raw_context_as_text(&ctx);
+        // Truncation cap is 500 + "…", plus the "TOOL_RESULT: " prefix and trailing newlines.
+        assert!(rendered.len() < 700);
+        assert!(rendered.contains("…"));
+    }
+
+    #[test]
+    fn skips_unknown_roles_and_empty_content() {
+        let ctx = vec![
+            json!({"role": "system", "content": "ignored"}),
+            json!({"role": "user", "content": ""}),
+            json!({"role": "user", "content": "real"}),
         ];
-        summarize_raw_context_in_place(&mut ctx, "summary", &StubProvider);
-        // Find the tool message; the entry immediately before it must be the
-        // assistant carrying the matching tool_call id.
-        let tool_idx = ctx.iter().position(|m| m["role"] == "tool").expect("tool present");
-        assert!(tool_idx >= 1);
-        let prev = &ctx[tool_idx - 1];
-        assert_eq!(prev["role"], "assistant");
-        let tc_id = &prev["tool_calls"][0]["id"];
-        assert_eq!(tc_id, &ctx[tool_idx]["tool_call_id"]);
-    }
-
-    #[test]
-    fn no_op_when_context_too_short() {
-        // Defensive guard: if raw_context has fewer than 2 entries, do nothing
-        // (the trailing-pair contract would be violated).
-        let mut ctx = vec![json!({"role": "user", "content": "alone"})];
-        let original = ctx.clone();
-        summarize_raw_context_in_place(&mut ctx, "x", &StubProvider);
-        assert_eq!(ctx, original);
-    }
-
-    #[test]
-    fn handles_missing_first_user() {
-        // Pathological: no user message in the context (shouldn't happen in
-        // practice, but the helper should not panic). Result should still be
-        // a valid 3-message context (summary user + trailing pair).
-        let (assist, tres) = synthetic_pair();
-        let mut ctx = vec![
-            json!({"role": "assistant", "content": "drift"}),
-            assist,
-            tres,
-        ];
-        summarize_raw_context_in_place(&mut ctx, "summary", &StubProvider);
-        assert_eq!(ctx.len(), 3);
-        assert_eq!(ctx[0]["role"], "user");
-        assert!(ctx[0]["content"].as_str().unwrap().contains("<jyc-cycle-summary>"));
+        let rendered = render_raw_context_as_text(&ctx);
+        assert!(!rendered.contains("ignored"));
+        assert!(rendered.contains("USER: real"));
     }
 }
 

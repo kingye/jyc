@@ -2,6 +2,67 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.7] - 2026-05-22
+
+### Fixed
+
+- **HTTP 400 from DeepSeek `thinking = enabled` mode** at the agent-loop cycle
+  boundary, with response body
+  `"The reasoning_content in the thinking mode must be passed back to the API."`.
+  v0.3.6 introduced two changes that violated DeepSeek's contract: (a)
+  stripping `reasoning_content` from non-final assistant turns, which broke
+  the model's requirement that every assistant turn it produced be replayed
+  with reasoning_content intact; and (b) injecting a synthetic assistant
+  tool-call into `raw_context` at the cycle boundary, which created an
+  assistant turn the model never produced (and thus had no reasoning_content
+  to round-trip).
+
+  v0.3.7 reverts both. The cycle-boundary block is rebuilt around the
+  principle that the main loop's `raw_context` must NEVER be touched by
+  ancillary work — the LLM's view of its own conversation is the source of
+  truth.
+
+### Changed
+
+- **`filter_valid_messages` no longer strips `reasoning_content`.** The
+  v0.3.6 stripping logic is fully reverted. Every assistant turn that
+  carries `reasoning_content` keeps it on every subsequent request.
+  Regression test pinned in `unit_tests.rs::filter_valid_messages::preserves_reasoning_content_on_all_assistant_turns`.
+
+- **Cycle-boundary progress-summary call is now isolated from the main loop.**
+  At the boundary the loop:
+
+  1. Renders `raw_context` to a plain-text transcript (lossy by design, used
+     only for summarization).
+  2. Issues a separate LLM completion with the joined transcript as a single
+     user message and a "summarize this" system prompt — no tools, no prior
+     assistant turns, no `reasoning_content` round-trip.
+  3. Posts the resulting summary text via the reply tool (GitHub comment /
+     IM message) for user-visible progress.
+  4. Resets `iter_in_cycle` to 0 and continues. **`raw_context` is NOT
+     mutated.** No synthetic assistant turn is appended; no compaction is
+     applied. The next iteration replays the model's own last assistant
+     turn (with its real `reasoning_content`) followed by its `tool_result`,
+     and the model continues from where it left off.
+
+  Helper `agent_loop::generate_summary_from_joined_history` and
+  `agent_loop::render_raw_context_as_text` added (crate-internal).
+
+### Removed
+
+- `agent_loop::summarize_raw_context_in_place` (introduced in v0.3.6).
+  The "compact `raw_context` in place at cycle boundary" approach is gone.
+  Per the new design the main loop's context stays untouched; bounded
+  request size is achieved purely by the model continuing from a real
+  conversation state.
+
+### Notes
+
+- The HTTP-body diagnostic in `openai_compat::complete_raw` (Piece 1 of
+  v0.3.6) is retained — it produced the diagnostic body that pinpointed the
+  v0.3.6 regression, and remains useful for any future provider 4xx errors.
+- The default `max_iterations` of 500 (v0.3.6) is retained.
+
 ## [0.3.6] - 2026-05-22
 
 ### Fixed

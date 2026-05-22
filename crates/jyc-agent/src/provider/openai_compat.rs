@@ -299,25 +299,39 @@ impl Provider for OpenAiCompatProvider {
 
         req = req.json(&body);
 
+        // Capture data needed to diagnose 4xx/5xx after the SSE source fails.
+        // EventSource's error string is just "Invalid status code: 400 Bad Request"
+        // and discards the response body. On the first stream error we issue one
+        // diagnostic POST with the same body and surface the body in the error.
+        let diag_url = url.clone();
+        let diag_body = body.clone();
+        let diag_api_key = self.api_key.clone();
+        let diag_client = self.client.clone();
+
         let es = EventSource::new(req)
             .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         let stream = futures::stream::unfold(
-            (es, OpenAiStreamState::default()),
-            |(mut es, mut state)| async move {
+            (es, OpenAiStreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            |(mut es, mut state, mut diag)| async move {
                 loop {
                     if let Some(event) = state.pending_events.pop() {
-                        return Some((Ok(event), (es, state)));
+                        return Some((Ok(event), (es, state, diag)));
                     }
 
                     match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Open)) => {
+                            // Connection succeeded; we no longer need diagnostic
+                            // capability. Drop the cloned data to free memory.
+                            diag = None;
+                            continue;
+                        }
                         Some(Ok(Event::Message(msg))) => {
                             let data = &msg.data;
                             if data.trim() == "[DONE]" {
                                 state.pending_events.push(StreamEvent::Done);
                                 if let Some(event) = state.pending_events.pop() {
-                                    return Some((Ok(event), (es, state)));
+                                    return Some((Ok(event), (es, state, diag)));
                                 }
                                 return None;
                             }
@@ -325,25 +339,40 @@ impl Provider for OpenAiCompatProvider {
                                 state.pending_events.extend(events);
                             }
                             if let Some(event) = state.pending_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                         }
                         Some(Err(e)) => {
                             let err_msg = format!("{e}");
                             if err_msg.contains("Stream ended") {
                                 if let Some(event) = state.pending_events.pop() {
-                                    return Some((Ok(event), (es, state)));
+                                    return Some((Ok(event), (es, state, diag)));
                                 }
                                 return None;
                             }
+                            // First stream error: try to capture the HTTP body via
+                            // a diagnostic POST with the same body so the caller
+                            // sees the provider's actual error (validation message,
+                            // rate limit reason, etc.).
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                                fetch_error_body(&client, &url, &body, api_key.as_deref()).await
+                            } else {
+                                None
+                            };
+                            let final_msg = match diagnosed {
+                                Some((status, body)) => format!(
+                                    "SSE stream error: {e} (HTTP {status} body: {body})"
+                                ),
+                                None => format!("SSE stream error: {e}"),
+                            };
                             return Some((
-                                Err(anyhow::anyhow!("SSE stream error: {e}")),
-                                (es, state),
+                                Err(anyhow::anyhow!(final_msg)),
+                                (es, state, diag),
                             ));
                         }
                         None => {
                             if let Some(event) = state.pending_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                             return None;
                         }
@@ -354,6 +383,38 @@ impl Provider for OpenAiCompatProvider {
 
         Ok(Box::pin(stream))
     }
+}
+
+/// Issue a one-shot diagnostic POST with the same payload to capture the HTTP
+/// status and response body when the streaming connection failed at the
+/// transport layer (typically a 4xx like 400 Bad Request).
+///
+/// Used only on error paths — adds latency exclusively when something is
+/// already broken. Returns `None` on network failure (in which case the
+/// original SSE error is more informative anyway).
+async fn fetch_error_body(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    api_key: Option<&str>,
+) -> Option<(u16, String)> {
+    let mut req = client
+        .post(url)
+        .header("content-type", "application/json")
+        .json(body);
+    if let Some(key) = api_key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+    let resp = req.send().await.ok()?;
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_else(|_| "<unreadable body>".to_string());
+    // Truncate very large bodies — we just need the leading error message.
+    let trimmed = if text.len() > 2000 {
+        format!("{}…(truncated, {} bytes total)", &text[..2000], text.len())
+    } else {
+        text
+    };
+    Some((status, trimmed))
 }
 
 /// Internal state for OpenAI stream parsing.

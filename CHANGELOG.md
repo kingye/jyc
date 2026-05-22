@@ -2,6 +2,55 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [0.3.6] - 2026-05-22
+
+### Fixed
+
+- **Agent loop crashed at cycle boundary with `SSE stream error: Invalid status
+  code: 400 Bad Request`** on long-running developer agent tasks (~200+
+  iterations). Three independent issues conspired:
+
+  1. The cycle-boundary block in `agent_loop.rs` appended a synthetic progress
+     reply to `raw_context` and resent the entire context without trimming.
+     The next request grew unboundedly across cycles.
+  2. `filter_valid_messages` did not strip DeepSeek's `reasoning_content` from
+     prior assistant turns. Replaying many turns of `reasoning_content` is
+     not part of the standard chat-completions input schema and triggered the
+     400 validation error around iteration 200 even though the absolute token
+     count was nowhere near the model's context window.
+  3. The OpenAI-compatible provider's SSE wrapper discarded the HTTP response
+     body on errors, surfacing only `Invalid status code: 400 Bad Request`
+     with no diagnostic detail.
+
+### Added
+
+- **In-loop context summarization at every cycle boundary.** When
+  `iter_in_cycle` reaches `max_iterations`, `raw_context` is now compacted in
+  place: the first user message (task anchor) and the synthetic
+  assistant-tool-call / tool-result pair are preserved, plus a synthetic
+  `<jyc-cycle-summary>` user message carrying the progress text. Output is a
+  4-message context regardless of how long the previous cycle was. Crate-
+  internal helper `agent_loop::summarize_raw_context_in_place`.
+
+- **HTTP body diagnostics on provider errors.** When the OpenAI-compatible SSE
+  stream fails at the transport layer (e.g., HTTP 400/429/5xx), jyc now issues
+  a one-shot diagnostic POST with the same payload, captures the response
+  body, and includes the status and body in the propagated error. Adds latency
+  only on already-broken requests; happy path is unchanged.
+
+### Changed
+
+- **Default `max_iterations` raised from 200 to 500** per cycle. Higher
+  iteration counts are now safe because in-loop summarization keeps the
+  request size bounded regardless of cycle length.
+
+- **`filter_valid_messages` strips `reasoning_content` from all assistant
+  messages except the most recent one.** The latest assistant turn keeps
+  `reasoning_content` so the model can see its own latest thinking; all
+  earlier turns are stripped before sending. Channel-agnostic and applied
+  regardless of provider, since `reasoning_content` is only emitted by
+  reasoner models in the first place.
+
 ## [0.3.5] - 2026-05-22
 
 ### Added

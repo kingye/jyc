@@ -19,15 +19,26 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 
 /// Filter raw messages before sending to any LLM API.
 ///
-/// Removes assistant messages that have no meaningful content and no tool_calls.
-/// Such messages are invalid for replay — even if they have reasoning_content
-/// (DeepSeek) or other provider-specific fields.
+/// Two transformations:
+///
+/// 1. Removes assistant messages that have no meaningful content and no
+///    `tool_calls`. Such messages are invalid for replay — even if they have
+///    `reasoning_content` (DeepSeek) or other provider-specific fields.
+///
+/// 2. Strips `reasoning_content` from every assistant message **except the
+///    most recent assistant message** in the slice. DeepSeek emits
+///    `reasoning_content` as output but the field is not part of the standard
+///    chat-completions input schema; replaying it across many prior turns has
+///    been observed to trigger HTTP 400 validation errors. We keep it on the
+///    last assistant turn (so the model can see its own latest thinking) and
+///    drop it everywhere else.
 ///
 /// Handles both formats:
 /// - OpenAI: `"content": "text"` + `"tool_calls": [...]`
 /// - Anthropic: `"content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]`
 pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    raw_messages.iter()
+    // First pass: drop empty-and-toolless assistant messages, clone the rest.
+    let mut filtered: Vec<serde_json::Value> = raw_messages.iter()
         .filter(|m| {
             if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
                 return true;
@@ -51,7 +62,29 @@ pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_js
             has_string_content || has_array_content || has_tool_calls
         })
         .cloned()
-        .collect()
+        .collect();
+
+    // Second pass: strip reasoning_content from all assistant messages except
+    // the most recent one. We walk in reverse, keeping the first assistant we
+    // encounter intact and removing reasoning_content from subsequent ones.
+    let mut last_assistant_seen = false;
+    for msg in filtered.iter_mut().rev() {
+        let is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some("assistant");
+        if !is_assistant {
+            continue;
+        }
+        if !last_assistant_seen {
+            // Most recent assistant message — keep reasoning_content as-is.
+            last_assistant_seen = true;
+            continue;
+        }
+        // Older assistant message — strip reasoning_content.
+        if let Some(obj) = msg.as_object_mut() {
+            obj.remove("reasoning_content");
+        }
+    }
+
+    filtered
 }
 
 /// Trait for LLM providers.

@@ -200,5 +200,5 @@ impl Default for AgentConfig {
 }
 
 fn default_max_iterations() -> usize {
-    200
+    500
 }

@@ -174,6 +174,78 @@ pub fn create_provider(
     }
 }
 
+/// Classify whether an SSE / network error from `complete_raw` is transient
+/// and worth retrying.
+///
+/// Used by `agent_loop` to wrap a single LLM call in a bounded retry loop:
+/// transient errors (TCP RST mid-stream, body decode glitch, idle timeout,
+/// stream-ended-early) get a few automatic retries with backoff before the
+/// thread is failed. Non-transient errors (e.g. HTTP 4xx with a captured
+/// body) propagate immediately.
+///
+/// The classifier is intentionally string-matching the user-visible error
+/// message — `complete_raw` returns `anyhow::Error`, and the underlying
+/// `reqwest_eventsource::Error` and `reqwest::Error` types do not provide a
+/// stable enum we can match through `anyhow::Error::downcast_ref` (the
+/// errors are wrapped via `anyhow!("SSE stream error: {e}")` which loses
+/// the source chain). String matching the well-known transient patterns is
+/// adequate and easy to extend.
+///
+/// Treated as TRANSIENT (retryable):
+/// - "error decoding response body" — reqwest's body decoder hit a
+///   chunked-encoding glitch, malformed UTF-8, or premature EOF. Almost
+///   always a network/provider blip.
+/// - "Stream ended" / "stream ended" — provider closed the SSE before
+///   `[DONE]`. Treated as transient mid-flight failure.
+/// - "connection reset" / "connection closed" / "broken pipe" — TCP-level
+///   transport interruption.
+/// - "operation timed out" / "request timed out" — the 300s reqwest
+///   timeout fired or an SSE idle-read timed out. Worth one fresh attempt.
+/// - "dns error" / "tcp connect error" — pre-connection failures during a
+///   retry wave; transient by nature.
+///
+/// Treated as TERMINAL (NOT retryable):
+/// - Anything containing `"HTTP "` — the diagnostic-body capture path
+///   in `openai_compat::complete_raw` only injects an `(HTTP {status} body:
+///   {body})` suffix when the provider returned a real status code, which
+///   means the request was structurally rejected (auth / quota / bad
+///   payload). Retrying won't help.
+/// - "Invalid status code" without an HTTP body suffix — usually a
+///   pre-stream rejection (e.g. 401 / 429 with empty body). The retry
+///   would just hit the same rejection. Surface immediately.
+pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{:#}", err);
+    let lower = msg.to_lowercase();
+
+    // Strong terminal signal: a captured HTTP status+body means the
+    // provider answered with a structured error. Don't retry.
+    if msg.contains("HTTP ") && msg.contains("body:") {
+        return false;
+    }
+    // A bare "Invalid status code" (no captured body) is also a
+    // structured rejection at connection time — non-transient.
+    if lower.contains("invalid status code") {
+        return false;
+    }
+
+    const TRANSIENT_PATTERNS: &[&str] = &[
+        "error decoding response body",
+        "stream ended",
+        "connection reset",
+        "connection closed",
+        "broken pipe",
+        "operation timed out",
+        "request timed out",
+        "timed out",
+        "dns error",
+        "tcp connect error",
+        "transport error",
+        "incomplete message",
+        "unexpected eof",
+    ];
+    TRANSIENT_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
 /// Merge provider-level params with model-level params.
 /// Model params override provider params (shallow merge of top-level keys).
 fn resolve_params(

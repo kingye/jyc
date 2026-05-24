@@ -14,9 +14,9 @@ use tracing;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 
-use crate::provider::Provider;
+use crate::provider::{is_transient_sse_error, Provider};
 use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
-use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent};
+use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
 /// Default maximum number of tool-call iterations before giving up.
 /// Can be overridden via AgentLoopConfig.max_iterations.
@@ -122,6 +122,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &raw_context,
                 cycle_count,
                 total_iterations,
+                thread_name,
+                event_bus,
             ).await.unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to generate progress summary, using fallback");
                 format!(
@@ -203,12 +205,20 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         );
 
         // 1. Send to LLM using raw context (preserves provider-specific fields)
-        let stream = provider
-            .complete_raw(&raw_context, &tools.definitions(), system_prompt)
-            .await?;
-
         // 2. Collect the response
-        let response = collect_response(stream).await?;
+        //
+        // Wrapped in a bounded retry loop: transient SSE failures (TCP RST
+        // mid-stream, body decode glitch, idle timeout) get a few automatic
+        // retries with backoff before the thread is failed. See
+        // `complete_with_retry` for classifier and policy.
+        let response = complete_with_retry(
+            provider,
+            &raw_context,
+            &tools.definitions(),
+            system_prompt,
+            thread_name,
+            event_bus,
+        ).await?;
 
         // Track tokens: input_tokens from last call is the current context size
         // (each call sends full context, so latest = total). Output tokens accumulate.
@@ -430,6 +440,8 @@ async fn generate_summary_from_joined_history(
     raw_context: &[serde_json::Value],
     cycle_count: usize,
     total_iterations: usize,
+    thread_name: &str,
+    event_bus: Option<&ThreadEventBusRef>,
 ) -> Result<String> {
     let summary_system = format!(
         "You are summarizing in-progress work for the user. Based on the transcript below, \
@@ -445,11 +457,15 @@ async fn generate_summary_from_joined_history(
     let joined = render_raw_context_as_text(raw_context);
     let user_msg = provider.format_user_message(&joined);
 
-    let stream = provider
-        .complete_raw(&[user_msg], &[], &summary_system)
-        .await?;
-
-    let response = collect_response(stream).await?;
+    // Same transient-SSE-retry policy as the main loop call.
+    let response = complete_with_retry(
+        provider,
+        &[user_msg],
+        &[],
+        &summary_system,
+        thread_name,
+        event_bus,
+    ).await?;
 
     if response.text.is_empty() {
         anyhow::bail!("LLM returned empty progress summary");
@@ -610,6 +626,95 @@ impl CollectedResponse {
     }
 }
 
+/// Maximum attempts for a single LLM call before failing the thread.
+/// Includes the initial attempt — i.e. up to 2 retries after the first try.
+const SSE_MAX_ATTEMPTS: u32 = 3;
+
+/// Backoff (milliseconds) before each retry. Indexed by retry number (0-based:
+/// the wait BEFORE the 2nd attempt is `[0]`, before the 3rd is `[1]`, etc.).
+/// Length must be `SSE_MAX_ATTEMPTS - 1`.
+const SSE_RETRY_BACKOFF_MS: &[u64] = &[1000, 2000];
+
+/// Issue one LLM call and collect its streaming response, retrying on
+/// transient SSE / network failures.
+///
+/// On a transient failure (classified by `is_transient_sse_error`):
+/// - Sleep with exponential backoff (1s, 2s).
+/// - Publish a `SessionStatus { status_type: "retry", attempt: N }` event so
+///   the dashboard surfaces the in-progress retry.
+/// - Re-issue the entire request (no resume — providers don't support it).
+///   Output tokens from the failed attempt are discarded; only the
+///   successful attempt's tokens are counted by the caller.
+///
+/// On a non-transient failure (HTTP 4xx with captured body, malformed
+/// arguments, etc.) propagate immediately.
+async fn complete_with_retry(
+    provider: &dyn Provider,
+    raw_context: &[serde_json::Value],
+    tools: &[ToolDefinition],
+    system_prompt: &str,
+    thread_name: &str,
+    event_bus: Option<&ThreadEventBusRef>,
+) -> Result<CollectedResponse> {
+    let mut last_err: anyhow::Error = anyhow::anyhow!(
+        "complete_with_retry exited without attempting any call"
+    );
+
+    for attempt_idx in 0..SSE_MAX_ATTEMPTS {
+        let result: Result<CollectedResponse> = async {
+            let stream = provider
+                .complete_raw(raw_context, tools, system_prompt)
+                .await?;
+            collect_response(stream).await
+        }
+        .await;
+
+        match result {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = e,
+        }
+
+        // Retry decision: must be a known transient error AND we still have
+        // attempts remaining.
+        let is_last_attempt = attempt_idx + 1 == SSE_MAX_ATTEMPTS;
+        if is_last_attempt || !is_transient_sse_error(&last_err) {
+            break;
+        }
+
+        let backoff_ms = SSE_RETRY_BACKOFF_MS[attempt_idx as usize];
+        let next_attempt = attempt_idx + 2; // 1-based attempt # we're about to make
+        let err_display = format!("{:#}", last_err);
+        let truncated_err = truncate_str(&err_display, 160);
+
+        tracing::warn!(
+            attempt = next_attempt,
+            max_attempts = SSE_MAX_ATTEMPTS,
+            backoff_ms,
+            error = %err_display,
+            "Transient SSE error, retrying after backoff"
+        );
+
+        publish_event(
+            event_bus,
+            ThreadEvent::SessionStatus {
+                thread_name: thread_name.to_string(),
+                status_type: "retry".to_string(),
+                attempt: Some(next_attempt),
+                message: Some(format!(
+                    "transient SSE error, retrying ({}/{}): {}",
+                    next_attempt, SSE_MAX_ATTEMPTS, truncated_err
+                )),
+                timestamp: Utc::now(),
+            },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+    }
+
+    Err(last_err)
+}
+
 /// Collect a streaming response into a complete response.
 async fn collect_response(
     stream: crate::provider::EventStream,
@@ -710,6 +815,225 @@ mod render_raw_context_tests {
         let rendered = render_raw_context_as_text(&ctx);
         assert!(!rendered.contains("ignored"));
         assert!(rendered.contains("USER: real"));
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::provider::{EventStream, Provider};
+    use crate::types::{Message, StreamEvent, ToolDefinition};
+    use async_trait::async_trait;
+    use futures::stream;
+    use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Mock provider that fails its first `fail_count` calls with the given
+    /// error message, then succeeds with an empty-but-valid stream.
+    struct FlakyProvider {
+        fail_count: usize,
+        fail_message: String,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for FlakyProvider {
+        fn name(&self) -> &str { "flaky" }
+        fn model(&self) -> &str { "flaky-1" }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_count {
+                return Err(anyhow::anyhow!("SSE stream error: {}", self.fail_message));
+            }
+            // Successful stream: one text delta + Done.
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![
+                Ok(StreamEvent::TextDelta("ok".to_string())),
+                Ok(StreamEvent::Done),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, text: &str) -> serde_json::Value {
+            serde_json::json!({"role": "user", "content": text})
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content,
+            })
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            serde_json::json!({"role": "assistant", "content": text})
+        }
+    }
+
+    /// Drain a receiver synchronously to a Vec, with a small grace timeout
+    /// so any in-flight publishes complete.
+    async fn drain_events(
+        rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>,
+    ) -> Vec<ThreadEvent> {
+        let mut out = Vec::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(e)) => out.push(e),
+                Ok(None) => break, // sender closed
+                Err(_) => break,    // timeout — no more events
+            }
+        }
+        out
+    }
+
+    /// Two transient failures then success → returns Ok, publishes 2 retry events.
+    #[tokio::test]
+    async fn retries_transient_sse_errors_then_succeeds() {
+        let provider = FlakyProvider {
+            fail_count: 2,
+            fail_message: "error decoding response body".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+
+        // Override backoff via a test-fast version: we still pay the real
+        // backoff (1s + 2s = 3s). That's fine for a unit test but let's
+        // verify the path works regardless. (Fast timers would require
+        // tokio's pause/advance which complicates this minimal test.)
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+        )
+        .await;
+
+        assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
+        let response = result.unwrap();
+        assert_eq!(response.text, "ok");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3, "expected 3 total calls (2 fails + 1 success)");
+
+        let events = drain_events(&mut rx).await;
+        let retry_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ThreadEvent::SessionStatus { status_type, attempt, .. }
+                    if status_type == "retry" => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            retry_events,
+            vec![Some(2), Some(3)],
+            "expected retry events for attempts 2 and 3, got {:?}",
+            retry_events
+        );
+    }
+
+    /// Three transient failures (all attempts exhausted) → Err propagates.
+    #[tokio::test]
+    async fn gives_up_after_max_attempts() {
+        let provider = FlakyProvider {
+            fail_count: 99, // fail forever
+            fail_message: "error decoding response body".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+        )
+        .await;
+
+        assert!(result.is_err(), "expected Err after exhausting retries");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            SSE_MAX_ATTEMPTS as usize,
+            "should have made exactly SSE_MAX_ATTEMPTS calls"
+        );
+
+        let events = drain_events(&mut rx).await;
+        let retry_count = events
+            .iter()
+            .filter(|e| matches!(e, ThreadEvent::SessionStatus { status_type, .. } if status_type == "retry"))
+            .count();
+        assert_eq!(
+            retry_count,
+            (SSE_MAX_ATTEMPTS - 1) as usize,
+            "should publish one retry event per retry (not for the initial attempt or the final failed attempt)"
+        );
+    }
+
+    /// Non-transient error (HTTP 4xx with captured body) → fails immediately,
+    /// no retries, no retry events.
+    #[tokio::test]
+    async fn non_transient_errors_fail_immediately() {
+        let provider = FlakyProvider {
+            fail_count: 99,
+            fail_message: "server overload (HTTP 429 body: {\"error\": \"rate limit\"})".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "non-transient error must not retry"
+        );
+
+        let events = drain_events(&mut rx).await;
+        let retry_count = events
+            .iter()
+            .filter(|e| matches!(e, ThreadEvent::SessionStatus { status_type, .. } if status_type == "retry"))
+            .count();
+        assert_eq!(retry_count, 0, "non-transient errors must not publish retry events");
     }
 }
 

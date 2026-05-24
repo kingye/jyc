@@ -19,7 +19,10 @@ use jyc_types::*;
 const MAX_ACTIVITY_ENTRIES: usize = 60;
 
 /// Per-thread activity buffer, shared between the activity tracker and the server.
-pub type SharedActivityMap = Arc<Mutex<HashMap<String, ThreadActivityState>>>;
+///
+/// Key is `(channel_name, thread_name)` so that two channels with same-named
+/// threads (e.g. both have `issue-20`) do not collide.
+pub type SharedActivityMap = Arc<Mutex<HashMap<(String, String), ThreadActivityState>>>;
 
 /// Per-thread activity state: bounded event log + processing flag.
 #[derive(Debug, Default)]
@@ -314,7 +317,8 @@ impl InspectServer {
         // Merge activity logs and status into threads
         let activity_map = context.activity_map.lock().await;
         for thread in &mut threads {
-            if let Some(state) = activity_map.get(&thread.name) {
+            let key = (thread.channel.clone(), thread.name.clone());
+            if let Some(state) = activity_map.get(&key) {
                 thread.activity = state.entries.iter().cloned().collect();
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
@@ -384,13 +388,16 @@ impl ActivityTracker {
             // Load historical activity from disk for all existing threads
             for (tm_index, tm) in thread_managers.iter().enumerate() {
                 let workspace_dir = &workspace_dirs[tm_index];
+                let channel = tm.channel_name().to_string();
                 let threads = tm.list_threads().await;
                 for thread in &threads {
                     let thread_path = workspace_dir.join(&thread.name);
                     if let Ok(entries) = ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES) {
                         if !entries.is_empty() {
                             let mut map = activity_map.lock().await;
-                            let state = map.entry(thread.name.clone()).or_default();
+                            let state = map
+                                .entry((channel.clone(), thread.name.clone()))
+                                .or_default();
                             state.entries = entries.into_iter().collect();
                             state.is_processing = false;
                             if let Some(last) = state.entries.back() {
@@ -405,7 +412,7 @@ impl ActivityTracker {
                 }
             }
 
-            let mut subscribed: HashSet<String> = HashSet::new();
+            let mut subscribed: HashSet<(String, String)> = HashSet::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
             loop {
@@ -414,16 +421,19 @@ impl ActivityTracker {
                         // Discover new threads and subscribe to their event buses
                         for (tm_index, tm) in thread_managers.iter().enumerate() {
                             let workspace_dir = workspace_dirs.get(tm_index);
+                            let channel = tm.channel_name().to_string();
                             let threads = tm.list_threads().await;
                             for thread in threads {
-                                if subscribed.contains(&thread.name) {
+                                let key = (channel.clone(), thread.name.clone());
+                                if subscribed.contains(&key) {
                                     continue;
                                 }
                                 if let Some(bus) = tm.get_event_bus(&thread.name).await {
                                     if let Ok(mut rx) = bus.subscribe().await {
-                                        subscribed.insert(thread.name.clone());
+                                        subscribed.insert(key.clone());
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
+                                        let channel_for_task = channel.clone();
                                         let thread_path = workspace_dir.map(|d| d.join(&name));
                                         let cancel_inner = cancel.clone();
                                         tokio::spawn(async move {
@@ -450,7 +460,9 @@ impl ActivityTracker {
                                                                      }
                                                                  }
                                                                  let mut map = map.lock().await;
-                                                                 let state = map.entry(name.clone()).or_default();
+                                                                 let state = map
+                                                                     .entry((channel_for_task.clone(), name.clone()))
+                                                                     .or_default();
                                                                  state.entries.push_back(entry);
                                                                  state.last_active_at = Some(event.timestamp());
                                                                  if state.entries.len() > MAX_ACTIVITY_ENTRIES {
@@ -1064,5 +1076,84 @@ mode = "agent"
 
         cancel.cancel();
         handle.await.unwrap();
+    }
+
+    /// Regression test for cross-channel issue collision.
+    ///
+    /// Bug: when two channels both had a thread with the same name (e.g.
+    /// `issue-20`), the activity map keyed by `thread.name` alone caused
+    /// channel2's thread to share channel1's processing state and logs in
+    /// the dashboard. This test exercises the merge logic that
+    /// `build_state` performs on each `ThreadInfo`, asserting that two
+    /// same-named threads from different channels resolve to *independent*
+    /// activity-map entries.
+    #[tokio::test]
+    async fn test_activity_map_disambiguates_same_named_threads_across_channels() {
+        // Construct two ThreadInfos with the same name but different channels,
+        // mimicking the situation where channel1 and channel2 both have an
+        // `issue-20`.
+        let make_thread = |channel: &str| ThreadInfo {
+            name: "issue-20".to_string(),
+            channel: channel.to_string(),
+            pattern: None,
+            status: ThreadStatus::Idle,
+            model: None,
+            mode: None,
+            input_tokens: None,
+            max_tokens: None,
+            activity: vec![],
+            last_active_at: None,
+            skills: vec![],
+        };
+
+        let mut threads = vec![make_thread("channel1"), make_thread("channel2")];
+
+        // Populate the activity map: only channel1's issue-20 is processing
+        // and has an activity entry. Channel2's issue-20 is idle with no
+        // activity.
+        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let mut map = activity_map.lock().await;
+            let state = map
+                .entry(("channel1".to_string(), "issue-20".to_string()))
+                .or_default();
+            state.is_processing = true;
+            state.entries.push_back(ActivityEntry {
+                text: "channel1 working".to_string(),
+                timestamp: None,
+                severity: Severity::Info,
+            });
+        }
+
+        // Replicate the merge loop from build_state.
+        let map = activity_map.lock().await;
+        for thread in &mut threads {
+            let key = (thread.channel.clone(), thread.name.clone());
+            if let Some(state) = map.get(&key) {
+                thread.activity = state.entries.iter().cloned().collect();
+                if state.is_processing {
+                    thread.status = ThreadStatus::Processing;
+                }
+            }
+        }
+        drop(map);
+
+        // channel1 must reflect its own processing state and log.
+        let ch1 = threads.iter().find(|t| t.channel == "channel1").unwrap();
+        assert!(matches!(ch1.status, ThreadStatus::Processing));
+        assert_eq!(ch1.activity.len(), 1);
+        assert_eq!(ch1.activity[0].text, "channel1 working");
+
+        // channel2 must NOT inherit channel1's state — this is the bug.
+        let ch2 = threads.iter().find(|t| t.channel == "channel2").unwrap();
+        assert!(
+            matches!(ch2.status, ThreadStatus::Idle),
+            "channel2's issue-20 leaked channel1's processing status"
+        );
+        assert!(
+            ch2.activity.is_empty(),
+            "channel2's issue-20 leaked channel1's activity log: {:?}",
+            ch2.activity
+        );
     }
 }

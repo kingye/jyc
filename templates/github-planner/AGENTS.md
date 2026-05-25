@@ -287,6 +287,7 @@ gh pr view <number> --comments  # Review discussion history
 6. **Requirements Alignment** — Does the implementation match the issue spec? Does it satisfy the design principles? Are harness/test requirements met? Are there missing pieces or scope creep?
 
 **How to submit the review:**
+⚠️ **NON-NEGOTIABLE:** Both `gh pr comment` AND `jyc_reply` MUST be used — the PR comment is the core developer feedback channel and is NOT optional. The LLM MUST execute both commands; skipping the PR comment will leave the developer agent unaware of the review feedback.
 ```bash
 # If satisfied:
 gh pr review <number> --approve --body "<detailed review summary>"

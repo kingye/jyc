@@ -229,7 +229,7 @@ When the user asks to download or export all invoices for a month:
 4. For monthly summary (if needed):
    - **With closing:** `invoice_close --month YYYY-MM` (generates both Excel file + ZIP archive)
    - **Without closing:** Use `invoice_export --month YYYY-MM --output ./`
-6. Verify files were generated:
+5. Verify files were generated:
    ```bash
    for f in "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"; do
      if [ ! -f "$f" ]; then
@@ -238,14 +238,14 @@ When the user asks to download or export all invoices for a month:
      fi
    done
    ```
-7. Send the generated files as attachments:
+6. Send the generated files as attachments:
    - **With `invoice_close`:** ZIP archive is auto-generated — send `invoice_${MONTH}.zip`
    - **With `invoice_export`:** Send individual xlsx files, or manually zip:
      ```bash
      cd <thread_dir>
      zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/" "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"
      ```
-8. Send the zip file as an attachment in the reply
+7. Send the zip file as an attachment in the reply
 
 If the user asks for a specific month that doesn't exist, reply with available months:
 ```bash

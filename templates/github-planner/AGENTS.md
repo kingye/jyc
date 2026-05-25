@@ -277,14 +277,15 @@ gh pr diff <number>             # Full diff of changes
 gh pr view <number> --comments  # Review discussion history
 ```
 
-**Six review dimensions:**
+**Seven review dimensions:**
 
 1. **Architecture & Design** — Is the design appropriate? Are there simpler, more maintainable alternatives? Does it follow established patterns in the codebase? Are there separation of concerns issues?
-2. **Deep Logic** — Is the core logic correct? Are all edge cases and boundary conditions handled? Check off-by-one errors, race conditions, incorrect assumptions about data.
-3. **Security** — Are there injection risks (SQL, shell, command injection)? Are auth/authz checks correct? Is sensitive data exposed in logs, errors, or responses? Are inputs validated and sanitized?
-4. **Performance Anti-patterns** — Unnecessary allocations/clones, N+1 query problems, blocking calls in async contexts, excessive O(n²) operations, obviously redundant work visible in the diff.
-5. **Robustness & Best Practices** — Error handling: are errors properly propagated (not swallowed, not panicked)? Does the code follow project conventions (logging, naming, doc comments)? Is it maintainable?
-6. **Requirements Alignment** — Does the implementation match the issue spec? Does it satisfy the design principles? Are harness/test requirements met? Are there missing pieces or scope creep?
+2. **Reusability** — Can code be reused in other contexts? Is there unnecessary coupling between unrelated concerns? Should common patterns be extracted into shared utilities? Are there hardcoded values that should be configurable? **Reusability issues are BLOCKING** — they must be addressed before merge, not treated as optional suggestions.
+3. **Deep Logic** — Is the core logic correct? Are all edge cases and boundary conditions handled? Check off-by-one errors, race conditions, incorrect assumptions about data.
+4. **Security** — Are there injection risks (SQL, shell, command injection)? Are auth/authz checks correct? Is sensitive data exposed in logs, errors, or responses? Are inputs validated and sanitized?
+5. **Performance Anti-patterns** — Unnecessary allocations/clones, N+1 query problems, blocking calls in async contexts, excessive O(n²) operations, obviously redundant work visible in the diff.
+6. **Robustness & Best Practices** — Error handling: are errors properly propagated (not swallowed, not panicked)? Does the code follow project conventions (logging, naming, doc comments)? Is it maintainable?
+7. **Requirements Alignment** — Does the implementation match the issue spec? Does it satisfy the design principles? Are harness/test requirements met? Are there missing pieces or scope creep?
 
 **How to submit the review:**
 ⚠️ **NON-NEGOTIABLE:** Both `gh pr comment` AND `jyc_reply` MUST be used — the PR comment is the core developer feedback channel and is NOT optional. The LLM MUST execute both commands; skipping the PR comment will leave the developer agent unaware of the review feedback.

@@ -260,7 +260,7 @@ gh pr view <number> --comments  # Review discussion history
 1. **Architecture & Design** — Is the design appropriate? Are there simpler, more maintainable alternatives? Does it follow established patterns in the codebase? Are there separation of concerns issues?
 2. **Deep Logic** — Is the core logic correct? Are all edge cases and boundary conditions handled? Check off-by-one errors, race conditions, incorrect assumptions about data.
 3. **Security** — Are there injection risks (SQL, shell, command injection)? Are auth/authz checks correct? Is sensitive data exposed in logs, errors, or responses? Are inputs validated and sanitized?
-4. **Performance Anti-patterns** — Unnecessary allocations/clones, N+1 query problems, blocking calls in async contexts, excessive O(n²) operations, missing caching opportunities.
+4. **Performance Anti-patterns** — Unnecessary allocations/clones, N+1 query problems, blocking calls in async contexts, excessive O(n²) operations, obviously redundant work visible in the diff.
 5. **Robustness & Best Practices** — Error handling: are errors properly propagated (not swallowed, not panicked)? Does the code follow project conventions (logging, naming, doc comments)? Is it maintainable?
 6. **Requirements Alignment** — Does the implementation match the issue spec? Does it satisfy the design principles? Are harness/test requirements met? Are there missing pieces or scope creep?
 
@@ -274,7 +274,7 @@ gh pr review <number> --request-changes --body "<detailed findings, organized by
 ```
 
 **How to reply on the issue:**
-After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) to summarize the review outcome on the issue thread. Include:
+After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) to summarize the review outcome on the issue thread. (See Rules section — `jyc_reply` is always used for user-facing replies.) Include:
 - Overall verdict (approved / changes requested)
 - Key findings from each relevant dimension
 - Link to the PR for full details
@@ -283,7 +283,8 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 
 ## Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
-- ALWAYS use the `jyc_reply` tool (reply_message) for ALL replies — NEVER use `gh issue comment` or `gh pr comment`
+- ALWAYS use the `jyc_reply` tool (reply_message) for ALL user-facing replies — NEVER use `gh issue comment`
+- `gh pr comment` is ONLY permitted for automated developer notifications about requirement updates (see Section 5), NOT for user-facing replies
 - ONLY use `gh` CLI to read issues/PRs, create branches, and create PRs
 - ONLY use `git` to create branches, create empty commits (`git commit --allow-empty`), and push branches
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools

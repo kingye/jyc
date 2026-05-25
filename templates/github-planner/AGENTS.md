@@ -211,9 +211,37 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.
 
 ### 5. After Hand-over
-- Reply on the issue confirming the PR was created
+- Reply on the issue confirming the PR was created (via the `jyc_reply` tool)
 - You can continue discussing with the user on the issue
-- If requirements change, comment on the PR with the updated requirements
+- **If requirements change after the PR has been created**, you MUST do BOTH:
+  1. Update the PR description to reflect the new requirements:
+     ```bash
+     cd repo
+     gh pr edit <pr_number> --body "<updated spec>"
+     ```
+  2. **Post a comment on the PR** to alert the developer agent of the change:
+     ```bash
+     cd repo
+     gh pr comment <pr_number> --body "Requirements updated. Please review the updated PR description for the new spec."
+     ```
+  **Why both?** The updated PR description serves as the source of truth, while the PR comment triggers the developer agent (via GitHub notifications / pattern matching on new comments). A description update alone may go unnoticed.
+- **Example:** If the user asks to add a new feature requirement after the PR is created:
+  ```bash
+  # 1. Update the PR description
+  gh pr edit 42 --body "$(cat <<'EOF'
+  ## Spec
+  ...updated spec with new requirements...
+  
+  Fixes #41
+  
+  ## Implementation Plan
+  ... (updated if needed) ...
+  EOF
+  )"
+  
+  # 2. Alert the developer
+  gh pr comment 42 --body "Requirements updated: <brief summary of what changed>. Please check the updated PR description."
+  ```
 
 ## Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution

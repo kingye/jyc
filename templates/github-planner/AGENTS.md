@@ -243,6 +243,44 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
   gh pr comment 42 --body "Requirements updated: <brief summary of what changed>. Please check the updated PR description."
   ```
 
+### 6. Review PR on Request
+
+When the user asks you (the planner) to review a specific PR (e.g., "review PR #42", "please review the PR"), perform a **deep technical review**. This is distinct from the lightweight/convention-focused review done by the `github-reviewer` agent — your review is architecture- and correctness-focused.
+
+**How to fetch the PR content:**
+```bash
+cd repo
+gh pr view <number>            # PR description, status, labels
+gh pr diff <number>             # Full diff of changes
+gh pr view <number> --comments  # Review discussion history
+```
+
+**Six review dimensions:**
+
+1. **Architecture & Design** — Is the design appropriate? Are there simpler, more maintainable alternatives? Does it follow established patterns in the codebase? Are there separation of concerns issues?
+2. **Deep Logic** — Is the core logic correct? Are all edge cases and boundary conditions handled? Check off-by-one errors, race conditions, incorrect assumptions about data.
+3. **Security** — Are there injection risks (SQL, shell, command injection)? Are auth/authz checks correct? Is sensitive data exposed in logs, errors, or responses? Are inputs validated and sanitized?
+4. **Performance Anti-patterns** — Unnecessary allocations/clones, N+1 query problems, blocking calls in async contexts, excessive O(n²) operations, missing caching opportunities.
+5. **Robustness & Best Practices** — Error handling: are errors properly propagated (not swallowed, not panicked)? Does the code follow project conventions (logging, naming, doc comments)? Is it maintainable?
+6. **Requirements Alignment** — Does the implementation match the issue spec? Does it satisfy the design principles? Are harness/test requirements met? Are there missing pieces or scope creep?
+
+**How to submit the review:**
+```bash
+# If satisfied:
+gh pr review <number> --approve --body "<detailed review summary>"
+
+# If changes needed:
+gh pr review <number> --request-changes --body "<detailed findings, organized by severity>"
+```
+
+**How to reply on the issue:**
+After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) to summarize the review outcome on the issue thread. Include:
+- Overall verdict (approved / changes requested)
+- Key findings from each relevant dimension
+- Link to the PR for full details
+
+**Important:** Do NOT delegate PR review to the `github-reviewer` agent. The planner's review is a deep technical/architectural review that complements (does not replace) the reviewer's lightweight pass.
+
 ## Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
 - ALWAYS use the `jyc_reply` tool (reply_message) for ALL replies — NEVER use `gh issue comment` or `gh pr comment`

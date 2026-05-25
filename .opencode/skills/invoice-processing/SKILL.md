@@ -27,7 +27,7 @@ files — read them before processing.
 ## Mandatory Fields (发票必填字段)
 
 A valid Chinese invoice (发票) MUST contain these 2 fields. If ANY is missing,
-the invoice is **invalid** and must NOT be written to `invoices.xlsx`.
+the invoice is **invalid** and must NOT be written to the database.
 
 | Field | Description | Format | Required? |
 |-------|-------------|--------|-----------|
@@ -90,7 +90,7 @@ Email Received
 │  If ALL image sources fail → FINAL FAILURE  │
 └─────────────────────────────────────────────┘
     ↓
-SUCCESS → Step 4 (validate) → Step 5 (Excel) → Step 6 (reply)
+SUCCESS → Step 4 (validate) → Step 5 (insert via invoice_add) → Step 6 (reply)
 FAILURE → Log to errors.jsonl → Reply with error details
 ```
 
@@ -180,7 +180,6 @@ fi
 ### Processing Rules
 - ALWAYS check/create the monthly folder before processing
 - ALWAYS initialize invoice database via `invoice_init` if `.invoice/` directory does not exist (Step 0)
-- The Excel column mapping is FIXED (15 columns, A-O) — do NOT read template headers each time. See EXCEL.md for the exact mapping.
 - ALWAYS validate file format — only PDF and image (JPG/PNG) are valid certified vouchers (合规凭证)
 - ALWAYS validate 2 mandatory fields (销售方税号, 价税合计) before writing via `invoice_add`
 - ALWAYS follow the STRICT sequential order: PDF attachments → PDF URLs → Image sources (see PROCESSING.md)

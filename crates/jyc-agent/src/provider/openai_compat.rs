@@ -355,7 +355,14 @@ impl Provider for OpenAiCompatProvider {
                             // sees the provider's actual error (validation message,
                             // rate limit reason, etc.).
                             let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
-                                fetch_error_body(&client, &url, &body, api_key.as_deref()).await
+                                super::fetch_error_body(&client, &url, &body, |req| {
+                                    if let Some(key) = api_key.as_deref() {
+                                        req.header("authorization", format!("Bearer {key}"))
+                                    } else {
+                                        req
+                                    }
+                                })
+                                .await
                             } else {
                                 None
                             };
@@ -383,38 +390,6 @@ impl Provider for OpenAiCompatProvider {
 
         Ok(Box::pin(stream))
     }
-}
-
-/// Issue a one-shot diagnostic POST with the same payload to capture the HTTP
-/// status and response body when the streaming connection failed at the
-/// transport layer (typically a 4xx like 400 Bad Request).
-///
-/// Used only on error paths — adds latency exclusively when something is
-/// already broken. Returns `None` on network failure (in which case the
-/// original SSE error is more informative anyway).
-async fn fetch_error_body(
-    client: &reqwest::Client,
-    url: &str,
-    body: &serde_json::Value,
-    api_key: Option<&str>,
-) -> Option<(u16, String)> {
-    let mut req = client
-        .post(url)
-        .header("content-type", "application/json")
-        .json(body);
-    if let Some(key) = api_key {
-        req = req.header("authorization", format!("Bearer {key}"));
-    }
-    let resp = req.send().await.ok()?;
-    let status = resp.status().as_u16();
-    let text = resp.text().await.unwrap_or_else(|_| "<unreadable body>".to_string());
-    // Truncate very large bodies — we just need the leading error message.
-    let trimmed = if text.len() > 2000 {
-        format!("{}…(truncated, {} bytes total)", &text[..2000], text.len())
-    } else {
-        text
-    };
-    Some((status, trimmed))
 }
 
 /// Internal state for OpenAI stream parsing.

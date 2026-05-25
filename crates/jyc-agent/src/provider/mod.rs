@@ -174,6 +174,55 @@ pub fn create_provider(
     }
 }
 
+/// Issue a one-shot diagnostic POST with the same payload to capture the HTTP
+/// status and response body when an SSE connection failed at the transport
+/// or HTTP layer (typically a pre-stream `4xx` like 400 Bad Request).
+///
+/// `EventSource`'s error string for these cases is just `"Invalid status
+/// code: 400 Bad Request"` and discards the response body. The provider's
+/// actual error message — which is the only thing useful for diagnosis —
+/// lives in that body. This helper recovers it via a single follow-up POST.
+///
+/// Used only on error paths — adds latency exclusively when something is
+/// already broken. Returns `None` on network failure (in which case the
+/// original SSE error is more informative anyway).
+///
+/// `apply_auth` lets each provider attach its own auth headers (OpenAI uses
+/// `Authorization: Bearer <key>`, Anthropic uses `x-api-key: <key>` plus
+/// `anthropic-version`). The closure is invoked once per call.
+///
+/// The captured body is truncated at 2000 bytes — enough for the leading
+/// JSON error message from any sane provider, while bounding memory if the
+/// upstream returns a huge HTML error page.
+pub async fn fetch_error_body<F>(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    apply_auth: F,
+) -> Option<(u16, String)>
+where
+    F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+{
+    let req = client
+        .post(url)
+        .header("content-type", "application/json")
+        .json(body);
+    let req = apply_auth(req);
+    let resp = req.send().await.ok()?;
+    let status = resp.status().as_u16();
+    let text = resp
+        .text()
+        .await
+        .unwrap_or_else(|_| "<unreadable body>".to_string());
+    // Truncate very large bodies — we just need the leading error message.
+    let trimmed = if text.len() > 2000 {
+        format!("{}…(truncated, {} bytes total)", &text[..2000], text.len())
+    } else {
+        text
+    };
+    Some((status, trimmed))
+}
+
 /// Classify whether an SSE / network error from `complete_raw` is transient
 /// and worth retrying.
 ///

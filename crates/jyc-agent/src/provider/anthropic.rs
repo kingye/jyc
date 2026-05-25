@@ -112,17 +112,33 @@ impl Provider for AnthropicProvider {
 
         req = req.json(&body);
 
+        // Capture data needed to diagnose pre-stream HTTP errors (4xx/5xx).
+        // EventSource discards the response body; on the first stream error
+        // we issue one diagnostic POST with the same body and surface it.
+        // Dropped on Event::Open since once the stream is up, mid-stream
+        // errors won't have a re-fetchable body.
+        let diag_url = url.clone();
+        let diag_body = body.clone();
+        let diag_api_key = self.api_key.clone();
+        let diag_client = self.client.clone();
+
         // Create SSE stream
         let es = EventSource::new(req)
             .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
-            (es, StreamState::default()),
-            |(mut es, mut state)| async move {
+            (es, StreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            |(mut es, mut state, mut diag)| async move {
                 loop {
                     match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Open)) => {
+                            // Connection succeeded; drop diag handle to free
+                            // the cloned body. Mid-stream errors past this
+                            // point can't be diagnosed by re-POSTing anyway.
+                            diag = None;
+                            continue;
+                        }
                         Some(Ok(Event::Message(msg))) => {
                             match parse_anthropic_sse(&msg.data, &mut state) {
                                 Some(events) => {
@@ -130,7 +146,7 @@ impl Provider for AnthropicProvider {
                                     let mut iter = events.into_iter();
                                     if let Some(first) = iter.next() {
                                         state.buffered_events.extend(iter);
-                                        return Some((Ok(first), (es, state)));
+                                        return Some((Ok(first), (es, state, diag)));
                                     }
                                     continue;
                                 }
@@ -140,18 +156,41 @@ impl Provider for AnthropicProvider {
                         Some(Err(e)) => {
                             // Check if we have buffered events to drain first
                             if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                             let err_msg = format!("{e}");
                             if err_msg.contains("Stream ended") {
                                 return None;
                             }
-                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
+                            // First stream error: try to capture the upstream
+                            // response body so the caller sees the provider's
+                            // actual error (model-not-supported, schema rejection,
+                            // rate limit details, etc.).
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                                super::fetch_error_body(&client, &url, &body, |req| {
+                                    let req = req.header("anthropic-version", "2023-06-01");
+                                    if let Some(key) = api_key.as_deref() {
+                                        req.header("x-api-key", key)
+                                    } else {
+                                        req
+                                    }
+                                })
+                                .await
+                            } else {
+                                None
+                            };
+                            let final_msg = match diagnosed {
+                                Some((status, body)) => format!(
+                                    "SSE error: {e} (HTTP {status} body: {body})"
+                                ),
+                                None => format!("SSE error: {e}"),
+                            };
+                            return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
                         }
                         None => {
                             // Drain buffered events
                             if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                             return None;
                         }
@@ -270,22 +309,32 @@ impl Provider for AnthropicProvider {
 
         req = req.json(&body);
 
+        // Capture data needed to diagnose pre-stream HTTP errors (4xx/5xx).
+        // See `complete()` above for rationale.
+        let diag_url = url.clone();
+        let diag_body = body.clone();
+        let diag_api_key = self.api_key.clone();
+        let diag_client = self.client.clone();
+
         let es = EventSource::new(req)
             .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         let stream = futures::stream::unfold(
-            (es, StreamState::default()),
-            |(mut es, mut state)| async move {
+            (es, StreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            |(mut es, mut state, mut diag)| async move {
                 loop {
                     match es.next().await {
-                        Some(Ok(Event::Open)) => continue,
+                        Some(Ok(Event::Open)) => {
+                            diag = None;
+                            continue;
+                        }
                         Some(Ok(Event::Message(msg))) => {
                             match parse_anthropic_sse(&msg.data, &mut state) {
                                 Some(events) => {
                                     let mut iter = events.into_iter();
                                     if let Some(first) = iter.next() {
                                         state.buffered_events.extend(iter);
-                                        return Some((Ok(first), (es, state)));
+                                        return Some((Ok(first), (es, state, diag)));
                                     }
                                     continue;
                                 }
@@ -294,17 +343,36 @@ impl Provider for AnthropicProvider {
                         }
                         Some(Err(e)) => {
                             if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                             let err_msg = format!("{e}");
                             if err_msg.contains("Stream ended") {
                                 return None;
                             }
-                            return Some((Err(anyhow::anyhow!("SSE error: {e}")), (es, state)));
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                                super::fetch_error_body(&client, &url, &body, |req| {
+                                    let req = req.header("anthropic-version", "2023-06-01");
+                                    if let Some(key) = api_key.as_deref() {
+                                        req.header("x-api-key", key)
+                                    } else {
+                                        req
+                                    }
+                                })
+                                .await
+                            } else {
+                                None
+                            };
+                            let final_msg = match diagnosed {
+                                Some((status, body)) => format!(
+                                    "SSE error: {e} (HTTP {status} body: {body})"
+                                ),
+                                None => format!("SSE error: {e}"),
+                            };
+                            return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
                         }
                         None => {
                             if let Some(event) = state.buffered_events.pop() {
-                                return Some((Ok(event), (es, state)));
+                                return Some((Ok(event), (es, state, diag)));
                             }
                             return None;
                         }
@@ -462,4 +530,99 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Message;
+    use futures::StreamExt;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// When Anthropic rejects the request with 400, the diagnostic POST
+    /// must recover the response body and include it in the error message
+    /// surfaced to the agent loop.
+    ///
+    /// This is the exact failure pattern observed in production where the
+    /// agent saw `SSE error: Invalid status code: 400 Bad Request` with
+    /// no body, hiding the real cause (an unsupported `thinking.type`
+    /// param sent via the provider's `params` config merge). With this
+    /// fix in place the error becomes:
+    ///
+    ///   `SSE error: Invalid status code: 400 Bad Request
+    ///    (HTTP 400 body: {"type":"error","error":{...}})`
+    #[tokio::test]
+    async fn complete_error_includes_response_body_on_4xx() {
+        let server = MockServer::start().await;
+
+        let error_body = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior."
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(header("x-api-key", "test-key"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(&error_body),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test-model",
+            Some("test-key"),
+            None,
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete() should return a stream — the error surfaces from polling it");
+
+        // Drive the stream until we get the error.
+        tokio::pin!(stream);
+        let mut found_err: Option<anyhow::Error> = None;
+        let mut polls = 0;
+        while polls < 16 {
+            polls += 1;
+            match stream.next().await {
+                Some(Err(e)) => {
+                    found_err = Some(e);
+                    break;
+                }
+                Some(Ok(_)) => continue,
+                None => break,
+            }
+        }
+
+        let err = found_err.expect("expected an error from the SSE stream after 4xx");
+        let msg = format!("{:#}", err);
+
+        assert!(
+            msg.contains("400") || msg.contains("Bad Request"),
+            "expected status code in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP 400 body:"),
+            "expected captured-body suffix in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("thinking.type.enabled"),
+            "expected upstream error message in captured body, got: {msg}"
+        );
+        assert!(
+            msg.contains("invalid_request_error"),
+            "expected upstream error type in captured body, got: {msg}"
+        );
+    }
 }

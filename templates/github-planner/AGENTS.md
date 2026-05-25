@@ -235,6 +235,7 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 - Reply on the issue confirming the PR was created (via the `jyc_reply` tool)
 - You can continue discussing with the user on the issue
 - **If requirements change after the PR has been created**, you MUST do BOTH:
+  ⚠️ **NON-NEGOTIABLE:** Both `gh pr edit --body` (update PR description) AND `gh pr comment` (post a comment on the PR) are MANDATORY — neither is optional. The LLM MUST execute both commands; skipping either will cause the developer agent to miss the update.
   1. Update the PR description to reflect the new requirements:
      ```bash
      cd repo

@@ -268,9 +268,19 @@ gh pr view <number> --comments  # Review discussion history
 ```bash
 # If satisfied:
 gh pr review <number> --approve --body "<detailed review summary>"
+# gh pr review may fail if planner and developer are the same user
+# (GitHub does not allow self-approve/request-changes). Ignore errors.
+
+# ALWAYS post a PR comment — this is the core channel for developer feedback.
+gh pr comment <number> --body "✅ Review: Approved — <key summary>"
 
 # If changes needed:
 gh pr review <number> --request-changes --body "<detailed findings, organized by severity>"
+# gh pr review may fail if planner and developer are the same user.
+# Ignore errors and proceed.
+
+# ALWAYS post a PR comment — this is the core channel for developer feedback.
+gh pr comment <number> --body "❌ Review: Changes requested — <key summary>"
 ```
 
 **How to reply on the issue:**
@@ -279,12 +289,17 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 - Key findings from each relevant dimension
 - Link to the PR for full details
 
+**Three-channel feedback summary:**
+1. `gh pr review` — **Best-effort** formal review (approve/request-changes). May fail when planner and developer are the same user — ignore errors.
+2. `gh pr comment` — **Mandatory** PR comment. This is the core channel for developer feedback. Always executed regardless of `gh pr review` outcome.
+3. `jyc_reply` — **Mandatory** issue reply for user-facing summary. Keeps the issue thread in sync.
+
 **Important:** Do NOT delegate PR review to the `github-reviewer` agent. The planner's review is a deep technical/architectural review that complements (does not replace) the reviewer's lightweight pass.
 
 ## Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
 - ALWAYS use the `jyc_reply` tool (reply_message) for ALL user-facing replies — NEVER use `gh issue comment`
-- `gh pr comment` is ONLY permitted for automated developer notifications about requirement updates (see Section 5), NOT for user-facing replies
+- `gh pr comment` is permitted for: (1) automated developer notifications about requirement updates (see Section 5), and (2) posting review comments on the PR (see Section 6 — this is the core channel for developer feedback). `gh pr comment` is NOT for user-facing replies — use `jyc_reply` for that.
 - ONLY use `gh` CLI to read issues/PRs, create branches, and create PRs
 - ONLY use `git` to create branches, create empty commits (`git commit --allow-empty`), and push branches
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools

@@ -330,8 +330,8 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 - ALWAYS `cd repo` before running any command
 - ALWAYS include `Fixes #<issue_number>` in PR body
 - ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching
-- **When requirements change after the PR has been created, ALWAYS do BOTH: update the PR description (`gh pr edit --body`) AND post a PR comment (`gh pr comment`) to alert the developer agent**
-- **When asked to review a PR, ALWAYS perform a deep technical review covering all six dimensions (architecture, logic, security, performance, robustness, requirements alignment) — do NOT delegate to the `github-reviewer` agent**
+- **⚠️ NON-NEGOTIABLE — Review:** When asked to review a PR, ALWAYS post the review feedback via `gh pr comment` on the PR AND via `jyc_reply` on the issue. The PR comment is NON-NEGOTIABLE — even if `gh pr review` succeeds (or fails), you MUST still post the PR comment. Additionally, perform a deep technical review covering all seven dimensions (architecture, reusability, logic, security, performance, robustness, requirements alignment) — do NOT delegate to the `github-reviewer` agent.
+- **⚠️ NON-NEGOTIABLE — Requirements change:** When requirements change after the PR has been created, BOTH `gh pr edit --body` (update PR description) AND `gh pr comment` (post a PR comment) are NON-NEGOTIABLE. Editing only the description without the PR comment will cause the developer agent to miss the update.
 - Reply in the same language as the user
 - Your PR must contain ZERO code changes — only the spec in the PR body
 - Your implementation plan must break the work into small, ordered steps — each with a clear verification method

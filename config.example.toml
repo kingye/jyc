@@ -231,6 +231,11 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # environment = { "JYC_THREAD_DIR" = "/path/to/thread" }
 
 # [[mcps]]
+# name = "invoice"
+# type = "local"
+# command = ["invoice", "mcp"]
+
+# [[mcps]]
 # name = "remote_mcp"
 # type = "remote"
 # url = "https://mcp.example.com/handler"

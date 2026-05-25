@@ -18,8 +18,8 @@ files — read them before processing.
 | 1 | (this file) | Determine current month folder |
 | 2–3 | [PROCESSING.md](PROCESSING.md) | Download invoice → Extract data (PDF Phase → Image Phase) |
 | 4 | [VALIDATION.md](VALIDATION.md) | Validate mandatory fields before write |
-| 5–6 | [EXCEL.md](EXCEL.md) | Insert to SQLite, reply with summary |
-| 7–8 | [EXCEL.md](EXCEL.md) | Monthly summary & export (when requested) |
+| 5–6 | [EXCEL.md](EXCEL.md) | Insert via invoice_add, reply with summary |
+| 7–8 | [EXCEL.md](EXCEL.md) | Monthly close/export via invoice_close/invoice_export (when requested) |
 | 9 | [VALIDATION.md](VALIDATION.md) | List errors (when requested) |
 
 ---
@@ -214,7 +214,7 @@ fi
 - Do NOT follow or scan QR code URLs
 - Only PDF and image files (JPG/PNG) are valid — HTML, XML, text are NOT valid invoices
 - Maximum 5 URLs processed per phase (PDF Phase and Image Phase each)
-- ALWAYS clean up processed attachments from `attachments/` after successful Excel write
+- ALWAYS clean up processed attachments from `attachments/` after successful database insert via `invoice_add`
 - Do NOT clean up attachments on failure — keep them for manual processing or retry
 
 ### Error Handling Rules

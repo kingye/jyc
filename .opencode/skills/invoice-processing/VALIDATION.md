@@ -1,18 +1,18 @@
 # Step 4 & 9: Validation and Error Handling
 
-This file covers field validation before writing to Excel (Step 4) and
+This file covers field validation before writing to the database (Step 4) and
 error log viewing (Step 9).
 
 ---
 
-## Step 4: Validate Extraction Before Writing to Excel
+## Step 4: Validate Extraction Before Writing to Database
 
-**CRITICAL: Do NOT write to invoices.xlsx if the invoice is invalid, extraction
+**CRITICAL: Do NOT write to the database if the invoice is invalid, extraction
 failed, or mandatory fields are missing.**
 
 ### Mandatory Field Validation
 
-Before proceeding to update Excel, validate that ALL conditions are met:
+Before proceeding to insert with `invoice_add`, validate that ALL conditions are met:
 
 1. The invoice file is a valid format (PDF or image — JPG/PNG only)
 2. The extraction was successful (non-empty data returned)
@@ -70,15 +70,30 @@ Check 价税合计 (positive number)
     └─ Valid → continue
     ↓
 Any missing fields?
-    ├─ YES → Log to errors.jsonl, do NOT write to Excel
+    ├─ YES → Log to errors.jsonl, do NOT write to database
     │        If current phase has more sources → try next source
     │        If all sources exhausted → FAILURE
-    └─ NO → Proceed to Step 5 (Excel update)
+    └─ NO → Check for duplicates (below), then proceed to Step 5 (invoice_add)
 ```
 
 **IMPORTANT:** Validation failure does NOT immediately stop processing.
 The system tries ALL sources in the current phase before moving to the next phase.
 Only when ALL sources in ALL phases fail is it a final failure.
+
+### Duplicate Invoice Check
+
+Before inserting via `invoice_add`, check if the invoice already exists:
+
+```
+Use invoice_list --number <发票号码> to check for duplicates.
+If the result is non-empty, the invoice already exists → skip it.
+```
+
+**How it works:**
+- Query: `invoice_list --number "INV-2026-0042"`
+- If the command returns data → **duplicate** found, skip insertion
+- If the command returns empty → **no duplicate**, safe to insert via `invoice_add`
+- For invoices without an invoice number, use `invoice_list` with other criteria or rely on `invoice_add`'s internal dedup
 
 ### When to Log Errors
 

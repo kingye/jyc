@@ -127,19 +127,8 @@ For example:
 - Invoice dated 2026-03 (March) but received in 2026-04 (April) → file into `invoice_2026-04/`
 - The 开票日期 is still recorded in the Excel, but the file goes to the current month
 
-The template Excel files are bundled with this skill at:
-- `.opencode/skills/invoice-processing/template.xlsx` — invoice record template
-- `summary.xlsx` — summary template (copied from skill, can be customized by user)
-
-If the thread doesn't have `template.xlsx` yet, copy it from the skill:
-```bash
-if [ ! -f template.xlsx ]; then
-  cp .opencode/skills/invoice-processing/template.xlsx template.xlsx
-fi
-if [ ! -f summary.xlsx ]; then
-  cp .opencode/skills/invoice-processing/summary.xlsx summary.xlsx
-fi
-```
+The Excel files are now generated on-demand by invoice MCP tools (`invoice_export`, `invoice_close`)
+using `rust_xlsxwriter` internally — no template copying needed.
 
 ```
 Thread directory structure:
@@ -208,7 +197,6 @@ fi
 
 ### File Handling Rules
 - Do NOT overwrite existing invoice files
-- Do NOT modify the template.xlsx — only modify the copy in the monthly folder
 - Do NOT process QR code images — small images (< 50KB) are likely QR codes
 - Do NOT follow or scan QR code URLs
 - Only PDF and image files (JPG/PNG) are valid — HTML, XML, text are NOT valid invoices

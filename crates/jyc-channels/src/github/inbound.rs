@@ -77,7 +77,33 @@ impl ChannelMatcher for GithubMatcher {
         message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
-        for pattern in patterns {
+        // Pattern evaluation order is normally TOML-declaration order with
+        // first-match-wins semantics. We deviate from strict order in ONE
+        // specific way: any pattern whose `role` is "Reviewer" is tried
+        // before non-reviewer patterns.
+        //
+        // Rationale: in the typical PR workflow a developer pattern handles
+        // the early phases (e.g. label `ready-for-dev`) and a reviewer
+        // pattern handles the review phase (label `ready-for-review`). When
+        // the developer hands off to the reviewer they ADD `ready-for-review`,
+        // and the existing dev label often remains on the PR until cleanup.
+        // With strict TOML order, a developer pattern listed before a
+        // reviewer pattern wins on every poll because it still matches
+        // `ready-for-dev`, and the reviewer is never tried.
+        //
+        // Promoting reviewer patterns to be evaluated first means a PR
+        // labeled `ready-for-review` is routed to the reviewer regardless
+        // of any leftover developer-phase labels — which is the semantically
+        // correct outcome (the PR is ready for review; the review supersedes
+        // any further developer work). Operators no longer need to reorder
+        // their TOML or scrub stale labels for the reviewer to fire.
+        //
+        // Within the reviewer group and within the non-reviewer group,
+        // relative TOML order is preserved (stable sort).
+        let mut ordered: Vec<&ChannelPattern> = patterns.iter().collect();
+        ordered.sort_by_key(|p| pattern_priority(p.role.as_deref()));
+
+        for pattern in ordered {
             if !pattern.enabled {
                 continue;
             }
@@ -112,6 +138,24 @@ impl ChannelMatcher for GithubMatcher {
 
     fn store_unmatched_messages(&self) -> bool {
         false
+    }
+}
+
+/// Sort key for `ChannelPattern` evaluation order in `GithubMatcher::match_message`.
+///
+/// Lower numbers are tried first. Currently:
+/// - `0` — patterns whose `role` equals "Reviewer" (case-insensitive).
+/// - `255` — every other pattern.
+///
+/// `Vec::sort_by_key` is stable, so patterns within the same priority bucket
+/// retain their TOML-declaration order.
+///
+/// The bucket spread (0 vs 255) leaves room to introduce intermediate roles
+/// later (e.g. CI bots) without renumbering everything.
+fn pattern_priority(role: Option<&str>) -> u8 {
+    match role {
+        Some(r) if r.eq_ignore_ascii_case("Reviewer") => 0,
+        _ => 255,
     }
 }
 
@@ -1879,6 +1923,168 @@ mod tests {
         assert_eq!(result.unwrap().pattern_name, "planner");
     }
 
+    /// Regression for the May 26 PR #204 bug: with `developer` listed before
+    /// `reviewer` in the TOML config, a PR carrying BOTH `ready-for-dev` and
+    /// `ready-for-review` (the developer hadn't stripped the dev label on
+    /// handoff) routed to the developer pattern on every poll because of
+    /// strict TOML-order first-match-wins. The reviewer pattern was never
+    /// tried.
+    ///
+    /// Fix: `pattern_priority` promotes any pattern whose role is
+    /// "Reviewer" ahead of non-reviewer patterns. With this in place a PR
+    /// labeled `ready-for-review` is routed to the reviewer regardless of
+    /// any leftover developer-phase labels.
+    #[test]
+    fn test_reviewer_pattern_wins_when_both_dev_and_review_labels_present() {
+        // Reproduce jyc_repo's exact pattern config: developer FIRST, reviewer SECOND.
+        let developer = ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(jyc_types::LabelRule::Nested(vec![vec![
+                    "bug".to_string(),
+                    "enhancement".to_string(),
+                    "documentation".to_string(),
+                ]])),
+                assignees: Some(vec!["kingye".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reviewer = ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(jyc_types::LabelRule::Flat(vec![
+                    "ready-for-review".to_string(),
+                ])),
+                assignees: Some(vec!["kingye".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let patterns = vec![developer, reviewer];
+
+        // PR #204's actual label set on poll after the developer added
+        // `ready-for-review` without removing `ready-for-dev`.
+        let msg = make_message_with_rules(
+            "pull_request",
+            204,
+            &["enhancement", "ready-for-dev", "ready-for-review"],
+            &["kingye"],
+        );
+
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some(), "expected a pattern match");
+        assert_eq!(
+            result.unwrap().pattern_name,
+            "reviewer",
+            "reviewer must win over developer when both could match"
+        );
+    }
+
+    /// Negative case for the priority change: a PR with only the dev label
+    /// (no `ready-for-review`) must still route to the developer. The
+    /// reviewer-priority bump must not poach developer-phase PRs.
+    #[test]
+    fn test_developer_pattern_still_wins_when_no_review_label() {
+        let developer = ChannelPattern {
+            name: "developer".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(jyc_types::LabelRule::Nested(vec![vec![
+                    "bug".to_string(),
+                    "enhancement".to_string(),
+                ]])),
+                assignees: Some(vec!["kingye".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reviewer = ChannelPattern {
+            name: "reviewer".to_string(),
+            enabled: true,
+            role: Some("Reviewer".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["pull_request".to_string()]),
+                labels: Some(jyc_types::LabelRule::Flat(vec![
+                    "ready-for-review".to_string(),
+                ])),
+                assignees: Some(vec!["kingye".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let patterns = vec![developer, reviewer];
+
+        let msg = make_message_with_rules(
+            "pull_request",
+            205,
+            &["enhancement", "ready-for-dev"], // no ready-for-review
+            &["kingye"],
+        );
+
+        let result = GithubMatcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().pattern_name,
+            "developer",
+            "developer must still match when no review label is present"
+        );
+    }
+
+    /// Within the non-reviewer bucket, TOML-declaration order is preserved
+    /// (stable sort). If two non-reviewer patterns both match, the one
+    /// listed first in the TOML wins.
+    #[test]
+    fn test_non_reviewer_patterns_preserve_toml_order() {
+        let first = ChannelPattern {
+            name: "first".to_string(),
+            enabled: true,
+            role: Some("Developer".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let second = ChannelPattern {
+            name: "second".to_string(),
+            enabled: true,
+            role: Some("Planner".to_string()),
+            rules: jyc_types::PatternRules {
+                github_type: Some(vec!["issue".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let patterns = vec![first, second];
+        let msg = make_message("issue", 1);
+        let result = GithubMatcher.match_message(&msg, &patterns).unwrap();
+        assert_eq!(
+            result.pattern_name, "first",
+            "stable sort: first non-reviewer pattern in TOML order should win"
+        );
+    }
+
+    #[test]
+    fn test_pattern_priority_helper() {
+        // Reviewer (any case) → 0, anything else → 255.
+        assert_eq!(pattern_priority(Some("Reviewer")), 0);
+        assert_eq!(pattern_priority(Some("reviewer")), 0);
+        assert_eq!(pattern_priority(Some("REVIEWER")), 0);
+        assert_eq!(pattern_priority(Some("Developer")), 255);
+        assert_eq!(pattern_priority(Some("Planner")), 255);
+        assert_eq!(pattern_priority(None), 255);
+        assert_eq!(pattern_priority(Some("")), 255);
+    }
+
     #[test]
     fn test_assignees_rule_blocks_wrong_assignee() {
         // Pattern requires assignee "alice", but issue is assigned to "bob"
@@ -2412,7 +2618,13 @@ mod tests {
         let patterns = make_patterns();
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "developer");
+        // Reviewer is promoted ahead of non-reviewer patterns by
+        // `pattern_priority`. With both `developer` and `reviewer` matching
+        // any pull_request (the test fixture has no label constraints),
+        // `reviewer` wins regardless of TOML declaration order.
+        // See `test_reviewer_pattern_wins_when_both_dev_and_review_labels_present`
+        // for the production-shaped variant of this regression.
+        assert_eq!(result.unwrap().pattern_name, "reviewer");
     }
 
     #[test]

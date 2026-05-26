@@ -186,55 +186,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     message: "Feishu configuration is required for feishu channel type".into(),
                 });
             }
-        } else if channel.channel_type == "openilink" {
-            // Validate OpeniLink channel specifics
-            if let Some(ref openilink_config) = channel.openilink {
-                if openilink_config.api_key.is_empty() {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.openilink.api_key"),
-                        message: "OpeniLink api_key is required (use ${ENV_VAR} syntax)".into(),
-                    });
-                }
-                if openilink_config.hub_url.is_empty() {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.openilink.hub_url"),
-                        message: "OpeniLink hub_url is required".into(),
-                    });
-                } else if !openilink_config.hub_url.starts_with("https://") {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.openilink.hub_url"),
-                        message: "OpeniLink hub_url must start with https://".into(),
-                    });
-                }
-
-                // Validate WebSocket configuration
-                if openilink_config.websocket.enabled {
-                    if openilink_config.websocket.reconnect_delay_secs == 0 {
-                        errors.push(ValidationError {
-                            path: format!("{prefix}.openilink.websocket.reconnect_delay_secs"),
-                            message: "must be greater than 0".into(),
-                        });
-                    }
-                    if openilink_config.websocket.heartbeat_interval_secs < 10 {
-                        errors.push(ValidationError {
-                            path: format!("{prefix}.openilink.websocket.heartbeat_interval_secs"),
-                            message: "must be at least 10".into(),
-                        });
-                    }
-                }
-
-                if openilink_config.context_token_cache_size == 0 {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.openilink.context_token_cache_size"),
-                        message: "must be at least 1".into(),
-                    });
-                }
-            } else {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.openilink"),
-                    message: "OpeniLink configuration is required for openilink channel type".into(),
-                });
-            }
         }
 
         // Validate patterns

@@ -20,10 +20,18 @@ pub struct OpenAiCompatProvider {
     api_key: Option<String>,
     /// Extra parameters to merge into the API request body.
     params: Option<serde_json::Value>,
+    /// Whether the active model accepts image content blocks.
+    supports_images: bool,
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
+    pub fn new(
+        base_url: &str,
+        model: &str,
+        api_key: Option<&str>,
+        params: Option<serde_json::Value>,
+        supports_images: bool,
+    ) -> Result<Self> {
         // Connection pool hygiene:
         //
         // - `pool_idle_timeout(30s)` ensures we never reuse a connection
@@ -53,6 +61,7 @@ impl OpenAiCompatProvider {
             model: model.to_string(),
             api_key: api_key.map(|s| s.to_string()),
             params,
+            supports_images,
         })
     }
 }
@@ -65,6 +74,10 @@ impl Provider for OpenAiCompatProvider {
 
     fn model(&self) -> &str {
         &self.model
+    }
+
+    fn supports_images(&self) -> bool {
+        self.supports_images
     }
 
     async fn complete(
@@ -200,11 +213,8 @@ impl Provider for OpenAiCompatProvider {
         Ok(Box::pin(stream))
     }
 
-    fn format_user_message(&self, text: &str) -> serde_json::Value {
-        serde_json::json!({
-            "role": "user",
-            "content": text,
-        })
+    fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+        build_openai_user_content(blocks)
     }
 
     fn format_tool_result(&self, tool_call_id: &str, content: &str, _is_error: bool) -> serde_json::Value {
@@ -540,13 +550,7 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
 /// Convert internal Message to OpenAI API format.
 fn to_openai_message(msg: &Message) -> serde_json::Value {
     match msg.role {
-        Role::User => {
-            let content = msg.text();
-            serde_json::json!({
-                "role": "user",
-                "content": content,
-            })
-        }
+        Role::User => build_openai_user_content(&msg.content),
         Role::Assistant => {
             let mut result = serde_json::json!({ "role": "assistant" });
 
@@ -592,4 +596,63 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
             }
         }
     }
+}
+
+/// Build an OpenAI-compatible user message from content blocks.
+///
+/// When the message contains only text, emits the legacy string-content form
+/// (`"content": "..."`). When images are present, emits the array-content form
+/// (`"content": [{"type":"text",...}, {"type":"image_url",...}]`).
+///
+/// Why the dual form: many OpenAI-compatible servers (especially older ones)
+/// reject array content for purely textual user messages, so we keep the
+/// minimal-friction string form for the common case and only escalate to the
+/// array form when actually needed for multimodal input.
+fn build_openai_user_content(content: &[ContentBlock]) -> serde_json::Value {
+    let has_image = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+
+    if !has_image {
+        // Legacy string-content form
+        let text = content.iter().filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("");
+        return serde_json::json!({
+            "role": "user",
+            "content": text,
+        });
+    }
+
+    // Array-content form (multimodal)
+    let parts: Vec<serde_json::Value> = content.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(serde_json::json!({
+            "type": "text",
+            "text": text,
+        })),
+        ContentBlock::Image { source } => Some(image_block_openai(source)),
+        _ => None,
+    }).collect();
+
+    serde_json::json!({
+        "role": "user",
+        "content": parts,
+    })
+}
+
+/// Build an OpenAI-compatible `image_url` content part from an `ImageSource`.
+///
+/// Both base64 and remote URL share the same `image_url.url` field; base64
+/// is encoded as a `data:` URL.
+fn image_block_openai(source: &crate::types::ImageSource) -> serde_json::Value {
+    use crate::types::ImageSource;
+    let url = match source {
+        ImageSource::Base64 { media_type, data } => {
+            format!("data:{media_type};base64,{data}")
+        }
+        ImageSource::Url { url } => url.clone(),
+    };
+    serde_json::json!({
+        "type": "image_url",
+        "image_url": { "url": url },
+    })
 }

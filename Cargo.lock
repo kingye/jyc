@@ -1498,6 +1498,7 @@ version = "0.3.8"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "futures",
  "glob",

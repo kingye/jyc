@@ -10,14 +10,55 @@ pub mod registry;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use crate::types::ToolDefinition;
+use crate::types::{ImageSource, ToolDefinition};
 
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
     /// Working directory for the tool.
     pub working_dir: &'a Path,
+    /// Additional absolute paths the agent may legitimately read from
+    /// outside `working_dir` (currently: a configured absolute
+    /// `[attachments.inbound].save_path`). Tools that enforce a path
+    /// boundary (e.g. `read_image`) accept paths under any of these
+    /// roots in addition to `working_dir`.
+    pub additional_read_roots: Vec<PathBuf>,
+    /// Side-channel for tools (e.g. `read_image`) that need to inject
+    /// additional content blocks into the *next* user turn alongside
+    /// the textual tool result. The agent loop drains this after each
+    /// batch of tool calls and emits a synthetic user turn carrying the
+    /// images. `Mutex<Vec<_>>` to allow tools with `&self` execution to
+    /// push without requiring `&mut ToolContext`.
+    pub pending_images: Mutex<Vec<ImageSource>>,
+}
+
+impl<'a> ToolContext<'a> {
+    /// Construct a context with no extra roots and an empty pending-images queue.
+    pub fn new(working_dir: &'a Path) -> Self {
+        Self {
+            working_dir,
+            additional_read_roots: Vec::new(),
+            pending_images: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Construct a context with extra absolute read roots.
+    pub fn with_roots(working_dir: &'a Path, additional_read_roots: Vec<PathBuf>) -> Self {
+        Self {
+            working_dir,
+            additional_read_roots,
+            pending_images: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Drain and return any pending image sources accumulated during the
+    /// current tool-execution batch. Called by the agent loop after the
+    /// batch completes.
+    pub fn take_pending_images(&self) -> Vec<ImageSource> {
+        std::mem::take(&mut *self.pending_images.lock().expect("pending_images poisoned"))
+    }
 }
 
 /// Trait for tools that can be invoked by the agent.

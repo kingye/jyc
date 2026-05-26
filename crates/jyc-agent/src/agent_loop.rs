@@ -31,7 +31,9 @@ pub struct AgentLoopConfig<'a> {
     pub small_provider: Option<&'a dyn Provider>,
     pub tools: &'a ToolRegistry,
     pub system_prompt: &'a str,
-    pub user_message: &'a str,
+    /// First user-turn content blocks (text + optional image attachments).
+    /// Use a single `ContentBlock::Text` for text-only prompts.
+    pub user_blocks: Vec<ContentBlock>,
     pub working_dir: &'a Path,
     pub cancel: CancellationToken,
     /// Thread name (for event publishing).
@@ -44,6 +46,12 @@ pub struct AgentLoopConfig<'a> {
     pub prior_raw_context: Vec<serde_json::Value>,
     /// Maximum loop iterations. Defaults to DEFAULT_MAX_ITERATIONS.
     pub max_iterations: Option<usize>,
+    /// Additional absolute paths permitted for tools that enforce a path
+    /// boundary (currently: `read_image`). Used to allow access to a
+    /// configured absolute `[attachments.inbound].save_path` outside
+    /// `working_dir`.
+    #[allow(dead_code)]
+    pub additional_read_roots: Vec<std::path::PathBuf>,
 }
 
 /// Run the agent loop to completion.
@@ -51,9 +59,9 @@ pub struct AgentLoopConfig<'a> {
 /// Returns the final text response and metadata about tool usage.
 pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
-        provider, small_provider, tools, system_prompt, user_message,
+        provider, small_provider, tools, system_prompt, user_blocks,
         working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
-        max_iterations,
+        max_iterations, additional_read_roots,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -65,11 +73,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     // Build internal history: prior context + current message
     let mut history: Vec<Message> = prior_history;
-    history.push(Message::user(user_message));
+    history.push(Message::user_with_blocks(user_blocks.clone()));
 
     // Build raw context: prior raw + current user message
     let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
-    raw_context.push(provider.format_user_message(user_message));
+    raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
@@ -149,7 +157,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }).await;
 
             let tool_start = Instant::now();
-            let ctx = ToolContext { working_dir };
+            let ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools.execute("jyc_reply_reply_message", synthetic_input, &ctx).await {
@@ -280,7 +288,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             "Executing tool calls"
         );
 
-        let ctx = ToolContext { working_dir };
+        let ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {
@@ -352,6 +360,27 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &output.content,
                 output.is_error,
             ));
+        }
+
+        // Drain any images queued by tools (e.g. `read_image`) during this
+        // batch. Emit them as a synthetic user turn so the model sees the
+        // image content on the next request. The textual tool_result already
+        // landed above; the images ride alongside as separate content blocks
+        // in their own user message — required because OpenAI-compatible
+        // `role: "tool"` content is a string-only field on most servers.
+        let queued_images = ctx.take_pending_images();
+        if !queued_images.is_empty() {
+            let mut blocks: Vec<ContentBlock> = vec![ContentBlock::Text {
+                text: format!(
+                    "[{} image(s) loaded by tool — see attached content]",
+                    queued_images.len()
+                ),
+            }];
+            for src in queued_images {
+                blocks.push(ContentBlock::Image { source: src });
+            }
+            history.push(Message::user_with_blocks(blocks.clone()));
+            raw_context.push(provider.format_user_message(&blocks));
         }
 
         // If reply was sent by tool, we can stop early
@@ -455,7 +484,7 @@ async fn generate_summary_from_joined_history(
     );
 
     let joined = render_raw_context_as_text(raw_context);
-    let user_msg = provider.format_user_message(&joined);
+    let user_msg = provider.format_user_message(&[ContentBlock::Text { text: joined }]);
 
     // Same transient-SSE-retry policy as the main loop call.
     let response = complete_with_retry(
@@ -869,7 +898,11 @@ mod retry_tests {
             Ok(Box::pin(stream::iter(events)))
         }
 
-        fn format_user_message(&self, text: &str) -> serde_json::Value {
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            let text: String = blocks.iter().filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("");
             serde_json::json!({"role": "user", "content": text})
         }
 

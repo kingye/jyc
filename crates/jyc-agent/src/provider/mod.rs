@@ -73,6 +73,11 @@ pub trait Provider: Send + Sync {
     /// Model identifier being used.
     fn model(&self) -> &str;
 
+    /// Whether the active model accepts image content blocks (multimodal input).
+    /// Resolved at construction time from config (`ModelConfig.supports_images`
+    /// overrides `ProviderConfig.supports_images`; default false).
+    fn supports_images(&self) -> bool { false }
+
     /// Send messages and get a streaming response.
     async fn complete(
         &self,
@@ -82,7 +87,11 @@ pub trait Provider: Send + Sync {
     ) -> Result<EventStream>;
 
     /// Format a user message as raw provider JSON (for context persistence).
-    fn format_user_message(&self, text: &str) -> serde_json::Value;
+    ///
+    /// Accepts arbitrary content blocks so multimodal user turns (text + images)
+    /// can be expressed by callers. Providers that do not support images should
+    /// gracefully degrade (e.g., serialize only the text blocks).
+    fn format_user_message(&self, blocks: &[crate::types::ContentBlock]) -> serde_json::Value;
 
     /// Format a tool result as raw provider JSON (for context persistence).
     fn format_tool_result(&self, tool_call_id: &str, content: &str, is_error: bool) -> serde_json::Value;
@@ -149,6 +158,12 @@ pub fn create_provider(
     // Resolve params: model-level overrides provider-level (shallow merge)
     let params = resolve_params(config.params.as_ref(), config.models.get(model_id).and_then(|m| m.params.as_ref()));
 
+    // Resolve supports_images: model-level overrides provider-level; default false.
+    let supports_images = config.models.get(model_id)
+        .and_then(|m| m.supports_images)
+        .or(config.supports_images)
+        .unwrap_or(false);
+
     match config.provider_type.as_str() {
         "anthropic" => {
             let base_url = config.base_url.as_deref()
@@ -158,6 +173,7 @@ pub fn create_provider(
                 model_id,
                 api_key.as_deref(),
                 params,
+                supports_images,
             )?))
         }
         "openai-compatible" | "openai" => {
@@ -168,6 +184,7 @@ pub fn create_provider(
                 model_id,
                 api_key.as_deref(),
                 params,
+                supports_images,
             )?))
         }
         other => anyhow::bail!("Unknown provider type '{}' for provider '{}'", other, provider_name),

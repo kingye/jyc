@@ -288,6 +288,14 @@ pub struct ChannelPattern {
     /// Patterns without `repo_group` keep existing behavior (no symlink, no sharing).
     #[serde(default)]
     pub repo_group: Option<String>,
+    /// Whether to auto-inject inbound `image/*` attachments into the first
+    /// user turn of the agent loop as multimodal content blocks.
+    ///
+    /// Only takes effect when the active model has `supports_images = true`.
+    /// When false (default), image attachments stay on disk and the agent
+    /// must use the `read_image` built-in tool to load them on demand.
+    #[serde(default)]
+    pub inject_inbound_images: bool,
 }
 
 impl Default for ChannelPattern {
@@ -304,6 +312,7 @@ impl Default for ChannelPattern {
             role: None,
             live_injection: true,
             repo_group: None,
+            inject_inbound_images: false,
         }
     }
 }

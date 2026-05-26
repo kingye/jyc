@@ -2,6 +2,7 @@
 
 pub mod bash;
 pub mod read;
+pub mod read_image;
 pub mod write;
 pub mod edit;
 pub mod glob_tool;
@@ -23,4 +24,10 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(webfetch::WebfetchTool));
 
     registry
+}
+
+/// Register the `read_image` built-in tool. Call this only when the active
+/// model supports image content blocks.
+pub fn register_read_image(registry: &mut ToolRegistry) {
+    registry.register(Box::new(read_image::ReadImageTool));
 }

@@ -252,12 +252,22 @@ impl ChannelMatcher for WechatInboundAdapter {
 
     fn derive_thread_name(
         &self,
-        _message: &InboundMessage,
-        _patterns: &[ChannelPattern],
-        _pattern_match: Option<&PatternMatch>,
+        message: &InboundMessage,
+        patterns: &[ChannelPattern],
+        pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // WeChat uses the channel name as the fixed thread name
-        self.channel_name.clone()
+        // Delegate to `WechatMatcher` so the saver and the router agree
+        // on the thread name. They MUST agree — when they don't, the
+        // attachment saver writes to a different directory than where
+        // the agent thread actually runs, and operators see two
+        // attachment folders (one populated, one orphan).
+        //
+        // Historically this returned `self.channel_name`, which produced
+        // `<channel>/workspace/<channel>/attachments/...` while the
+        // router (using WechatMatcher) produced
+        // `<channel>/workspace/wechat/...`. Same payload, two folders,
+        // confusion. Fixed in feat/wechat-fix-thread-name-divergence.
+        WechatMatcher.derive_thread_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -536,14 +546,23 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_name_derived_via_adapter() {
+    fn test_adapter_thread_name_matches_matcher() {
+        // The adapter's `derive_thread_name` must match `WechatMatcher`'s
+        // exactly — see the doc comment on the impl. Producing a different
+        // name leads to attachments saved to a different directory than
+        // where the agent thread actually runs.
         let adapter = WechatInboundAdapter::new(
             &WechatConfig::default(),
             "my_wechat_bot".to_string(),
         );
         let msg = make_wechat_message("user1", "Hello");
-        let name = adapter.derive_thread_name(&msg, &[], None);
-        assert_eq!(name, "my_wechat_bot");
+        let adapter_name = adapter.derive_thread_name(&msg, &[], None);
+        let matcher_name = WechatMatcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(adapter_name, matcher_name);
+        // Both currently return the hardcoded "wechat" string. If that
+        // ever changes (e.g. pattern-aware derivation), update both
+        // sites in lockstep.
+        assert_eq!(adapter_name, "wechat");
     }
 
     /// End-to-end save test: an `InboundMessage` carrying inline
@@ -598,8 +617,9 @@ mod tests {
             .expect("save should succeed");
 
         // Both attachments must now have a saved_path under the expected
-        // tree: <workspace>/wechat_me/workspace/wechat_me/attachments/...
-        // (Thread name == channel name for the default WechatMatcher.)
+        // tree: <workspace>/wechat_me/workspace/wechat/attachments/...
+        // (Thread name comes from `WechatMatcher::derive_thread_name`,
+        // which is hardcoded to "wechat".)
         for att in &message.attachments {
             let path = att
                 .saved_path
@@ -616,8 +636,13 @@ mod tests {
                 "attachments must land in the attachments/ dir, got parent: {}",
                 parent.display()
             );
-            // Thread directory: <workspace>/wechat_me/workspace/wechat_me
+            // Thread directory: <workspace>/wechat_me/workspace/wechat
             let thread_dir = parent.parent().expect("attachments parent");
+            assert!(
+                thread_dir.ends_with("wechat"),
+                "thread dir must be 'wechat' (the WechatMatcher-derived name), got: {}",
+                thread_dir.display()
+            );
             assert!(
                 thread_dir.starts_with(&workspace_root),
                 "attachment must be under workspace_root, got: {}",

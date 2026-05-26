@@ -415,6 +415,36 @@ impl WechatWebSocket {
             .extract_attachments(&data, &message_id)
             .await;
 
+        // Body normalisation for non-text events.
+        //
+        // For non-text events (`message.image`, `message.file`,
+        // `message.voice`, …), the OpenILink Bridge fills `data.content`
+        // with a short bracketed placeholder like `"[image]"` so legacy
+        // text-only clients don't choke on an empty body. For us this
+        // placeholder is noise — the agent's prompt would receive the
+        // literal four-character string `[image]` and reply confusingly
+        // about it.
+        //
+        // Strip the placeholder so `thread_manager`'s body-empty guard
+        // kicks in and the agent step is skipped entirely. The
+        // attachment is still saved to disk and visible in the chat
+        // history; a later PR will introduce a vision-aware path that
+        // actually feeds the image to the LLM.
+        //
+        // Heuristic: non-text event AND the content is a single
+        // bracketed token (e.g. `[image]`, `[file]`, `[voice]`,
+        // `[video]`, `[image]\n`). Anything else (a real text message
+        // with embedded brackets, a caption, etc.) flows through.
+        let content = if event_type != "message.text" && is_placeholder_body(&content) {
+            tracing::debug!(
+                event_type = %event_type,
+                "Stripping OpenILink placeholder body for non-text event"
+            );
+            String::new()
+        } else {
+            content
+        };
+
         tracing::debug!(
             sender = %sender_id,
             content_len = content.len(),
@@ -646,6 +676,40 @@ impl WechatWebSocket {
 
         out
     }
+}
+
+/// Detect the OpenILink Bridge's bracketed placeholder bodies emitted
+/// for non-text events.
+///
+/// Returns true when, after trimming, the body is a single bracketed
+/// token like `[image]`, `[file]`, `[voice]`, `[video]`, or any other
+/// `[…]` marker. False for normal text (including text that happens to
+/// contain brackets, like `Look at [this]`).
+///
+/// Used by `handle_incoming` to blank out the body for non-text events
+/// so the agent's body-empty guard skips the LLM call. The attachment
+/// is still delivered via `MessageAttachment` and persisted to disk;
+/// a later vision-aware path will feed the bytes to the LLM properly.
+fn is_placeholder_body(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.len() < 2 {
+        return false;
+    }
+    if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+        return false;
+    }
+    // Inner must be non-empty and contain no surface punctuation that
+    // would suggest a real sentence (closing brackets, newlines, etc.).
+    let inner = &trimmed[1..trimmed.len() - 1];
+    if inner.is_empty() {
+        return false;
+    }
+    // Reject if the inner has additional brackets, newlines, or a
+    // sentence-y character set. Keep the policy narrow to avoid eating
+    // legitimate user text that happens to start and end with brackets.
+    !inner.chars().any(|c| {
+        c == '[' || c == ']' || c == '\n' || c == '\r' || c == '.' || c == '!' || c == '?'
+    })
 }
 
 #[cfg(test)]
@@ -945,9 +1009,12 @@ mod tests {
 
         let msg = captured.lock().unwrap().take().unwrap();
 
-        // Text body still carries the placeholder so the agent's prompt
-        // builder has something visible.
-        assert_eq!(msg.content.text.as_deref(), Some("[image]"));
+        // Text body is BLANKED for non-text events so the agent's
+        // body-empty guard skips the LLM call (the bracketed
+        // placeholder `[image]` would otherwise be the entire prompt
+        // body, which is not useful). A later vision-aware path will
+        // feed the actual bytes to the model.
+        assert_eq!(msg.content.text.as_deref(), Some(""));
 
         // Attachment populated.
         assert_eq!(msg.attachments.len(), 1, "expected one attachment");
@@ -1021,8 +1088,12 @@ mod tests {
             msg.attachments.is_empty(),
             "no fetch should happen when attachment_config is missing"
         );
-        // Text body still flows.
-        assert_eq!(msg.content.text.as_deref(), Some("[image]"));
+        // Body still blanked for non-text events even when no attachment
+        // was fetched: the placeholder `[image]` carries no information
+        // for the agent, regardless of whether we managed to grab the
+        // bytes. The body-empty guard in thread_manager skips the LLM
+        // call uniformly.
+        assert_eq!(msg.content.text.as_deref(), Some(""));
     }
 
     /// Items whose extension is not in `allowed_extensions` are skipped
@@ -1106,6 +1177,74 @@ mod tests {
 
         assert_eq!(json["type"], "send");
         assert_eq!(json["content"], "你好，有什么可以帮助你的？");
+    }
+
+    /// `is_placeholder_body` correctly identifies the OpenILink
+    /// bracketed-token bodies and leaves real user text alone.
+    #[test]
+    fn test_is_placeholder_body() {
+        // Known WeChat / OpenILink placeholders.
+        assert!(is_placeholder_body("[image]"));
+        assert!(is_placeholder_body("[file]"));
+        assert!(is_placeholder_body("[voice]"));
+        assert!(is_placeholder_body("[video]"));
+        assert!(is_placeholder_body("[sticker]"));
+        // Surrounding whitespace tolerated.
+        assert!(is_placeholder_body(" [image] "));
+        assert!(is_placeholder_body("[image]\n"));
+
+        // Real user text — even with brackets — must NOT be detected as
+        // a placeholder.
+        assert!(!is_placeholder_body("hello"));
+        assert!(!is_placeholder_body("Look at [this]"));
+        assert!(!is_placeholder_body("[image] please review"));
+        assert!(!is_placeholder_body("[]"));
+        assert!(!is_placeholder_body(""));
+        assert!(!is_placeholder_body(" "));
+        assert!(!is_placeholder_body("[multi\nline]"));
+        assert!(!is_placeholder_body("[a sentence.]"));
+        // Nested brackets — not a single token.
+        assert!(!is_placeholder_body("[a[b]c]"));
+    }
+
+    /// `message.text` events preserve the actual user text — the
+    /// placeholder-blanking only applies to non-text event types.
+    #[tokio::test]
+    async fn test_handle_incoming_text_event_preserves_body() {
+        let payload = r#"{
+            "type": "event",
+            "v": 1,
+            "event": {
+                "id": "e",
+                "type": "message.text",
+                "data": {
+                    "content": "[image]",
+                    "items": [{"type": "text", "text": "[image]"}],
+                    "group": null,
+                    "message_id": "m",
+                    "msg_type": "text",
+                    "sender": {"id": "u1", "role": "user"}
+                }
+            }
+        }"#;
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<InboundMessage>));
+        let captured_for_cb = captured.clone();
+        let on_message = move |msg: InboundMessage| -> Result<()> {
+            *captured_for_cb.lock().unwrap() = Some(msg);
+            Ok(())
+        };
+
+        WechatWebSocket::new("h", "t")
+            .handle_incoming("wechat_me", payload, &on_message)
+            .await
+            .unwrap();
+
+        let msg = captured.lock().unwrap().take().unwrap();
+        // For message.text events, the body is preserved verbatim even
+        // if it happens to look like a placeholder. The user actually
+        // typed `[image]`; we must not eat their message.
+        assert_eq!(msg.content.text.as_deref(), Some("[image]"));
     }
 
     /// Documents the rendering contract relied upon by every

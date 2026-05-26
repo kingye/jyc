@@ -14,7 +14,9 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::{InboundMessage, MessageContent};
+use jyc_types::{InboundAttachmentConfig, InboundMessage, MessageAttachment, MessageContent};
+
+use super::media;
 
 /// WebSocket connection handler for WeChat OpenILink Bridge.
 ///
@@ -29,6 +31,11 @@ pub struct WechatWebSocket {
     sender: mpsc::UnboundedSender<String>,
     /// Receiver half of the outbound channel
     outbound_rx: Option<mpsc::UnboundedReceiver<String>>,
+    /// Inbound attachment policy. When `Some`, non-text items in
+    /// `event.data.items[]` are downloaded and attached to the resulting
+    /// `InboundMessage` (subject to allowlist + size cap). When `None` or
+    /// `enabled = false`, attachments are dropped silently.
+    attachment_config: Option<InboundAttachmentConfig>,
 }
 
 impl WechatWebSocket {
@@ -43,6 +50,7 @@ impl WechatWebSocket {
             token: token.to_string(),
             sender: tx,
             outbound_rx: Some(rx),
+            attachment_config: None,
         }
     }
 
@@ -57,6 +65,16 @@ impl WechatWebSocket {
         reconnect_delay_secs: u64,
     ) -> Self {
         Self::new(base_url, token)
+    }
+
+    /// Attach an inbound attachment policy. Without this, non-text items
+    /// are dropped silently — the WS still produces an `InboundMessage`
+    /// with the placeholder text body, but `attachments` will be empty.
+    ///
+    /// Builder-style so the call can be chained at construction time.
+    pub fn with_attachment_config(mut self, cfg: Option<InboundAttachmentConfig>) -> Self {
+        self.attachment_config = cfg;
+        self
     }
 
     /// Get a clone of the sender for outbound messages.
@@ -341,7 +359,7 @@ impl WechatWebSocket {
         if !message_id.is_empty() {
             metadata.insert(
                 "msg_id".to_string(),
-                serde_json::Value::String(message_id),
+                serde_json::Value::String(message_id.clone()),
             );
         }
         if !event_id.is_empty() {
@@ -382,12 +400,28 @@ impl WechatWebSocket {
             metadata.insert("group".to_string(), g);
         }
 
+        // Extract and download non-text items as attachments. The Bridge
+        // delivers images / files / voice / video as
+        // `event.data.items[*].media.url` (signed). For each such item,
+        // we fetch the bytes and push a `MessageAttachment` into the
+        // outgoing message. The actual on-disk persistence happens
+        // post-route in the inbound adapter's
+        // `save_attachments_to_thread_directory` (mirroring feishu).
+        //
+        // Each item is best-effort: if a single download fails, log a
+        // warning and continue with the rest. The text body and other
+        // attachments are still delivered.
+        let attachments = self
+            .extract_attachments(&data, &message_id)
+            .await;
+
         tracing::debug!(
             sender = %sender_id,
             content_len = content.len(),
             msg_type = %msg_type,
             event_type = %event_type,
             is_group,
+            attachments_len = attachments.len(),
             "WeChat message received"
         );
 
@@ -411,13 +445,206 @@ impl WechatWebSocket {
             thread_refs: None,
             reply_to_id: None,
             external_id: None,
-            attachments: vec![],
+            attachments,
             metadata,
             matched_pattern: None,
         };
 
         on_message(message)?;
         Ok(())
+    }
+
+    /// Walk `event.data.items[]` and download every non-text item that
+    /// passes the configured allowlist + size cap, returning the resulting
+    /// `MessageAttachment`s. Each download error is logged at WARN and
+    /// skipped; one failed item never blocks the others or the text body.
+    ///
+    /// Behaviour when `attachment_config` is `None` or `enabled = false`:
+    /// silently skip everything (returns an empty Vec). The text body and
+    /// metadata are still delivered to the agent, just without any files.
+    async fn extract_attachments(
+        &self,
+        data: &serde_json::Value,
+        message_id: &str,
+    ) -> Vec<MessageAttachment> {
+        let mut out: Vec<MessageAttachment> = Vec::new();
+
+        let cfg = match &self.attachment_config {
+            Some(c) if c.enabled => c,
+            _ => {
+                // Attachments disabled (or no config provided). Log so the
+                // operator can correlate empty-attachment threads with
+                // disabled config rather than guessing.
+                if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
+                    let non_text = items
+                        .iter()
+                        .filter(|i| {
+                            i.get("type").and_then(|v| v.as_str()).unwrap_or("") != "text"
+                        })
+                        .count();
+                    if non_text > 0 {
+                        tracing::debug!(
+                            non_text_items = non_text,
+                            "WeChat attachments disabled, skipping {} non-text item(s)",
+                            non_text
+                        );
+                    }
+                }
+                return out;
+            }
+        };
+
+        let items = match data.get("items").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => return out,
+        };
+
+        // Resolve the size cap (best-effort parse; if it fails we apply
+        // only the hard MAX_MEDIA_BYTES ceiling enforced inside
+        // `media::download_media`).
+        let max_size_bytes: Option<u64> = cfg
+            .max_file_size
+            .as_deref()
+            .and_then(|s| jyc_utils::helpers::parse_file_size(s).ok());
+
+        let max_per_message = cfg.max_per_message.unwrap_or(usize::MAX);
+
+        for (idx, item) in items.iter().enumerate() {
+            if out.len() >= max_per_message {
+                tracing::debug!(
+                    max_per_message,
+                    "Reached max_per_message cap, skipping remaining WeChat items"
+                );
+                break;
+            }
+
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if item_type == "text" {
+                continue; // text items are folded into `data.content`.
+            }
+
+            let media = match item.get("media") {
+                Some(m) => m,
+                None => {
+                    tracing::debug!(item_type, idx, "WeChat item has no `media` object, skipping");
+                    continue;
+                }
+            };
+            let url = match media.get("url").and_then(|v| v.as_str()) {
+                Some(u) if !u.is_empty() => u,
+                _ => {
+                    tracing::debug!(item_type, idx, "WeChat item missing media.url, skipping");
+                    continue;
+                }
+            };
+
+            // Determine MIME and extension. Prefer the URL's `ct=` query
+            // parameter (the Bridge always sets it); we'll override with
+            // the response's `Content-Type` after fetch if available.
+            let url_mime = media::mime::from_url_ct_param(url);
+            let inferred_ext = url_mime
+                .as_deref()
+                .and_then(media::mime::extension_for)
+                .unwrap_or_else(|| {
+                    // Fallback: use the item type or media.media_type as a
+                    // hint. Won't be perfect but is better than nothing.
+                    media
+                        .get("media_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(item_type)
+                });
+
+            // Allowlist gate: extension must appear in the operator's
+            // configured `allowed_extensions`. Compare case-insensitively
+            // and accept either dot-prefixed or bare values.
+            if !cfg.allowed_extensions.is_empty() {
+                let want = inferred_ext.trim_start_matches('.').to_ascii_lowercase();
+                let permitted = cfg.allowed_extensions.iter().any(|e| {
+                    e.trim_start_matches('.').eq_ignore_ascii_case(&want)
+                });
+                if !permitted {
+                    tracing::debug!(
+                        ext = %inferred_ext,
+                        item_type,
+                        "WeChat item extension not in allowlist, skipping"
+                    );
+                    continue;
+                }
+            }
+
+            // Fetch.
+            let token: Option<&str> = if self.token.is_empty() {
+                None
+            } else {
+                Some(self.token.as_str())
+            };
+            let resp = match media::download_media(url, token).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %format!("{:#}", e),
+                        item_type,
+                        "Failed to download WeChat media item, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            // Server-provided Content-Type beats the URL hint.
+            let content_type = resp
+                .content_type
+                .clone()
+                .or(url_mime)
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let final_ext = media::mime::extension_for(&content_type)
+                .unwrap_or(inferred_ext)
+                .to_string();
+
+            // Post-download size check.
+            if let Some(max) = max_size_bytes {
+                if (resp.bytes.len() as u64) > max {
+                    tracing::warn!(
+                        size = resp.bytes.len(),
+                        max,
+                        item_type,
+                        "WeChat media item exceeds max_file_size, skipping"
+                    );
+                    continue;
+                }
+            }
+
+            // Synthesise filename. Bridge doesn't ship one in the image
+            // shape we've seen; voice/file shapes might (we'll surface it
+            // when we observe one). For now: `<type>_<message_id>_<n>.<ext>`.
+            // Sanitization is applied in `attachment_storage::generate_attachment_filename`
+            // when the file lands on disk; we still produce a clean name
+            // here for use in metadata / logs.
+            let raw_name = item
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .or_else(|| media.get("filename").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    if message_id.is_empty() {
+                        format!("{}_{}.{}", item_type, idx, final_ext)
+                    } else {
+                        format!("{}_{}_{}.{}", item_type, message_id, idx, final_ext)
+                    }
+                });
+            let filename =
+                jyc_core::attachment_storage::sanitize_attachment_filename(&raw_name);
+
+            let size = resp.bytes.len();
+            out.push(MessageAttachment {
+                filename,
+                content_type,
+                size,
+                content: Some(resp.bytes),
+                saved_path: None,
+            });
+        }
+
+        out
     }
 }
 
@@ -647,6 +874,211 @@ mod tests {
         assert!(
             !invoked.load(std::sync::atomic::Ordering::SeqCst),
             "non-message events must not invoke on_message"
+        );
+    }
+
+    /// `message.image` event with a fetchable `event.data.items[].media.url`
+    /// → the parser downloads the bytes and surfaces them as a
+    /// `MessageAttachment` on the resulting `InboundMessage`.
+    ///
+    /// Mocks the OpenILink media endpoint with wiremock; uses a
+    /// permissive `attachment_config` so the allowlist gate passes.
+    #[tokio::test]
+    async fn test_handle_incoming_image_message_event_attaches_media() {
+        let media_server = wiremock::MockServer::start().await;
+        let body: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x10, 0x20, 0x30];
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/media"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(body)
+                    .insert_header("content-type", "image/jpeg"),
+            )
+            .mount(&media_server)
+            .await;
+
+        let media_url = format!("{}/media?ct=image%2Fjpeg", media_server.uri());
+        let payload = serde_json::json!({
+            "type": "event",
+            "v": 1,
+            "trace_id": "tr_test",
+            "event": {
+                "id": "evt_test",
+                "type": "message.image",
+                "data": {
+                    "content": "[image]",
+                    "items": [{
+                        "type": "image",
+                        "media": {
+                            "url": &media_url,
+                            "media_type": "image",
+                        }
+                    }],
+                    "group": null,
+                    "message_id": "msg_42",
+                    "msg_type": "image",
+                    "sender": {"id": "u1@im.wechat", "role": "user"}
+                }
+            }
+        })
+        .to_string();
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<InboundMessage>));
+        let captured_for_cb = captured.clone();
+        let on_message = move |msg: InboundMessage| -> Result<()> {
+            *captured_for_cb.lock().unwrap() = Some(msg);
+            Ok(())
+        };
+
+        let cfg = jyc_types::InboundAttachmentConfig {
+            enabled: true,
+            allowed_extensions: vec![".jpg".to_string(), ".png".to_string()],
+            max_file_size: Some("10mb".to_string()),
+            max_per_message: Some(10),
+            save_path: None,
+        };
+
+        let ws = WechatWebSocket::new("h", "t").with_attachment_config(Some(cfg));
+        ws.handle_incoming("wechat_me", &payload, &on_message)
+            .await
+            .expect("handle_incoming should succeed");
+
+        let msg = captured.lock().unwrap().take().unwrap();
+
+        // Text body still carries the placeholder so the agent's prompt
+        // builder has something visible.
+        assert_eq!(msg.content.text.as_deref(), Some("[image]"));
+
+        // Attachment populated.
+        assert_eq!(msg.attachments.len(), 1, "expected one attachment");
+        let att = &msg.attachments[0];
+        assert_eq!(att.content_type, "image/jpeg");
+        assert_eq!(att.size, body.len());
+        assert_eq!(att.content.as_deref(), Some(body));
+        assert!(att.saved_path.is_none(), "saved_path is set later by saver");
+        assert!(
+            att.filename.ends_with(".jpg"),
+            "filename should end with .jpg, got: {}",
+            att.filename
+        );
+        assert!(
+            att.filename.contains("msg_42"),
+            "filename should include message_id, got: {}",
+            att.filename
+        );
+
+        // Metadata still set.
+        assert_eq!(
+            msg.metadata.get("event_type").and_then(|v| v.as_str()),
+            Some("message.image")
+        );
+    }
+
+    /// When `attachment_config` is `None`, non-text items are silently
+    /// dropped — message is still delivered with placeholder text but
+    /// no attachments. Documents the safe-default behaviour.
+    #[tokio::test]
+    async fn test_handle_incoming_drops_attachments_when_config_missing() {
+        let payload = serde_json::json!({
+            "type": "event",
+            "v": 1,
+            "event": {
+                "id": "e",
+                "type": "message.image",
+                "data": {
+                    "content": "[image]",
+                    "items": [{
+                        "type": "image",
+                        "media": {
+                            "url": "https://invalid.example/should-not-be-fetched",
+                            "media_type": "image"
+                        }
+                    }],
+                    "group": null,
+                    "message_id": "m",
+                    "msg_type": "image",
+                    "sender": {"id": "u1", "role": "user"}
+                }
+            }
+        })
+        .to_string();
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<InboundMessage>));
+        let captured_for_cb = captured.clone();
+        let on_message = move |msg: InboundMessage| -> Result<()> {
+            *captured_for_cb.lock().unwrap() = Some(msg);
+            Ok(())
+        };
+
+        // Default WechatWebSocket has no attachment_config.
+        WechatWebSocket::new("h", "t")
+            .handle_incoming("wechat_me", &payload, &on_message)
+            .await
+            .expect("handle_incoming should succeed");
+
+        let msg = captured.lock().unwrap().take().unwrap();
+        assert!(
+            msg.attachments.is_empty(),
+            "no fetch should happen when attachment_config is missing"
+        );
+        // Text body still flows.
+        assert_eq!(msg.content.text.as_deref(), Some("[image]"));
+    }
+
+    /// Items whose extension is not in `allowed_extensions` are skipped
+    /// without fetching. Mirrors feishu's behaviour.
+    #[tokio::test]
+    async fn test_handle_incoming_skips_disallowed_extension() {
+        let payload = serde_json::json!({
+            "type": "event",
+            "v": 1,
+            "event": {
+                "id": "e",
+                "type": "message.image",
+                "data": {
+                    "content": "[image]",
+                    "items": [{
+                        "type": "image",
+                        "media": {
+                            "url": "https://invalid.example/never-fetched?ct=image%2Fjpeg",
+                            "media_type": "image"
+                        }
+                    }],
+                    "group": null,
+                    "message_id": "m",
+                    "msg_type": "image",
+                    "sender": {"id": "u1", "role": "user"}
+                }
+            }
+        })
+        .to_string();
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<InboundMessage>));
+        let captured_for_cb = captured.clone();
+        let on_message = move |msg: InboundMessage| -> Result<()> {
+            *captured_for_cb.lock().unwrap() = Some(msg);
+            Ok(())
+        };
+
+        // Allowlist excludes jpg.
+        let cfg = jyc_types::InboundAttachmentConfig {
+            enabled: true,
+            allowed_extensions: vec![".pdf".to_string()],
+            max_file_size: None,
+            max_per_message: None,
+            save_path: None,
+        };
+
+        WechatWebSocket::new("h", "t")
+            .with_attachment_config(Some(cfg))
+            .handle_incoming("wechat_me", &payload, &on_message)
+            .await
+            .expect("handle_incoming should succeed");
+
+        let msg = captured.lock().unwrap().take().unwrap();
+        assert!(
+            msg.attachments.is_empty(),
+            "extension allowlist should reject jpg"
         );
     }
 

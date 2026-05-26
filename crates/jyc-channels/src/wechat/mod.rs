@@ -10,5 +10,6 @@
 //! - Pure text messages only in v1 (rich media can be added later)
 
 pub mod inbound;
+pub mod media;
 pub mod outbound;
 pub mod websocket;

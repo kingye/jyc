@@ -162,15 +162,23 @@ pub struct WechatInboundAdapter {
     /// On each reconnection, a new WebSocket is created and its sender is pushed
     /// here so the outbound adapter always has a live sender.
     shared_sender: Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
+    /// Workspace root path (e.g., "/home/jiny/projects/jyc-data").
+    /// Used by `save_attachments_to_thread_directory` to compute the per-
+    /// thread `attachments/` directory. Defaults to the process's current
+    /// working directory if `new` is used.
+    workspace_root: std::path::PathBuf,
 }
 
 impl WechatInboundAdapter {
     /// Create a new WeChat inbound adapter.
     pub fn new(config: &WechatConfig, channel_name: String) -> Self {
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         Self {
             config: config.clone(),
             channel_name,
             shared_sender: None,
+            workspace_root,
         }
     }
 
@@ -184,11 +192,56 @@ impl WechatInboundAdapter {
         channel_name: String,
         shared_sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
     ) -> Self {
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         Self {
             config: config.clone(),
             channel_name,
             shared_sender: Some(shared_sender),
+            workspace_root,
         }
+    }
+
+    /// Override the workspace root used when saving attachments. Builder-
+    /// style; useful in tests and for any deployment where the process's
+    /// CWD is not the JYC data root.
+    pub fn with_workspace(mut self, workspace_root: std::path::PathBuf) -> Self {
+        self.workspace_root = workspace_root;
+        self
+    }
+
+    /// Save inbound attachments to disk under
+    /// `<workspace_root>/<channel>/workspace/<thread>/attachments/`.
+    ///
+    /// Mirrors the feishu equivalent. Called from `monitor.rs` BEFORE
+    /// routing so that by the time the agent thread sees the message the
+    /// `MessageAttachment.saved_path` field is already populated and the
+    /// agent's filesystem tools (read/bash/glob) can find the files in
+    /// the thread workspace.
+    ///
+    /// Thread name is derived via `WechatInboundAdapter::derive_thread_name`
+    /// (using the channel name + matched-pattern logic) just like the
+    /// router would derive it — keeping the on-disk layout consistent
+    /// with where the agent actually runs.
+    pub async fn save_attachments_to_thread_directory(
+        &self,
+        message: &mut InboundMessage,
+        patterns: &[ChannelPattern],
+        attachment_config: Option<&jyc_types::InboundAttachmentConfig>,
+    ) -> Result<()> {
+        // We use the adapter's `derive_thread_name` directly (the wechat
+        // matcher today returns the channel name). If pattern-based
+        // overrides are added later, this stays correct because both the
+        // saver and the router consult the same function.
+        let thread_name = ChannelMatcher::derive_thread_name(self, message, patterns, None);
+        jyc_core::attachment_storage::save_attachments_to_thread_directory(
+            message,
+            &self.workspace_root,
+            &self.channel_name,
+            &thread_name,
+            attachment_config,
+        )
+        .await
     }
 }
 
@@ -243,7 +296,8 @@ impl InboundAdapter for WechatInboundAdapter {
                 &self.config.token,
                 self.config.websocket.max_reconnect_attempts,
                 self.config.websocket.reconnect_delay_secs,
-            );
+            )
+            .with_attachment_config(options.attachment_config.clone());
 
             // Push the new WebSocket's sender into the shared slot so the
             // outbound adapter always sends through the live connection.
@@ -490,5 +544,112 @@ mod tests {
         let msg = make_wechat_message("user1", "Hello");
         let name = adapter.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "my_wechat_bot");
+    }
+
+    /// End-to-end save test: an `InboundMessage` carrying inline
+    /// attachment bytes is persisted to
+    /// `<workspace>/<channel>/workspace/<thread>/attachments/...`. Mirrors
+    /// `feishu::inbound::tests::test_save_attachments_to_thread_directory`.
+    #[tokio::test]
+    async fn test_save_attachments_to_thread_directory() {
+        use jyc_types::MessageAttachment;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+
+        let adapter = WechatInboundAdapter::new(
+            &WechatConfig::default(),
+            "wechat_me".to_string(),
+        )
+        .with_workspace(workspace_root.clone());
+
+        let mut message = make_wechat_message("u1@im.wechat", "[image]");
+        message.attachments.push(MessageAttachment {
+            filename: "image_msg42_0.jpg".to_string(),
+            content_type: "image/jpeg".to_string(),
+            size: 5,
+            content: Some(vec![1, 2, 3, 4, 5]),
+            saved_path: None,
+        });
+        message.attachments.push(MessageAttachment {
+            filename: "image_msg42_1.png".to_string(),
+            content_type: "image/png".to_string(),
+            size: 3,
+            content: Some(vec![9, 8, 7]),
+            saved_path: None,
+        });
+
+        let cfg = jyc_types::InboundAttachmentConfig {
+            enabled: true,
+            allowed_extensions: vec![".jpg".to_string(), ".png".to_string()],
+            max_file_size: None,
+            max_per_message: None,
+            save_path: None,
+        };
+
+        adapter
+            .save_attachments_to_thread_directory(
+                &mut message,
+                &[],
+                Some(&cfg),
+            )
+            .await
+            .expect("save should succeed");
+
+        // Both attachments must now have a saved_path under the expected
+        // tree: <workspace>/wechat_me/workspace/wechat_me/attachments/...
+        // (Thread name == channel name for the default WechatMatcher.)
+        for att in &message.attachments {
+            let path = att
+                .saved_path
+                .as_ref()
+                .expect("saved_path must be set after save");
+            assert!(
+                path.exists(),
+                "attachment file must exist on disk: {}",
+                path.display()
+            );
+            let parent = path.parent().expect("attachment path must have parent");
+            assert!(
+                parent.ends_with("attachments"),
+                "attachments must land in the attachments/ dir, got parent: {}",
+                parent.display()
+            );
+            // Thread directory: <workspace>/wechat_me/workspace/wechat_me
+            let thread_dir = parent.parent().expect("attachments parent");
+            assert!(
+                thread_dir.starts_with(&workspace_root),
+                "attachment must be under workspace_root, got: {}",
+                thread_dir.display()
+            );
+        }
+
+        // Bytes preserved.
+        let path0 = message.attachments[0].saved_path.as_ref().unwrap();
+        let bytes0 = tokio::fs::read(path0).await.unwrap();
+        assert_eq!(bytes0, vec![1, 2, 3, 4, 5]);
+    }
+
+    /// No attachments → no error, no directory created.
+    #[tokio::test]
+    async fn test_save_attachments_no_attachments() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+
+        let adapter = WechatInboundAdapter::new(
+            &WechatConfig::default(),
+            "wechat_me".to_string(),
+        )
+        .with_workspace(workspace_root);
+
+        let mut message = make_wechat_message("u1", "hello");
+        // attachments is empty.
+        adapter
+            .save_attachments_to_thread_directory(&mut message, &[], None)
+            .await
+            .expect("save should be a no-op for empty attachments");
     }
 }

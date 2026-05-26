@@ -122,7 +122,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
     async fn send_reply(
         &self,
-        _original: &InboundMessage,
+        original: &InboundMessage,
         reply_text: &str,
         thread_path: &Path,
         message_dir: &str,
@@ -159,10 +159,31 @@ impl OutboundAdapter for WechatOutboundAdapter {
         // 5. Skip attachment validation for v1 (text-only)
         // Attachments will be supported in future versions.
 
-        // 6. Send the reply through WebSocket
-        // Format: {"type":"send","content":"..."}
+        // 6. Resolve the outbound `to` address from the original inbound
+        // message. The OpenILink Bridge multiplexes many WeChat
+        // conversations through one bot connection, so every send must
+        // declare which conversation it's targeting. Without `to` the
+        // server returns `{"error":"to is required","type":"error"}`
+        // and the reply is dropped.
+        //
+        // For 1:1 messages: use sender_address (event.data.sender.id),
+        //                   which is the WeChat user ID like
+        //                   `o9cq8082...@im.wechat`.
+        // For group messages (event.data.group non-null in the inbound
+        // payload, surfaced as `is_group=true` metadata): prefer
+        // event.data.group.id so the reply lands in the same group.
+        let to = resolve_outbound_to(original).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Cannot send WeChat reply: original message has no usable `to` \
+                 address (no sender_address, no group.id metadata)"
+            )
+        })?;
+
+        // 7. Send the reply through WebSocket
+        // Format: {"type":"send","to":"<conversation>","content":"..."}
         let json_msg = serde_json::json!({
             "type": "send",
+            "to": &to,
             "content": full_reply,
         })
         .to_string();
@@ -174,11 +195,12 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
         tracing::info!(
             text_len = full_reply.len(),
+            to = %to,
             message_id = %message_id,
             "WeChat reply sent"
         );
 
-        // 7. Handle attachments (WeChat v1: text-only, log a warning)
+        // 8. Handle attachments (WeChat v1: text-only, log a warning)
         if let Some(atts) = attachments {
             if !atts.is_empty() {
                 tracing::warn!(
@@ -188,7 +210,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
             }
         }
 
-        // 8. Store reply to chat log
+        // 9. Store reply to chat log
         self.storage
             .store_reply(thread_path, &full_reply, message_dir)
             .await?;
@@ -207,6 +229,19 @@ impl OutboundAdapter for WechatOutboundAdapter {
         subject: &str,
         body: &str,
     ) -> Result<SendResult> {
+        // The OpenILink Bridge requires `to` on every send. For alerts
+        // (proactive, no inbound message to reply to) we use the
+        // configured `recipient` directly. The recipient is whatever
+        // string the operator put in the alerting config — it must be
+        // a valid OpenILink address (e.g. a WeChat user/group ID like
+        // `oXXX@im.wechat`).
+        if recipient.is_empty() {
+            anyhow::bail!(
+                "Cannot send WeChat alert: recipient is empty. Configure a \
+                 valid WeChat conversation ID in the alerting recipient field."
+            );
+        }
+
         // Format alert message
         let alert_text = format!("{}\n\n{}", subject, body);
 
@@ -214,6 +249,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
         let json_msg = serde_json::json!({
             "type": "send",
+            "to": recipient,
             "content": alert_text,
         })
         .to_string();
@@ -227,35 +263,164 @@ impl OutboundAdapter for WechatOutboundAdapter {
     }
 }
 
+/// Resolve the outbound `to` address from an inbound message.
+///
+/// Picks, in order:
+/// 1. `metadata.group.id` if the message came from a group chat
+///    (`metadata.is_group == true`). Group replies must address the
+///    group, not the individual sender.
+/// 2. `sender_address` (the WeChat user ID extracted from
+///    `event.data.sender.id` in the inbound parser).
+/// 3. `None` — the inbound message can't be replied to. Caller decides
+///    whether that's an error or a no-op.
+fn resolve_outbound_to(original: &InboundMessage) -> Option<String> {
+    let is_group = original
+        .metadata
+        .get("is_group")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if is_group {
+        if let Some(group_id) = original
+            .metadata
+            .get("group")
+            .and_then(|g| g.get("id"))
+            .and_then(|v| v.as_str())
+        {
+            if !group_id.is_empty() {
+                return Some(group_id.to_string());
+            }
+        }
+        // Group flag set but no group.id available — fall through to
+        // sender_address rather than failing outright.
+    }
+
+    if !original.sender_address.is_empty() {
+        return Some(original.sender_address.clone());
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::MessageContent;
 
+    fn make_inbound_with_sender(sender: &str) -> InboundMessage {
+        InboundMessage {
+            id: "id".to_string(),
+            channel: "wechat_me".to_string(),
+            channel_uid: "msg_1".to_string(),
+            sender: sender.to_string(),
+            sender_address: sender.to_string(),
+            recipients: vec![],
+            topic: String::new(),
+            content: MessageContent {
+                text: Some("hi".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: std::collections::HashMap::new(),
+            matched_pattern: None,
+        }
+    }
+
+    /// 1:1 message: `to` resolves to the sender's WeChat ID. Mirrors the
+    /// production case (May 26 incident: `o9cq8082...@im.wechat`).
     #[test]
-    fn test_send_reply_json_format() {
+    fn resolve_to_uses_sender_address_for_one_to_one() {
+        let msg = make_inbound_with_sender("o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat");
+        let to = resolve_outbound_to(&msg);
+        assert_eq!(
+            to.as_deref(),
+            Some("o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat"),
+        );
+    }
+
+    /// Group message: `to` resolves to the group ID, not the sender.
+    /// `is_group=true` and `group.id` are both set in metadata by the
+    /// inbound parser when `event.data.group` is non-null.
+    #[test]
+    fn resolve_to_uses_group_id_when_is_group_true() {
+        let mut msg = make_inbound_with_sender("u1@im.wechat");
+        msg.metadata.insert(
+            "is_group".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        msg.metadata.insert(
+            "group".to_string(),
+            serde_json::json!({"id": "grp_abc", "name": "Group X"}),
+        );
+
+        let to = resolve_outbound_to(&msg);
+        assert_eq!(to.as_deref(), Some("grp_abc"));
+    }
+
+    /// Defensive fallback: if `is_group=true` is set but `group.id` is
+    /// missing or empty, fall back to sender_address rather than failing
+    /// outright. The reply lands on the sender instead of the group; not
+    /// ideal but better than dropping the reply.
+    #[test]
+    fn resolve_to_falls_back_to_sender_when_group_id_missing() {
+        let mut msg = make_inbound_with_sender("u1@im.wechat");
+        msg.metadata.insert(
+            "is_group".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        // group object exists but has no `id` field.
+        msg.metadata.insert(
+            "group".to_string(),
+            serde_json::json!({"name": "Group X"}),
+        );
+
+        let to = resolve_outbound_to(&msg);
+        assert_eq!(to.as_deref(), Some("u1@im.wechat"));
+    }
+
+    /// No usable address at all — the message has no sender_address and
+    /// no group metadata. Caller (send_reply) is expected to translate
+    /// this into an explicit error.
+    #[test]
+    fn resolve_to_returns_none_when_no_address_available() {
+        let msg = make_inbound_with_sender("");
+        let to = resolve_outbound_to(&msg);
+        assert!(to.is_none());
+    }
+
+    /// Documents the wire format the OpenILink Bridge accepts for a 1:1
+    /// reply. Required fields: `type`, `to`, `content`. Without `to` the
+    /// server returns `{"error":"to is required","type":"error"}` (the
+    /// May 26 production failure that prompted this fix).
+    #[test]
+    fn outbound_send_frame_includes_to_field() {
         let json_msg = serde_json::json!({
             "type": "send",
+            "to": "o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat",
             "content": "Hello, world!",
-        })
-        .to_string();
+        });
 
-        let parsed: serde_json::Value = serde_json::from_str(&json_msg).unwrap();
-        assert_eq!(parsed["type"], "send");
-        assert_eq!(parsed["content"], "Hello, world!");
+        assert_eq!(json_msg["type"], "send");
+        assert_eq!(json_msg["to"], "o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat");
+        assert_eq!(json_msg["content"], "Hello, world!");
     }
 
     #[test]
-    fn test_send_alert_json_format() {
-        let alert_text = "Alert: System down\n\nPlease check the server.";
+    fn outbound_alert_frame_includes_to_field() {
         let json_msg = serde_json::json!({
             "type": "send",
-            "content": alert_text,
-        })
-        .to_string();
+            "to": "kingye@im.wechat",
+            "content": "Alert: System down\n\nPlease check the server.",
+        });
 
-        let parsed: serde_json::Value = serde_json::from_str(&json_msg).unwrap();
-        assert_eq!(parsed["type"], "send");
-        assert_eq!(parsed["content"], alert_text);
+        assert_eq!(json_msg["type"], "send");
+        assert_eq!(json_msg["to"], "kingye@im.wechat");
+        assert!(json_msg["content"].as_str().unwrap().contains("Alert"));
     }
 
     #[test]

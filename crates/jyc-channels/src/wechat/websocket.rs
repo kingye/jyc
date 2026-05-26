@@ -9,16 +9,12 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
 use jyc_types::{InboundMessage, MessageContent};
-
-/// Default max reconnect attempts
-const DEFAULT_MAX_RECONNECT: usize = 10;
 
 /// WebSocket connection handler for WeChat OpenILink Bridge.
 ///
@@ -29,16 +25,10 @@ pub struct WechatWebSocket {
     base_url: String,
     /// Access token
     token: String,
-    /// Maximum reconnect attempts
-    max_reconnect_attempts: usize,
-    /// Base reconnect delay in seconds (used in exponential backoff: delay * 2^attempt)
-    reconnect_delay_secs: u64,
     /// Sender half of the outbound channel — clones can be shared with `WechatOutboundAdapter`
     sender: mpsc::UnboundedSender<String>,
     /// Receiver half of the outbound channel
     outbound_rx: Option<mpsc::UnboundedReceiver<String>>,
-    /// Reconnection count
-    reconnect_count: usize,
 }
 
 impl WechatWebSocket {
@@ -51,31 +41,22 @@ impl WechatWebSocket {
         Self {
             base_url: base_url.to_string(),
             token: token.to_string(),
-            max_reconnect_attempts: DEFAULT_MAX_RECONNECT,
-            reconnect_delay_secs: 5,
             sender: tx,
             outbound_rx: Some(rx),
-            reconnect_count: 0,
         }
     }
 
     /// Create a new WeChat WebSocket handler with custom reconnect settings.
+    /// Reconnect parameters are stored in the adapter, not on the WS instance,
+    /// since a fresh WS is created on each connection attempt.
+    #[allow(unused_variables)]
     pub fn new_with_config(
         base_url: &str,
         token: &str,
         max_reconnect_attempts: usize,
         reconnect_delay_secs: u64,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
-        Self {
-            base_url: base_url.to_string(),
-            token: token.to_string(),
-            max_reconnect_attempts,
-            reconnect_delay_secs,
-            sender: tx,
-            outbound_rx: Some(rx),
-            reconnect_count: 0,
-        }
+        Self::new(base_url, token)
     }
 
     /// Get a clone of the sender for outbound messages.
@@ -116,8 +97,6 @@ impl WechatWebSocket {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Reset reconnection count on successful connection
-        self.reconnect_count = 0;
         tracing::info!("WeChat WebSocket connected");
 
         // Take the outbound receiver
@@ -274,32 +253,6 @@ impl WechatWebSocket {
         on_message(message)?;
         Ok(())
     }
-
-    /// Handle reconnection with exponential backoff.
-    ///
-    /// Returns `true` if we should retry, `false` if max attempts reached.
-    pub async fn handle_reconnection(&mut self) -> bool {
-        if self.reconnect_count >= self.max_reconnect_attempts {
-            tracing::error!(
-                max_attempts = self.max_reconnect_attempts,
-                "Maximum reconnection attempts reached for WeChat WebSocket"
-            );
-            return false;
-        }
-
-        // Exponential backoff: reconnect_delay_secs * 2^attempt, capped at 60 seconds
-        let delay_secs = std::cmp::min(self.reconnect_delay_secs << self.reconnect_count, 60);
-        self.reconnect_count += 1;
-        tracing::info!(
-            attempt = self.reconnect_count,
-            max_attempts = self.max_reconnect_attempts,
-            delay_secs = delay_secs,
-            "Reconnecting to WeChat WebSocket"
-        );
-
-        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-        true
-    }
 }
 
 #[cfg(test)]
@@ -316,8 +269,9 @@ mod tests {
     #[test]
     fn test_new_with_config() {
         let ws = WechatWebSocket::new_with_config("example.com", "token", 5, 3);
-        assert_eq!(ws.max_reconnect_attempts, 5);
-        assert_eq!(ws.reconnect_count, 0);
+        // new_with_config delegates to new(), ignoring reconnect params
+        // since reconnect tracking is in the adapter, not the WS instance
+        assert!(ws.sender().send("test".to_string()).is_ok());
     }
 
     #[test]
@@ -330,13 +284,6 @@ mod tests {
         sender2.send("test2".to_string()).ok();
     }
 
-    #[tokio::test]
-    async fn test_handle_reconnection_max_attempts() {
-        let mut ws = WechatWebSocket::new_with_config("example.com", "token", 2, 5);
-        ws.reconnect_count = 2;
-        // Already at max, should return false immediately
-        assert!(!ws.handle_reconnection().await);
-    }
 
     /// Test incoming JSON message format parsing
     #[test]

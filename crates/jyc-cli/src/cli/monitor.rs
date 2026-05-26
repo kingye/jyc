@@ -494,17 +494,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     use jyc_types::InboundAdapter;
                     use jyc_channels::wechat::inbound::WechatMatcher;
 
-                    // Create the adapter and initialize WebSocket
-                    let adapter = WechatInboundAdapter::new(&wechat_config, channel_name_owned.clone());
-
-                    // Create WebSocket and get the sender for outbound
-                    let sender = adapter.create_and_get_sender().await;
-
-                    // Set the sender on the outbound adapter
-                    {
-                        let mut guard = wechat_sender_arc_clone.lock().await;
-                        *guard = Some(sender);
-                    }
+                    // Create the adapter with the shared sender Arc so it can
+                    // update the outbound sender on each reconnection.
+                    let adapter = WechatInboundAdapter::with_shared_sender(
+                        &wechat_config,
+                        channel_name_owned.clone(),
+                        wechat_sender_arc_clone,
+                    );
 
                     let thread_manager_clone = thread_manager.clone();
                     let options = jyc_types::InboundAdapterOptions {

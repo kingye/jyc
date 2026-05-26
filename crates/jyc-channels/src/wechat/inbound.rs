@@ -158,8 +158,10 @@ pub struct WechatInboundAdapter {
     config: WechatConfig,
     /// Channel name from config (e.g., "wechat_bot")
     channel_name: String,
-    /// Pre-created WebSocket (shared with outbound adapter)
-    ws: Arc<Mutex<Option<WechatWebSocket>>>,
+    /// Shared sender Arc pointing to the same storage as WechatOutboundAdapter.
+    /// On each reconnection, a new WebSocket is created and its sender is pushed
+    /// here so the outbound adapter always has a live sender.
+    shared_sender: Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
 }
 
 impl WechatInboundAdapter {
@@ -168,25 +170,25 @@ impl WechatInboundAdapter {
         Self {
             config: config.clone(),
             channel_name,
-            ws: Arc::new(Mutex::new(None)),
+            shared_sender: None,
         }
     }
 
-    /// Create the WebSocket handler and return its sender for outbound use.
+    /// Create a new WeChat inbound adapter with a shared sender.
     ///
-    /// This allows the monitor to share the same WebSocket connection
-    /// between inbound and outbound adapters. Call this before `start()`.
-    pub async fn create_and_get_sender(&self) -> mpsc::UnboundedSender<String> {
-        let ws = WechatWebSocket::new_with_config(
-            &self.config.base_url,
-            &self.config.token,
-            self.config.websocket.max_reconnect_attempts,
-            self.config.websocket.reconnect_delay_secs,
-        );
-        let sender = ws.sender();
-        let mut guard = self.ws.lock().await;
-        *guard = Some(ws);
-        sender
+    /// The `shared_sender` must point to the same `Arc<Mutex<Option<...>>>` as
+    /// the outbound adapter's sender storage. On each reconnect, a fresh
+    /// WebSocket is created and the new sender is written into this shared slot.
+    pub fn with_shared_sender(
+        config: &WechatConfig,
+        channel_name: String,
+        shared_sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    ) -> Self {
+        Self {
+            config: config.clone(),
+            channel_name,
+            shared_sender: Some(shared_sender),
+        }
     }
 }
 
@@ -227,23 +229,28 @@ impl InboundAdapter for WechatInboundAdapter {
             return Ok(());
         }
 
-        // Create WebSocket handler (use pre-created if available from monitor)
-        let mut ws = {
-            let mut guard = self.ws.lock().await;
-            guard.take().unwrap_or_else(|| {
-                WechatWebSocket::new_with_config(
-                    &self.config.base_url,
-                    &self.config.token,
-                    self.config.websocket.max_reconnect_attempts,
-                    self.config.websocket.reconnect_delay_secs,
-                )
-            })
-        };
-
         let channel_name = self.channel_name.clone();
+        let mut reconnect_count = 0usize;
 
         loop {
             tracing::info!("Starting WeChat WebSocket connection...");
+
+            // Create a FRESH WebSocket on every iteration.
+            // This avoids the `outbound_rx.take()` panic on re-run and ensures
+            // the outbound sender always has a live channel pair.
+            let mut ws = WechatWebSocket::new_with_config(
+                &self.config.base_url,
+                &self.config.token,
+                self.config.websocket.max_reconnect_attempts,
+                self.config.websocket.reconnect_delay_secs,
+            );
+
+            // Push the new WebSocket's sender into the shared slot so the
+            // outbound adapter always sends through the live connection.
+            if let Some(ref shared) = self.shared_sender {
+                let mut guard = shared.lock().await;
+                *guard = Some(ws.sender());
+            }
 
             match ws.run(&channel_name, &*options.on_message, &cancel).await {
                 Ok(()) => {
@@ -258,11 +265,27 @@ impl InboundAdapter for WechatInboundAdapter {
                     }
                     tracing::error!(error = %e, "WeChat WebSocket error");
 
-                    if !ws.handle_reconnection().await {
-                        tracing::error!("Max reconnection attempts reached, stopping WeChat channel");
+                    // Exponential backoff: reconnect_delay_secs * 2^attempt, capped at 60s
+                    let max_attempts = self.config.websocket.max_reconnect_attempts;
+                    if reconnect_count >= max_attempts {
+                        tracing::error!(max_attempts, "Max reconnection attempts reached, stopping WeChat channel");
                         break;
                     }
-                    // Loop continues → reconnect
+
+                    let delay_secs = std::cmp::min(
+                        self.config.websocket.reconnect_delay_secs << reconnect_count,
+                        60,
+                    );
+                    reconnect_count += 1;
+                    tracing::info!(
+                        attempt = reconnect_count,
+                        max_attempts,
+                        delay_secs,
+                        "Reconnecting to WeChat WebSocket"
+                    );
+
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                    // Loop creates a fresh WS next iteration
                 }
             }
         }

@@ -107,7 +107,8 @@ impl WechatWebSocket {
         cancel: &CancellationToken,
     ) -> Result<()> {
         let ws_url = self.ws_url();
-        tracing::info!(url = %ws_url, "Connecting to WeChat OpenILink WebSocket...");
+        let masked_url = format!("wss://{}/bot/v1/ws?token=***", self.base_url);
+        tracing::info!(url = %masked_url, "Connecting to WeChat OpenILink WebSocket...");
 
         let (ws_stream, _) = connect_async(&ws_url)
             .await

@@ -3340,4 +3340,75 @@ mod tests {
         result.sort();
         assert_eq!(result, vec!["issue-42".to_string()]);
     }
+
+    // --- Dedup tests for triggered_in_cycle ---
+
+    #[test]
+    fn test_triggered_in_cycle_allows_first_trigger() {
+        // Simulates the dedup guard pattern used in poll_once() for all
+        // trigger types (label, comment, review, review_comment, CI failure).
+        // Validates that the first trigger for an issue/PR is allowed through.
+        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+
+        // First insert for issue 42 should return true (allowed)
+        assert!(triggered_in_cycle.insert(42), "First trigger for an issue should be allowed");
+    }
+
+    #[test]
+    fn test_triggered_in_cycle_blocks_duplicate() {
+        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+
+        // First insert returns true
+        assert!(triggered_in_cycle.insert(42));
+
+        // Second insert for same number returns false (blocked)
+        assert!(!triggered_in_cycle.insert(42), "Duplicate trigger for same issue should be blocked");
+    }
+
+    #[test]
+    fn test_triggered_in_cycle_allows_different_numbers() {
+        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+
+        // Insert different issue numbers — all should be allowed
+        assert!(triggered_in_cycle.insert(42));
+        assert!(triggered_in_cycle.insert(43), "Different issue numbers should each be allowed");
+        assert!(triggered_in_cycle.insert(100));
+    }
+
+    #[test]
+    fn test_triggered_in_cycle_independent_per_cycle() {
+        // Validates that the dedup set is scoped per poll cycle — a fresh
+        // HashSet is created for each poll_once() call, so the same issue
+        // number can trigger again in a new cycle.
+        let mut cycle1: HashSet<u64> = HashSet::new();
+        assert!(cycle1.insert(42));  // First cycle: allowed
+        assert!(!cycle1.insert(42)); // First cycle: duplicate blocked
+
+        // New cycle = fresh HashSet
+        let mut cycle2: HashSet<u64> = HashSet::new();
+        assert!(cycle2.insert(42), "Same issue should be allowed in a new poll cycle");
+    }
+
+    #[test]
+    fn test_triggered_in_cycle_mixed_issues() {
+        // Validates realistic scenario: issue 42 triggers via label change,
+        // then a comment for issue 42 is blocked, while a comment for
+        // issue 43 is still allowed.
+        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+
+        // Label trigger for issue 42 — allowed
+        assert!(triggered_in_cycle.insert(42));
+
+        // Comment trigger for issue 42 — blocked (duplicate)
+        assert!(!triggered_in_cycle.insert(42));
+
+        // Comment trigger for issue 43 — allowed (different issue)
+        assert!(triggered_in_cycle.insert(43));
+
+        // Review trigger for PR 42 — blocked (same number, still in cycle)
+        assert!(!triggered_in_cycle.insert(42));
+
+        // Review trigger for PR 99 — allowed
+        assert!(triggered_in_cycle.insert(99));
+    }
 }

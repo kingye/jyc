@@ -330,7 +330,9 @@ async fn generate_context_summary(
         - Outstanding work and next steps\n\n\
         Reply with ONLY the summary text. No preamble, no markdown headers, no tool calls.";
 
-    let user_msg = provider.format_user_message(joined_history);
+    let user_msg = provider.format_user_message(&[ContentBlock::Text {
+        text: joined_history.to_string(),
+    }]);
     let stream = provider
         .complete_raw(&[user_msg], &[], system_prompt)
         .await?;

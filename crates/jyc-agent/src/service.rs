@@ -12,7 +12,7 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_types::{InboundMessage, QueueItem, McpServerConfig};
+use jyc_types::{InboundMessage, QueueItem, McpServerConfig, ChannelPattern};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
@@ -105,16 +105,33 @@ pub struct JycAgentService {
     workdir: PathBuf,
     /// MCP server configurations for dynamic tool loading.
     mcp_configs: Vec<McpServerConfig>,
+    /// Channel patterns flattened from `[[channels.<name>.patterns]]`. Used
+    /// to look up per-pattern agent runtime flags (e.g.
+    /// `inject_inbound_images`) and per-pattern attachment configuration
+    /// by `InboundMessage.matched_pattern`.
+    patterns: Vec<ChannelPattern>,
+    /// Global `[attachments.inbound]` config (used as fallback when a matched
+    /// pattern does not specify its own `attachments`).
+    global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
 }
 
 impl JycAgentService {
-    /// Create a new agent service with the given configuration, workdir, and MCP configs.
-    pub fn new(config: AgentConfig, workdir: PathBuf, mcp_configs: Vec<McpServerConfig>) -> Self {
+    /// Create a new agent service with the given configuration, workdir,
+    /// MCP configs, channel patterns, and global inbound-attachment config.
+    pub fn new(
+        config: AgentConfig,
+        workdir: PathBuf,
+        mcp_configs: Vec<McpServerConfig>,
+        patterns: Vec<ChannelPattern>,
+        global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
+    ) -> Self {
         Self {
             config,
             event_buses: Mutex::new(HashMap::new()),
             workdir,
             mcp_configs,
+            patterns,
+            global_inbound_attachments,
         }
     }
 
@@ -267,8 +284,8 @@ impl JycAgentService {
         prompt
     }
 
-    /// Build the user prompt from an inbound message.
-    fn build_user_prompt(&self, message: &InboundMessage) -> String {
+    /// Build the user prompt text (header + body) from an inbound message.
+    fn build_user_prompt_text(&self, message: &InboundMessage) -> String {
         let mut prompt = String::new();
 
         prompt.push_str("## Incoming Message\n");
@@ -288,10 +305,123 @@ impl JycAgentService {
         prompt
     }
 
+    /// Resolve the additional absolute read-roots for tools that enforce a
+    /// path boundary. Returns at most one root: the resolved attachment
+    /// save directory (per-pattern override beats global) when it points
+    /// outside `thread_path`. Relative values resolve inside `thread_path`
+    /// and need no widening.
+    ///
+    /// Reuses `jyc_core::attachment_storage::resolve_attachment_save_dir`
+    /// so the agent's boundary rule never drifts from the channel adapters'
+    /// save-location rule.
+    fn resolve_additional_read_roots(
+        &self,
+        message: &InboundMessage,
+        thread_path: &Path,
+    ) -> Vec<PathBuf> {
+        let pattern_cfg = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.attachments.as_ref());
+        let cfg = pattern_cfg.or(self.global_inbound_attachments.as_ref());
+
+        let resolved = jyc_core::attachment_storage::resolve_attachment_save_dir(thread_path, cfg);
+
+        if resolved.starts_with(thread_path) {
+            Vec::new()
+        } else {
+            vec![resolved]
+        }
+    }
+
+    /// Build the user-turn content blocks from an inbound message.
+    ///
+    /// Always emits a leading text block (header + body). When the active
+    /// model has `supports_images = true` AND the matched pattern has
+    /// `inject_inbound_images = true`, also appends one `ContentBlock::Image`
+    /// per `image/*` attachment, base64-encoded inline from
+    /// `MessageAttachment.saved_path`.
+    ///
+    /// Skips attachments without a `saved_path` (download failed) and logs
+    /// (but does not fail) on read errors so transient I/O issues degrade
+    /// gracefully into the text-only path.
+    fn build_user_blocks(
+        &self,
+        message: &InboundMessage,
+        supports_images: bool,
+    ) -> Vec<crate::types::ContentBlock> {
+        use crate::types::{ContentBlock, ImageSource};
+        use base64::Engine as _;
+
+        let mut blocks = vec![ContentBlock::Text {
+            text: self.build_user_prompt_text(message),
+        }];
+
+        // Per-pattern opt-in. Default false when the message did not match a
+        // pattern or the pattern is not in our flattened list.
+        let pattern_inject = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .map(|p| p.inject_inbound_images)
+            .unwrap_or(false);
+
+        if !(supports_images && pattern_inject) {
+            return blocks;
+        }
+
+        let mut injected = 0usize;
+        for att in &message.attachments {
+            if !att.content_type.starts_with("image/") {
+                continue;
+            }
+            let Some(saved) = att.saved_path.as_ref() else {
+                tracing::debug!(
+                    filename = %att.filename,
+                    "Image attachment has no saved_path; skipping injection"
+                );
+                continue;
+            };
+            match std::fs::read(saved) {
+                Ok(bytes) => {
+                    blocks.push(ContentBlock::Image {
+                        source: ImageSource::Base64 {
+                            media_type: att.content_type.clone(),
+                            data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        },
+                    });
+                    injected += 1;
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    path = %saved.display(),
+                    "Failed to read image attachment for injection; skipping"
+                ),
+            }
+        }
+
+        if injected > 0 {
+            tracing::info!(
+                count = injected,
+                pattern = ?message.matched_pattern,
+                "Injected inbound image attachments into user turn"
+            );
+        }
+        blocks
+    }
+
     /// Create the tool registry for a thread.
-    async fn build_tool_registry(&self, _thread_path: &Path) -> ToolRegistry {
+    ///
+    /// `supports_images` gates the `read_image` built-in: when the active
+    /// model can accept image content blocks, the agent gets a way to load
+    /// local files or URLs into subsequent user turns. When the model is
+    /// text-only, the tool is omitted to keep the schema honest (no point
+    /// advertising a capability the model can't act on).
+    async fn build_tool_registry(&self, _thread_path: &Path, supports_images: bool) -> ToolRegistry {
         // Start with all built-in tools
         let mut registry = crate::tools::builtin::create_builtin_registry();
+
+        // Image-loading built-in (only when the model accepts images).
+        if supports_images {
+            crate::tools::builtin::register_read_image(&mut registry);
+        }
 
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
@@ -448,23 +578,25 @@ impl AgentService for JycAgentService {
             "Loaded prior context"
         );
 
-        // 4. Build prompts
+        // 4. Build prompts (image-injection gated by per-pattern flag and
+        //    per-model `supports_images`)
         let system_prompt = self.build_system_prompt(thread_path);
-        let user_prompt = self.build_user_prompt(message);
+        let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry
-        let tools = self.build_tool_registry(thread_path).await;
+        let tools = self.build_tool_registry(thread_path, provider.supports_images()).await;
 
         // 6. Get event bus for this thread
         let event_bus = self.get_event_bus(thread_name).await;
 
         // 7. Run agent loop
+        let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider.as_deref().map(|p| p as &dyn provider::Provider),
             tools: &tools,
             system_prompt: &system_prompt,
-            user_message: &user_prompt,
+            user_blocks,
             working_dir: thread_path,
             cancel: thread_cancel,
             thread_name,
@@ -472,6 +604,7 @@ impl AgentService for JycAgentService {
             prior_history,
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
+            additional_read_roots,
         })
         .await?;
 

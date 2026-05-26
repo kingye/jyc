@@ -196,6 +196,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             .map(|(model_name, model_def)| {
                                 (model_name.clone(), jyc_agent::types::ModelConfig {
                                     context_window: model_def.context_window,
+                                    supports_images: model_def.supports_images,
                                     params: model_def.params.clone(),
                                 })
                             })
@@ -205,6 +206,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             base_url: def.base_url.clone(),
                             api_key_env: def.api_key_env.clone(),
                             context_window: def.context_window,
+                            supports_images: def.supports_images,
                             params: def.params.clone(),
                             models,
                         })
@@ -216,7 +218,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     providers,
                     max_iterations: agent_config.max_iterations,
                 };
-                Arc::new(JycAgentService::new(agent_cfg, workdir.to_path_buf(), config_snapshot.mcps.clone()))
+                // Flatten patterns from all channels so the agent can look up
+                // per-pattern flags (e.g. inject_inbound_images) by
+                // InboundMessage.matched_pattern regardless of channel.
+                let all_patterns: Vec<jyc_types::ChannelPattern> = config_snapshot.channels
+                    .values()
+                    .filter_map(|c| c.patterns.clone())
+                    .flatten()
+                    .collect();
+                Arc::new(JycAgentService::new(
+                    agent_cfg,
+                    workdir.to_path_buf(),
+                    config_snapshot.mcps.clone(),
+                    all_patterns,
+                    inbound_attachment_config.clone(),
+                ))
             }
             "static" => {
                 let text = agent_config

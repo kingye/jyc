@@ -44,6 +44,13 @@ enabled = true
 # When false, messages queue and are processed sequentially (one at a time).
 # live_injection = false
 
+# Auto-inject inbound `image/*` attachments into the first user turn of the
+# agent loop as multimodal content blocks. Default: false. Only takes effect
+# when the active model has `supports_images = true`. When false, image
+# attachments stay on disk and the agent must use the `read_image` built-in
+# tool to load them on demand.
+# inject_inbound_images = true
+
 [channels.jiny283.patterns.rules.sender]
 exact = ["kingye@petalmail.com"]
 
@@ -166,6 +173,33 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 
 # Maximum iterations per cycle (default: 500)
 # max_iterations = 500
+
+# --- Agent providers ---
+#
+# Define one entry per provider. The `model` and `small_model` keys above
+# select which provider/model pair is active using `<provider>/<model-id>`.
+#
+# `supports_images` (per-provider or per-model, model-level wins) declares
+# whether the model accepts native image content blocks. When true, the
+# `read_image` built-in tool is registered, and per-pattern
+# `inject_inbound_images` (see channel patterns) can take effect.
+#
+# [agent.providers.deepseek]
+# type = "openai-compatible"
+# base_url = "https://api.deepseek.com"
+# api_key_env = "DEEPSEEK_API_KEY"
+# context_window = 128000
+#
+# [agent.providers.deepseek.models."deepseek-v4-pro"]
+# supports_images = true
+#
+# [agent.providers.anthropic]
+# type = "anthropic"
+# base_url = "https://api.anthropic.com/v1"
+# api_key_env = "ANTHROPIC_API_KEY"
+#
+# [agent.providers.anthropic.models."claude-opus-4-7"]
+# supports_images = true
 
 
 [agent.attachments]

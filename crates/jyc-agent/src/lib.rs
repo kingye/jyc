@@ -30,6 +30,7 @@ mod integration_tests {
             base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
             api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
             context_window: None,
+            supports_images: None,
             params: None,
             models: HashMap::new(),
         });
@@ -63,6 +64,7 @@ mod integration_tests {
             base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
             api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
             context_window: None,
+            supports_images: None,
             params: None,
             models: HashMap::new(),
         });
@@ -81,7 +83,9 @@ mod integration_tests {
             small_provider: None,
             tools: &registry,
             system_prompt: "You are a helpful assistant. Reply concisely.",
-            user_message: "What is 2+2? Use the bash tool to compute it with `echo $((2+2))`",
+            user_blocks: vec![types::ContentBlock::Text {
+                text: "What is 2+2? Use the bash tool to compute it with `echo $((2+2))`".to_string(),
+            }],
             working_dir: tmp.path(),
             cancel,
             thread_name: "test",
@@ -89,6 +93,7 @@ mod integration_tests {
             prior_history: Vec::new(),
             prior_raw_context: Vec::new(),
             max_iterations: None,
+            additional_read_roots: Vec::new(),
         }).await.unwrap();
 
         println!("Text: {}", result.text);

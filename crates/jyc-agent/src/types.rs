@@ -13,6 +13,26 @@ pub enum Role {
     Tool,
 }
 
+/// Source of image bytes in a content block.
+///
+/// Carries the canonical bytes-or-url + mime so each provider can choose its
+/// own wire format. OpenAI-compatible servers map both `Base64` and `Url`
+/// onto the same `image_url.url` field (using `data:` URLs for base64);
+/// Anthropic uses distinct `source.type = "base64"` vs `"url"` shapes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageSource {
+    /// Inline base64-encoded image bytes (no `data:` prefix).
+    Base64 {
+        media_type: String,
+        data: String,
+    },
+    /// Remote http(s) URL — the provider fetches it.
+    Url {
+        url: String,
+    },
+}
+
 /// A content block within a message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -20,6 +40,10 @@ pub enum ContentBlock {
     /// Plain text content.
     Text {
         text: String,
+    },
+    /// Image content (multimodal input).
+    Image {
+        source: ImageSource,
     },
     /// A tool use request from the assistant.
     ToolUse {
@@ -48,6 +72,14 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    /// Create a user message with arbitrary content blocks (text + images).
+    pub fn user_with_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::User,
+            content: blocks,
         }
     }
 
@@ -159,6 +191,10 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
     /// Default context window size in tokens
     pub context_window: Option<u64>,
+    /// Whether models under this provider can accept image content blocks
+    /// (multimodal input). Per-model override via `ModelConfig.supports_images`
+    /// takes precedence. Default: false.
+    pub supports_images: Option<bool>,
     /// Extra parameters merged into every API request for this provider
     pub params: Option<serde_json::Value>,
     /// Per-model configuration
@@ -171,6 +207,10 @@ pub struct ProviderConfig {
 pub struct ModelConfig {
     /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
+    /// Whether this specific model can accept image content blocks
+    /// (multimodal input). Overrides the provider-level `supports_images`.
+    /// Default: inherits from provider, else false.
+    pub supports_images: Option<bool>,
     /// Extra parameters merged into API request (overrides provider params)
     pub params: Option<serde_json::Value>,
 }

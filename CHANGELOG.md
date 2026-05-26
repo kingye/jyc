@@ -2,6 +2,88 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Native image input into the agent loop.** Two complementary entry points
+  let vision-capable models receive images directly as prompt content blocks
+  instead of via the out-of-band `jyc_vision` MCP detour:
+
+  1. **Inbound auto-injection.** Set
+     `inject_inbound_images = true` on a `[[channels.<name>.patterns]]` entry.
+     When the active model also has `supports_images = true`, every `image/*`
+     attachment on a matching message is base64-encoded from its
+     `MessageAttachment.saved_path` and appended as `ContentBlock::Image`
+     to the first user turn. Honors the existing
+     `[attachments.inbound].save_path` configuration without re-implementing
+     path resolution (uses
+     `jyc_core::attachment_storage::resolve_attachment_save_dir`). Default
+     for the new flag: `false`.
+
+  2. **Agent-driven `read_image` built-in tool.** Registered automatically
+     whenever the active provider has `supports_images() == true`. The
+     model can call it with either `path` (an absolute local path,
+     boundary-checked against the working directory and the configured
+     attachments root) or `url` (http/https, fetched and base64-inlined).
+     Supported MIME: png, jpeg, gif, webp. 10 MB inner cap.
+
+  Wire format: Anthropic emits `{"type":"image","source":{...}}` blocks;
+  OpenAI-compatible providers emit `{"type":"image_url","image_url":{"url":...}}`
+  parts and switch the user message to array-content form only when at
+  least one image is present (preserves legacy string-content form for
+  text-only requests, which several OpenAI-compat servers require).
+
+  Tools that load images mid-loop push onto a side-channel queue; the
+  agent loop drains it after each tool batch and emits a synthetic
+  user-role turn carrying the image blocks. This avoids cramming base64
+  into `tool_result` content (unsupported by most OpenAI-compat servers
+  for `role: "tool"`).
+
+- **Per-model `supports_images` flag** in `[agent.providers.<name>]` and
+  `[agent.providers.<name>.models.<id>]`. Model-level overrides
+  provider-level. Default `false`. Gates everything described above.
+
+### Changed
+
+- **`Provider::format_user_message`** now takes `&[ContentBlock]` instead
+  of `&str`. Existing call sites that passed plain text wrap the string
+  in a single `ContentBlock::Text { text }` — no behavior change for
+  text-only flows.
+
+- **`AgentLoopConfig`** field rename: `user_message: &str` →
+  `user_blocks: Vec<ContentBlock>`. Same semantics for text-only callers
+  (one text block); enables multimodal first turns.
+
+- **`JycAgentService::new`** signature gains two parameters:
+  `patterns: Vec<ChannelPattern>` (so the service can look up per-pattern
+  agent flags by `InboundMessage.matched_pattern`) and
+  `global_inbound_attachments: Option<InboundAttachmentConfig>` (so the
+  agent can derive the additional read-roots that `read_image` is
+  permitted to access). The CLI flattens
+  `config.channels[*].patterns` and forwards the global
+  `[attachments.inbound]` block.
+
+- **`ToolContext`** carries two new fields used by `read_image`:
+  `additional_read_roots: Vec<PathBuf>` (boundary widening) and
+  `pending_images: Mutex<Vec<ImageSource>>` (the side-channel queue).
+  Existing tools are unaffected.
+
+- **Refactored**
+  `jyc_core::attachment_storage::resolve_attachment_save_dir`. Extracted
+  the previously duplicated path-resolution logic from
+  `save_attachments_to_dir` and `save_attachments_to_thread_directory`
+  into one public helper. Both call sites now share it; the agent code
+  reuses it to keep its boundary rule in lockstep with the channel
+  adapters' save-location rule.
+
+### Deprecated
+
+- **`jyc_vision` MCP tool.** Models with `supports_images = true` now
+  load images natively via `read_image` and inbound auto-injection. The
+  MCP tool stays in tree for one release to support text-only models;
+  removal is planned in a subsequent release.
+
 ## [0.3.8] - 2026-05-22
 
 ### Added

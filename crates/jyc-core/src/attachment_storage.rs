@@ -11,6 +11,35 @@ use jyc_types::{InboundMessage, MessageAttachment};
 use jyc_types::InboundAttachmentConfig;
 use jyc_utils::helpers::sanitize_for_filesystem;
 
+/// Resolve the save directory for inbound attachments.
+///
+/// Rules:
+/// - If `attachment_config.save_path` is set and absolute, return it as-is.
+/// - If `attachment_config.save_path` is set and relative, join under
+///   `thread_path`.
+/// - If unset, return `thread_path/attachments/`.
+///
+/// Centralizes the attachment-path-resolution logic so callers (channel
+/// adapters that save attachments, agent code that needs to know which
+/// absolute roots to widen its filesystem boundary checks against) agree
+/// on exactly one rule.
+pub fn resolve_attachment_save_dir(
+    thread_path: &Path,
+    attachment_config: Option<&InboundAttachmentConfig>,
+) -> PathBuf {
+    match attachment_config.and_then(|c| c.save_path.as_deref()) {
+        Some(path) => {
+            let path_buf = PathBuf::from(path);
+            if path_buf.is_absolute() {
+                path_buf
+            } else {
+                thread_path.join(path_buf)
+            }
+        }
+        None => thread_path.join("attachments"),
+    }
+}
+
 /// Sanitize an attachment filename to prevent path traversal attacks.
 ///
 /// Strips directory components, normalizes path separators, and removes
@@ -96,18 +125,7 @@ pub async fn save_attachments_to_dir(
         return Ok(());
     }
 
-    // Determine save path: use configured path or default to thread_path/attachments/
-    let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
-        Some(path) => {
-            let path_buf = PathBuf::from(path);
-            if path_buf.is_absolute() {
-                path_buf
-            } else {
-                thread_path.join(path_buf)
-            }
-        }
-        None => thread_path.join("attachments"),
-    };
+    let save_dir = resolve_attachment_save_dir(thread_path, attachment_config);
 
     tracing::debug!("Attachment save directory: {}", save_dir.display());
     tokio::fs::create_dir_all(&save_dir)
@@ -176,18 +194,7 @@ pub async fn save_attachments_to_thread_directory(
         .join("workspace")
         .join(thread_name);
 
-    // Determine save path: use configured path or default to thread_dir/attachments/
-    let save_dir = match attachment_config.and_then(|c| c.save_path.as_deref()) {
-        Some(path) => {
-            let path_buf = PathBuf::from(path);
-            if path_buf.is_absolute() {
-                path_buf
-            } else {
-                thread_dir.join(path_buf)
-            }
-        }
-        None => thread_dir.join("attachments"),
-    };
+    let save_dir = resolve_attachment_save_dir(&thread_dir, attachment_config);
 
     tracing::debug!("Attachment save directory: {}", save_dir.display());
 

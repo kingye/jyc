@@ -246,6 +246,10 @@ pub struct ProviderDef {
     pub api_key_env: Option<String>,
     /// Default context window size in tokens (used if model-specific not set)
     pub context_window: Option<u64>,
+    /// Whether models under this provider can accept image content blocks
+    /// (multimodal input). Per-model `ModelDef.supports_images` overrides this.
+    /// Default: false.
+    pub supports_images: Option<bool>,
     /// Extra parameters merged into every API request for this provider
     #[serde(default)]
     pub params: Option<serde_json::Value>,
@@ -259,6 +263,9 @@ pub struct ProviderDef {
 pub struct ModelDef {
     /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
+    /// Whether this specific model can accept image content blocks
+    /// (multimodal input). Overrides `ProviderDef.supports_images`.
+    pub supports_images: Option<bool>,
     /// Extra parameters merged into API request when using this model (overrides provider params)
     #[serde(default)]
     pub params: Option<serde_json::Value>,

@@ -247,7 +247,7 @@ mod session {
             panic!("stub provider should not be invoked in these tests")
         }
 
-        fn format_user_message(&self, _text: &str) -> serde_json::Value {
+        fn format_user_message(&self, _blocks: &[jyc_agent::types::ContentBlock]) -> serde_json::Value {
             panic!("stub")
         }
 
@@ -457,7 +457,7 @@ mod tools {
     use std::path::Path;
 
     fn ctx(path: &Path) -> ToolContext<'_> {
-        ToolContext { working_dir: path }
+        ToolContext::new(path)
     }
 
     #[tokio::test]
@@ -593,7 +593,7 @@ mod mcp_bridge {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         let tool = ReplyMessageTool;
-        let ctx = ToolContext { working_dir: tmp.path() };
+        let ctx = ToolContext::new(tmp.path());
         let result = tool.execute(json!({"message": ""}), &ctx).await.unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("empty"));
@@ -606,7 +606,7 @@ mod mcp_bridge {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         let tool = ReplyMessageTool;
-        let ctx = ToolContext { working_dir: tmp.path() };
+        let ctx = ToolContext::new(tmp.path());
         let result = tool.execute(json!({"message": "Hello user!"}), &ctx).await.unwrap();
         assert!(!result.is_error);
 
@@ -654,6 +654,8 @@ mod skills {
             AgentConfig::default(),
             workdir,
             vec![],
+            vec![],
+            None,
         )
     }
 

@@ -20,10 +20,18 @@ pub struct AnthropicProvider {
     api_key: Option<String>,
     /// Extra parameters to merge into the API request body.
     params: Option<serde_json::Value>,
+    /// Whether the active model accepts image content blocks.
+    supports_images: bool,
 }
 
 impl AnthropicProvider {
-    pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
+    pub fn new(
+        base_url: &str,
+        model: &str,
+        api_key: Option<&str>,
+        params: Option<serde_json::Value>,
+        supports_images: bool,
+    ) -> Result<Self> {
         // See `openai_compat::OpenAiCompatProvider::new` for the full
         // rationale on connection-pool hygiene. Same defaults are
         // applied here for consistency across providers.
@@ -40,6 +48,7 @@ impl AnthropicProvider {
             model: model.to_string(),
             api_key: api_key.map(|s| s.to_string()),
             params,
+            supports_images,
         })
     }
 }
@@ -52,6 +61,10 @@ impl Provider for AnthropicProvider {
 
     fn model(&self) -> &str {
         &self.model
+    }
+
+    fn supports_images(&self) -> bool {
+        self.supports_images
     }
 
     async fn complete(
@@ -207,10 +220,24 @@ impl Provider for AnthropicProvider {
         Ok(Box::pin(stream))
     }
 
-    fn format_user_message(&self, text: &str) -> serde_json::Value {
+    fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+        let content: Vec<serde_json::Value> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(serde_json::json!({
+                    "type": "text",
+                    "text": text,
+                })),
+                ContentBlock::Image { source } => Some(image_block_anthropic(source)),
+                // ToolUse / ToolResult are not valid in a user-content array
+                // built from the prompt-construction path.
+                _ => None,
+            })
+            .collect();
+
         serde_json::json!({
             "role": "user",
-            "content": [{"type": "text", "text": text}],
+            "content": content,
         })
     }
 
@@ -503,6 +530,7 @@ fn to_anthropic_message(msg: &Message) -> serde_json::Value {
                 "type": "text",
                 "text": text,
             }),
+            ContentBlock::Image { source } => image_block_anthropic(source),
             ContentBlock::ToolUse { id, name, input } => serde_json::json!({
                 "type": "tool_use",
                 "id": id,
@@ -527,6 +555,32 @@ fn to_anthropic_message(msg: &Message) -> serde_json::Value {
         "role": role,
         "content": content,
     })
+}
+
+/// Build an Anthropic `image` content block from an `ImageSource`.
+///
+/// Anthropic uses different shapes for inline base64 vs remote URL:
+/// - Base64: `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`
+/// - URL:    `{"type":"image","source":{"type":"url","url":"https://..."}}`
+fn image_block_anthropic(source: &crate::types::ImageSource) -> serde_json::Value {
+    use crate::types::ImageSource;
+    match source {
+        ImageSource::Base64 { media_type, data } => serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }),
+        ImageSource::Url { url } => serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": url,
+            },
+        }),
+    }
 }
 
 /// Anthropic tool definition format.
@@ -585,6 +639,7 @@ mod tests {
             "claude-test-model",
             Some("test-key"),
             None,
+            false,
         )
         .expect("provider construction");
 

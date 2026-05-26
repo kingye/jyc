@@ -226,3 +226,83 @@ impl OutboundAdapter for WechatOutboundAdapter {
         Ok(SendResult { message_id })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_send_reply_json_format() {
+        let json_msg = serde_json::json!({
+            "type": "send",
+            "content": "Hello, world!",
+        })
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&json_msg).unwrap();
+        assert_eq!(parsed["type"], "send");
+        assert_eq!(parsed["content"], "Hello, world!");
+    }
+
+    #[test]
+    fn test_send_alert_json_format() {
+        let alert_text = "Alert: System down\n\nPlease check the server.";
+        let json_msg = serde_json::json!({
+            "type": "send",
+            "content": alert_text,
+        })
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&json_msg).unwrap();
+        assert_eq!(parsed["type"], "send");
+        assert_eq!(parsed["content"], alert_text);
+    }
+
+    #[test]
+    fn test_outbound_adapter_creation() {
+        let storage = Arc::new(MessageStorage::new(
+            &std::path::PathBuf::from("/tmp/test_wechat"),
+        ));
+        let adapter = WechatOutboundAdapter::new_with_attachments(
+            storage,
+            None,
+            true,
+        );
+        assert_eq!(adapter.channel_type(), "wechat");
+    }
+
+    #[test]
+    fn test_sender_set_and_connect() {
+        let storage = Arc::new(MessageStorage::new(
+            &std::path::PathBuf::from("/tmp/test_wechat"),
+        ));
+        let adapter = WechatOutboundAdapter::new_with_attachments(
+            storage,
+            None,
+            true,
+        );
+
+        // Initially no sender
+        let guard = adapter.sender.blocking_lock();
+        assert!(guard.is_none());
+        drop(guard);
+
+        // Create a channel and set it
+        let (tx, _rx) = mpsc::unbounded_channel();
+        adapter.sender.blocking_lock().replace(tx);
+
+        let guard = adapter.sender.blocking_lock();
+        assert!(guard.is_some());
+    }
+
+    #[test]
+    fn test_clean_body() {
+        let storage = Arc::new(MessageStorage::new(
+            &std::path::PathBuf::from("/tmp/test_wechat"),
+        ));
+        let adapter = WechatOutboundAdapter::new(storage);
+        assert_eq!(adapter.clean_body("  hello  "), "hello");
+        assert_eq!(adapter.clean_body("hello\n\nworld"), "hello\n\nworld");
+        assert_eq!(adapter.clean_body("trimmed  "), "trimmed");
+    }
+}

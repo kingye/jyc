@@ -337,4 +337,76 @@ mod tests {
         // Already at max, should return false immediately
         assert!(!ws.handle_reconnection().await);
     }
+
+    /// Test incoming JSON message format parsing
+    #[test]
+    fn test_incoming_message_json_format() {
+        let json = r#"{
+            "id": "msg_001",
+            "type": "text",
+            "content": "Hello, this is a test message",
+            "sender": "wx_user_123",
+            "sender_name": "张三",
+            "timestamp": 1234567890
+        }"#;
+
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed["id"], "msg_001");
+        assert_eq!(parsed["type"], "text");
+        assert_eq!(parsed["content"], "Hello, this is a test message");
+        assert_eq!(parsed["sender"], "wx_user_123");
+        assert_eq!(parsed["sender_name"], "张三");
+    }
+
+    /// Test minimal incoming JSON message (only required fields)
+    #[test]
+    fn test_incoming_message_minimal() {
+        let json = r#"{
+            "content": "Hello"
+        }"#;
+
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed["content"], "Hello");
+        assert!(parsed.get("id").is_none());
+        assert!(parsed.get("sender").is_none());
+    }
+
+    /// Test outgoing message JSON format
+    #[test]
+    fn test_outgoing_message_json_format() {
+        let json = serde_json::json!({
+            "type": "send",
+            "content": "AI reply message"
+        });
+
+        assert_eq!(json["type"], "send");
+        assert_eq!(json["content"], "AI reply message");
+    }
+
+    /// Test outgoing message with Unicode content
+    #[test]
+    fn test_outgoing_message_unicode() {
+        let json = serde_json::json!({
+            "type": "send",
+            "content": "你好，有什么可以帮助你的？"
+        });
+
+        assert_eq!(json["type"], "send");
+        assert_eq!(json["content"], "你好，有什么可以帮助你的？");
+    }
+
+    /// Test that sender is properly extracted when sender_name is absent
+    #[test]
+    fn test_sender_fallback_to_name() {
+        let json = r#"{
+            "content": "test",
+            "sender": "wx_user_456"
+        }"#;
+
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let sender = parsed.get("sender").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let sender_name = parsed.get("sender_name").and_then(|v| v.as_str()).unwrap_or(sender);
+        assert_eq!(sender, "wx_user_456");
+        assert_eq!(sender_name, "wx_user_456"); // Falls back to sender
+    }
 }

@@ -352,3 +352,44 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # github_type = ["pull_request"]
 # labels = ["ready-for-review"]
 # assignees = ["alice"]
+#
+# # --- Channel: my_wechat_bot ---
+# # WeChat channel via OpenILink WebSocket Bridge
+# # Both inbound and outbound share the same WebSocket connection.
+# # One bot = one fixed thread (thread name = channel name).
+# # v1 supports text-only messages.
+#
+# [channels.my_wechat_bot]
+# type = "wechat"
+#
+# [channels.my_wechat_bot.wechat]
+# base_url = "openilink.example.com"
+# token = "${WECHAT_BOT_TOKEN}"
+#
+# [channels.my_wechat_bot.wechat.websocket]
+# enabled = true
+# reconnect_delay_secs = 5
+# max_reconnect_attempts = 10
+#
+# # Pattern: match all messages (empty rules = catch-all)
+# [[channels.my_wechat_bot.patterns]]
+# name = "catch_all"
+# enabled = true
+#
+# [channels.my_wechat_bot.patterns.rules]
+#
+# # Pattern: match messages from specific sender
+# # [[channels.my_wechat_bot.patterns]]
+# # name = "vip_user"
+# # enabled = true
+# #
+# # [channels.my_wechat_bot.patterns.rules.sender]
+# # exact = ["wx_vip_user_123"]
+#
+# # Pattern: match messages containing keywords
+# # [[channels.my_wechat_bot.patterns]]
+# # name = "support"
+# # enabled = true
+# #
+# # [channels.my_wechat_bot.patterns.rules]
+# # keywords = ["help", "support", "问题"]

@@ -3251,6 +3251,115 @@ skills of the same name.
 2. Add the skill mapping to `deploy-templates.sh` (`get_skills` function)
 3. Run `./deploy-templates.sh <target>` to deploy
 
+## WeChat Channel Implementation
+
+The WeChat (微信) channel implementation provides messaging capabilities through the OpenILink WebSocket Bridge. Unlike Feishu which uses separate WebSocket (inbound) and HTTP API (outbound) paths, WeChat uses a **single shared WebSocket connection** for both receiving and sending messages. One bot corresponds to one fixed thread.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   OpenILink Bridge (Server)                  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │          WebSocket (wss://host/bot/v1/ws)            │  │
+│  │  ┌─────────────┐     ┌──────────────┐               │  │
+│  │  │   Inbound   │     │   Outbound  │               │  │
+│  │  │   Messages  │     │   Messages  │               │  │
+│  │  │  (Receive)  │     │   (Send)    │               │  │
+│  │  └──────┬──────┘     └──────▲───────┘               │  │
+│  └─────────┼──────────────────┼──────────────────────────┘  │
+└────────────┼──────────────────┼─────────────────────────────┘
+             │                  │
+             │         mpsc::UnboundedSender<String>
+             │                  │
+             │                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    JYC WeChat Channel                        │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │             WechatWebSocket                          │  │
+│  │  • Single WebSocket for both send and receive       │  │
+│  │  • tokio-tungstenite connection management          │  │
+│  │  • JSON parsing: extract 'content' field            │  │
+│  │  • Auto-reconnect with exponential backoff          │  │
+│  │  • CancellationToken support                        │  │
+│  │  • Exposes mpsc::UnboundedSender for outbound       │  │
+│  └────────────────────────┬────────────────────────────┘  │
+│                           │                                │
+│            ┌──────────────┴──────────────┐                │
+│            ▼                             ▼                │
+│  ┌──────────────────┐    ┌─────────────────────────┐     │
+│  │WechatInboundAdapter│   │ WechatOutboundAdapter  │     │
+│  │ • WechatMatcher    │   │ • JSON format sending  │     │
+│  │ • Pattern matching │   │ • Footer concatenation │     │
+│  │ • Thread name =    │   │ • Reply storage        │     │
+│  │   channel name     │   │ • v1: text-only        │     │
+│  └──────────────────┘    └─────────────────────────┘     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Features Implemented
+
+1. **Single WebSocket Connection for Inbound + Outbound**
+   - `WechatWebSocket` manages a single `tokio-tungstenite` connection
+   - Incoming messages parsed as JSON, `content` field extracted to `InboundMessage`
+   - Outbound messages sent via shared `mpsc::UnboundedSender<String>` in `{"type":"send","content":"..."}` format
+   - Both read and write handled in a single tokio::select! event loop
+
+2. **Auto-Reconnection with Exponential Backoff**
+   - Reconnect delay: `2^attempt` seconds (capped at 60s)
+   - Configurable max reconnect attempts
+   - `CancellationToken` for graceful shutdown
+
+3. **One Bot = One Fixed Thread**
+   - `derive_thread_name()` returns the channel name directly (e.g., `"wechat_bot"`)
+   - Unlike Feishu which supports multiple chats, WeChat v1 uses a single-thread model
+   - Simplifies implementation and matches typical WeChat bot usage patterns
+
+4. **Pattern Matching**
+   - `keywords`: match by message content (case-insensitive, OR logic)
+   - `sender`: match by sender address (exact or regex)
+   - Empty rules match all messages (AND logic across present rules)
+
+### Architecture Differences from Feishu
+
+| Aspect | Feishu | WeChat |
+|--------|--------|--------|
+| Inbound transport | LarkWsClient (SDK) WebSocket | Raw tokio-tungstenite WebSocket |
+| Outbound transport | REST API (HTTP) | Same WebSocket as inbound |
+| Thread model | One thread per chat | One fixed thread per bot |
+| Message format | Rich (text, image, file, card) | v1: text-only |
+| Name resolution | API-based with caching | Not needed (fixed thread) |
+| SDK dependency | openlark SDK | None (direct WS protocol) |
+
+### Message Formats
+
+**Incoming** (from OpenILink Bridge):
+```json
+{
+  "id": "msg_001",
+  "type": "text",
+  "content": "用户消息内容",
+  "sender": "wx_user_123",
+  "sender_name": "用户名称",
+  "timestamp": 1234567890
+}
+```
+
+**Outgoing** (sent by JYC):
+```json
+{
+  "type": "send",
+  "content": "AI回复内容"
+}
+```
+
+### Limitations (v1)
+- Text-only messages — no image, file, or rich media support
+- Single thread per bot — no multi-chat routing
+- JSON format is OpenILink-specific — no protocol abstraction layer
+
 ## References
 
 - [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping

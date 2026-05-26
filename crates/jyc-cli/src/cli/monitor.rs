@@ -16,6 +16,8 @@ use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
+use jyc_channels::wechat::inbound::WechatInboundAdapter;
+use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::MonitorConfig;
 use jyc_types::{load_config, validation};
@@ -106,6 +108,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .map_or(true, |f| f.enabled);
 
         // Create the outbound adapter based on channel type
+        // For wechat, we need to share the WebSocket sender between inbound and outbound
+        let mut wechat_sender_arc: Option<
+            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>
+        > = None;
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
                 let outbound_config = channel_config
@@ -149,6 +155,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     storage.clone(),
                     footer_enabled,
                 )?)
+            }
+            "wechat" => {
+                // WeChat config is validated and cloned in the inbound section.
+                // Outbound only needs sender, storage, and footer config.
+                let adapter = WechatOutboundAdapter::new_with_attachments(
+                    storage.clone(),
+                    outbound_attachment_config,
+                    footer_enabled,
+                );
+                // Store the sender_arc for later use in the inbound section
+                wechat_sender_arc = Some(adapter.sender_arc());
+                Arc::new(adapter)
             }
             other => {
                 tracing::warn!(
@@ -450,6 +468,71 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         tracing::error!(
                             error = %e,
                             "GitHub inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "wechat" => {
+                let wechat_config = channel_config
+                    .wechat
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wechat config")
+                    })?
+                    .clone();
+
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
+
+                let task = tokio::spawn(async move {
+                    use jyc_types::InboundAdapter;
+                    use jyc_channels::wechat::inbound::WechatMatcher;
+
+                    // Create the adapter with the shared sender Arc so it can
+                    // update the outbound sender on each reconnection.
+                    let adapter = WechatInboundAdapter::with_shared_sender(
+                        &wechat_config,
+                        channel_name_owned.clone(),
+                        wechat_sender_arc_clone,
+                    );
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&WechatMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "WeChat inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "WeChat inbound adapter error"
                         );
                     }
 

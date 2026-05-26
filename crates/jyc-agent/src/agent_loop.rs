@@ -1035,5 +1035,66 @@ mod retry_tests {
             .count();
         assert_eq!(retry_count, 0, "non-transient errors must not publish retry events");
     }
+
+    /// Regression for the May 26 production failure on bare-metal:
+    ///
+    /// The SSE stream died mid-flight with a reqwest send-side error
+    /// (stale connection from pool, almost certainly), but the diagnostic
+    /// re-POST issued by `fetch_error_body` came back HTTP 200 with a
+    /// healthy first chunk. The previous classifier wrongly treated ANY
+    /// `(HTTP <code> body:)` suffix as terminal and refused to retry,
+    /// causing the thread to die after one attempt.
+    ///
+    /// After this fix, a 2xx diag status confirms the upstream is fine
+    /// and the original transport error is transient → retry.
+    #[tokio::test]
+    async fn diag_2xx_with_send_error_is_retried() {
+        let provider = FlakyProvider {
+            fail_count: 2,
+            fail_message: "error sending request for url \
+                (https://api.deepseek.com/chat/completions) \
+                (HTTP 200 body: data: {\"id\":\"abc\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"\"}}]})"
+                .to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "diag-200 send-error must be transient and recover, got {:?}",
+            result.err()
+        );
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            3,
+            "expected 2 fails + 1 success"
+        );
+
+        let events = drain_events(&mut rx).await;
+        let retry_attempts: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ThreadEvent::SessionStatus { status_type, attempt, .. }
+                    if status_type == "retry" => Some(*attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            retry_attempts,
+            vec![Some(2), Some(3)],
+            "expected retry events for attempts 2 and 3"
+        );
+    }
 }
 

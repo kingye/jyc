@@ -321,7 +321,7 @@ impl ThreadManager {
             let mut pending: Option<QueueItem> = None;
 
             loop {
-                let item = match pending.take() {
+                let mut item = match pending.take() {
                     Some(item) => item,
                     None => tokio::select! {
                         item = rx.recv() => match item {
@@ -471,7 +471,7 @@ impl ThreadManager {
                 }
 
                 if let Err(e) = process_message(
-                    &item,
+                    &mut item,
                     &thread_name,
                     &storage,
                     outbound.clone(),
@@ -895,7 +895,7 @@ impl ThreadManager {
 /// 4. CHECK BODY → if empty after commands + quoted history stripping → stop
 /// 5. DISPATCH TO AGENT → agent.process() handles everything
 async fn process_message(
-    item: &QueueItem,
+    item: &mut QueueItem,
     thread_name: &str,
     storage: &MessageStorage,
     outbound: Arc<dyn OutboundAdapter>,
@@ -906,17 +906,15 @@ async fn process_message(
     thread_manager: Arc<ThreadManager>,
     thread_cancel: CancellationToken,
 ) -> Result<()> {
-    let message = &item.message;
-
     // ── 1. STORE ──────────────────────────────────────────────────────
     let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = storage
-        .store_with_match(message, thread_name, is_matched, item.attachment_config.as_ref())
+        .store_with_match(&item.message, thread_name, is_matched, item.attachment_config.as_ref())
         .await?;
 
     tracing::info!(
-        sender = %message.sender_address,
-        topic = %message.topic,
+        sender = %item.message.sender_address,
+        topic = %item.message.topic,
         "Message stored"
     );
 
@@ -924,15 +922,25 @@ async fn process_message(
     // Save attachments AFTER thread name resolution (not before).
     // This ensures attachments go to the correct thread directory when
     // thread_name override is configured on the pattern.
-    if !message.attachments.is_empty() {
+    //
+    // The save populates `MessageAttachment.saved_path` on every saved
+    // entry — required by the agent's `build_user_blocks` so it can read
+    // image bytes from disk and inject them as multimodal content blocks.
+    // The previous `&mut message.clone()` here mutated a temporary that
+    // was immediately dropped, so `saved_path` never reached the agent
+    // and image-only WeChat messages were silently text-only.
+    if !item.message.attachments.is_empty() {
         if let Err(e) = crate::attachment_storage::save_attachments_to_dir(
-            &mut message.clone(),
+            &mut item.message,
             &store_result.thread_path,
             item.attachment_config.as_ref(),
         ).await {
             tracing::warn!(error = %e, "Failed to save attachments");
         }
     }
+
+    // From here on we only need a shared borrow of the message.
+    let message = &item.message;
 
     // ── 2. COMMAND PROCESS ────────────────────────────────────────────
     let raw_body = message

@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Both inbound and outbound messages share the same WebSocket connection.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WechatConfig {
-    /// Base URL of the OpenILink server (e.g., "https://openilink.example.com")
+    /// Hostname of the OpenILink server (e.g., "openilink.example.com").
+    /// Do NOT include protocol prefix — the WebSocket URL is constructed
+    /// as `wss://{base_url}/bot/v1/ws?token={token}` automatically.
     pub base_url: String,
 
     /// Access token for the OpenILink server
@@ -82,7 +84,7 @@ mod tests {
     #[test]
     fn test_config_deserialize() {
         let toml_str = r#"
-            base_url = "https://openilink.example.com"
+            base_url = "openilink.example.com"
             token = "wechat_token_xxx"
 
             [websocket]
@@ -91,7 +93,7 @@ mod tests {
         "#;
 
         let config: WechatConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.base_url, "https://openilink.example.com");
+        assert_eq!(config.base_url, "openilink.example.com");
         assert_eq!(config.token, "wechat_token_xxx");
         assert!(!config.websocket.enabled);
         assert_eq!(config.websocket.reconnect_delay_secs, 10);

@@ -25,12 +25,14 @@ const DEFAULT_MAX_RECONNECT: usize = 10;
 /// Manages a single WebSocket connection that both receives and sends messages.
 /// The `sender` field is exposed to the outbound adapter for sending replies.
 pub struct WechatWebSocket {
-    /// Base URL of the OpenILink server (hostname only, no protocol)
+    /// Hostname of the OpenILink server (e.g., "openilink.example.com")
     base_url: String,
     /// Access token
     token: String,
     /// Maximum reconnect attempts
     max_reconnect_attempts: usize,
+    /// Base reconnect delay in seconds (used in exponential backoff: delay * 2^attempt)
+    reconnect_delay_secs: u64,
     /// Sender half of the outbound channel — clones can be shared with `WechatOutboundAdapter`
     sender: mpsc::UnboundedSender<String>,
     /// Receiver half of the outbound channel
@@ -50,6 +52,7 @@ impl WechatWebSocket {
             base_url: base_url.to_string(),
             token: token.to_string(),
             max_reconnect_attempts: DEFAULT_MAX_RECONNECT,
+            reconnect_delay_secs: 5,
             sender: tx,
             outbound_rx: Some(rx),
             reconnect_count: 0,
@@ -61,12 +64,14 @@ impl WechatWebSocket {
         base_url: &str,
         token: &str,
         max_reconnect_attempts: usize,
+        reconnect_delay_secs: u64,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         Self {
             base_url: base_url.to_string(),
             token: token.to_string(),
             max_reconnect_attempts,
+            reconnect_delay_secs,
             sender: tx,
             outbound_rx: Some(rx),
             reconnect_count: 0,
@@ -281,8 +286,8 @@ impl WechatWebSocket {
             return false;
         }
 
-        // Exponential backoff: 2^attempt seconds, capped at 60 seconds
-        let delay_secs = std::cmp::min(1u64 << self.reconnect_count, 60);
+        // Exponential backoff: reconnect_delay_secs * 2^attempt, capped at 60 seconds
+        let delay_secs = std::cmp::min(self.reconnect_delay_secs << self.reconnect_count, 60);
         self.reconnect_count += 1;
         tracing::info!(
             attempt = self.reconnect_count,
@@ -293,12 +298,6 @@ impl WechatWebSocket {
 
         tokio::time::sleep(Duration::from_secs(delay_secs)).await;
         true
-    }
-
-    /// Reset reconnection count (called after successful connection).
-    #[allow(dead_code)]
-    pub fn reset_reconnection_count(&mut self) {
-        self.reconnect_count = 0;
     }
 }
 
@@ -315,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_new_with_config() {
-        let ws = WechatWebSocket::new_with_config("example.com", "token", 5);
+        let ws = WechatWebSocket::new_with_config("example.com", "token", 5, 3);
         assert_eq!(ws.max_reconnect_attempts, 5);
         assert_eq!(ws.reconnect_count, 0);
     }
@@ -332,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_reconnection_max_attempts() {
-        let mut ws = WechatWebSocket::new_with_config("example.com", "token", 2);
+        let mut ws = WechatWebSocket::new_with_config("example.com", "token", 2, 5);
         ws.reconnect_count = 2;
         // Already at max, should return false immediately
         assert!(!ws.handle_reconnection().await);

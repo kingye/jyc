@@ -181,6 +181,7 @@ impl WechatInboundAdapter {
             &self.config.base_url,
             &self.config.token,
             self.config.websocket.max_reconnect_attempts,
+            self.config.websocket.reconnect_delay_secs,
         );
         let sender = ws.sender();
         let mut guard = self.ws.lock().await;
@@ -234,6 +235,7 @@ impl InboundAdapter for WechatInboundAdapter {
                     &self.config.base_url,
                     &self.config.token,
                     self.config.websocket.max_reconnect_attempts,
+                    self.config.websocket.reconnect_delay_secs,
                 )
             })
         };

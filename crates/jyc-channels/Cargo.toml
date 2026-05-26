@@ -26,7 +26,7 @@ comrak = "0.37"
 regex = "1"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 
 [dev-dependencies]

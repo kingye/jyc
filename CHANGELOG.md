@@ -6,6 +6,20 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **`MessageAttachment.saved_path` now propagates from the post-route
+  attachment saver back to the agent.** `thread_manager::process_message`
+  was calling `save_attachments_to_dir(&mut message.clone(), ...)`,
+  mutating a temporary clone that was immediately dropped. The original
+  `item.message` kept `saved_path: None`, so when
+  `build_user_blocks` checked the field it logged
+  `"Image attachment has no saved_path; skipping injection"` and the
+  multimodal payload was silently dropped — visible on the deployed
+  WeChat channel where the attachment was correctly saved on disk yet
+  never reached the model. `process_message` now takes
+  `item: &mut QueueItem` and saves into the original message; the
+  `agent.process()` dispatch downstream sees the populated `saved_path`
+  on every attachment.
+
 - **Attachment-only messages no longer drop silently before reaching the
   agent.** The thread-manager body-empty short-circuit
   (`No message body, stopping (no AI)`) bypasses when

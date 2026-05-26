@@ -4,6 +4,25 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Attachment-only messages no longer drop silently before reaching the
+  agent.** The thread-manager body-empty short-circuit
+  (`No message body, stopping (no AI)`) bypasses when
+  `message.attachments` is non-empty. This was masking image-only WeChat
+  messages where OpenILink delivers `[image]` as a placeholder body that
+  the channel correctly strips, leaving an empty body — without this fix
+  the agent never ran for image-only inputs even with
+  `inject_inbound_images = true`. Also applies to PDF / docx /
+  attachment-only messages on any channel: the agent now runs and can
+  process them via `read` / `bash` / `read_image` tools.
+
+- **`build_user_prompt_text` falls back to a content-aware placeholder
+  when the body is empty but attachments are present.** The model now
+  sees `[no text body — N image attachment(s) follow]` (or a mixed
+  variant) instead of an opaque `[no text content]`, so it has explicit
+  context for what the multimodal blocks downstream represent.
+
 ### Added
 
 - **Native image input into the agent loop.** Two complementary entry points

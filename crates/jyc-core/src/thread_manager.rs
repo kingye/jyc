@@ -985,16 +985,37 @@ async fn process_message(
     // ── 4. CHECK BODY ─────────────────────────────────────────────────
     let cleaned_body = outbound.clean_body(&cmd_output.cleaned_body);
     let effective_body_empty = cleaned_body.trim().is_empty();
+    let has_attachments = !message.attachments.is_empty();
 
     tracing::debug!(
         body_empty = effective_body_empty,
         cleaned_len = cleaned_body.trim().len(),
+        attachments = message.attachments.len(),
         "Body check after command + quote stripping"
     );
 
-    if effective_body_empty {
-        tracing::info!("No message body, stopping (no AI)");
+    // Bypass the no-AI short-circuit when the message carries attachments.
+    //
+    // An attachment-only message is a legitimate AI trigger:
+    //   - Image attachments on a vision-capable model with
+    //     `inject_inbound_images = true` ride the user turn directly as
+    //     multimodal content blocks.
+    //   - Non-image attachments (PDF, docx, etc.) are picked up by the
+    //     agent via the `read` / `bash` / `read_image` tools — the
+    //     invoice-processing skill is the canonical example.
+    //
+    // Without this bypass the WeChat path silently dropped image-only
+    // messages because OpenILink delivers `[image]` as a placeholder body
+    // that the channel correctly strips, leaving `cleaned_body` empty.
+    if effective_body_empty && !has_attachments {
+        tracing::info!("No message body and no attachments, stopping (no AI)");
         return Ok(());
+    }
+    if effective_body_empty {
+        tracing::info!(
+            attachments = message.attachments.len(),
+            "Empty body but attachments present — proceeding to AI"
+        );
     }
 
     // ── 4.5. CHECK IF THREAD IS WAITING FOR QUESTION ANSWER ──────────

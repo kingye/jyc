@@ -489,9 +489,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
-                let wechat_config_for_callback = wechat_config.clone();
-                let channel_name_for_callback = channel_name_owned.clone();
-                let inbound_attachment_config_for_callback = inbound_attachment_config.clone();
 
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
@@ -507,43 +504,24 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                     let thread_manager_clone = thread_manager.clone();
                     let options = jyc_types::InboundAdapterOptions {
-                        on_message: Box::new(move |mut message| {
+                        on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
                             let patterns = patterns_for_callback.clone();
-                            let wechat_config_clone = wechat_config_for_callback.clone();
-                            let channel_name_clone = channel_name_for_callback.clone();
-                            let attachment_config_clone =
-                                inbound_attachment_config_for_callback.clone();
 
+                            // NOTE on attachments: the WeChat parser
+                            // populates `message.attachments` (with
+                            // inline `Vec<u8>` content) inside
+                            // `WechatWebSocket::handle_incoming`. We do
+                            // NOT save them to disk here — the canonical
+                            // post-route saver in
+                            // `thread_manager::process_message`
+                            // (`save_attachments_to_dir`) does that
+                            // AFTER thread name resolution, ensuring
+                            // attachments land in the same directory
+                            // the agent thread actually runs in. A
+                            // pre-route save here would just produce a
+                            // duplicate copy under a sibling directory.
                             tokio::spawn(async move {
-                                // 1. Persist any attachments the parser
-                                //    populated in `message.attachments`
-                                //    BEFORE routing. This mirrors the
-                                //    feishu flow: by the time the agent
-                                //    thread sees the message,
-                                //    `MessageAttachment.saved_path` is
-                                //    set and the agent's filesystem
-                                //    tools (read/bash/glob) can find the
-                                //    files in the thread workspace.
-                                let saver = WechatInboundAdapter::new(
-                                    &wechat_config_clone,
-                                    channel_name_clone,
-                                );
-                                if let Err(e) = saver
-                                    .save_attachments_to_thread_directory(
-                                        &mut message,
-                                        &patterns,
-                                        attachment_config_clone.as_ref(),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        error = %format!("{:#}", e),
-                                        "Failed to save WeChat attachments"
-                                    );
-                                }
-
-                                // 2. Route the message.
                                 router.route(&WechatMatcher, message, &patterns).await;
                             });
 

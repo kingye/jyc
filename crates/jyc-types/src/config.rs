@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::channel::ChannelPattern;
 use crate::feishu_config::FeishuConfig;
 use crate::github_config::GithubConfig;
+use crate::openilink_config::OpenilinkConfig;
 
 /// MCP server configuration for agent dynamic tool loading.
 ///
@@ -112,6 +113,9 @@ pub struct ChannelConfig {
 
     /// GitHub configuration (for github channels)
     pub github: Option<GithubConfig>,
+
+    /// OpeniLink configuration (for openilink/wechat channels)
+    pub openilink: Option<OpenilinkConfig>,
 
     /// Monitoring settings (IDLE vs poll, interval, etc.)
     pub monitor: Option<MonitorConfig>,

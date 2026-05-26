@@ -293,13 +293,35 @@ impl JycAgentService {
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
         prompt.push_str(&format!("**Date:** {}\n\n", message.timestamp.to_rfc3339()));
 
-        // Body
-        let body = message
-            .content
-            .text
-            .as_deref()
+        // Body — fall back to a content-aware placeholder when both text and
+        // markdown are missing. Image-only messages on multimodal channels
+        // legitimately have no text body; calling that out explicitly keeps
+        // the model's context honest instead of dropping in an opaque
+        // "[no text content]".
+        let body_owned: String;
+        let body: &str = match message.content.text.as_deref()
             .or(message.content.markdown.as_deref())
-            .unwrap_or("[no text content]");
+        {
+            Some(b) if !b.trim().is_empty() => b,
+            _ if !message.attachments.is_empty() => {
+                let images = message.attachments.iter()
+                    .filter(|a| a.content_type.starts_with("image/"))
+                    .count();
+                let total = message.attachments.len();
+                body_owned = if images == total {
+                    format!("[no text body — {total} image attachment(s) follow]")
+                } else if images > 0 {
+                    format!(
+                        "[no text body — {images} image attachment(s) and {} other attachment(s) follow]",
+                        total - images
+                    )
+                } else {
+                    format!("[no text body — {total} attachment(s) follow]")
+                };
+                &body_owned
+            }
+            _ => "[no text content]",
+        };
 
         prompt.push_str(body);
         prompt

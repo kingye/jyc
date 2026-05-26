@@ -263,7 +263,12 @@ impl InboundAdapter for WechatInboundAdapter {
                         tracing::info!("WeChat WebSocket shutting down (cancelled)");
                         break;
                     }
-                    tracing::error!(error = %e, "WeChat WebSocket error");
+                    // Use `:#` so anyhow's full Context chain renders on one line
+                    // (e.g. "Failed to connect to WeChat OpenILink WebSocket: \
+                    // WebSocket protocol error: Handshake failed: HTTP 401").
+                    // Plain `%e` would only show the outermost message and hide
+                    // the actual cause.
+                    tracing::error!(error = %format!("{:#}", e), "WeChat WebSocket error");
 
                     // Exponential backoff: reconnect_delay_secs * 2^attempt, capped at 60s
                     let max_attempts = self.config.websocket.max_reconnect_attempts;

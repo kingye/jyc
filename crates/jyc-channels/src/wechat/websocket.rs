@@ -112,7 +112,7 @@ impl WechatWebSocket {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             if let Err(e) = self.handle_incoming(channel_name, &text, on_message).await {
-                                tracing::warn!(error = %e, "Failed to process WeChat message");
+                                tracing::warn!(error = %format!("{:#}", e), "Failed to process WeChat message");
                             }
                         }
                         Some(Ok(Message::Ping(_))) => {
@@ -126,7 +126,7 @@ impl WechatWebSocket {
                             // Binary, Pong frames: ignore
                         }
                         Some(Err(e)) => {
-                            tracing::error!(error = %e, "WeChat WebSocket read error");
+                            tracing::error!(error = %format!("{:#}", e), "WeChat WebSocket read error");
                             break;
                         }
                         None => {
@@ -140,7 +140,7 @@ impl WechatWebSocket {
                 // Outbound message to send
                 Some(outbound_msg) = outbound_rx.recv() => {
                     if let Err(e) = write.send(Message::Text(outbound_msg.into())).await {
-                        tracing::error!(error = %e, "Failed to send WeChat outbound message");
+                        tracing::error!(error = %format!("{:#}", e), "Failed to send WeChat outbound message");
                         break;
                     }
                 }
@@ -169,7 +169,7 @@ impl WechatWebSocket {
         let json: serde_json::Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, payload = %text, "Failed to parse WeChat message as JSON");
+                tracing::warn!(error = %format!("{:#}", e), payload = %text, "Failed to parse WeChat message as JSON");
                 return Err(anyhow::anyhow!("Failed to parse WeChat message as JSON: {}", e));
             }
         };
@@ -355,5 +355,49 @@ mod tests {
         let sender_name = parsed.get("sender_name").and_then(|v| v.as_str()).unwrap_or(sender);
         assert_eq!(sender, "wx_user_456");
         assert_eq!(sender_name, "wx_user_456"); // Falls back to sender
+    }
+
+    /// Documents the rendering contract relied upon by every
+    /// `tracing::error!(error = %format!("{:#}", e), ...)` site in this
+    /// module: anyhow's alternate-Display (`{:#}`) renders the entire
+    /// `.context(...)` chain on a single line, joined by ": ", so the
+    /// outermost message AND the underlying cause both reach the log.
+    ///
+    /// Regression for the May 26 wechat_me incident, where a misconfigured
+    /// WebSocket URL surfaced only as `error=Failed to connect to WeChat
+    /// OpenILink WebSocket` — the wrapped tungstenite cause was dropped
+    /// because the log site used plain `%e` (Display), not `{:#}`.
+    #[test]
+    fn anyhow_alternate_display_renders_full_context_chain() {
+        // Inner: simulate a tungstenite-style transport error.
+        fn inner() -> anyhow::Result<()> {
+            Err(anyhow::anyhow!(
+                "WebSocket protocol error: Handshake failed: HTTP 401"
+            ))
+        }
+        // Outer: wrap with context, the way `connect_async` does at
+        // `websocket.rs::run`'s call site.
+        let outer = inner()
+            .context("Failed to connect to WeChat OpenILink WebSocket")
+            .unwrap_err();
+
+        // Plain Display only shows the outermost message — this was the bug.
+        let plain = format!("{}", outer);
+        assert_eq!(plain, "Failed to connect to WeChat OpenILink WebSocket");
+
+        // Alternate Display walks the whole chain.
+        let chained = format!("{:#}", outer);
+        assert!(
+            chained.contains("Failed to connect to WeChat OpenILink WebSocket"),
+            "outer message must appear, got: {chained}"
+        );
+        assert!(
+            chained.contains("WebSocket protocol error"),
+            "underlying cause must appear, got: {chained}"
+        );
+        assert!(
+            chained.contains("HTTP 401"),
+            "deepest cause must appear, got: {chained}"
+        );
     }
 }

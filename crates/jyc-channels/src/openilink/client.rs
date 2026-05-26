@@ -189,7 +189,6 @@ impl OpenilinkClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openilink::types::WechatUserInfo;
 
     #[test]
     fn test_client_creation() {

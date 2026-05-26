@@ -50,12 +50,8 @@ fn item_to_text(item: &MessageItem) -> String {
         }
         49 => {
             // Shared link/card — try to extract title from extra data
-            if let Some(ref extra) = item.extra {
-                if let Some(title) = extra.get("title").and_then(|v| v.as_str()) {
-                    if !title.is_empty() {
-                        return format!("[分享: {}]", title);
-                    }
-                }
+            if let Some(title) = item.extra.as_ref().and_then(|e| e.get("title")).and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+                return format!("[分享: {}]", title);
             }
             "[分享]".to_string()
         }

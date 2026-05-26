@@ -64,6 +64,7 @@ pub fn openilink_match_message(
     message: &InboundMessage,
     patterns: &[ChannelPattern],
 ) -> Option<PatternMatch> {
+    #[allow(clippy::collapsible_if)]
     for pattern in patterns {
         if !pattern.enabled {
             continue;

@@ -45,7 +45,7 @@ impl jyc_types::OutboundAdapter for OpenilinkOutboundAdapter {
         tracing::info!(
             version = ?config.version,
             connected = config.connected,
-            wechat_user = ?config.wechat_user.as_ref().map(|u| u.nickname.as_deref()).flatten(),
+            wechat_user = ?config.wechat_user.as_ref().and_then(|u| u.nickname.as_deref()),
             "OpeniLink outbound adapter connected"
         );
         Ok(())
@@ -150,40 +150,7 @@ impl jyc_types::OutboundAdapter for OpenilinkOutboundAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::MessageContent;
-    use chrono::Utc;
-
-    fn make_test_message(to_user_id: &str, context_token: Option<&str>) -> InboundMessage {
-        let mut metadata = std::collections::HashMap::new();
-        if let Some(token) = context_token {
-            metadata.insert(
-                "context_token".to_string(),
-                serde_json::Value::String(token.to_string()),
-            );
-        }
-
-        InboundMessage {
-            id: "test_msg".to_string(),
-            channel: "openilink".to_string(),
-            channel_uid: to_user_id.to_string(),
-            sender: to_user_id.to_string(),
-            sender_address: to_user_id.to_string(),
-            recipients: vec![],
-            topic: String::new(),
-            content: MessageContent {
-                text: Some("Test message".to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: Utc::now(),
-            thread_refs: None,
-            reply_to_id: None,
-            external_id: None,
-            attachments: vec![],
-            metadata,
-            matched_pattern: None,
-        }
-    }
+    use jyc_types::OutboundAdapter;
 
     #[test]
     fn test_channel_type() {

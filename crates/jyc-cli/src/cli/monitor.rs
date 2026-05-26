@@ -16,6 +16,8 @@ use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
+use jyc_channels::openilink::inbound::{OpenilinkInboundAdapter, OpenilinkMatcher};
+use jyc_channels::openilink::outbound::OpenilinkOutboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::MonitorConfig;
 use jyc_types::{load_config, validation};
@@ -149,6 +151,19 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     storage.clone(),
                     footer_enabled,
                 )?)
+            }
+            "openilink" => {
+                let openilink_config = channel_config
+                    .openilink
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing openilink config")
+                    })?
+                    .clone();
+                Arc::new(OpenilinkOutboundAdapter::new(
+                    openilink_config,
+                    footer_enabled,
+                ))
             }
             other => {
                 tracing::warn!(
@@ -450,6 +465,54 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         tracing::error!(
                             error = %e,
                             "GitHub inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "openilink" => {
+                let openilink_config = channel_config
+                    .openilink
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing openilink config")
+                    })?
+                    .clone();
+
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+
+                let task = tokio::spawn(async move {
+                    let adapter = OpenilinkInboundAdapter::new(&openilink_config, channel_name_owned.clone());
+
+                    use jyc_types::InboundAdapter;
+
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&OpenilinkMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: None,
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "OpeniLink inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "OpeniLink inbound adapter error"
                         );
                     }
 

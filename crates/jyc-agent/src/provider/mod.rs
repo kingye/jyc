@@ -228,9 +228,10 @@ where
 ///
 /// Used by `agent_loop` to wrap a single LLM call in a bounded retry loop:
 /// transient errors (TCP RST mid-stream, body decode glitch, idle timeout,
-/// stream-ended-early) get a few automatic retries with backoff before the
-/// thread is failed. Non-transient errors (e.g. HTTP 4xx with a captured
-/// body) propagate immediately.
+/// stream-ended-early, stale-connection send failure) get a few automatic
+/// retries with backoff before the thread is failed. Non-transient errors
+/// (e.g. HTTP 4xx/5xx with a captured body indicating a structural
+/// rejection) propagate immediately.
 ///
 /// The classifier is intentionally string-matching the user-visible error
 /// message — `complete_raw` returns `anyhow::Error`, and the underlying
@@ -240,45 +241,80 @@ where
 /// the source chain). String matching the well-known transient patterns is
 /// adequate and easy to extend.
 ///
-/// Treated as TRANSIENT (retryable):
-/// - "error decoding response body" — reqwest's body decoder hit a
-///   chunked-encoding glitch, malformed UTF-8, or premature EOF. Almost
-///   always a network/provider blip.
-/// - "Stream ended" / "stream ended" — provider closed the SSE before
-///   `[DONE]`. Treated as transient mid-flight failure.
-/// - "connection reset" / "connection closed" / "broken pipe" — TCP-level
-///   transport interruption.
-/// - "operation timed out" / "request timed out" — the 300s reqwest
-///   timeout fired or an SSE idle-read timed out. Worth one fresh attempt.
-/// - "dns error" / "tcp connect error" — pre-connection failures during a
-///   retry wave; transient by nature.
+/// ## Diagnostic-suffix awareness
 ///
-/// Treated as TERMINAL (NOT retryable):
-/// - Anything containing `"HTTP "` — the diagnostic-body capture path
-///   in `openai_compat::complete_raw` only injects an `(HTTP {status} body:
-///   {body})` suffix when the provider returned a real status code, which
-///   means the request was structurally rejected (auth / quota / bad
-///   payload). Retrying won't help.
-/// - "Invalid status code" without an HTTP body suffix — usually a
-///   pre-stream rejection (e.g. 401 / 429 with empty body). The retry
-///   would just hit the same rejection. Surface immediately.
+/// `fetch_error_body` may have appended `(HTTP <code> body: <body>)` to the
+/// error after issuing a one-shot diagnostic POST. The status code carried
+/// in that suffix is authoritative:
+///
+/// - `4xx` / `5xx` → the request is structurally rejected (auth, quota,
+///   schema, model-not-supported). **Terminal.**
+/// - `2xx` → the diagnostic POST succeeded. The original SSE failure was
+///   purely a transport-level glitch (stale connection in pool, NAT idle
+///   reset, partial-write etc.). The diag confirms the upstream is fine
+///   and a fresh attempt will likely succeed. **Transient.**
+/// - `3xx` (rare) → treat as transient; safe re-issue.
+///
+/// Without the diag suffix, fall back to substring matching against the
+/// well-known transient patterns.
+///
+/// ## Transient patterns (substring match, case-insensitive)
+///
+/// - `"error decoding response body"` — reqwest's body decoder hit a
+///   chunked-encoding glitch, malformed UTF-8, or premature EOF.
+/// - `"error sending request"` — reqwest's transport-level send failure,
+///   typically a stale connection from the pool that got silently dropped
+///   by a NAT/load-balancer/peer. Almost always recoverable.
+/// - `"stream ended"` — provider closed the SSE before `[DONE]`.
+/// - `"connection reset"` / `"connection closed"` / `"broken pipe"` —
+///   TCP-level transport interruption.
+/// - `"operation timed out"` / `"request timed out"` / `"timed out"` —
+///   reqwest's 300s timeout fired or an SSE idle-read timed out.
+/// - `"dns error"` / `"tcp connect error"` — pre-connection failures.
+/// - `"transport error"` / `"incomplete message"` / `"unexpected eof"` —
+///   misc transport blips.
+///
+/// ## Terminal patterns
+///
+/// - `"invalid status code"` (no diag suffix) — pre-stream rejection
+///   (e.g. 401 with empty body). Retry would hit the same rejection.
 pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
     let msg = format!("{:#}", err);
     let lower = msg.to_lowercase();
 
-    // Strong terminal signal: a captured HTTP status+body means the
-    // provider answered with a structured error. Don't retry.
-    if msg.contains("HTTP ") && msg.contains("body:") {
-        return false;
+    // If the diagnostic POST captured a status code, trust it.
+    if let Some(status) = extract_diag_status(&msg) {
+        if (400..600).contains(&status) {
+            // Structured rejection — retry won't help.
+            return false;
+        }
+        // 2xx/3xx: diag confirmed upstream is healthy. The original SSE
+        // failure must have been a transport blip. Retry.
+        return true;
     }
-    // A bare "Invalid status code" (no captured body) is also a
-    // structured rejection at connection time — non-transient.
+
+    // No diag suffix — fall back to substring matching.
     if lower.contains("invalid status code") {
         return false;
     }
 
+    matches_transient_pattern(&lower)
+}
+
+/// Parse the HTTP status code from the `(HTTP <code> body: ...)` suffix
+/// appended by `fetch_error_body`. Returns `None` when the suffix is not
+/// present or the code is malformed.
+fn extract_diag_status(msg: &str) -> Option<u16> {
+    let start = msg.find("(HTTP ")? + "(HTTP ".len();
+    let rest = msg.get(start..)?;
+    let end = rest.find(' ')?;
+    rest.get(..end)?.parse().ok()
+}
+
+fn matches_transient_pattern(lower_msg: &str) -> bool {
     const TRANSIENT_PATTERNS: &[&str] = &[
         "error decoding response body",
+        "error sending request",
         "stream ended",
         "connection reset",
         "connection closed",
@@ -292,7 +328,7 @@ pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
         "incomplete message",
         "unexpected eof",
     ];
-    TRANSIENT_PATTERNS.iter().any(|p| lower.contains(p))
+    TRANSIENT_PATTERNS.iter().any(|p| lower_msg.contains(p))
 }
 
 /// Merge provider-level params with model-level params.
@@ -315,5 +351,105 @@ fn resolve_params(
             }
             Some(merged)
         }
+    }
+}
+
+#[cfg(test)]
+mod classifier_tests {
+    use super::*;
+
+    fn err(msg: &str) -> anyhow::Error {
+        anyhow::anyhow!("{}", msg)
+    }
+
+    #[test]
+    fn diag_status_2xx_is_transient() {
+        // Real production case (May 26 12:04:05): SSE failed mid-flight,
+        // diag re-POST returned 200 with a healthy first chunk.
+        // Retrying must succeed.
+        let e = err(
+            "SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions) \
+             (HTTP 200 body: data: {\"id\":\"abc\",\"choices\":[...]})"
+        );
+        assert!(
+            is_transient_sse_error(&e),
+            "diag-200 confirms upstream healthy → must be transient"
+        );
+    }
+
+    #[test]
+    fn diag_status_4xx_is_terminal() {
+        // Diag captured a structured rejection — retrying won't help.
+        let e = err(
+            "SSE stream error: Invalid status code: 400 Bad Request \
+             (HTTP 400 body: {\"error\":{\"message\":\"bad payload\"}})"
+        );
+        assert!(
+            !is_transient_sse_error(&e),
+            "diag-400 is a structured rejection → terminal"
+        );
+    }
+
+    #[test]
+    fn diag_status_5xx_is_terminal() {
+        // 503 is a server-side failure but the diag confirms structured
+        // upstream behavior. We surface it immediately rather than
+        // retrying tight against a known-broken upstream.
+        let e = err(
+            "SSE stream error: Invalid status code: 503 Service Unavailable \
+             (HTTP 503 body: {\"error\":\"upstream down\"})"
+        );
+        assert!(
+            !is_transient_sse_error(&e),
+            "diag-5xx is terminal — surface to user, retry policy is not the right hammer"
+        );
+    }
+
+    #[test]
+    fn decode_body_error_no_diag_is_transient() {
+        // Pre-this-fix production case: reqwest body decoder glitched
+        // mid-stream, diag wasn't issued (already past Event::Open).
+        let e = err("SSE stream error: error decoding response body");
+        assert!(is_transient_sse_error(&e));
+    }
+
+    #[test]
+    fn invalid_status_no_diag_is_terminal() {
+        // No diag suffix and "Invalid status code" → pre-stream rejection
+        // with no recoverable body. Retry would hit the same wall.
+        let e = err("SSE error: Invalid status code: 401 Unauthorized");
+        assert!(!is_transient_sse_error(&e));
+    }
+
+    #[test]
+    fn error_sending_request_is_transient() {
+        // Stale-connection-from-pool failure. Without a diag suffix it
+        // still matches the "error sending request" pattern.
+        let e = err(
+            "SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions)"
+        );
+        assert!(is_transient_sse_error(&e));
+    }
+
+    #[test]
+    fn extract_diag_status_basic() {
+        assert_eq!(
+            extract_diag_status("foo (HTTP 200 body: bar)"),
+            Some(200)
+        );
+        assert_eq!(
+            extract_diag_status("foo (HTTP 400 body: {\"error\": ...})"),
+            Some(400)
+        );
+        assert_eq!(extract_diag_status("foo (HTTP 503 body: x)"), Some(503));
+    }
+
+    #[test]
+    fn extract_diag_status_missing_returns_none() {
+        assert_eq!(extract_diag_status("plain error"), None);
+        assert_eq!(extract_diag_status("(HTTP "), None);
+        assert_eq!(extract_diag_status("(HTTP abc body:)"), None);
     }
 }

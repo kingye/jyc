@@ -24,8 +24,26 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
+        // Connection pool hygiene:
+        //
+        // - `pool_idle_timeout(30s)` ensures we never reuse a connection
+        //   that has been idle longer than the typical NAT/load-balancer
+        //   silent-drop window. Reqwest's default is 90s, which is large
+        //   enough for the peer to forget the connection while we still
+        //   think it's healthy — that manifests as
+        //   `error sending request for url (...)` on the next use, even
+        //   though a fresh diagnostic POST against the same URL succeeds.
+        //   Observed in production on bare-metal where DeepSeek SSE calls
+        //   intermittently failed despite the upstream being healthy.
+        //
+        // - `pool_max_idle_per_host(2)` bounds how many warm connections
+        //   we keep around per provider. JYC issues at most a handful of
+        //   concurrent requests per provider so 2 is a comfortable cap;
+        //   prevents unbounded pool growth under bursts.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .pool_max_idle_per_host(2)
             .build()
             .context("Failed to build HTTP client")?;
 

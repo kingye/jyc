@@ -24,8 +24,13 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: &str, model: &str, api_key: Option<&str>, params: Option<serde_json::Value>) -> Result<Self> {
+        // See `openai_compat::OpenAiCompatProvider::new` for the full
+        // rationale on connection-pool hygiene. Same defaults are
+        // applied here for consistency across providers.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .pool_max_idle_per_host(2)
             .build()
             .context("Failed to build HTTP client")?;
 

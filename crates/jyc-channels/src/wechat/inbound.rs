@@ -10,6 +10,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
@@ -156,6 +158,8 @@ pub struct WechatInboundAdapter {
     config: WechatConfig,
     /// Channel name from config (e.g., "wechat_bot")
     channel_name: String,
+    /// Pre-created WebSocket (shared with outbound adapter)
+    ws: Arc<Mutex<Option<WechatWebSocket>>>,
 }
 
 impl WechatInboundAdapter {
@@ -164,7 +168,24 @@ impl WechatInboundAdapter {
         Self {
             config: config.clone(),
             channel_name,
+            ws: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Create the WebSocket handler and return its sender for outbound use.
+    ///
+    /// This allows the monitor to share the same WebSocket connection
+    /// between inbound and outbound adapters. Call this before `start()`.
+    pub async fn create_and_get_sender(&self) -> mpsc::UnboundedSender<String> {
+        let ws = WechatWebSocket::new_with_config(
+            &self.config.base_url,
+            &self.config.token,
+            self.config.websocket.max_reconnect_attempts,
+        );
+        let sender = ws.sender();
+        let mut guard = self.ws.lock().await;
+        *guard = Some(ws);
+        sender
     }
 }
 
@@ -205,12 +226,17 @@ impl InboundAdapter for WechatInboundAdapter {
             return Ok(());
         }
 
-        // Create WebSocket handler
-        let mut ws = WechatWebSocket::new_with_config(
-            &self.config.base_url,
-            &self.config.token,
-            self.config.websocket.max_reconnect_attempts,
-        );
+        // Create WebSocket handler (use pre-created if available from monitor)
+        let mut ws = {
+            let mut guard = self.ws.lock().await;
+            guard.take().unwrap_or_else(|| {
+                WechatWebSocket::new_with_config(
+                    &self.config.base_url,
+                    &self.config.token,
+                    self.config.websocket.max_reconnect_attempts,
+                )
+            })
+        };
 
         let channel_name = self.channel_name.clone();
 

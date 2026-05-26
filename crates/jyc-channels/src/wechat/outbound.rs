@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use jyc_core::email_parser;
 use jyc_core::message_storage::MessageStorage;
@@ -20,10 +20,12 @@ use jyc_types::OutboundAttachmentConfig;
 /// WeChat outbound adapter for sending messages via WebSocket.
 ///
 /// Uses an `mpsc::UnboundedSender<String>` to push messages into the shared
-/// WebSocket connection established by the inbound adapter.
+/// WebSocket connection established by the inbound adapter. The sender is
+/// stored behind `Arc<Mutex<Option<...>>>` so it can be set after construction
+/// (the outbound adapter is created before the WebSocket is initialized).
 pub struct WechatOutboundAdapter {
     /// Sender to push outbound messages through the WebSocket
-    sender: Option<mpsc::UnboundedSender<String>>,
+    sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
     /// Message storage for logging replies
     storage: Arc<MessageStorage>,
     /// Attachment configuration
@@ -40,7 +42,7 @@ impl WechatOutboundAdapter {
     /// WebSocket connection. Use `set_sender()` to set it before sending.
     pub fn new(storage: Arc<MessageStorage>) -> Self {
         Self {
-            sender: None,
+            sender: Arc::new(Mutex::new(None)),
             storage,
             attachment_config: None,
             footer_enabled: true,
@@ -54,24 +56,31 @@ impl WechatOutboundAdapter {
         footer_enabled: bool,
     ) -> Self {
         Self {
-            sender: None,
+            sender: Arc::new(Mutex::new(None)),
             storage,
             attachment_config,
             footer_enabled,
         }
     }
 
+    /// Get the shared sender Arc so the monitor can set it after WebSocket creation.
+    pub fn sender_arc(&self) -> Arc<Mutex<Option<mpsc::UnboundedSender<String>>>> {
+        self.sender.clone()
+    }
+
     /// Set the WebSocket sender after the WebSocket connection is established.
     ///
     /// This is called by the monitor after creating the `WechatWebSocket` instance,
     /// allowing the inbound and outbound adapters to share the same connection.
-    pub fn set_sender(&mut self, sender: mpsc::UnboundedSender<String>) {
-        self.sender = Some(sender);
+    pub async fn set_sender(&self, sender: mpsc::UnboundedSender<String>) {
+        let mut guard = self.sender.lock().await;
+        *guard = Some(sender);
     }
 
     /// Send a JSON-formatted message through the WebSocket.
-    fn send_internal(&self, json_msg: &str) -> Result<()> {
-        match &self.sender {
+    async fn send_internal(&self, json_msg: &str) -> Result<()> {
+        let guard = self.sender.lock().await;
+        match guard.as_ref() {
             Some(sender) => sender
                 .send(json_msg.to_string())
                 .map_err(|e| anyhow::anyhow!("Failed to send WeChat outbound message: {}", e)),
@@ -91,7 +100,8 @@ impl OutboundAdapter for WechatOutboundAdapter {
     async fn connect(&self) -> Result<()> {
         // WebSocket connection is managed by the inbound adapter.
         // The sender must be set via `set_sender()` before sending.
-        if self.sender.is_some() {
+        let guard = self.sender.lock().await;
+        if guard.is_some() {
             tracing::info!("WeChat outbound adapter connected (sender available)");
         } else {
             tracing::warn!("WeChat outbound adapter: no sender set yet (WebSocket may not be connected)");
@@ -159,7 +169,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
         let message_id = uuid::Uuid::new_v4().to_string();
 
-        self.send_internal(&json_msg)
+        self.send_internal(&json_msg).await
             .context("Failed to send WeChat reply through WebSocket")?;
 
         tracing::info!(
@@ -208,7 +218,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
         })
         .to_string();
 
-        self.send_internal(&json_msg)
+        self.send_internal(&json_msg).await
             .context("Failed to send WeChat alert through WebSocket")?;
 
         tracing::info!("WeChat alert sent to {}: {}", recipient, subject);

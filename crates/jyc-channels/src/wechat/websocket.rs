@@ -174,6 +174,32 @@ impl WechatWebSocket {
             }
         };
 
+        // Diagnostic: log the raw payload and its top-level keys so we can
+        // see the exact shape the OpenILink Bridge sends. Needed because
+        // the current parser extracts `content`, `sender`, `sender_name`,
+        // etc. from flat top-level fields and produces empty strings — the
+        // real schema is something else (nested? differently named? keyed
+        // by event type?) and we want one capture to know what to parse.
+        //
+        // Truncates the raw payload at 2000 chars to bound log size on the
+        // off chance OpenILink ever sends large media metadata.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let preview: String = if text.len() > 2000 {
+                format!("{}…(truncated, {} bytes total)", &text[..2000], text.len())
+            } else {
+                text.to_string()
+            };
+            let top_keys: Vec<&str> = json
+                .as_object()
+                .map(|obj| obj.keys().map(|k| k.as_str()).collect())
+                .unwrap_or_default();
+            tracing::debug!(
+                raw_payload = %preview,
+                top_level_keys = ?top_keys,
+                "WeChat raw payload received"
+            );
+        }
+
         // Extract the content field
         let content = json
             .get("content")

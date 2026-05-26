@@ -840,6 +840,7 @@ impl GithubInboundAdapter {
         ci_status: &mut HashMap<u64, (String, String)>, // pr_number → (head_sha, overall_status)
     ) -> Result<()> {
         let poll_start = last_poll.clone();
+        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
 
         tracing::trace!(
             channel = %self.channel_name,
@@ -883,6 +884,11 @@ impl GithubInboundAdapter {
             // patterns can match on issue metadata (type, labels, assignees)
             // without requiring a comment.
             if is_new {
+                // Dedup: skip if this issue already triggered in this poll cycle
+                if !triggered_in_cycle.insert(issue.number) {
+                    continue;
+                }
+
                 let event_uid = format!("{}-{}-opened", github_type, issue.number);
 
                 let message = self.build_trigger_message(
@@ -1011,6 +1017,17 @@ impl GithubInboundAdapter {
                 "Comment detected → routing for Pattern mode"
             );
 
+            // Dedup: skip if this issue already triggered in this poll cycle
+            if !triggered_in_cycle.insert(issue_number) {
+                tracing::debug!(
+                    channel = %self.channel_name,
+                    issue_number = issue_number,
+                    "Skipping duplicate comment trigger for issue already triggered in this cycle"
+                );
+                self.track_comment(&comment_key, processed_comments).await;
+                continue;
+            }
+
             if let Err(e) = (options.on_message)(message) {
                 tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
             }
@@ -1122,6 +1139,17 @@ impl GithubInboundAdapter {
                             "PR review detected → routing"
                         );
 
+                        // Dedup: skip if this PR already triggered in this poll cycle
+                        if !triggered_in_cycle.insert(*pr_number) {
+                            tracing::debug!(
+                                channel = %self.channel_name,
+                                pr_number = pr_number,
+                                "Skipping duplicate review trigger for PR already triggered in this cycle"
+                            );
+                            self.track_comment(&review_key, processed_comments).await;
+                            continue;
+                        }
+
                         if let Err(e) = (options.on_message)(message) {
                             tracing::error!(error = %e, pr_number = pr_number, "Failed to route review event");
                         }
@@ -1226,6 +1254,17 @@ impl GithubInboundAdapter {
                             user = %rc.user.login,
                             "PR review comment detected → routing"
                         );
+
+                        // Dedup: skip if this PR already triggered in this poll cycle
+                        if !triggered_in_cycle.insert(*pr_number) {
+                            tracing::debug!(
+                                channel = %self.channel_name,
+                                pr_number = pr_number,
+                                "Skipping duplicate review comment trigger for PR already triggered in this cycle"
+                            );
+                            self.track_comment(&rc_key, processed_comments).await;
+                            continue;
+                        }
 
                         if let Err(e) = (options.on_message)(message) {
                             tracing::error!(error = %e, pr_number = pr_number, "Failed to route review comment event");
@@ -1398,6 +1437,18 @@ impl GithubInboundAdapter {
                         failed_count = failed_checks.len(),
                         "CI failure detected → routing to developer agent"
                     );
+
+                    // Dedup: skip if this PR already triggered in this poll cycle
+                    if !triggered_in_cycle.insert(*pr_number) {
+                        tracing::debug!(
+                            channel = %self.channel_name,
+                            pr_number = pr_number,
+                            "Skipping duplicate CI failure trigger for PR already triggered in this cycle"
+                        );
+                        self.track_ci_status(*pr_number, &head_sha, overall_status, ci_status)
+                            .await;
+                        continue;
+                    }
 
                     if let Err(e) = (options.on_message)(message) {
                         tracing::error!(error = %e, pr_number = pr_number, "Failed to route CI failure event");

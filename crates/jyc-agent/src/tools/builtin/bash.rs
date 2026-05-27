@@ -76,11 +76,10 @@ impl Tool for BashTool {
         for token in command.split_whitespace() {
             if token.starts_with('/') {
                 let candidate = std::path::Path::new(token);
-                // Only check tokens that look like existing paths to avoid
-                // flagging flags like `/C` or `/usr/bin/env`.
-                // We check both the token itself and its parent chain
-                // because tokens like `arg1=/etc/passwd` contain embedded
-                // paths.
+                // Only check tokens that start with `/` and correspond to
+                // existing filesystem paths. This catches obvious escape
+                // attempts (e.g. `cat /etc/passwd`) while allowing flags
+                // like `-C` and commands that shell out to relative paths.
                 if candidate.exists() {
                     if let Err(msg) = ctx.check_path_boundary(token, candidate) {
                         return Ok(ToolOutput::error(msg));

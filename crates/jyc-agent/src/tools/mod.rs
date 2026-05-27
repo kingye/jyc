@@ -92,7 +92,9 @@ impl<'a> ToolContext<'a> {
             return Ok(());
         }
 
-        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.to_path_buf());
+        let canonical = resolved
+            .canonicalize()
+            .unwrap_or_else(|_| resolved.to_path_buf());
         let working_canonical = self
             .working_dir
             .canonicalize()

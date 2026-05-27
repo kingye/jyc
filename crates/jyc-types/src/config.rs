@@ -470,14 +470,12 @@ fn expand_env_vars(value: &mut toml::Value) {
     let re = Regex::new(r"\$\{(\w+)\}").unwrap();
 
     match value {
-        toml::Value::String(s) => {
-            if s.contains("${") {
-                *s = re
-                    .replace_all(s, |caps: &regex::Captures| {
-                        std::env::var(&caps[1]).unwrap_or_default()
-                    })
-                    .to_string();
-            }
+        toml::Value::String(s) if s.contains("${") => {
+            *s = re
+                .replace_all(s, |caps: &regex::Captures| {
+                    std::env::var(&caps[1]).unwrap_or_default()
+                })
+                .to_string();
         }
         toml::Value::Table(t) => {
             for (_, v) in t.iter_mut() {

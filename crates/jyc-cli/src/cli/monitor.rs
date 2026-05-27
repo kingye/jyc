@@ -185,10 +185,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         tracing::info!(channel = %channel_name, channel_type = %channel_type, "Outbound connected");
 
         // Create agent based on configured mode
+        // Resolve effective model per-channel: channel-level override beats global
+        let effective_model = channel_config.model.clone()
+            .or_else(|| agent_config.model.clone());
+        let effective_small_model = channel_config.small_model.clone()
+            .or_else(|| agent_config.small_model.clone());
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
             "agent" => {
                 // In-process agent
-                let model = agent_config.model.clone();
+                let model = effective_model;
                 tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
                 let providers = agent_config.providers.iter()
                     .map(|(name, def)| {
@@ -214,7 +219,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .collect();
                 let agent_cfg = jyc_agent::types::AgentConfig {
                     model,
-                    small_model: agent_config.small_model.clone(),
+                    small_model: effective_small_model.clone(),
                     providers,
                     max_iterations: agent_config.max_iterations,
                     vision: agent_config.vision.clone().map(|v| jyc_agent::types::VisionConfig {

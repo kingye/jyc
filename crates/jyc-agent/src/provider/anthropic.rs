@@ -78,7 +78,7 @@ impl Provider for AnthropicProvider {
         // Convert messages to Anthropic format
         let api_messages = messages
             .iter()
-            .map(|msg| to_anthropic_message(msg))
+            .map(to_anthropic_message)
             .collect::<Vec<_>>();
 
         // Build tools array
@@ -108,18 +108,18 @@ impl Provider for AnthropicProvider {
         }
 
         // Merge extra params from config (provider-level + model-level)
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
         // Build request
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&url)
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01");
@@ -141,12 +141,16 @@ impl Provider for AnthropicProvider {
         let diag_client = self.client.clone();
 
         // Create SSE stream
-        let es = EventSource::new(req)
-            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        let es =
+            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
-            (es, StreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            (
+                es,
+                StreamState::default(),
+                Some((diag_client, diag_url, diag_body, diag_api_key)),
+            ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
                     match es.next().await {
@@ -184,7 +188,8 @@ impl Provider for AnthropicProvider {
                             // response body so the caller sees the provider's
                             // actual error (model-not-supported, schema rejection,
                             // rate limit details, etc.).
-                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take()
+                            {
                                 super::fetch_error_body(&client, &url, &body, |req| {
                                     let req = req.header("anthropic-version", "2023-06-01");
                                     if let Some(key) = api_key.as_deref() {
@@ -198,9 +203,9 @@ impl Provider for AnthropicProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => format!(
-                                    "SSE error: {e} (HTTP {status} body: {body})"
-                                ),
+                                Some((status, body)) => {
+                                    format!("SSE error: {e} (HTTP {status} body: {body})")
+                                }
                                 None => format!("SSE error: {e}"),
                             };
                             return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
@@ -241,7 +246,12 @@ impl Provider for AnthropicProvider {
         })
     }
 
-    fn format_tool_result(&self, tool_use_id: &str, content: &str, is_error: bool) -> serde_json::Value {
+    fn format_tool_result(
+        &self,
+        tool_use_id: &str,
+        content: &str,
+        is_error: bool,
+    ) -> serde_json::Value {
         let mut result = serde_json::json!({
             "role": "user",
             "content": [{
@@ -269,8 +279,8 @@ impl Provider for AnthropicProvider {
         }
 
         for (id, name, args) in tool_calls {
-            let input: serde_json::Value = serde_json::from_str(args)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let input: serde_json::Value =
+                serde_json::from_str(args).unwrap_or(serde_json::Value::Object(Default::default()));
             content.push(serde_json::json!({
                 "type": "tool_use",
                 "id": id,
@@ -320,17 +330,17 @@ impl Provider for AnthropicProvider {
         }
 
         // Merge extra params
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&url)
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01");
@@ -348,11 +358,15 @@ impl Provider for AnthropicProvider {
         let diag_api_key = self.api_key.clone();
         let diag_client = self.client.clone();
 
-        let es = EventSource::new(req)
-            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        let es =
+            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         let stream = futures::stream::unfold(
-            (es, StreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            (
+                es,
+                StreamState::default(),
+                Some((diag_client, diag_url, diag_body, diag_api_key)),
+            ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
                     match es.next().await {
@@ -381,7 +395,8 @@ impl Provider for AnthropicProvider {
                             if err_msg.contains("Stream ended") {
                                 return None;
                             }
-                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take()
+                            {
                                 super::fetch_error_body(&client, &url, &body, |req| {
                                     let req = req.header("anthropic-version", "2023-06-01");
                                     if let Some(key) = api_key.as_deref() {
@@ -395,9 +410,9 @@ impl Provider for AnthropicProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => format!(
-                                    "SSE error: {e} (HTTP {status} body: {body})"
-                                ),
+                                Some((status, body)) => {
+                                    format!("SSE error: {e} (HTTP {status} body: {body})")
+                                }
                                 None => format!("SSE error: {e}"),
                             };
                             return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
@@ -473,8 +488,14 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
         "message_delta" => {
             // May contain usage info
             if let Some(usage) = value.get("usage") {
-                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let output = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if input > 0 || output > 0 {
                     return Some(vec![StreamEvent::Usage {
                         input_tokens: input,
@@ -487,8 +508,14 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
         "message_start" => {
             // Extract initial usage
             if let Some(usage) = value.get("message").and_then(|m| m.get("usage")) {
-                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let output = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if input > 0 {
                     return Some(vec![StreamEvent::Usage {
                         input_tokens: input,
@@ -498,9 +525,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
             }
             None
         }
-        "message_stop" => {
-            Some(vec![StreamEvent::Done])
-        }
+        "message_stop" => Some(vec![StreamEvent::Done]),
         "error" => {
             let error_msg = value
                 .get("error")
@@ -537,7 +562,11 @@ fn to_anthropic_message(msg: &Message) -> serde_json::Value {
                 "name": name,
                 "input": input,
             }),
-            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
                 let mut result = serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -627,10 +656,7 @@ mod tests {
             .and(path("/messages"))
             .and(header("anthropic-version", "2023-06-01"))
             .and(header("x-api-key", "test-key"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_json(&error_body),
-            )
+            .respond_with(ResponseTemplate::new(400).set_body_json(&error_body))
             .mount(&server)
             .await;
 

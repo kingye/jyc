@@ -1,18 +1,18 @@
+use arc_swap::ArcSwap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use arc_swap::ArcSwap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::AppConfig;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_manager::ThreadManager;
+use jyc_types::AppConfig;
 use jyc_types::*;
 
 /// Max activity entries kept per thread.
@@ -64,11 +64,7 @@ pub struct InspectServer {
 }
 
 impl InspectServer {
-    pub fn new(
-        bind_addr: String,
-        context: Arc<InspectContext>,
-        cancel: CancellationToken,
-    ) -> Self {
+    pub fn new(bind_addr: String, context: Arc<InspectContext>, cancel: CancellationToken) -> Self {
         Self {
             bind_addr,
             context,
@@ -153,10 +149,7 @@ impl InspectServer {
         Ok(())
     }
 
-    async fn handle_request(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
+    async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
         match request.method.as_str() {
             "get_state" => {
                 let state = Self::build_state(context).await;
@@ -245,10 +238,7 @@ impl InspectServer {
             }
         };
 
-        if thread_name.contains("..")
-            || thread_name.contains('/')
-            || thread_name.contains('\\')
-        {
+        if thread_name.contains("..") || thread_name.contains('/') || thread_name.contains('\\') {
             return InspectResponse::ResetSessionResult {
                 success: false,
                 message: "invalid thread_name: path traversal not allowed".to_string(),
@@ -334,7 +324,11 @@ impl InspectServer {
 
         // Read metrics
         let health = context.health_stats.lock().await;
-        let max_concurrent: usize = context.thread_managers.iter().map(|tm| tm.max_concurrent()).sum();
+        let max_concurrent: usize = context
+            .thread_managers
+            .iter()
+            .map(|tm| tm.max_concurrent())
+            .sum();
         let stats = GlobalStats {
             active_workers,
             total_threads,
@@ -392,21 +386,21 @@ impl ActivityTracker {
                 let threads = tm.list_threads().await;
                 for thread in &threads {
                     let thread_path = workspace_dir.join(&thread.name);
-                    if let Ok(entries) = ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES) {
-                        if !entries.is_empty() {
-                            let mut map = activity_map.lock().await;
-                            let state = map
-                                .entry((channel.clone(), thread.name.clone()))
-                                .or_default();
-                            state.entries = entries.into_iter().collect();
-                            state.is_processing = false;
-                            if let Some(last) = state.entries.back() {
-                                if let Some(ref ts) = last.timestamp {
-                                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-                                        state.last_active_at = Some(dt.with_timezone(&chrono::Utc));
-                                    }
-                                }
-                            }
+                    if let Ok(entries) =
+                        ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES)
+                        && !entries.is_empty()
+                    {
+                        let mut map = activity_map.lock().await;
+                        let state = map
+                            .entry((channel.clone(), thread.name.clone()))
+                            .or_default();
+                        state.entries = entries.into_iter().collect();
+                        state.is_processing = false;
+                        if let Some(last) = state.entries.back()
+                            && let Some(ref ts) = last.timestamp
+                            && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts)
+                        {
+                            state.last_active_at = Some(dt.with_timezone(&chrono::Utc));
                         }
                     }
                 }
@@ -428,8 +422,8 @@ impl ActivityTracker {
                                 if subscribed.contains(&key) {
                                     continue;
                                 }
-                                if let Some(bus) = tm.get_event_bus(&thread.name).await {
-                                    if let Ok(mut rx) = bus.subscribe().await {
+                                if let Some(bus) = tm.get_event_bus(&thread.name).await
+                                    && let Ok(mut rx) = bus.subscribe().await {
                                         subscribed.insert(key.clone());
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
@@ -454,11 +448,10 @@ impl ActivityTracker {
                                                                 );
                                                                  let entry = event_to_activity(&event);
                                                                  let is_error = entry.severity == Severity::Error;
-                                                                 if let Some(ref path) = thread_path {
-                                                                     if let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                 if let Some(ref path) = thread_path
+                                                                     && let Err(e) = ActivityLogStore::append(path, &entry) {
                                                                          tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                      }
-                                                                 }
                                                                  let mut map = map.lock().await;
                                                                  let state = map
                                                                      .entry((channel_for_task.clone(), name.clone()))
@@ -486,7 +479,6 @@ impl ActivityTracker {
                                             }
                                         });
                                     }
-                                }
                             }
                         }
                     }
@@ -531,12 +523,12 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Failed ({duration_secs}s)")
             }
         }
-        ThreadEvent::ToolStarted { tool_name, input, .. } => {
-            match input {
-                Some(inp) => format!("Tool: {tool_name} — {inp}"),
-                None => format!("Tool: {tool_name} (running)"),
-            }
-        }
+        ThreadEvent::ToolStarted {
+            tool_name, input, ..
+        } => match input {
+            Some(inp) => format!("Tool: {tool_name} — {inp}"),
+            None => format!("Tool: {tool_name} (running)"),
+        },
         ThreadEvent::ToolCompleted {
             tool_name,
             success,
@@ -556,7 +548,9 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 }
             }
         }
-        ThreadEvent::Thinking { text, full_length, .. } => {
+        ThreadEvent::Thinking {
+            text, full_length, ..
+        } => {
             let oneline = text.replace('\n', " ");
             if *full_length > text.len() {
                 format!("Thinking: {oneline}...")
@@ -564,7 +558,12 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Thinking: {oneline}")
             }
         }
-        ThreadEvent::SessionStatus { status_type, attempt, message, .. } => {
+        ThreadEvent::SessionStatus {
+            status_type,
+            attempt,
+            message,
+            ..
+        } => {
             let label = match status_type.as_str() {
                 "retry" => "RETRY",
                 "error" => "ERROR",
@@ -601,17 +600,13 @@ mod tests {
     fn test_context() -> Arc<InspectContext> {
         Arc::new(InspectContext {
             thread_managers: vec![],
-            channels: vec![
-                ChannelInfo {
-                    name: "emf".to_string(),
-                    channel_type: "github".to_string(),
-                    active_workers: 0,
-                    max_concurrent: 0,
-                },
-            ],
-            health_stats: Arc::new(Mutex::new(
-                jyc_core::metrics::HealthStats::default(),
-            )),
+            channels: vec![ChannelInfo {
+                name: "emf".to_string(),
+                channel_type: "github".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
@@ -630,11 +625,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let server = InspectServer::new(
-            addr.to_string(),
-            ctx,
-            cancel.clone(),
-        );
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
         let handle = server.start();
 
         // Give server time to start
@@ -645,7 +636,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
-        writer.write_all(b"{\"method\":\"get_state\"}\n").await.unwrap();
+        writer
+            .write_all(b"{\"method\":\"get_state\"}\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
 
         let mut response = String::new();
@@ -678,8 +672,16 @@ mod tests {
             timestamp: chrono::Utc::now(),
         };
         let entry = event_to_activity(&event);
-        assert!(entry.text.contains("ERROR"), "Expected ERROR label, got: {}", entry.text);
-        assert!(entry.text.contains("SMTP 535 authentication failed"), "Expected error message, got: {}", entry.text);
+        assert!(
+            entry.text.contains("ERROR"),
+            "Expected ERROR label, got: {}",
+            entry.text
+        );
+        assert!(
+            entry.text.contains("SMTP 535 authentication failed"),
+            "Expected error message, got: {}",
+            entry.text
+        );
     }
 
     #[tokio::test]
@@ -692,8 +694,16 @@ mod tests {
             timestamp: chrono::Utc::now(),
         };
         let entry = event_to_activity(&event);
-        assert!(entry.text.contains("ERROR (attempt #3)"), "Expected ERROR with attempt, got: {}", entry.text);
-        assert!(entry.text.contains("server overload"), "Expected error message, got: {}", entry.text);
+        assert!(
+            entry.text.contains("ERROR (attempt #3)"),
+            "Expected ERROR with attempt, got: {}",
+            entry.text
+        );
+        assert!(
+            entry.text.contains("server overload"),
+            "Expected error message, got: {}",
+            entry.text
+        );
     }
 
     #[tokio::test]
@@ -713,7 +723,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
-        writer.write_all(b"{\"method\":\"unknown\"}\n").await.unwrap();
+        writer
+            .write_all(b"{\"method\":\"unknown\"}\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
 
         let mut response = String::new();
@@ -773,7 +786,10 @@ mod tests {
 
         // Send two requests on the same connection
         for _ in 0..2 {
-            writer.write_all(b"{\"method\":\"get_state\"}\n").await.unwrap();
+            writer
+                .write_all(b"{\"method\":\"get_state\"}\n")
+                .await
+                .unwrap();
             writer.flush().await.unwrap();
 
             let mut response = String::new();
@@ -847,7 +863,10 @@ mode = "agent"
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
-        writer.write_all(b"{\"method\":\"reload_config\"}\n").await.unwrap();
+        writer
+            .write_all(b"{\"method\":\"reload_config\"}\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
 
         let mut response = String::new();
@@ -866,10 +885,14 @@ mode = "agent"
         assert_eq!(config_swap.load().general.max_concurrent_threads, 5);
 
         // Now modify the config on disk and reload again
-        let updated_toml = config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
+        let updated_toml =
+            config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
         std::fs::write(&config_path, updated_toml).unwrap();
 
-        writer.write_all(b"{\"method\":\"reload_config\"}\n").await.unwrap();
+        writer
+            .write_all(b"{\"method\":\"reload_config\"}\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
 
         let mut response2 = String::new();
@@ -926,7 +949,9 @@ mode = "agent"
         let mut reader = BufReader::new(reader);
 
         writer
-            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"test-thread\"}}\n")
+            .write_all(
+                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"test-thread\"}}\n",
+            )
             .await
             .unwrap();
         writer.flush().await.unwrap();
@@ -1018,7 +1043,9 @@ mode = "agent"
         let mut reader = BufReader::new(reader);
 
         writer
-            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"nonexistent\"}}\n")
+            .write_all(
+                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"nonexistent\"}}\n",
+            )
             .await
             .unwrap();
         writer.flush().await.unwrap();
@@ -1057,7 +1084,9 @@ mode = "agent"
         let mut reader = BufReader::new(reader);
 
         writer
-            .write_all(b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n")
+            .write_all(
+                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n",
+            )
             .await
             .unwrap();
         writer.flush().await.unwrap();
@@ -1069,7 +1098,10 @@ mode = "agent"
         match resp {
             InspectResponse::ResetSessionResult { success, message } => {
                 assert!(!success);
-                assert!(message.contains("path traversal"), "expected path traversal error, got: {message}");
+                assert!(
+                    message.contains("path traversal"),
+                    "expected path traversal error, got: {message}"
+                );
             }
             other => panic!("expected ResetSessionResult, got {:?}", other),
         }

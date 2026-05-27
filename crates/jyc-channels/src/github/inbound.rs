@@ -4,13 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::{
-    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    LabelRule, MessageContent, PatternMatch, PatternRules,
-};
-use jyc_utils::helpers::truncate_str;
 use super::client::{GithubClient, GithubComment};
 use jyc_types::GithubConfig;
+use jyc_types::{
+    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
+    MessageContent, PatternMatch, PatternRules,
+};
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
 pub struct GithubMatcher;
@@ -43,10 +42,10 @@ impl ChannelMatcher for GithubMatcher {
         // separate workspace directories so each can carry its own template
         // and AGENTS.md without collision.
         if let Some(pm) = pattern_match {
-            if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name) {
-                if let Some(prefix) = pattern.thread_prefix.as_deref() {
-                    return format!("{}-{}", prefix, number);
-                }
+            if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
+                && let Some(prefix) = pattern.thread_prefix.as_deref()
+            {
+                return format!("{}-{}", prefix, number);
             }
 
             // Backwards-compatible fallback: a pattern named "reviewer"
@@ -120,10 +119,13 @@ impl ChannelMatcher for GithubMatcher {
                 continue;
             }
 
-            if let Some(comment_role) = message.metadata.get("comment_role").and_then(|v| v.as_str()) {
-                if pattern_role.eq_ignore_ascii_case(comment_role) {
-                    continue;
-                }
+            if let Some(comment_role) = message
+                .metadata
+                .get("comment_role")
+                .and_then(|v| v.as_str())
+                && pattern_role.eq_ignore_ascii_case(comment_role)
+            {
+                continue;
             }
 
             return Some(PatternMatch {
@@ -173,7 +175,10 @@ impl GithubMatcher {
                 .get("github_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if !allowed_types.iter().any(|t| t.eq_ignore_ascii_case(msg_type)) {
+            if !allowed_types
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(msg_type))
+            {
                 return false;
             }
         }
@@ -191,10 +196,10 @@ impl GithubMatcher {
             .unwrap_or_default();
 
         // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
-        if let Some(ref label_rule) = rules.labels {
-            if !label_rule.matches(&msg_labels) {
-                return false;
-            }
+        if let Some(ref label_rule) = rules.labels
+            && !label_rule.matches(&msg_labels)
+        {
+            return false;
         }
 
         // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
@@ -332,7 +337,9 @@ impl GithubInboundAdapter {
         let mut entries: Vec<(u64, String)> = processed
             .iter()
             .map(|key| {
-                let id = key.split(':').next()
+                let id = key
+                    .split(':')
+                    .next()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
                 (id, key.clone())
@@ -349,10 +356,7 @@ impl GithubInboundAdapter {
         *processed = keep;
 
         let file = self.state_dir.join("processed-comments.txt");
-        let content: String = processed
-            .iter()
-            .map(|key| format!("{key}\n"))
-            .collect();
+        let content: String = processed.iter().map(|key| format!("{key}\n")).collect();
         if let Err(e) = tokio::fs::write(&file, content).await {
             tracing::warn!(error = %e, "Failed to compact processed comments file");
         } else {
@@ -426,7 +430,9 @@ impl GithubInboundAdapter {
         let mut entries: Vec<(u64, String)> = seen
             .iter()
             .map(|key| {
-                let number = key.split(':').next()
+                let number = key
+                    .split(':')
+                    .next()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
                 (number, key.clone())
@@ -443,10 +449,7 @@ impl GithubInboundAdapter {
         *seen = keep;
 
         let file = self.state_dir.join("seen-issues.txt");
-        let content: String = seen
-            .iter()
-            .map(|key| format!("{key}\n"))
-            .collect();
+        let content: String = seen.iter().map(|key| format!("{key}\n")).collect();
         if let Err(e) = tokio::fs::write(&file, content).await {
             tracing::warn!(error = %e, "Failed to compact seen issues file");
         } else {
@@ -635,10 +638,10 @@ impl GithubInboundAdapter {
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy().to_string();
             // Require strict suffix `-{N}` AND a non-empty prefix before it.
-            if let Some(prefix) = name.strip_suffix(&suffix) {
-                if !prefix.is_empty() {
-                    matches.push(name);
-                }
+            if let Some(prefix) = name.strip_suffix(&suffix)
+                && !prefix.is_empty()
+            {
+                matches.push(name);
             }
         }
         matches
@@ -646,6 +649,7 @@ impl GithubInboundAdapter {
 
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
+    #[allow(clippy::too_many_arguments)]
     fn build_trigger_message(
         &self,
         event_type: &str,
@@ -673,7 +677,8 @@ impl GithubInboundAdapter {
         // For enterprise GitHub (non-default api_url), prefix commands with GH_HOST
         // so `gh` targets the correct host (e.g., github.tools.sap instead of github.com).
         let gh_host_prefix = if self.config.api_url != "https://api.github.com" {
-            self.config.api_url
+            self.config
+                .api_url
                 .strip_prefix("https://")
                 .and_then(|s| s.split('/').next())
                 .map(|host| format!("GH_HOST={} ", host))
@@ -685,23 +690,39 @@ impl GithubInboundAdapter {
         let gh_cmd = match github_type {
             "pull_request" => format!(
                 "Repository: {}/{}\n\nSetup:\n  cd repo  # or: {gh}gh repo clone {}/{} repo && cd repo\n\nRead PR:\n  {gh}gh pr view {}\n  {gh}gh pr view {} --comments\n  {gh}gh pr diff {}",
-                self.config.owner, self.config.repo,
-                self.config.owner, self.config.repo,
-                number, number, number,
+                self.config.owner,
+                self.config.repo,
+                self.config.owner,
+                self.config.repo,
+                number,
+                number,
+                number,
                 gh = gh_host_prefix
             ),
             _ => format!(
                 "Repository: {}/{}\n\nSetup:\n  cd repo  # or: {gh}gh repo clone {}/{} repo && cd repo\n\nRead issue:\n  {gh}gh issue view {}\n  {gh}gh issue view {} --comments",
-                self.config.owner, self.config.repo,
-                self.config.owner, self.config.repo,
-                number, number,
+                self.config.owner,
+                self.config.repo,
+                self.config.owner,
+                self.config.repo,
+                number,
+                number,
                 gh = gh_host_prefix
             ),
         };
 
         let body = format!(
             "github event: {}\nrepository: {}/{}\nnumber: {}\ntype: {}\naction: {}\nactor: {}\n{}{}{}",
-            event_type, self.config.owner, self.config.repo, number, github_type, action, actor, label_str, assignee_str, gh_cmd
+            event_type,
+            self.config.owner,
+            self.config.repo,
+            number,
+            github_type,
+            action,
+            actor,
+            label_str,
+            assignee_str,
+            gh_cmd
         );
 
         let mut metadata = HashMap::new();
@@ -762,14 +783,9 @@ impl ChannelMatcher for GithubInboundAdapter {
 
 #[async_trait]
 impl InboundAdapter for GithubInboundAdapter {
-    async fn start(
-        &self,
-        options: InboundAdapterOptions,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
         // Create GitHub API client
-        let client = GithubClient::new(&self.config)
-            .context("Failed to create GitHub client")?;
+        let client = GithubClient::new(&self.config).context("Failed to create GitHub client")?;
 
         // Get bot identity (for logging — not used for comment filtering)
         let bot_user = match client.get_authenticated_user().await {
@@ -792,8 +808,14 @@ impl InboundAdapter for GithubInboundAdapter {
         // Create state directory and load persistent processed comments
         let state_file = self.state_dir.join("processed-comments.txt");
         let is_fresh_start = !state_file.exists();
-        tokio::fs::create_dir_all(&self.state_dir).await
-            .with_context(|| format!("failed to create state directory: {}", self.state_dir.display()))?;
+        tokio::fs::create_dir_all(&self.state_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create state directory: {}",
+                    self.state_dir.display()
+                )
+            })?;
         let mut processed_comments: HashSet<String> = self.load_processed_comments().await;
 
         // Track processed event IDs for non-comment deduplication (close events)
@@ -803,7 +825,8 @@ impl InboundAdapter for GithubInboundAdapter {
         let mut seen_issues: HashSet<String> = self.load_seen_issues().await;
 
         // Cache issue info for comment routing (number → title, type, labels, assignees)
-        let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> = HashMap::new();
+        let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> =
+            HashMap::new();
 
         // Load CI status tracking for check-run polling
         let mut ci_status: HashMap<u64, (String, String)> = self.load_ci_status().await;
@@ -819,9 +842,7 @@ impl InboundAdapter for GithubInboundAdapter {
                 channel = %self.channel_name,
                 "Fresh start detected — polling from now (no backfill)"
             );
-            chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string()
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
         } else {
             tracing::info!(
                 channel = %self.channel_name,
@@ -872,6 +893,7 @@ impl InboundAdapter for GithubInboundAdapter {
 impl GithubInboundAdapter {
     /// Execute one poll cycle: fetch comments and route via pattern matching.
     /// Routes events to threads via on_message callback.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn poll_once(
         &self,
         client: &GithubClient,
@@ -903,22 +925,30 @@ impl GithubInboundAdapter {
         );
 
         for issue in &issues {
-            let github_type = if issue.is_pull_request() { "pull_request" } else { "issue" };
+            let github_type = if issue.is_pull_request() {
+                "pull_request"
+            } else {
+                "issue"
+            };
             let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
             let assignees: Vec<String> = issue.assignees.iter().map(|a| a.login.clone()).collect();
 
             issue_cache.insert(
                 issue.number,
-                (issue.title.clone(), github_type.to_string(), labels.clone(), assignees.clone()),
+                (
+                    issue.title.clone(),
+                    github_type.to_string(),
+                    labels.clone(),
+                    assignees.clone(),
+                ),
             );
 
             // Track seen issues for dedup (prevent re-triggering after restart).
             // Key = number:labels — triggers on first sight and label changes.
             // Does NOT include updated_at: comments (including agent's own replies)
             // update that timestamp, which would cause infinite re-triggering.
-            let mut labels_sorted: Vec<String> = issue.labels.iter()
-                .map(|l| l.name.clone())
-                .collect();
+            let mut labels_sorted: Vec<String> =
+                issue.labels.iter().map(|l| l.name.clone()).collect();
             labels_sorted.sort();
             let seen_key = format!("{}:{}", issue.number, labels_sorted.join(","));
             let is_new = !seen_issues.contains(&seen_key);
@@ -1009,10 +1039,15 @@ impl GithubInboundAdapter {
             }
 
             // Look up issue info from cache
-            let (title, github_type, labels, assignees) = issue_cache
-                .get(&issue_number)
-                .cloned()
-                .unwrap_or_else(|| (format!("#{}", issue_number), "issue".to_string(), vec![], vec![]));
+            let (title, github_type, labels, assignees) =
+                issue_cache.get(&issue_number).cloned().unwrap_or_else(|| {
+                    (
+                        format!("#{}", issue_number),
+                        "issue".to_string(),
+                        vec![],
+                        vec![],
+                    )
+                });
 
             let event_uid = format!("comment-{}", comment.id);
 
@@ -1128,10 +1163,15 @@ impl GithubInboundAdapter {
 
                         let comment_role = extract_comment_role(body_trimmed);
 
-                        let (title, github_type, labels, assignees) = issue_cache
-                            .get(pr_number)
-                            .cloned()
-                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+                        let (title, github_type, labels, assignees) =
+                            issue_cache.get(pr_number).cloned().unwrap_or_else(|| {
+                                (
+                                    format!("#{}", pr_number),
+                                    "pull_request".to_string(),
+                                    vec![],
+                                    vec![],
+                                )
+                            });
 
                         let event_uid = format!("review-{}", review.id);
 
@@ -1232,10 +1272,15 @@ impl GithubInboundAdapter {
 
                         let comment_role = extract_comment_role(body_trimmed);
 
-                        let (title, github_type, labels, assignees) = issue_cache
-                            .get(pr_number)
-                            .cloned()
-                            .unwrap_or_else(|| (format!("#{}", pr_number), "pull_request".to_string(), vec![], vec![]));
+                        let (title, github_type, labels, assignees) =
+                            issue_cache.get(pr_number).cloned().unwrap_or_else(|| {
+                                (
+                                    format!("#{}", pr_number),
+                                    "pull_request".to_string(),
+                                    vec![],
+                                    vec![],
+                                )
+                            });
 
                         let event_uid = format!("review-comment-{}", rc.id);
 
@@ -1273,7 +1318,9 @@ impl GithubInboundAdapter {
                         } else {
                             format!(
                                 "\n\n---\nReview comment by {} on {}:\n\n{}",
-                                rc.user.login, context_parts.join(", "), rc.body
+                                rc.user.login,
+                                context_parts.join(", "),
+                                rc.body
                             )
                         };
                         match &mut message.content.text {
@@ -1368,12 +1415,11 @@ impl GithubInboundAdapter {
                     }
                 };
 
-                let has_failure = check_runs
-                    .iter()
-                    .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
-                let all_completed = check_runs
-                    .iter()
-                    .all(|cr| cr.status == "completed");
+                let has_failure = check_runs.iter().any(|cr| {
+                    cr.conclusion.as_deref() == Some("failure")
+                        || cr.conclusion.as_deref() == Some("timed_out")
+                });
+                let all_completed = check_runs.iter().all(|cr| cr.status == "completed");
 
                 let overall_status = if has_failure {
                     "failure"
@@ -1403,13 +1449,14 @@ impl GithubInboundAdapter {
                 if overall_status == "failure" && previous_status.as_deref() != Some("failure") {
                     let failed_checks: Vec<&super::client::GithubCheckRun> = check_runs
                         .iter()
-                        .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
+                        .filter(|cr| {
+                            cr.conclusion.as_deref() == Some("failure")
+                                || cr.conclusion.as_deref() == Some("timed_out")
+                        })
                         .collect();
 
-                    let (title, github_type, labels, assignees) = issue_cache
-                        .get(pr_number)
-                        .cloned()
-                        .unwrap_or_else(|| {
+                    let (title, github_type, labels, assignees) =
+                        issue_cache.get(pr_number).cloned().unwrap_or_else(|| {
                             (
                                 format!("#{}", pr_number),
                                 "pull_request".to_string(),
@@ -1418,7 +1465,11 @@ impl GithubInboundAdapter {
                             )
                         });
 
-                    let event_uid = format!("ci-{}-{}-failure", pr_number, head_sha.get(..12).unwrap_or(&head_sha));
+                    let event_uid = format!(
+                        "ci-{}-{}-failure",
+                        pr_number,
+                        head_sha.get(..12).unwrap_or(&head_sha)
+                    );
 
                     let mut message = self.build_trigger_message(
                         "check_run",
@@ -1514,7 +1565,9 @@ impl GithubInboundAdapter {
         for cached_number in cached_numbers {
             if !current_open_numbers.contains(&cached_number) {
                 // Get cached info before removing
-                if let Some((_title, github_type, _labels, _assignees)) = issue_cache.get(&cached_number) {
+                if let Some((_title, github_type, _labels, _assignees)) =
+                    issue_cache.get(&cached_number)
+                {
                     let event_uid = format!("{}-{}-closed", github_type, cached_number);
 
                     if !processed_events.contains(&event_uid) {
@@ -1557,7 +1610,11 @@ impl GithubInboundAdapter {
         );
 
         for item in &closed {
-            let github_type = if item.is_pull_request() { "pull_request" } else { "issue" };
+            let github_type = if item.is_pull_request() {
+                "pull_request"
+            } else {
+                "issue"
+            };
             let event_uid = format!("{}-{}-closed", github_type, item.number);
 
             if processed_events.contains(&event_uid) {
@@ -1585,7 +1642,7 @@ impl GithubInboundAdapter {
             // are also closed alongside the defaults (`issue`, `pr`, `review-pr`).
             if let Some(ref on_close) = options.on_thread_close {
                 let _ = github_type; // event-type no longer drives the prefix list
-                let _ = is_merged;   // merge state currently doesn't change cleanup
+                let _ = is_merged; // merge state currently doesn't change cleanup
                 let thread_names = self.scan_threads_for_number(item.number);
                 for thread_name in thread_names {
                     let _ = (on_close)(thread_name);
@@ -1626,13 +1683,15 @@ impl GithubInboundAdapter {
 ///
 /// Only recognizes known agent roles to avoid false positives.
 fn extract_comment_role(text: &str) -> Option<String> {
-    if text.starts_with('[') {
-        if let Some(end) = text.find(']') {
-            let role = &text[1..end];
-            match role {
-                "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => return Some(role.to_string()),
-                _ => {}
+    if text.starts_with('[')
+        && let Some(end) = text.find(']')
+    {
+        let role = &text[1..end];
+        match role {
+            "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => {
+                return Some(role.to_string());
             }
+            _ => {}
         }
     }
     None
@@ -1652,6 +1711,7 @@ fn should_process_comment(comment: &GithubComment, open_numbers: &HashSet<u64>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::LabelRule;
 
     fn make_message(github_type: &str, number: u64) -> InboundMessage {
         let mut metadata = HashMap::new();
@@ -1659,10 +1719,7 @@ mod tests {
             "github_type".to_string(),
             serde_json::Value::String(github_type.to_string()),
         );
-        metadata.insert(
-            "github_number".to_string(),
-            serde_json::json!(number),
-        );
+        metadata.insert("github_number".to_string(), serde_json::json!(number));
 
         InboundMessage {
             id: "test".to_string(),
@@ -1886,14 +1943,10 @@ mod tests {
         assignees: &[&str],
     ) -> InboundMessage {
         let mut msg = make_message(github_type, number);
-        msg.metadata.insert(
-            "github_labels".to_string(),
-            serde_json::json!(labels),
-        );
-        msg.metadata.insert(
-            "github_assignees".to_string(),
-            serde_json::json!(assignees),
-        );
+        msg.metadata
+            .insert("github_labels".to_string(), serde_json::json!(labels));
+        msg.metadata
+            .insert("github_assignees".to_string(), serde_json::json!(assignees));
         msg
     }
 
@@ -1911,7 +1964,10 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "developer pattern should not match issue type");
+        assert!(
+            result.is_none(),
+            "developer pattern should not match issue type"
+        );
     }
 
     #[test]
@@ -2088,7 +2144,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_blocks_wrong_assignee() {
         // Pattern requires assignee "alice", but issue is assigned to "bob"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2102,13 +2158,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "should not match when assignee doesn't match");
+        assert!(
+            result.is_none(),
+            "should not match when assignee doesn't match"
+        );
     }
 
     #[test]
     fn test_assignees_rule_allows_matching_assignee() {
         // Pattern requires assignee "alice", issue is assigned to "alice"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2129,7 +2188,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_or_logic() {
         // Pattern allows "alice" or "bob", issue assigned to "bob"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2143,13 +2202,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "should match when any assignee in the list matches");
+        assert!(
+            result.is_some(),
+            "should match when any assignee in the list matches"
+        );
     }
 
     #[test]
     fn test_assignees_rule_case_insensitive() {
         // Pattern has "Alice", issue has "alice"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2163,13 +2225,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "assignee matching should be case-insensitive");
+        assert!(
+            result.is_some(),
+            "assignee matching should be case-insensitive"
+        );
     }
 
     #[test]
     fn test_labels_rule_blocks_wrong_label() {
         // Pattern requires label "bug", but issue has "enhancement"
-        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2183,13 +2248,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "should not match when label doesn't match");
+        assert!(
+            result.is_none(),
+            "should not match when label doesn't match"
+        );
     }
 
     #[test]
     fn test_labels_rule_allows_matching_label() {
         // Pattern requires label "bug", issue has "bug"
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2209,7 +2277,7 @@ mod tests {
     #[test]
     fn test_labels_rule_case_insensitive() {
         // Pattern has "Bug", issue has "bug"
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2223,14 +2291,17 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "label matching should be case-insensitive");
+        assert!(
+            result.is_some(),
+            "label matching should be case-insensitive"
+        );
     }
 
     #[test]
     fn test_all_rules_and_logic() {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
-        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
+        let msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -2252,7 +2323,7 @@ mod tests {
     fn test_and_logic_partial_fail() {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has correct type and label but wrong assignee — should NOT match
-        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
+        let msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -2273,7 +2344,7 @@ mod tests {
     #[test]
     fn test_no_rules_always_matches() {
         // Pattern with no rules (all None) — should match purely on role
-        let mut msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
+        let msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2289,7 +2360,7 @@ mod tests {
     #[test]
     fn test_no_assignees_on_issue_fails_assignee_rule() {
         // Pattern requires assignee "alice", but issue has no assignees
-        let mut msg = make_message_with_rules("issue", 42, &[], &[]);
+        let msg = make_message_with_rules("issue", 42, &[], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2303,7 +2374,10 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "no assignees on issue should fail assignee rule");
+        assert!(
+            result.is_none(),
+            "no assignees on issue should fail assignee rule"
+        );
     }
 
     #[test]
@@ -2311,7 +2385,7 @@ mod tests {
         // Two patterns with same role but different rules.
         // First requires assignee "alice", second has no assignee rule.
         // Message has assignee "bob" — should skip first, match second.
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![
             ChannelPattern {
@@ -2338,18 +2412,33 @@ mod tests {
         ];
         let result = GithubMatcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "planner-default",
-            "should fall through to second pattern when first pattern's rules don't match");
+        assert_eq!(
+            result.unwrap().pattern_name,
+            "planner-default",
+            "should fall through to second pattern when first pattern's rules don't match"
+        );
     }
 
     // --- Helper function tests ---
 
     #[test]
     fn test_extract_comment_role() {
-        assert_eq!(extract_comment_role("[Developer] some text"), Some("Developer".to_string()));
-        assert_eq!(extract_comment_role("[Reviewer] code looks good"), Some("Reviewer".to_string()));
-        assert_eq!(extract_comment_role("[Planner] questions"), Some("Planner".to_string()));
-        assert_eq!(extract_comment_role("[High-Level Planner] planning"), Some("High-Level Planner".to_string()));
+        assert_eq!(
+            extract_comment_role("[Developer] some text"),
+            Some("Developer".to_string())
+        );
+        assert_eq!(
+            extract_comment_role("[Reviewer] code looks good"),
+            Some("Reviewer".to_string())
+        );
+        assert_eq!(
+            extract_comment_role("[Planner] questions"),
+            Some("Planner".to_string())
+        );
+        assert_eq!(
+            extract_comment_role("[High-Level Planner] planning"),
+            Some("High-Level Planner".to_string())
+        );
         assert_eq!(extract_comment_role("normal comment"), None);
         assert_eq!(extract_comment_role("[Unknown] something"), None);
         assert_eq!(extract_comment_role(""), None);
@@ -2392,9 +2481,15 @@ mod tests {
         let mut processed = HashSet::new();
 
         // Track comments with id:updated_at keys
-        adapter.track_comment("100:2024-01-01T00:00:00Z", &mut processed).await;
-        adapter.track_comment("200:2024-01-02T00:00:00Z", &mut processed).await;
-        adapter.track_comment("300:2024-01-03T00:00:00Z", &mut processed).await;
+        adapter
+            .track_comment("100:2024-01-01T00:00:00Z", &mut processed)
+            .await;
+        adapter
+            .track_comment("200:2024-01-02T00:00:00Z", &mut processed)
+            .await;
+        adapter
+            .track_comment("300:2024-01-03T00:00:00Z", &mut processed)
+            .await;
 
         assert_eq!(processed.len(), 3);
         assert!(processed.contains("100:2024-01-01T00:00:00Z"));
@@ -2424,14 +2519,18 @@ mod tests {
         let mut processed = HashSet::new();
 
         // Track comment with original updated_at
-        adapter.track_comment("100:2024-01-01T00:00:00Z", &mut processed).await;
+        adapter
+            .track_comment("100:2024-01-01T00:00:00Z", &mut processed)
+            .await;
         assert!(processed.contains("100:2024-01-01T00:00:00Z"));
 
         // Same comment ID but different updated_at (edited) — should NOT be in set
         assert!(!processed.contains("100:2024-01-01T12:00:00Z"));
 
         // Track the edited version
-        adapter.track_comment("100:2024-01-01T12:00:00Z", &mut processed).await;
+        adapter
+            .track_comment("100:2024-01-01T12:00:00Z", &mut processed)
+            .await;
 
         // Now both versions are tracked
         assert_eq!(processed.len(), 2);
@@ -2596,9 +2695,18 @@ mod tests {
 
         let text = msg.content.text.unwrap();
         // Enterprise repos should include GH_HOST prefix
-        assert!(text.contains("GH_HOST=github.tools.sap gh repo clone"), "expected GH_HOST prefix in clone cmd, got: {text}");
-        assert!(text.contains("GH_HOST=github.tools.sap gh pr view 7880"), "expected GH_HOST prefix in pr view cmd");
-        assert!(text.contains("GH_HOST=github.tools.sap gh pr diff 7880"), "expected GH_HOST prefix in pr diff cmd");
+        assert!(
+            text.contains("GH_HOST=github.tools.sap gh repo clone"),
+            "expected GH_HOST prefix in clone cmd, got: {text}"
+        );
+        assert!(
+            text.contains("GH_HOST=github.tools.sap gh pr view 7880"),
+            "expected GH_HOST prefix in pr view cmd"
+        );
+        assert!(
+            text.contains("GH_HOST=github.tools.sap gh pr diff 7880"),
+            "expected GH_HOST prefix in pr diff cmd"
+        );
     }
 
     // --- Trigger mode tests ---
@@ -2630,7 +2738,8 @@ mod tests {
     #[test]
     fn test_pattern_self_loop_prevention() {
         let mut msg = make_message("pull_request", 43);
-        msg.metadata.insert("comment_role".to_string(), serde_json::json!("Developer"));
+        msg.metadata
+            .insert("comment_role".to_string(), serde_json::json!("Developer"));
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
             enabled: true,
@@ -2668,7 +2777,7 @@ mod tests {
     fn test_labels_nested_and_or() {
         // Nested: [["bug", "enhancement"], ["test"]] → (bug OR enhancement) AND test
         // Message has ["bug", "test"] → should match
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2685,19 +2794,25 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "should match when both AND groups are satisfied");
+        assert!(
+            result.is_some(),
+            "should match when both AND groups are satisfied"
+        );
 
         // Message has ["bug", "other"] → should NOT match (missing "test" group)
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
-        assert!(result2.is_none(), "should not match when second AND group is not satisfied");
+        assert!(
+            result2.is_none(),
+            "should not match when second AND group is not satisfied"
+        );
     }
 
     #[test]
     fn test_labels_nested_single_group() {
         // Nested with single group: [["bug"]] behaves same as flat ["bug"]
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2705,21 +2820,22 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: jyc_types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(LabelRule::Nested(vec![
-                    vec!["bug".to_string()],
-                ])),
+                labels: Some(LabelRule::Nested(vec![vec!["bug".to_string()]])),
                 ..Default::default()
             },
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "single nested group should behave like flat");
+        assert!(
+            result.is_some(),
+            "single nested group should behave like flat"
+        );
     }
 
     #[test]
     fn test_labels_nested_all_and() {
         // Nested: [["bug"], ["test"], ["v2"]] → requires all three labels
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2737,19 +2853,25 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "should match when all three labels are present");
+        assert!(
+            result.is_some(),
+            "should match when all three labels are present"
+        );
 
         // Missing one label → should NOT match
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
-        assert!(result2.is_none(), "should not match when one required label is missing");
+        assert!(
+            result2.is_none(),
+            "should not match when one required label is missing"
+        );
     }
 
     #[test]
     fn test_labels_nested_empty_group() {
         // Edge case: empty inner group [[]] should not block matching
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2759,20 +2881,23 @@ mod tests {
                 github_type: Some(vec!["pull_request".to_string()]),
                 labels: Some(LabelRule::Nested(vec![
                     vec!["bug".to_string()],
-                    vec![],  // empty group — should be treated as always-match
+                    vec![], // empty group — should be treated as always-match
                 ])),
                 ..Default::default()
             },
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "empty inner group should not block matching");
+        assert!(
+            result.is_some(),
+            "empty inner group should not block matching"
+        );
     }
 
     #[test]
     fn test_labels_flat_backward_compat() {
         // Verify Flat(vec!["bug", "enhancement"]) still uses OR logic
-        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2780,30 +2905,42 @@ mod tests {
             role: Some("Developer".to_string()),
             rules: jyc_types::PatternRules {
                 github_type: Some(vec!["pull_request".to_string()]),
-                labels: Some(LabelRule::Flat(vec!["bug".to_string(), "enhancement".to_string()])),
+                labels: Some(LabelRule::Flat(vec![
+                    "bug".to_string(),
+                    "enhancement".to_string(),
+                ])),
                 ..Default::default()
             },
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "flat labels should use OR logic — enhancement matches");
+        assert!(
+            result.is_some(),
+            "flat labels should use OR logic — enhancement matches"
+        );
 
         // Neither label present → should NOT match
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
-        assert!(result2.is_none(), "flat labels OR logic — no matching label");
+        assert!(
+            result2.is_none(),
+            "flat labels OR logic — no matching label"
+        );
     }
 
     // --- TOML deserialization tests for LabelRule ---
 
     #[test]
     fn test_labels_toml_flat_deserialize() {
-        let pattern: ChannelPattern = toml::from_str(r#"
+        let pattern: ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             [rules]
             labels = ["bug", "enhancement"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert!(
             matches!(pattern.rules.labels, Some(LabelRule::Flat(_))),
             "flat TOML array should deserialize as LabelRule::Flat"
@@ -2815,11 +2952,14 @@ mod tests {
 
     #[test]
     fn test_labels_toml_nested_deserialize() {
-        let pattern: ChannelPattern = toml::from_str(r#"
+        let pattern: ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             [rules]
             labels = [["bug", "enhancement"], ["test"]]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert!(
             matches!(pattern.rules.labels, Some(LabelRule::Nested(_))),
             "nested TOML array should deserialize as LabelRule::Nested"
@@ -2845,7 +2985,9 @@ mod tests {
         // Comment on open issue #10 → should be processed
         let comment = GithubComment {
             id: 1,
-            user: GithubUser { login: "user1".to_string() },
+            user: GithubUser {
+                login: "user1".to_string(),
+            },
             body: "test".to_string(),
             issue_url: "https://api.github.com/repos/owner/repo/issues/10".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2866,7 +3008,9 @@ mod tests {
         // Comment on closed issue #30 → should be skipped
         let comment = GithubComment {
             id: 2,
-            user: GithubUser { login: "user1".to_string() },
+            user: GithubUser {
+                login: "user1".to_string(),
+            },
             body: "test".to_string(),
             issue_url: "https://api.github.com/repos/owner/repo/issues/30".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2888,7 +3032,9 @@ mod tests {
         // unwrap_or(0) yields 0, which is not in open set → should be skipped
         let comment = GithubComment {
             id: 3,
-            user: GithubUser { login: "user1".to_string() },
+            user: GithubUser {
+                login: "user1".to_string(),
+            },
             body: "test".to_string(),
             issue_url: "not-a-valid-url".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2905,7 +3051,7 @@ mod tests {
     #[test]
     fn test_exclude_labels_blocks_matching_label() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -2919,13 +3065,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "exclude_labels should block matching when label is present");
+        assert!(
+            result.is_none(),
+            "exclude_labels should block matching when label is present"
+        );
     }
 
     #[test]
     fn test_exclude_labels_allows_non_matching_label() {
         // Message has "bug", pattern has exclude_labels = ["feature-plan"] → should match
-        let mut msg = make_message_with_rules("issue", 42, &["bug"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -2939,13 +3088,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "exclude_labels should not block when excluded label is absent");
+        assert!(
+            result.is_some(),
+            "exclude_labels should not block when excluded label is absent"
+        );
     }
 
     #[test]
     fn test_exclude_labels_multiple() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan", "wip"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -2959,13 +3111,16 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "exclude_labels should block when any exclude label matches");
+        assert!(
+            result.is_none(),
+            "exclude_labels should block when any exclude label matches"
+        );
     }
 
     #[test]
     fn test_exclude_labels_case_insensitive() {
         // Message has "Feature-Plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -2979,18 +3134,27 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_none(), "exclude_labels matching should be case-insensitive");
+        assert!(
+            result.is_none(),
+            "exclude_labels matching should be case-insensitive"
+        );
     }
 
     #[test]
     fn test_exclude_labels_toml_deserialize() {
-        let pattern: ChannelPattern = toml::from_str(r#"
+        let pattern: ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             [rules]
             github_type = ["issue"]
             exclude_labels = ["feature-plan", "wip"]
-        "#).unwrap();
-        assert!(pattern.rules.exclude_labels.is_some(), "exclude_labels should deserialize");
+        "#,
+        )
+        .unwrap();
+        assert!(
+            pattern.rules.exclude_labels.is_some(),
+            "exclude_labels should deserialize"
+        );
         let excl = pattern.rules.exclude_labels.unwrap();
         assert_eq!(excl.len(), 2);
         assert!(excl.contains(&"feature-plan".to_string()));
@@ -3000,7 +3164,7 @@ mod tests {
     #[test]
     fn test_high_level_planner_with_feature_plan_label() {
         // High-level planner pattern: labels = ["feature-plan"]
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "high-level-planner".to_string(),
@@ -3015,14 +3179,17 @@ mod tests {
             ..Default::default()
         }];
         let result = GithubMatcher.match_message(&msg, &patterns);
-        assert!(result.is_some(), "high-level planner should match issue with feature-plan label");
+        assert!(
+            result.is_some(),
+            "high-level planner should match issue with feature-plan label"
+        );
         assert_eq!(result.unwrap().pattern_name, "high-level-planner");
     }
 
     #[test]
     fn test_two_level_routing() {
         // Issue with feature-plan → high-level planner
-        let mut msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![
             ChannelPattern {
@@ -3055,7 +3222,7 @@ mod tests {
         assert_eq!(result1.unwrap().pattern_name, "high-level-planner");
 
         // Issue with bug → detail planner (no feature-plan)
-        let mut msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
+        let msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_some());
@@ -3075,9 +3242,18 @@ mod tests {
 
     #[test]
     fn test_review_comment_role_extraction() {
-        assert_eq!(extract_comment_role("[Developer] Fixed the issue"), Some("Developer".to_string()));
-        assert_eq!(extract_comment_role("[Reviewer] Looks good"), Some("Reviewer".to_string()));
-        assert_eq!(extract_comment_role("[Planner] Planning phase"), Some("Planner".to_string()));
+        assert_eq!(
+            extract_comment_role("[Developer] Fixed the issue"),
+            Some("Developer".to_string())
+        );
+        assert_eq!(
+            extract_comment_role("[Reviewer] Looks good"),
+            Some("Reviewer".to_string())
+        );
+        assert_eq!(
+            extract_comment_role("[Planner] Planning phase"),
+            Some("Planner".to_string())
+        );
         assert_eq!(extract_comment_role("Normal review comment"), None);
     }
 
@@ -3087,8 +3263,14 @@ mod tests {
         let key2 = format!("review-{}:{}", 123, "2026-04-16T10:00:00Z");
         let key3 = format!("review-comment-{}:{}", 456, "2026-04-15T10:00:00Z");
 
-        assert_ne!(key1, key2, "Same review ID with different submitted_at should be different keys");
-        assert_ne!(key1, key3, "Review and review comment keys should be different");
+        assert_ne!(
+            key1, key2,
+            "Same review ID with different submitted_at should be different keys"
+        );
+        assert_ne!(
+            key1, key3,
+            "Review and review comment keys should be different"
+        );
     }
 
     // --- CI status tracking tests ---
@@ -3113,17 +3295,33 @@ mod tests {
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
 
-        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
-        adapter.track_ci_status(43, "def456", "failure", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, "abc123", "pending", &mut ci_status)
+            .await;
+        adapter
+            .track_ci_status(43, "def456", "failure", &mut ci_status)
+            .await;
 
         assert_eq!(ci_status.len(), 2);
-        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
-        assert_eq!(ci_status.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+        assert_eq!(
+            ci_status.get(&42),
+            Some(&("abc123".to_string(), "pending".to_string()))
+        );
+        assert_eq!(
+            ci_status.get(&43),
+            Some(&("def456".to_string(), "failure".to_string()))
+        );
 
         let reloaded = adapter.load_ci_status().await;
         assert_eq!(reloaded.len(), 2);
-        assert_eq!(reloaded.get(&42), Some(&("abc123".to_string(), "pending".to_string())));
-        assert_eq!(reloaded.get(&43), Some(&("def456".to_string(), "failure".to_string())));
+        assert_eq!(
+            reloaded.get(&42),
+            Some(&("abc123".to_string(), "pending".to_string()))
+        );
+        assert_eq!(
+            reloaded.get(&43),
+            Some(&("def456".to_string(), "failure".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -3136,7 +3334,9 @@ mod tests {
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
 
         // PR 42 was previously tracked as "pending"
-        adapter.track_ci_status(42, "abc123", "pending", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, "abc123", "pending", &mut ci_status)
+            .await;
 
         // Simulate transition: same head_sha, status changes to "failure"
         let (tracked_sha, previous_status) = ci_status.get(&42).cloned().unwrap();
@@ -3146,11 +3346,19 @@ mod tests {
         // The polling logic would detect: overall_status="failure" && previous_status != "failure"
         // → trigger message. We test the state management part here.
         let should_trigger = previous_status != "failure";
-        assert!(should_trigger, "Transition from pending to failure should trigger message");
+        assert!(
+            should_trigger,
+            "Transition from pending to failure should trigger message"
+        );
 
         // Update to failure
-        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
-        assert_eq!(ci_status.get(&42), Some(&("abc123".to_string(), "failure".to_string())));
+        adapter
+            .track_ci_status(42, "abc123", "failure", &mut ci_status)
+            .await;
+        assert_eq!(
+            ci_status.get(&42),
+            Some(&("abc123".to_string(), "failure".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -3163,7 +3371,9 @@ mod tests {
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
 
         // PR 42 is already tracked as "failure"
-        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, "abc123", "failure", &mut ci_status)
+            .await;
 
         // On next poll, same failure status — should NOT re-trigger
         let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
@@ -3181,7 +3391,9 @@ mod tests {
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
 
         // PR 42 tracked with old head_sha in "failure" status
-        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, "abc123", "failure", &mut ci_status)
+            .await;
 
         // Developer pushes a fix — new head_sha
         let new_head_sha = "def456";
@@ -3193,7 +3405,9 @@ mod tests {
 
         // After reset, previous_status would be None → transition to any status triggers
         // Simulate: new commit's CI is still pending
-        adapter.track_ci_status(42, new_head_sha, "pending", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, new_head_sha, "pending", &mut ci_status)
+            .await;
         assert_eq!(
             ci_status.get(&42),
             Some(&("def456".to_string(), "pending".to_string()))
@@ -3202,7 +3416,10 @@ mod tests {
         // Now CI fails on new commit → should trigger (because we reset)
         let (_, previous_status) = ci_status.get(&42).cloned().unwrap();
         let should_trigger = previous_status != "failure";
-        assert!(should_trigger, "Failure on new commit should trigger after reset");
+        assert!(
+            should_trigger,
+            "Failure on new commit should trigger after reset"
+        );
     }
 
     #[tokio::test]
@@ -3278,40 +3495,57 @@ mod tests {
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
 
-        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
+        adapter
+            .track_ci_status(42, "abc123", "failure", &mut ci_status)
+            .await;
         let file = adapter.state_dir.join("ci-status.txt");
-        let lines_after_first = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+        let lines_after_first = tokio::fs::read_to_string(&file)
+            .await
+            .unwrap()
+            .lines()
+            .count();
 
         // Track same entry again — file should be rewritten (same content), not grow
-        adapter.track_ci_status(42, "abc123", "failure", &mut ci_status).await;
-        let lines_after_second = tokio::fs::read_to_string(&file).await.unwrap().lines().count();
+        adapter
+            .track_ci_status(42, "abc123", "failure", &mut ci_status)
+            .await;
+        let lines_after_second = tokio::fs::read_to_string(&file)
+            .await
+            .unwrap()
+            .lines()
+            .count();
 
-        assert_eq!(lines_after_first, lines_after_second, "File should not grow when status is unchanged");
+        assert_eq!(
+            lines_after_first, lines_after_second,
+            "File should not grow when status is unchanged"
+        );
     }
 
     #[test]
     fn test_ci_timed_out_triggers_failure() {
-        let check_runs = vec![
-            super::super::client::GithubCheckRun {
-                id: 1,
-                name: "CI".to_string(),
-                status: "completed".to_string(),
-                conclusion: Some("timed_out".to_string()),
-                head_sha: "abc123def456".to_string(),
-                started_at: None,
-                completed_at: None,
-            },
-        ];
+        let check_runs = [super::super::client::GithubCheckRun {
+            id: 1,
+            name: "CI".to_string(),
+            status: "completed".to_string(),
+            conclusion: Some("timed_out".to_string()),
+            head_sha: "abc123def456".to_string(),
+            started_at: None,
+            completed_at: None,
+        }];
 
-        let has_failure = check_runs
-            .iter()
-            .any(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"));
+        let has_failure = check_runs.iter().any(|cr| {
+            cr.conclusion.as_deref() == Some("failure")
+                || cr.conclusion.as_deref() == Some("timed_out")
+        });
 
         assert!(has_failure, "timed_out should be treated as failure");
 
         let failed_checks: Vec<_> = check_runs
             .iter()
-            .filter(|cr| cr.conclusion.as_deref() == Some("failure") || cr.conclusion.as_deref() == Some("timed_out"))
+            .filter(|cr| {
+                cr.conclusion.as_deref() == Some("failure")
+                    || cr.conclusion.as_deref() == Some("timed_out")
+            })
             .collect();
 
         assert_eq!(failed_checks.len(), 1);
@@ -3342,7 +3576,10 @@ mod tests {
         let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
 
         let result = adapter.scan_active_pr_threads();
-        assert!(result.is_empty(), "should return empty set when workspace dir does not exist");
+        assert!(
+            result.is_empty(),
+            "should return empty set when workspace dir does not exist"
+        );
     }
 
     #[test]
@@ -3480,7 +3717,11 @@ mod tests {
 
         let mut sorted = polled.clone();
         sorted.sort();
-        assert_eq!(sorted, vec![42, 43], "only PRs with active thread dirs should be polled");
+        assert_eq!(
+            sorted,
+            vec![42, 43],
+            "only PRs with active thread dirs should be polled"
+        );
     }
 
     #[test]
@@ -3499,7 +3740,10 @@ mod tests {
             .copied()
             .collect();
 
-        assert!(polled.is_empty(), "no workspace dirs means no PRs should be polled");
+        assert!(
+            polled.is_empty(),
+            "no workspace dirs means no PRs should be polled"
+        );
     }
 
     // --- scan_threads_for_number tests ---
@@ -3563,7 +3807,10 @@ mod tests {
         let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
 
         // First insert for issue 42 should return true (allowed)
-        assert!(triggered_in_cycle.insert(42), "First trigger for an issue should be allowed");
+        assert!(
+            triggered_in_cycle.insert(42),
+            "First trigger for an issue should be allowed"
+        );
     }
 
     #[test]
@@ -3574,7 +3821,10 @@ mod tests {
         assert!(triggered_in_cycle.insert(42));
 
         // Second insert for same number returns false (blocked)
-        assert!(!triggered_in_cycle.insert(42), "Duplicate trigger for same issue should be blocked");
+        assert!(
+            !triggered_in_cycle.insert(42),
+            "Duplicate trigger for same issue should be blocked"
+        );
     }
 
     #[test]
@@ -3583,7 +3833,10 @@ mod tests {
 
         // Insert different issue numbers — all should be allowed
         assert!(triggered_in_cycle.insert(42));
-        assert!(triggered_in_cycle.insert(43), "Different issue numbers should each be allowed");
+        assert!(
+            triggered_in_cycle.insert(43),
+            "Different issue numbers should each be allowed"
+        );
         assert!(triggered_in_cycle.insert(100));
     }
 
@@ -3593,12 +3846,15 @@ mod tests {
         // HashSet is created for each poll_once() call, so the same issue
         // number can trigger again in a new cycle.
         let mut cycle1: HashSet<u64> = HashSet::new();
-        assert!(cycle1.insert(42));  // First cycle: allowed
+        assert!(cycle1.insert(42)); // First cycle: allowed
         assert!(!cycle1.insert(42)); // First cycle: duplicate blocked
 
         // New cycle = fresh HashSet
         let mut cycle2: HashSet<u64> = HashSet::new();
-        assert!(cycle2.insert(42), "Same issue should be allowed in a new poll cycle");
+        assert!(
+            cycle2.insert(42),
+            "Same issue should be allowed in a new poll cycle"
+        );
     }
 
     #[test]

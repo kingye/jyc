@@ -1,5 +1,5 @@
 //! Feishu outbound adapter implementation.
-//! 
+//!
 //! This module handles sending messages to Feishu via HTTP API.
 
 use std::path::Path;
@@ -9,11 +9,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use crate::feishu::client::FeishuClient;
-use jyc_types::FeishuConfig;
-use jyc_types::{InboundMessage, OutboundAttachment, SendResult};
-use jyc_types::OutboundAttachmentConfig;
 use jyc_core::email_parser;
 use jyc_core::message_storage::MessageStorage;
+use jyc_types::FeishuConfig;
+use jyc_types::OutboundAttachmentConfig;
+use jyc_types::{InboundMessage, OutboundAttachment, SendResult};
 use jyc_utils::attachment_validator;
 
 /// Feishu outbound adapter for sending messages via HTTP API.
@@ -30,7 +30,7 @@ impl FeishuOutboundAdapter {
     pub fn new(config: FeishuConfig, storage: Arc<MessageStorage>) -> Self {
         Self::new_with_attachments(config, storage, None, true)
     }
-    
+
     /// Create a new Feishu outbound adapter with attachment configuration.
     pub fn new_with_attachments(
         config: FeishuConfig,
@@ -57,7 +57,9 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         // Pre-warm: initialize the openlark client.
         // The SDK handles token acquisition internally when sending messages,
         // so we don't need to pre-fetch the token here.
-        self.client.initialize().await
+        self.client
+            .initialize()
+            .await
             .context("Failed to initialize Feishu client during connect")?;
         tracing::info!("Feishu outbound adapter connected");
         Ok(())
@@ -83,47 +85,54 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // Ensure client is initialized
-        self.client.initialize().await
+        self.client
+            .initialize()
+            .await
             .context("Failed to initialize Feishu client before sending reply")?;
-        
+
         // Extract chat ID from original message
         let chat_id = original.channel_uid.as_str();
-        
+
         // 1. Read model/mode from reply context file (if available)
         let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
-        
+
         // Read current input tokens from session state
-        let (input_tokens, max_tokens) = jyc_core::session_state::read_input_tokens(thread_path).await;
-        
+        let (input_tokens, max_tokens) =
+            jyc_core::session_state::read_input_tokens(thread_path).await;
+
         // 2. Build footer with model/mode/tokens information
-        let footer = email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
-        
+        let footer =
+            email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
+
         // 3. Clean reply text to remove any trailing `---` separators
         let clean_reply = email_parser::strip_trailing_separators(reply_text);
-        
+
         // 4. Combine cleaned reply text with footer
         let full_reply = if footer.is_empty() {
             clean_reply
         } else {
             format!("{}\n\n{}", clean_reply, footer)
         };
-        
+
         // 4. Validate attachments if configuration is present
-        if let Some(attachments) = attachments {
-            if let Some(ref config) = self.attachment_config {
-                attachment_validator::validate_outbound_attachments(attachments, config)
-                    .await
-                    .context("Failed to validate outbound attachments")?;
-                tracing::debug!("Outbound attachments validated successfully for Feishu");
-            }
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config
+        {
+            attachment_validator::validate_outbound_attachments(attachments, config)
+                .await
+                .context("Failed to validate outbound attachments")?;
+            tracing::debug!("Outbound attachments validated successfully for Feishu");
         }
 
         // 5. Send text reply
-        let result = self.client.send_text_message(chat_id, &full_reply).await
+        let result = self
+            .client
+            .send_text_message(chat_id, &full_reply)
+            .await
             .context("Failed to send Feishu reply")?;
-        
+
         tracing::info!(
             chat_id = %chat_id,
             text_len = full_reply.len(),
@@ -159,12 +168,18 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
                     }
                 } else {
                     // File: upload → send file message
-                    let ext = att.path.extension()
+                    let ext = att
+                        .path
+                        .extension()
                         .map(|e| e.to_string_lossy().to_lowercase())
                         .unwrap_or_default();
                     let file_type = feishu_file_type(&ext);
 
-                    match self.client.upload_file(&att.path, &att.filename, file_type).await {
+                    match self
+                        .client
+                        .upload_file(&att.path, &att.filename, file_type)
+                        .await
+                    {
                         Ok(file_key) => {
                             match self.client.send_file_message(chat_id, &file_key).await {
                                 Ok(_) => tracing::info!(
@@ -198,31 +213,31 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
             message_dir = %message_dir,
             "Reply stored"
         );
-        
+
         Ok(SendResult {
             message_id: result.message_id,
         })
     }
 
-    async fn send_alert(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult> {
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         // Ensure client is initialized
-        self.client.initialize().await
+        self.client
+            .initialize()
+            .await
             .context("Failed to initialize Feishu client before sending alert")?;
-        
+
         // Format alert message
         let alert_text = format!("**{}**\n\n{}", subject, body);
-        
+
         // Send alert using Feishu client
-        let result = self.client.send_text_message(recipient, &alert_text).await
+        let result = self
+            .client
+            .send_text_message(recipient, &alert_text)
+            .await
             .context("Failed to send Feishu alert")?;
-        
+
         tracing::info!("Feishu alert sent to {}: {}", recipient, subject);
-        
+
         Ok(SendResult {
             message_id: result.message_id,
         })

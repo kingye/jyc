@@ -9,15 +9,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use jyc_types::InboundAttachmentConfig;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
 };
-use jyc_types::InboundAttachmentConfig;
 use jyc_utils::helpers::sanitize_for_filesystem;
 
 use super::client::FeishuClient;
-use jyc_types::FeishuConfig;
 use super::websocket::FeishuWebSocket;
+use jyc_types::FeishuConfig;
 
 /// Feishu-specific pattern matching and thread name derivation.
 ///
@@ -47,19 +47,22 @@ impl ChannelMatcher for FeishuMatcher {
         // Group chat: use chat name directly (e.g., "self-hosting-jyc")
         // P2P: use sender display name (e.g., "Zhang San")
         // Fallback: use opaque IDs with prefix
-        if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str()) {
-            if !chat_name.is_empty() {
-                return sanitize_for_filesystem(chat_name);
-            }
+        if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str())
+            && !chat_name.is_empty()
+        {
+            return sanitize_for_filesystem(chat_name);
         }
 
-        let chat_type = message.metadata.get("chat_type").and_then(|v| v.as_str()).unwrap_or("");
-        if chat_type == "p2p" {
-            if let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str()) {
-                if !sender_name.is_empty() {
-                    return sanitize_for_filesystem(sender_name);
-                }
-            }
+        let chat_type = message
+            .metadata
+            .get("chat_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if chat_type == "p2p"
+            && let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str())
+            && !sender_name.is_empty()
+        {
+            return sanitize_for_filesystem(sender_name);
         }
 
         // Fallback to opaque IDs with prefix (if name API calls failed)
@@ -134,7 +137,7 @@ pub fn feishu_match_message(
                 // Check if any configured mention value matches (case-insensitive)
                 mention_ids.iter().any(|configured| {
                     let lower = configured.to_lowercase();
-                    matchable.iter().any(|m| *m == lower)
+                    matchable.contains(&lower)
                 })
             } else {
                 false
@@ -165,96 +168,82 @@ pub fn feishu_match_message(
 
         // --- Keywords rule ---
         // Check if the message body contains any of the configured keywords
-        if matches {
-            if let Some(ref keywords) = pattern.rules.keywords {
-                let body = message
-                    .content
-                    .text
-                    .as_deref()
-                    .or(message.content.markdown.as_deref())
-                    .unwrap_or("")
-                    .to_lowercase();
+        if matches && let Some(ref keywords) = pattern.rules.keywords {
+            let body = message
+                .content
+                .text
+                .as_deref()
+                .or(message.content.markdown.as_deref())
+                .unwrap_or("")
+                .to_lowercase();
 
-                let keyword_matches = keywords
+            let keyword_matches = keywords.iter().any(|kw| body.contains(&kw.to_lowercase()));
+
+            if !keyword_matches {
+                matches = false;
+            } else {
+                let matched_kw: Vec<&str> = keywords
                     .iter()
-                    .any(|kw| body.contains(&kw.to_lowercase()));
-
-                if !keyword_matches {
-                    matches = false;
-                } else {
-                    let matched_kw: Vec<&str> = keywords
-                        .iter()
-                        .filter(|kw| body.contains(&kw.to_lowercase()))
-                        .map(|s| s.as_str())
-                        .collect();
-                    match_details.insert(
-                        "keywords".to_string(),
-                        matched_kw.join(","),
-                    );
-                }
+                    .filter(|kw| body.contains(&kw.to_lowercase()))
+                    .map(|s| s.as_str())
+                    .collect();
+                match_details.insert("keywords".to_string(), matched_kw.join(","));
             }
         }
 
         // --- Chat name rule ---
         // Check if the message's group chat name matches any configured name (case-insensitive)
-        if matches {
-            if let Some(ref chat_names) = pattern.rules.chat_name {
-                let msg_chat_name = message
-                    .metadata
-                    .get("chat_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
+        if matches && let Some(ref chat_names) = pattern.rules.chat_name {
+            let msg_chat_name = message
+                .metadata
+                .get("chat_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
 
-                let chat_name_matches = chat_names
-                    .iter()
-                    .any(|cn| msg_chat_name.starts_with(&cn.to_lowercase()));
+            let chat_name_matches = chat_names
+                .iter()
+                .any(|cn| msg_chat_name.starts_with(&cn.to_lowercase()));
 
-                if !chat_name_matches {
-                    matches = false;
-                } else {
-                    match_details.insert(
-                        "chat_name".to_string(),
-                        msg_chat_name,
-                    );
-                }
+            if !chat_name_matches {
+                matches = false;
+            } else {
+                match_details.insert("chat_name".to_string(), msg_chat_name);
             }
         }
 
         // --- Sender rule (shared) ---
         // Feishu uses sender_address as the user's open_id
-        if matches {
-            if let Some(ref sender_rule) = pattern.rules.sender {
-                let addr = message.sender_address.to_lowercase();
+        if matches && let Some(ref sender_rule) = pattern.rules.sender {
+            let addr = message.sender_address.to_lowercase();
 
-                let sender_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let sender_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref exact_addrs) = sender_rule.exact {
-                        any_rule_present = true;
-                        if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.exact".to_string(), addr.clone());
-                        }
+                if let Some(ref exact_addrs) = sender_rule.exact {
+                    any_rule_present = true;
+                    if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
+                        any_rule_matched = true;
+                        match_details.insert("sender.exact".to_string(), addr.clone());
                     }
-
-                    if let Some(ref regex_str) = sender_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str) {
-                            if re.is_match(&addr) {
-                                any_rule_matched = true;
-                                match_details.insert("sender.regex".to_string(), addr.clone());
-                            }
-                        }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !sender_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = sender_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = regex::Regex::new(regex_str)
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !sender_matches {
+                matches = false;
             }
         }
 
@@ -283,19 +272,23 @@ impl FeishuInboundAdapter {
     /// Create a new Feishu inbound adapter.
     pub fn new(config: &FeishuConfig, channel_name: String) -> Self {
         // Determine workspace root from current working directory
-        let workspace_root = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
         Self {
             config: config.clone(),
             channel_name,
             workspace_root,
         }
     }
-    
+
     /// Create a new Feishu inbound adapter with custom workspace root.
     #[allow(dead_code)]
-    pub fn new_with_workspace(config: &FeishuConfig, channel_name: String, workspace_root: std::path::PathBuf) -> Self {
+    pub fn new_with_workspace(
+        config: &FeishuConfig,
+        channel_name: String,
+        workspace_root: std::path::PathBuf,
+    ) -> Self {
         Self {
             config: config.clone(),
             channel_name,
@@ -351,11 +344,7 @@ impl FeishuInboundAdapter {
 
 #[async_trait]
 impl jyc_types::InboundAdapter for FeishuInboundAdapter {
-    async fn start(
-        &self,
-        options: InboundAdapterOptions,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
         if !self.config.websocket.enabled {
             tracing::info!("Feishu WebSocket disabled, holding channel alive until cancel");
             cancel.cancelled().await;
@@ -376,7 +365,15 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
             tracing::info!("Starting Feishu WebSocket connection...");
 
             let on_thread_close = options.on_thread_close.as_ref().map(|c| c.as_ref());
-            match ws.run(&channel_name, &*options.on_message, on_thread_close, &cancel).await {
+            match ws
+                .run(
+                    &channel_name,
+                    &*options.on_message,
+                    on_thread_close,
+                    &cancel,
+                )
+                .await
+            {
                 Ok(()) => {
                     // Clean exit (cancelled)
                     tracing::info!("Feishu WebSocket stopped cleanly");
@@ -390,7 +387,9 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
                     tracing::error!(error = %e, "Feishu WebSocket error");
 
                     if !ws.handle_reconnection().await {
-                        tracing::error!("Max reconnection attempts reached, stopping Feishu channel");
+                        tracing::error!(
+                            "Max reconnection attempts reached, stopping Feishu channel"
+                        );
                         break;
                     }
                     // Loop continues → reconnect
@@ -404,8 +403,8 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::{MessageContent, PatternRules, SenderRule};
     use chrono::Utc;
+    use jyc_types::{MessageContent, PatternRules, SenderRule};
 
     fn make_feishu_message(
         sender_addr: &str,
@@ -587,12 +586,8 @@ mod tests {
     #[test]
     fn test_disabled_pattern_skipped() {
         let msg = make_feishu_message("user1", "Hello", vec!["bot_abc"], None);
-        let mut pattern = make_feishu_pattern(
-            "mention_bot",
-            Some(vec!["bot_abc".to_string()]),
-            None,
-            None,
-        );
+        let mut pattern =
+            make_feishu_pattern("mention_bot", Some(vec!["bot_abc".to_string()]), None, None);
         pattern.enabled = false;
 
         assert!(feishu_match_message(&msg, &[pattern]).is_none());
@@ -683,12 +678,8 @@ mod tests {
             "chat_name".to_string(),
             serde_json::Value::String("self-hosting-jyc".to_string()),
         );
-        let mut pattern = make_feishu_pattern(
-            "both",
-            Some(vec!["bot_abc".to_string()]),
-            None,
-            None,
-        );
+        let mut pattern =
+            make_feishu_pattern("both", Some(vec!["bot_abc".to_string()]), None, None);
         pattern.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
 
         assert!(feishu_match_message(&msg, &[pattern]).is_some());
@@ -699,12 +690,8 @@ mod tests {
             "chat_name".to_string(),
             serde_json::Value::String("self-hosting-jyc".to_string()),
         );
-        let mut pattern2 = make_feishu_pattern(
-            "both",
-            Some(vec!["bot_abc".to_string()]),
-            None,
-            None,
-        );
+        let mut pattern2 =
+            make_feishu_pattern("both", Some(vec!["bot_abc".to_string()]), None, None);
         pattern2.rules.chat_name = Some(vec!["self-hosting-jyc".to_string()]);
         assert!(feishu_match_message(&msg2, &[pattern2]).is_none());
     }
@@ -801,13 +788,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_attachments_to_thread_directory() -> anyhow::Result<()> {
-        use tempfile::tempdir;
-        use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
         use jyc_types::{FeishuConfig, WebSocketConfig};
-        
+        use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
+        use tempfile::tempdir;
+
         // Create a temporary directory for testing
         let temp_dir = tempdir()?;
-        
+
         // Create a simple Feishu config
         let config = FeishuConfig {
             app_id: "test_app_id".to_string(),
@@ -820,7 +807,11 @@ mod tests {
         };
 
         // Create the adapter with custom workspace root
-        let adapter = FeishuInboundAdapter::new_with_workspace(&config, "feishu".to_string(), temp_dir.path().to_path_buf());
+        let adapter = FeishuInboundAdapter::new_with_workspace(
+            &config,
+            "feishu".to_string(),
+            temp_dir.path().to_path_buf(),
+        );
 
         // Create a test message with attachments
         let mut message = InboundMessage {
@@ -858,7 +849,10 @@ mod tests {
             ],
             metadata: {
                 let mut map = std::collections::HashMap::new();
-                map.insert("chat_id".to_string(), serde_json::Value::String("oc_12345".to_string()));
+                map.insert(
+                    "chat_id".to_string(),
+                    serde_json::Value::String("oc_12345".to_string()),
+                );
                 map
             },
             matched_pattern: None,
@@ -868,33 +862,50 @@ mod tests {
         let patterns = vec![]; // Empty patterns - will use default thread name
 
         // Save attachments
-        adapter.save_attachments_to_thread_directory(&mut message, &patterns, None)
+        adapter
+            .save_attachments_to_thread_directory(&mut message, &patterns, None)
             .await?;
 
         // Verify attachments were saved
         assert_eq!(message.attachments.len(), 2);
-        
+
         // Check saved_path was set
         for attachment in &message.attachments {
             assert!(attachment.saved_path.is_some());
-            
+
             // Verify file exists
             let saved_path = attachment.saved_path.as_ref().unwrap();
-            assert!(saved_path.exists(), "File should exist: {}", saved_path.display());
-            
+            assert!(
+                saved_path.exists(),
+                "File should exist: {}",
+                saved_path.display()
+            );
+
             // Verify file content
             let content = std::fs::read(saved_path)?;
             assert_eq!(&content, attachment.content.as_ref().unwrap());
         }
 
         // Verify directory structure
-        let expected_thread_dir = temp_dir.path().join("feishu").join("workspace").join("feishu_chat_oc_12345");
+        let expected_thread_dir = temp_dir
+            .path()
+            .join("feishu")
+            .join("workspace")
+            .join("feishu_chat_oc_12345");
         let expected_attachment_dir = expected_thread_dir.join("attachments");
-        
+
         // Verify directories exist
-        assert!(expected_thread_dir.exists(), "Thread directory should exist: {}", expected_thread_dir.display());
-        assert!(expected_attachment_dir.exists(), "Attachment directory should exist: {}", expected_attachment_dir.display());
-        
+        assert!(
+            expected_thread_dir.exists(),
+            "Thread directory should exist: {}",
+            expected_thread_dir.display()
+        );
+        assert!(
+            expected_attachment_dir.exists(),
+            "Attachment directory should exist: {}",
+            expected_attachment_dir.display()
+        );
+
         // Count files in attachment directory
         let file_count = std::fs::read_dir(&expected_attachment_dir)?.count();
         assert_eq!(file_count, 2, "Should have 2 files in attachment directory");
@@ -904,13 +915,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_attachments_no_attachments() -> anyhow::Result<()> {
-        use tempfile::tempdir;
-        use jyc_types::{InboundMessage, MessageContent};
         use jyc_types::{FeishuConfig, WebSocketConfig};
-        
+        use jyc_types::{InboundMessage, MessageContent};
+        use tempfile::tempdir;
+
         // Create a temporary directory
         let temp_dir = tempdir()?;
-        
+
         // Create a simple Feishu config
         let config = FeishuConfig {
             app_id: "test_app_id".to_string(),
@@ -923,7 +934,11 @@ mod tests {
         };
 
         // Create the adapter with custom workspace root
-        let adapter = FeishuInboundAdapter::new_with_workspace(&config, "feishu".to_string(), temp_dir.path().to_path_buf());
+        let adapter = FeishuInboundAdapter::new_with_workspace(
+            &config,
+            "feishu".to_string(),
+            temp_dir.path().to_path_buf(),
+        );
 
         // Create a test message WITHOUT attachments
         let mut message = InboundMessage {
@@ -946,14 +961,18 @@ mod tests {
             attachments: vec![],
             metadata: {
                 let mut map = std::collections::HashMap::new();
-                map.insert("chat_id".to_string(), serde_json::Value::String("oc_67890".to_string()));
+                map.insert(
+                    "chat_id".to_string(),
+                    serde_json::Value::String("oc_67890".to_string()),
+                );
                 map
             },
             matched_pattern: None,
         };
 
         // Save attachments (should do nothing)
-        adapter.save_attachments_to_thread_directory(&mut message, &[], None)
+        adapter
+            .save_attachments_to_thread_directory(&mut message, &[], None)
             .await?;
 
         // Verify no error and attachments remain empty

@@ -2,11 +2,11 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::{ChannelMatcher, ChannelPattern};
-use jyc_types::{ImapConfig, MonitorConfig};
+use crate::imap::client::ImapClient;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::state_manager::StateManager;
-use crate::imap::client::ImapClient;
+use jyc_types::{ChannelMatcher, ChannelPattern};
+use jyc_types::{ImapConfig, MonitorConfig};
 
 /// IMAP email monitor — connects to IMAP, fetches new emails, dispatches them.
 ///
@@ -27,6 +27,7 @@ pub struct ImapMonitor {
 }
 
 impl ImapMonitor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_name: String,
         imap_config: ImapConfig,
@@ -122,10 +123,7 @@ impl ImapMonitor {
                         reconnect_attempts = max_retries as u32;
                     }
                     let delay = backoff_delay(reconnect_attempts);
-                    tracing::warn!(
-                        delay_secs = delay.as_secs(),
-                        "Retrying after backoff..."
-                    );
+                    tracing::warn!(delay_secs = delay.as_secs(), "Retrying after backoff...");
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => continue,
                         _ = self.cancel.cancelled() => break,
@@ -134,10 +132,7 @@ impl ImapMonitor {
             };
 
             // Check for new messages
-            if let Err(e) = self
-                .check_for_new(&mut client, current_count, folder)
-                .await
-            {
+            if let Err(e) = self.check_for_new(&mut client, current_count, folder).await {
                 tracing::error!(error = %e, "Error checking for new messages, forcing disconnect");
                 // Force disconnect so the next iteration reconnects cleanly
                 // instead of entering IDLE on a potentially dead connection.
@@ -241,11 +236,7 @@ impl ImapMonitor {
             last_seq + 1
         };
 
-        tracing::info!(
-            from = from,
-            to = current_count,
-            "Fetching new messages"
-        );
+        tracing::info!(from = from, to = current_count, "Fetching new messages");
 
         let emails = client.fetch_range(from, current_count).await?;
 
@@ -283,10 +274,7 @@ impl ImapMonitor {
     }
 
     /// Process a single fetched email.
-    async fn process_email(
-        &self,
-        email: &crate::imap::client::FetchedEmail,
-    ) -> Result<()> {
+    async fn process_email(&self, email: &crate::imap::client::FetchedEmail) -> Result<()> {
         let mut message = crate::imap::parse_email::parse_raw_email(&email.body, email.uid)?;
 
         // Set channel to the config channel name (e.g., "jiny283"), not the type ("email")
@@ -305,7 +293,9 @@ impl ImapMonitor {
         // thread_name override is configured on the pattern.
 
         // Route through the message router (pattern match → thread queue)
-        self.router.route(&*self.matcher, message, &self.patterns).await;
+        self.router
+            .route(&*self.matcher, message, &self.patterns)
+            .await;
 
         Ok(())
     }

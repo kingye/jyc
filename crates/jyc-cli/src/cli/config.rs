@@ -28,10 +28,7 @@ async fn run_init(workdir: &Path) -> Result<()> {
     let config_path = workdir.join(DEFAULT_CONFIG_FILENAME);
 
     if config_path.exists() {
-        anyhow::bail!(
-            "Config file already exists: {}",
-            config_path.display()
-        );
+        anyhow::bail!("Config file already exists: {}", config_path.display());
     }
 
     let template = include_str!("../../config.example.toml");
@@ -66,7 +63,11 @@ async fn run_validate(workdir: &Path, config_file: &str) -> Result<()> {
         if let Some(ref inspect) = config.inspect {
             println!(
                 "  Inspect: {} (bind: {})",
-                if inspect.enabled { "enabled" } else { "disabled" },
+                if inspect.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
                 inspect.bind
             );
         }

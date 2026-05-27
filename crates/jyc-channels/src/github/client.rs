@@ -4,7 +4,7 @@
 //! Uses reqwest with the GitHub REST API v3.
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 
 use jyc_types::GithubConfig;
@@ -204,7 +204,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET /user failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "GET /user failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         resp.json::<GithubUser>()
@@ -240,7 +244,11 @@ impl GithubClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                anyhow::bail!("GET all open issues failed: {} — {}", status, truncate_str(&body, 200));
+                anyhow::bail!(
+                    "GET all open issues failed: {} — {}",
+                    status,
+                    truncate_str(&body, 200)
+                );
             }
 
             let issues: Vec<GithubIssue> = resp
@@ -279,7 +287,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET comments failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "GET comments failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         resp.json::<Vec<GithubComment>>()
@@ -304,7 +316,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET closed issues failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "GET closed issues failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         resp.json::<Vec<GithubIssue>>()
@@ -331,7 +347,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET reviews failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "GET reviews failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         resp.json::<Vec<GithubReview>>()
@@ -358,7 +378,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET review comments failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "GET review comments failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         resp.json::<Vec<GithubReviewComment>>()
@@ -387,7 +411,11 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("POST comment failed: {} — {}", status, truncate_str(&body, 200));
+            anyhow::bail!(
+                "POST comment failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
         }
 
         #[derive(Deserialize)]
@@ -487,7 +515,9 @@ mod tests {
     fn test_comment_issue_number() {
         let comment = GithubComment {
             id: 1,
-            user: GithubUser { login: "test".to_string() },
+            user: GithubUser {
+                login: "test".to_string(),
+            },
             body: "test comment".to_string(),
             issue_url: "https://api.github.com/repos/kingye/jyc/issues/42".to_string(),
             created_at: "2026-04-15T10:00:00Z".to_string(),
@@ -502,7 +532,9 @@ mod tests {
             number: 42,
             title: "Test".to_string(),
             state: "open".to_string(),
-            user: GithubUser { login: "test".to_string() },
+            user: GithubUser {
+                login: "test".to_string(),
+            },
             labels: vec![],
             assignees: vec![],
             pull_request: None,
@@ -526,7 +558,9 @@ mod tests {
     fn test_review_pr_number() {
         let review = GithubReview {
             id: 1,
-            user: GithubUser { login: "test".to_string() },
+            user: GithubUser {
+                login: "test".to_string(),
+            },
             body: "looks good".to_string(),
             state: "APPROVED".to_string(),
             submitted_at: Some("2026-04-15T10:00:00Z".to_string()),
@@ -539,7 +573,9 @@ mod tests {
     fn test_review_pr_number_no_match() {
         let review = GithubReview {
             id: 1,
-            user: GithubUser { login: "test".to_string() },
+            user: GithubUser {
+                login: "test".to_string(),
+            },
             body: "looks good".to_string(),
             state: "APPROVED".to_string(),
             submitted_at: Some("2026-04-15T10:00:00Z".to_string()),

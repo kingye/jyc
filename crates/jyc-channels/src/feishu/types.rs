@@ -69,7 +69,7 @@ pub struct FeishuMessageEvent {
 /// Feishu event types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::large_enum_variant)]
 pub enum FeishuEvent {
     /// Message received event
     #[serde(rename = "im.message.receive_v1")]

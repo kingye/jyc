@@ -47,16 +47,20 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let file_path = input.get("file_path")
+        let file_path = input
+            .get("file_path")
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' parameter"))?;
-        let old_string = input.get("old_string")
+        let old_string = input
+            .get("old_string")
             .and_then(|s| s.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'old_string' parameter"))?;
-        let new_string = input.get("new_string")
+        let new_string = input
+            .get("new_string")
             .and_then(|s| s.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'new_string' parameter"))?;
-        let replace_all = input.get("replace_all")
+        let replace_all = input
+            .get("replace_all")
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
 
@@ -67,7 +71,8 @@ impl Tool for EditTool {
         };
 
         // Read current content
-        let content = tokio::fs::read_to_string(&path).await
+        let content = tokio::fs::read_to_string(&path)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to read file '{}': {e}", file_path))?;
 
         if old_string == new_string {
@@ -98,12 +103,14 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        tokio::fs::write(&path, &new_content).await
+        tokio::fs::write(&path, &new_content)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to write file '{}': {e}", file_path))?;
 
         let replacements = if replace_all { count } else { 1 };
         Ok(ToolOutput::success(format!(
-            "Edited '{}': {} replacement(s) made", file_path, replacements
+            "Edited '{}': {} replacement(s) made",
+            file_path, replacements
         )))
     }
 }

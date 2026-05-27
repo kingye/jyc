@@ -11,7 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
@@ -79,16 +79,9 @@ pub fn wechat_match_message(
         // --- Keywords rule ---
         // Check if the message body contains any of the configured keywords
         if let Some(ref keywords) = pattern.rules.keywords {
-            let body = message
-                .content
-                .text
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase();
+            let body = message.content.text.as_deref().unwrap_or("").to_lowercase();
 
-            let keyword_matches = keywords
-                .iter()
-                .any(|kw| body.contains(&kw.to_lowercase()));
+            let keyword_matches = keywords.iter().any(|kw| body.contains(&kw.to_lowercase()));
 
             if !keyword_matches {
                 matches = false;
@@ -98,46 +91,41 @@ pub fn wechat_match_message(
                     .filter(|kw| body.contains(&kw.to_lowercase()))
                     .map(|s| s.as_str())
                     .collect();
-                match_details.insert(
-                    "keywords".to_string(),
-                    matched_kw.join(","),
-                );
+                match_details.insert("keywords".to_string(), matched_kw.join(","));
             }
         }
 
         // --- Sender rule (shared) ---
-        if matches {
-            if let Some(ref sender_rule) = pattern.rules.sender {
-                let addr = message.sender_address.to_lowercase();
+        if matches && let Some(ref sender_rule) = pattern.rules.sender {
+            let addr = message.sender_address.to_lowercase();
 
-                let sender_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let sender_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref exact_addrs) = sender_rule.exact {
-                        any_rule_present = true;
-                        if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.exact".to_string(), addr.clone());
-                        }
+                if let Some(ref exact_addrs) = sender_rule.exact {
+                    any_rule_present = true;
+                    if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
+                        any_rule_matched = true;
+                        match_details.insert("sender.exact".to_string(), addr.clone());
                     }
-
-                    if let Some(ref regex_str) = sender_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str) {
-                            if re.is_match(&addr) {
-                                any_rule_matched = true;
-                                match_details.insert("sender.regex".to_string(), addr.clone());
-                            }
-                        }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !sender_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = sender_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = regex::Regex::new(regex_str)
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !sender_matches {
+                matches = false;
             }
         }
 
@@ -281,11 +269,7 @@ impl ChannelMatcher for WechatInboundAdapter {
 
 #[async_trait]
 impl InboundAdapter for WechatInboundAdapter {
-    async fn start(
-        &self,
-        options: InboundAdapterOptions,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
         if !self.config.websocket.enabled {
             tracing::info!("WeChat WebSocket disabled, holding channel alive until cancel");
             cancel.cancelled().await;
@@ -337,7 +321,10 @@ impl InboundAdapter for WechatInboundAdapter {
                     // Exponential backoff: reconnect_delay_secs * 2^attempt, capped at 60s
                     let max_attempts = self.config.websocket.max_reconnect_attempts;
                     if reconnect_count >= max_attempts {
-                        tracing::error!(max_attempts, "Max reconnection attempts reached, stopping WeChat channel");
+                        tracing::error!(
+                            max_attempts,
+                            "Max reconnection attempts reached, stopping WeChat channel"
+                        );
                         break;
                     }
 
@@ -365,13 +352,10 @@ impl InboundAdapter for WechatInboundAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::{MessageContent, PatternRules, SenderRule};
     use chrono::Utc;
+    use jyc_types::{MessageContent, PatternRules, SenderRule};
 
-    fn make_wechat_message(
-        sender_addr: &str,
-        body: &str,
-    ) -> InboundMessage {
+    fn make_wechat_message(sender_addr: &str, body: &str) -> InboundMessage {
         InboundMessage {
             id: "test".to_string(),
             channel: "wechat".to_string(),
@@ -515,11 +499,7 @@ mod tests {
     #[test]
     fn test_disabled_pattern_skipped() {
         let msg = make_wechat_message("user1", "Hello");
-        let mut pattern = make_wechat_pattern(
-            "catch_all",
-            None,
-            None,
-        );
+        let mut pattern = make_wechat_pattern("catch_all", None, None);
         pattern.enabled = false;
 
         assert!(wechat_match_message(&msg, &[pattern]).is_none());
@@ -551,10 +531,8 @@ mod tests {
         // exactly — see the doc comment on the impl. Producing a different
         // name leads to attachments saved to a different directory than
         // where the agent thread actually runs.
-        let adapter = WechatInboundAdapter::new(
-            &WechatConfig::default(),
-            "my_wechat_bot".to_string(),
-        );
+        let adapter =
+            WechatInboundAdapter::new(&WechatConfig::default(), "my_wechat_bot".to_string());
         let msg = make_wechat_message("user1", "Hello");
         let adapter_name = adapter.derive_thread_name(&msg, &[], None);
         let matcher_name = WechatMatcher.derive_thread_name(&msg, &[], None);
@@ -577,11 +555,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace_root = tmp.path().to_path_buf();
 
-        let adapter = WechatInboundAdapter::new(
-            &WechatConfig::default(),
-            "wechat_me".to_string(),
-        )
-        .with_workspace(workspace_root.clone());
+        let adapter = WechatInboundAdapter::new(&WechatConfig::default(), "wechat_me".to_string())
+            .with_workspace(workspace_root.clone());
 
         let mut message = make_wechat_message("u1@im.wechat", "[image]");
         message.attachments.push(MessageAttachment {
@@ -608,11 +583,7 @@ mod tests {
         };
 
         adapter
-            .save_attachments_to_thread_directory(
-                &mut message,
-                &[],
-                Some(&cfg),
-            )
+            .save_attachments_to_thread_directory(&mut message, &[], Some(&cfg))
             .await
             .expect("save should succeed");
 
@@ -664,11 +635,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace_root = tmp.path().to_path_buf();
 
-        let adapter = WechatInboundAdapter::new(
-            &WechatConfig::default(),
-            "wechat_me".to_string(),
-        )
-        .with_workspace(workspace_root);
+        let adapter = WechatInboundAdapter::new(&WechatConfig::default(), "wechat_me".to_string())
+            .with_workspace(workspace_root);
 
         let mut message = make_wechat_message("u1", "hello");
         // attachments is empty.

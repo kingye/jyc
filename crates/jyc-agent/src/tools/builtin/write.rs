@@ -38,10 +38,12 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let file_path = input.get("file_path")
+        let file_path = input
+            .get("file_path")
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' parameter"))?;
-        let content = input.get("content")
+        let content = input
+            .get("content")
             .and_then(|c| c.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
 
@@ -53,13 +55,19 @@ impl Tool for WriteTool {
 
         // Create parent directories
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to create directories: {e}"))?;
         }
 
-        tokio::fs::write(&path, content).await
+        tokio::fs::write(&path, content)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to write file: {e}"))?;
 
-        Ok(ToolOutput::success(format!("File written: {} ({} bytes)", file_path, content.len())))
+        Ok(ToolOutput::success(format!(
+            "File written: {} ({} bytes)",
+            file_path,
+            content.len()
+        )))
     }
 }

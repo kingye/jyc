@@ -118,7 +118,8 @@ impl WechatWebSocket {
         tracing::info!("WeChat WebSocket connected");
 
         // Take the outbound receiver
-        let mut outbound_rx = self.outbound_rx
+        let mut outbound_rx = self
+            .outbound_rx
             .take()
             .expect("WechatWebSocket::run called more than once");
 
@@ -157,7 +158,7 @@ impl WechatWebSocket {
 
                 // Outbound message to send
                 Some(outbound_msg) = outbound_rx.recv() => {
-                    if let Err(e) = write.send(Message::Text(outbound_msg.into())).await {
+                    if let Err(e) = write.send(Message::Text(outbound_msg)).await {
                         tracing::error!(error = %format!("{:#}", e), "Failed to send WeChat outbound message");
                         break;
                     }
@@ -171,7 +172,9 @@ impl WechatWebSocket {
             }
         }
 
-        Err(anyhow::anyhow!("WeChat WebSocket connection closed unexpectedly"))
+        Err(anyhow::anyhow!(
+            "WeChat WebSocket connection closed unexpectedly"
+        ))
     }
 
     /// Handle an incoming text message from the WebSocket.
@@ -188,7 +191,10 @@ impl WechatWebSocket {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %format!("{:#}", e), payload = %text, "Failed to parse WeChat message as JSON");
-                return Err(anyhow::anyhow!("Failed to parse WeChat message as JSON: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to parse WeChat message as JSON: {}",
+                    e
+                ));
             }
         };
 
@@ -363,16 +369,10 @@ impl WechatWebSocket {
             );
         }
         if !event_id.is_empty() {
-            metadata.insert(
-                "event_id".to_string(),
-                serde_json::Value::String(event_id),
-            );
+            metadata.insert("event_id".to_string(), serde_json::Value::String(event_id));
         }
         if !trace_id.is_empty() {
-            metadata.insert(
-                "trace_id".to_string(),
-                serde_json::Value::String(trace_id),
-            );
+            metadata.insert("trace_id".to_string(), serde_json::Value::String(trace_id));
         }
         metadata.insert(
             "msg_type".to_string(),
@@ -392,10 +392,7 @@ impl WechatWebSocket {
                 serde_json::Value::String(sender_role),
             );
         }
-        metadata.insert(
-            "is_group".to_string(),
-            serde_json::Value::Bool(is_group),
-        );
+        metadata.insert("is_group".to_string(), serde_json::Value::Bool(is_group));
         if let Some(g) = group {
             metadata.insert("group".to_string(), g);
         }
@@ -411,9 +408,7 @@ impl WechatWebSocket {
         // Each item is best-effort: if a single download fails, log a
         // warning and continue with the rest. The text body and other
         // attachments are still delivered.
-        let attachments = self
-            .extract_attachments(&data, &message_id)
-            .await;
+        let attachments = self.extract_attachments(data, &message_id).await;
 
         // Body normalisation for non-text events.
         //
@@ -508,9 +503,7 @@ impl WechatWebSocket {
                 if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
                     let non_text = items
                         .iter()
-                        .filter(|i| {
-                            i.get("type").and_then(|v| v.as_str()).unwrap_or("") != "text"
-                        })
+                        .filter(|i| i.get("type").and_then(|v| v.as_str()).unwrap_or("") != "text")
                         .count();
                     if non_text > 0 {
                         tracing::debug!(
@@ -556,7 +549,11 @@ impl WechatWebSocket {
             let media = match item.get("media") {
                 Some(m) => m,
                 None => {
-                    tracing::debug!(item_type, idx, "WeChat item has no `media` object, skipping");
+                    tracing::debug!(
+                        item_type,
+                        idx,
+                        "WeChat item has no `media` object, skipping"
+                    );
                     continue;
                 }
             };
@@ -589,9 +586,10 @@ impl WechatWebSocket {
             // and accept either dot-prefixed or bare values.
             if !cfg.allowed_extensions.is_empty() {
                 let want = inferred_ext.trim_start_matches('.').to_ascii_lowercase();
-                let permitted = cfg.allowed_extensions.iter().any(|e| {
-                    e.trim_start_matches('.').eq_ignore_ascii_case(&want)
-                });
+                let permitted = cfg
+                    .allowed_extensions
+                    .iter()
+                    .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&want));
                 if !permitted {
                     tracing::debug!(
                         ext = %inferred_ext,
@@ -631,16 +629,16 @@ impl WechatWebSocket {
                 .to_string();
 
             // Post-download size check.
-            if let Some(max) = max_size_bytes {
-                if (resp.bytes.len() as u64) > max {
-                    tracing::warn!(
-                        size = resp.bytes.len(),
-                        max,
-                        item_type,
-                        "WeChat media item exceeds max_file_size, skipping"
-                    );
-                    continue;
-                }
+            if let Some(max) = max_size_bytes
+                && (resp.bytes.len() as u64) > max
+            {
+                tracing::warn!(
+                    size = resp.bytes.len(),
+                    max,
+                    item_type,
+                    "WeChat media item exceeds max_file_size, skipping"
+                );
+                continue;
             }
 
             // Synthesise filename. Bridge doesn't ship one in the image
@@ -661,8 +659,7 @@ impl WechatWebSocket {
                         format!("{}_{}_{}.{}", item_type, message_id, idx, final_ext)
                     }
                 });
-            let filename =
-                jyc_core::attachment_storage::sanitize_attachment_filename(&raw_name);
+            let filename = jyc_core::attachment_storage::sanitize_attachment_filename(&raw_name);
 
             let size = resp.bytes.len();
             out.push(MessageAttachment {
@@ -707,9 +704,9 @@ fn is_placeholder_body(s: &str) -> bool {
     // Reject if the inner has additional brackets, newlines, or a
     // sentence-y character set. Keep the policy narrow to avoid eating
     // legitimate user text that happens to start and end with brackets.
-    !inner.chars().any(|c| {
-        c == '[' || c == ']' || c == '\n' || c == '\r' || c == '.' || c == '!' || c == '?'
-    })
+    !inner
+        .chars()
+        .any(|c| c == '[' || c == ']' || c == '\n' || c == '\r' || c == '.' || c == '!' || c == '?')
 }
 
 #[cfg(test)]
@@ -720,7 +717,10 @@ mod tests {
     fn test_ws_url_format() {
         let ws = WechatWebSocket::new("openilink.example.com", "test_token");
         let url = ws.ws_url();
-        assert_eq!(url, "wss://openilink.example.com/bot/v1/ws?token=test_token");
+        assert_eq!(
+            url,
+            "wss://openilink.example.com/bot/v1/ws?token=test_token"
+        );
     }
 
     #[test]
@@ -740,7 +740,6 @@ mod tests {
         sender1.send("test1".to_string()).ok();
         sender2.send("test2".to_string()).ok();
     }
-
 
     /// Test parsing the canonical OpenILink Bridge envelope shape captured
     /// from production: a `message.text` event with a sender object.
@@ -793,15 +792,18 @@ mod tests {
             .expect("on_message must be invoked for message.text events");
 
         assert_eq!(msg.channel, "wechat_me");
-        assert_eq!(msg.channel_uid, "7464963577017103496",
-            "channel_uid must use event.data.message_id (the WeChat-side id)");
         assert_eq!(
-            msg.sender_address,
-            "o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat",
+            msg.channel_uid, "7464963577017103496",
+            "channel_uid must use event.data.message_id (the WeChat-side id)"
+        );
+        assert_eq!(
+            msg.sender_address, "o9cq8082DBb8Fd8p8DTRmzBFN7AM@im.wechat",
             "sender_address must come from event.data.sender.id"
         );
-        assert_eq!(msg.sender, msg.sender_address,
-            "v1: display name falls back to the WeChat ID");
+        assert_eq!(
+            msg.sender, msg.sender_address,
+            "v1: display name falls back to the WeChat ID"
+        );
         assert_eq!(
             msg.content.text.as_deref(),
             Some("8+3=?"),
@@ -882,7 +884,10 @@ mod tests {
             Some(true),
         );
         assert_eq!(
-            msg.metadata.get("group").and_then(|v| v.get("id")).and_then(|v| v.as_str()),
+            msg.metadata
+                .get("group")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str()),
             Some("grp_abc"),
         );
     }

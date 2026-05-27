@@ -3,7 +3,7 @@ use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_router, tool_handler,
+    schemars, tool, tool_handler, tool_router,
 };
 use std::path::{Path, PathBuf};
 
@@ -58,6 +58,12 @@ pub struct ReplyToolHandler {
     tool_router: ToolRouter<Self>,
 }
 
+impl Default for ReplyToolHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReplyToolHandler {
     pub fn new() -> Self {
         Self {
@@ -68,7 +74,9 @@ impl ReplyToolHandler {
 
 #[tool_router]
 impl ReplyToolHandler {
-    #[tool(description = "Send a reply message back through the originating channel. The reply will be delivered by the monitor process.")]
+    #[tool(
+        description = "Send a reply message back through the originating channel. The reply will be delivered by the monitor process."
+    )]
     async fn reply_message(
         &self,
         Parameters(params): Parameters<ReplyMessageParams>,
@@ -76,12 +84,15 @@ impl ReplyToolHandler {
         let cwd = resolve_thread_dir();
         let logger = McpLogger::new(&cwd);
 
-        logger.log("INFO", &format!(
-            "reply_message called: message_len={}, attachments={:?}, cwd={}",
-            params.message.len(),
-            params.attachments,
-            cwd.display()
-        ));
+        logger.log(
+            "INFO",
+            &format!(
+                "reply_message called: message_len={}, attachments={:?}, cwd={}",
+                params.message.len(),
+                params.attachments,
+                cwd.display()
+            ),
+        );
 
         match handle_reply(
             &logger,
@@ -108,11 +119,10 @@ impl ReplyToolHandler {
 impl ServerHandler for ReplyToolHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "jyc_reply",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions("MCP reply tool for JYC — stores replies for delivery by the monitor process")
+            .with_server_info(Implementation::new("jyc_reply", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "MCP reply tool for JYC — stores replies for delivery by the monitor process",
+            )
     }
 }
 
@@ -134,10 +144,13 @@ async fn handle_reply(
     // 1. Load reply context from disk (.jyc/reply-context.json)
     let ctx = load_reply_context(cwd).await?;
 
-    logger.log("INFO", &format!(
-        "Context loaded: channel={}, thread={}, messageDir={}, model={:?}, mode={:?}",
-        ctx.channel, ctx.thread_name, ctx.incoming_message_dir, ctx.model, ctx.mode
-    ));
+    logger.log(
+        "INFO",
+        &format!(
+            "Context loaded: channel={}, thread={}, messageDir={}, model={:?}, mode={:?}",
+            ctx.channel, ctx.thread_name, ctx.incoming_message_dir, ctx.model, ctx.mode
+        ),
+    );
 
     // 2. Validate message
     if message.trim().is_empty() {
@@ -159,7 +172,8 @@ async fn handle_reply(
     //    The watcher checks for both reply-sent.flag and reply.md.
     let jyc_dir = thread_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
-    tokio::fs::write(jyc_dir.join("reply.md"), message).await
+    tokio::fs::write(jyc_dir.join("reply.md"), message)
+        .await
         .map_err(|e| anyhow::anyhow!("failed to write reply.md: {e}"))?;
 
     // 6. Write signal file with reply metadata

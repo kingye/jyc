@@ -1,16 +1,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
-use jyc_types::{OutboundAttachmentConfig, SmtpConfig};
-use jyc_utils::attachment_validator;
 use jyc_core::email_parser;
 use jyc_core::message_storage::MessageStorage;
 use jyc_services::smtp::client::{EmailAttachment, SmtpClient};
+use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
+use jyc_types::{OutboundAttachmentConfig, SmtpConfig};
+use jyc_utils::attachment_validator;
 
 /// Email outbound adapter — owns the full reply lifecycle: format + send + store.
 ///
@@ -35,7 +35,7 @@ impl EmailOutboundAdapter {
     pub fn new(config: &SmtpConfig, storage: Arc<MessageStorage>) -> Self {
         Self::new_with_attachments(config, storage, None, true)
     }
-    
+
     pub fn new_with_attachments(
         config: &SmtpConfig,
         storage: Arc<MessageStorage>,
@@ -67,10 +67,7 @@ impl EmailOutboundAdapter {
     ) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
 
-        let mut refs: Vec<String> = original
-            .thread_refs
-            .clone()
-            .unwrap_or_default();
+        let mut refs: Vec<String> = original.thread_refs.clone().unwrap_or_default();
         if let Some(ref ext_id) = original.external_id {
             refs.push(ext_id.clone());
         }
@@ -151,7 +148,8 @@ impl OutboundAdapter for EmailOutboundAdapter {
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state
-        let (input_tokens, max_tokens) = jyc_core::session_state::read_input_tokens(thread_path).await;
+        let (input_tokens, max_tokens) =
+            jyc_core::session_state::read_input_tokens(thread_path).await;
 
         // 2. Build full reply with email-specific quoted history + model/mode footer
         let body_text = original
@@ -178,25 +176,26 @@ impl OutboundAdapter for EmailOutboundAdapter {
         .await;
 
         // 3. Validate attachments if configuration is present
-        if let Some(attachments) = attachments {
-            if let Some(ref config) = self.attachment_config {
-                if let Err(e) = attachment_validator::validate_outbound_attachments(attachments, config).await {
-                    let filenames: Vec<&str> = attachments.iter().map(|a| a.filename.as_str()).collect();
-                    tracing::error!(
-                        error = %format!("{:#}", e),
-                        attachments = ?filenames,
-                        "Outbound attachment validation failed"
-                    );
-                    return Err(e.context("Failed to validate outbound attachments"));
-                }
-                tracing::debug!("Outbound attachments validated successfully");
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config
+        {
+            if let Err(e) =
+                attachment_validator::validate_outbound_attachments(attachments, config).await
+            {
+                let filenames: Vec<&str> =
+                    attachments.iter().map(|a| a.filename.as_str()).collect();
+                tracing::error!(
+                    error = %format!("{:#}", e),
+                    attachments = ?filenames,
+                    "Outbound attachment validation failed"
+                );
+                return Err(e.context("Failed to validate outbound attachments"));
             }
+            tracing::debug!("Outbound attachments validated successfully");
         }
 
         // 4. Send via SMTP
-        let send_result = self
-            .smtp_send(original, &full_reply, attachments)
-            .await?;
+        let send_result = self.smtp_send(original, &full_reply, attachments).await?;
 
         // 4. Store reply to chat log
         self.storage
@@ -212,12 +211,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
     }
 
     /// Send a fresh alert email (not a reply, no formatting/threading/storage).
-    async fn send_alert(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult> {
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
         let message_id = smtp
             .send_mail(&self.from_address, recipient, subject, body)

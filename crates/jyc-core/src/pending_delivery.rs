@@ -54,13 +54,7 @@ pub async fn watch_pending_deliveries(
 
         // Deliver via outbound adapter (channel-agnostic)
         if let Err(e) = outbound
-            .send_reply(
-                message,
-                &reply_text,
-                thread_path,
-                message_dir,
-                None,
-            )
+            .send_reply(message, &reply_text, thread_path, message_dir, None)
             .await
         {
             tracing::error!(error = %e, "Failed to deliver pending message");
@@ -78,8 +72,10 @@ pub async fn watch_pending_deliveries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::{InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult};
     use async_trait::async_trait;
+    use jyc_types::{
+        InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult,
+    };
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -91,19 +87,32 @@ mod tests {
     impl MockOutbound {
         fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
             let delivered = Arc::new(Mutex::new(Vec::new()));
-            (Self { delivered: delivered.clone() }, delivered)
+            (
+                Self {
+                    delivered: delivered.clone(),
+                },
+                delivered,
+            )
         }
     }
 
     #[async_trait]
     impl OutboundAdapter for MockOutbound {
-        fn channel_type(&self) -> &str { "mock" }
+        fn channel_type(&self) -> &str {
+            "mock"
+        }
 
-        async fn connect(&self) -> anyhow::Result<()> { Ok(()) }
+        async fn connect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
-        async fn disconnect(&self) -> anyhow::Result<()> { Ok(()) }
+        async fn disconnect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
-        fn clean_body(&self, body: &str) -> String { body.to_string() }
+        fn clean_body(&self, body: &str) -> String {
+            body.to_string()
+        }
 
         async fn send_reply(
             &self,
@@ -114,7 +123,9 @@ mod tests {
             _attachments: Option<&[OutboundAttachment]>,
         ) -> anyhow::Result<SendResult> {
             self.delivered.lock().unwrap().push(reply_text.to_string());
-            Ok(SendResult { message_id: "mock-id".to_string() })
+            Ok(SendResult {
+                message_id: "mock-id".to_string(),
+            })
         }
 
         async fn send_alert(
@@ -123,7 +134,9 @@ mod tests {
             _subject: &str,
             _body: &str,
         ) -> anyhow::Result<SendResult> {
-            Ok(SendResult { message_id: "mock-id".to_string() })
+            Ok(SendResult {
+                message_id: "mock-id".to_string(),
+            })
         }
     }
 
@@ -158,8 +171,12 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         // Write signal and reply files to .jyc/
-        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "❓ What color?").await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "❓ What color?")
+            .await
+            .unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -167,13 +184,8 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(
-                &tp,
-                message_dir,
-                &test_message(),
-                &outbound,
-                cancel_clone,
-            ).await;
+            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
+                .await;
         });
 
         // Wait for watcher to pick up the files
@@ -200,7 +212,9 @@ mod tests {
         let jyc_dir = thread_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // reply.md exists but no signal file
-        tokio::fs::write(jyc_dir.join("reply.md"), "test").await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "test")
+            .await
+            .unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -208,13 +222,8 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(
-                &tp,
-                message_dir,
-                &test_message(),
-                &outbound,
-                cancel_clone,
-            ).await;
+            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
+                .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -233,8 +242,12 @@ mod tests {
         let jyc_dir = thread_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
-        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}").await.unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "   ").await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "   ")
+            .await
+            .unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -242,13 +255,8 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(
-                &tp,
-                message_dir,
-                &test_message(),
-                &outbound,
-                cancel_clone,
-            ).await;
+            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
+                .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -264,7 +272,9 @@ mod tests {
         let thread_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        tokio::fs::create_dir_all(thread_path.join(".jyc")).await.unwrap();
+        tokio::fs::create_dir_all(thread_path.join(".jyc"))
+            .await
+            .unwrap();
 
         let (outbound, _delivered) = MockOutbound::new();
         let cancel = CancellationToken::new();
@@ -277,7 +287,8 @@ mod tests {
                 &test_message(),
                 &outbound,
                 cancel_clone,
-            ).await;
+            )
+            .await;
         });
 
         cancel.cancel();

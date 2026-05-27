@@ -160,7 +160,7 @@ impl ChatLogStore {
         if !metadata.subject.is_empty() && metadata.subject != "Re:" {
             formatted.push_str(&format!("**SUBJECT:** {}\n\n", metadata.subject));
         } else {
-            formatted.push_str("\n");
+            formatted.push('\n');
         }
 
         // Content body

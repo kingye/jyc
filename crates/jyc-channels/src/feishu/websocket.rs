@@ -12,15 +12,13 @@ use tokio_util::sync::CancellationToken;
 
 use open_lark::ws_client::{EventDispatcherHandler, LarkWsClient};
 
-use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
 use jyc_types::InboundAttachmentConfig;
+use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
 use jyc_utils::helpers::{self};
 
 use super::client::FeishuClient;
+use super::types::{EventEnvelope, FileContent, ImageContent, TextContent};
 use jyc_types::FeishuConfig;
-use super::types::{
-    EventEnvelope, FileContent, ImageContent, TextContent,
-};
 
 /// WebSocket connection handler for Feishu.
 ///
@@ -47,7 +45,7 @@ impl FeishuWebSocket {
             attachment_config: None,
         }
     }
-    
+
     /// Create a new WebSocket handler with attachment configuration.
     pub fn new_with_attachments(
         config: &FeishuConfig,
@@ -99,9 +97,8 @@ impl FeishuWebSocket {
         // 4. Spawn LarkWsClient::open() — blocks until connection drops
         let ws_config = Arc::new(ws_config);
         tracing::info!("Connecting to Feishu WebSocket...");
-        let ws_handle = tokio::spawn(async move {
-            LarkWsClient::open(ws_config, event_handler).await
-        });
+        let ws_handle =
+            tokio::spawn(async move { LarkWsClient::open(ws_config, event_handler).await });
 
         // Connection succeeded if we get here (open() spawns internal loops)
         self.reset_reconnection_count();
@@ -134,19 +131,15 @@ impl FeishuWebSocket {
 
         // If we get here, the connection dropped (not cancelled)
         match ws_handle.await {
-            Ok(Ok(())) => {
-                Err(anyhow::anyhow!("Feishu WebSocket connection closed unexpectedly"))
-            }
-            Ok(Err(e)) => {
-                Err(anyhow::anyhow!("Feishu WebSocket error: {e}"))
-            }
+            Ok(Ok(())) => Err(anyhow::anyhow!(
+                "Feishu WebSocket connection closed unexpectedly"
+            )),
+            Ok(Err(e)) => Err(anyhow::anyhow!("Feishu WebSocket error: {e}")),
             Err(e) if e.is_cancelled() => {
                 // Task was aborted (normal on cancel)
                 Ok(())
             }
-            Err(e) => {
-                Err(anyhow::anyhow!("Feishu WebSocket task panicked: {e}"))
-            }
+            Err(e) => Err(anyhow::anyhow!("Feishu WebSocket task panicked: {e}")),
         }
     }
 
@@ -164,11 +157,15 @@ impl FeishuWebSocket {
             Err(e) => {
                 let data_str = String::from_utf8_lossy(data);
                 tracing::warn!(error = %e, payload = %data_str, "Failed to parse Feishu event payload as JSON");
-                return Err(anyhow::anyhow!("Failed to parse Feishu event payload as JSON: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to parse Feishu event payload as JSON: {}",
+                    e
+                ));
             }
         };
 
-        let event_type = json.get("header")
+        let event_type = json
+            .get("header")
             .and_then(|h| h.get("event_type"))
             .and_then(|e| e.as_str())
             .unwrap_or("");
@@ -178,29 +175,31 @@ impl FeishuWebSocket {
         // Handle chat disbanded event specially (note: event_type is "im.chat.disbanded_v1")
         if event_type == "im.chat.disbanded_v1" {
             if let Some(callback) = on_thread_close {
-                let chat_id = json.get("event")
+                let chat_id = json
+                    .get("event")
                     .and_then(|e| e.get("chat_id"))
                     .and_then(|id| id.as_str())
                     .unwrap_or("");
-                
+
                 if chat_id.is_empty() {
                     tracing::warn!("Chat disbanded event missing chat_id");
                     return Ok(());
                 }
-                
+
                 // Try to get chat name: first from event, then from API/cache
-                let chat_name = json.get("event")
+                let chat_name = json
+                    .get("event")
                     .and_then(|e| e.get("name"))
                     .and_then(|n| n.as_str());
-                
-                let thread_name = if chat_name.is_some() {
-                    helpers::sanitize_for_filesystem(chat_name.unwrap())
+
+                let thread_name = if let Some(chat_name) = chat_name {
+                    helpers::sanitize_for_filesystem(chat_name)
                 } else if let Ok(Some(name)) = self.client.get_chat_name(chat_id).await {
                     name
                 } else {
                     derive_thread_name_from_chat_id(channel_name, chat_id)
                 };
-                
+
                 tracing::info!(chat_id = %chat_id, thread = %thread_name, "Chat disbanded, closing thread");
                 callback(thread_name)?;
             }
@@ -213,7 +212,11 @@ impl FeishuWebSocket {
             Err(e) => {
                 let data_str = String::from_utf8_lossy(data);
                 tracing::warn!(error = %e, payload = %data_str, "Failed to parse Feishu event as EventEnvelope");
-                return Err(anyhow::anyhow!("Failed to parse Feishu event: {} | payload: {}", e, data_str));
+                return Err(anyhow::anyhow!(
+                    "Failed to parse Feishu event: {} | payload: {}",
+                    e,
+                    data_str
+                ));
             }
         };
 
@@ -226,7 +229,9 @@ impl FeishuWebSocket {
             return Ok(());
         }
 
-        let message = self.convert_to_inbound(channel_name, &envelope).await
+        let message = self
+            .convert_to_inbound(channel_name, &envelope)
+            .await
             .context("Failed to convert Feishu event to InboundMessage")?;
 
         tracing::info!(
@@ -263,36 +268,56 @@ impl FeishuWebSocket {
             "image" => {
                 let content: ImageContent = serde_json::from_str(&msg.content)
                     .context("Failed to parse image message content")?;
-                
-                tracing::debug!("Processing image message: image_key = {}", content.image_key);
-                
+
+                tracing::debug!(
+                    "Processing image message: image_key = {}",
+                    content.image_key
+                );
+
                 let mut attachments = vec![];
-                
+
                 // Check if attachment download is enabled and image type is allowed
                 if let Some(ref config) = self.attachment_config {
                     // Check if image extensions are allowed (jpg, jpeg, png, gif)
-                    let image_allowed = config.allowed_extensions.is_empty() || 
-                        config.allowed_extensions.iter().any(|ext| 
-                            ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || 
-                            ext == ".bmp" || ext == ".webp" || ext == ".svg"
-                        );
-                    
+                    let image_allowed = config.allowed_extensions.is_empty()
+                        || config.allowed_extensions.iter().any(|ext| {
+                            ext == ".jpg"
+                                || ext == ".jpeg"
+                                || ext == ".png"
+                                || ext == ".gif"
+                                || ext == ".bmp"
+                                || ext == ".webp"
+                                || ext == ".svg"
+                        });
+
                     if config.enabled && image_allowed {
                         // Download image from Feishu using message resource endpoint
-                        match self.client.download_image(&content.image_key, Some(&msg.message_id)).await {
+                        match self
+                            .client
+                            .download_image(&content.image_key, Some(&msg.message_id))
+                            .await
+                        {
                             Ok(image_bytes) if !image_bytes.is_empty() => {
-                                tracing::debug!("Image downloaded: size = {} bytes", image_bytes.len());
-                                
+                                tracing::debug!(
+                                    "Image downloaded: size = {} bytes",
+                                    image_bytes.len()
+                                );
+
                                 // Parse max file size from human-readable string (e.g., "25mb")
-                                let max_size_bytes = config.max_file_size.as_ref()
+                                let max_size_bytes = config
+                                    .max_file_size
+                                    .as_ref()
                                     .and_then(|s| helpers::parse_file_size(s).ok())
                                     .unwrap_or(0);
-                                
+
                                 // Check size limit if configured
-                                if max_size_bytes == 0 || image_bytes.len() <= max_size_bytes as usize {
-                                    let safe_filename = jyc_core::attachment_storage::sanitize_attachment_filename(
-                                        &format!("image_{}.jpg", content.image_key)
-                                    );
+                                if max_size_bytes == 0
+                                    || image_bytes.len() <= max_size_bytes as usize
+                                {
+                                    let safe_filename =
+                                        jyc_core::attachment_storage::sanitize_attachment_filename(
+                                            &format!("image_{}.jpg", content.image_key),
+                                        );
                                     let image_attachment = MessageAttachment {
                                         filename: safe_filename,
                                         content_type: "image/jpeg".to_string(),
@@ -322,23 +347,27 @@ impl FeishuWebSocket {
                 } else {
                     tracing::debug!("Attachment config not provided, skipping image download");
                 }
-                
+
                 (format!("[Image: {}]", content.image_key), attachments)
             }
             "file" => {
                 let content: FileContent = serde_json::from_str(&msg.content)
                     .context("Failed to parse file message content")?;
                 let name = content.file_name.as_deref().unwrap_or("unnamed");
-                
+
                 let mut attachments = vec![];
-                
+
                 // Check if attachment download is enabled
                 if let Some(ref config) = self.attachment_config {
                     if config.enabled {
                         // Determine file extension for content type guessing
                         let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
-                        let ext_with_dot = if ext.is_empty() { String::new() } else { format!(".{}", ext) };
-                        
+                        let ext_with_dot = if ext.is_empty() {
+                            String::new()
+                        } else {
+                            format!(".{}", ext)
+                        };
+
                         // Check if this file extension is allowed
                         let allowed = if config.allowed_extensions.is_empty() {
                             // If no extensions specified, all are allowed
@@ -357,36 +386,49 @@ impl FeishuWebSocket {
                                 normalized == ext_with_dot
                             })
                         };
-                        
+
                         if allowed {
                             // Download file from Feishu
                             match self.client.download_file(&content.file_key).await {
                                 Ok(file_bytes) if !file_bytes.is_empty() => {
-                                    tracing::debug!("File downloaded: file_key = {}, size = {} bytes", 
-                                                   content.file_key, file_bytes.len());
-                                    
+                                    tracing::debug!(
+                                        "File downloaded: file_key = {}, size = {} bytes",
+                                        content.file_key,
+                                        file_bytes.len()
+                                    );
+
                                     // Parse max file size
-                                    let max_size_bytes = config.max_file_size.as_ref()
+                                    let max_size_bytes = config
+                                        .max_file_size
+                                        .as_ref()
                                         .and_then(|s| helpers::parse_file_size(s).ok())
                                         .unwrap_or(0);
-                                    
+
                                     // Check size limit
-                                    if max_size_bytes == 0 || file_bytes.len() <= max_size_bytes as usize {
+                                    if max_size_bytes == 0
+                                        || file_bytes.len() <= max_size_bytes as usize
+                                    {
                                         let content_type = match ext.as_str() {
                                             "pdf" => "application/pdf",
                                             "doc" => "application/msword",
-                                            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                            "docx" => {
+                                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                            }
                                             "xls" => "application/vnd.ms-excel",
-                                            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                            "xlsx" => {
+                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                            }
                                             "ppt" => "application/vnd.ms-powerpoint",
-                                            "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                            "pptx" => {
+                                                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                            }
                                             "txt" | "md" => "text/plain",
                                             "zip" => "application/zip",
                                             "rar" => "application/x-rar-compressed",
                                             "7z" => "application/x-7z-compressed",
                                             _ => "application/octet-stream",
                                         };
-                                        
+
                                         // Sanitize filename at ingestion
                                         let safe_filename = jyc_core::attachment_storage::sanitize_attachment_filename(name);
                                         let file_attachment = MessageAttachment {
@@ -406,7 +448,10 @@ impl FeishuWebSocket {
                                     }
                                 }
                                 Ok(_) => {
-                                    tracing::warn!("File download returned empty bytes for {}, skipping", name);
+                                    tracing::warn!(
+                                        "File download returned empty bytes for {}, skipping",
+                                        name
+                                    );
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to download file from Feishu: {}", e);
@@ -421,16 +466,20 @@ impl FeishuWebSocket {
                 } else {
                     tracing::debug!("Attachment config not provided, skipping file download");
                 }
-                
-                (format!("[File: {} (key: {})]", name, content.file_key), attachments)
+
+                (
+                    format!("[File: {} (key: {})]", name, content.file_key),
+                    attachments,
+                )
             }
             "interactive" => {
                 // Card messages: store raw content JSON for now
                 (format!("[Card message]: {}", msg.content), vec![])
             }
-            other => {
-                (format!("[Unsupported message type: {}]: {}", other, msg.content), vec![])
-            }
+            other => (
+                format!("[Unsupported message type: {}]: {}", other, msg.content),
+                vec![],
+            ),
         };
 
         // Resolve chat_id — the reply target
@@ -480,11 +529,7 @@ impl FeishuWebSocket {
             );
         }
 
-        let sender_id = sender
-            .sender_id
-            .open_id
-            .as_deref()
-            .unwrap_or("unknown");
+        let sender_id = sender.sender_id.open_id.as_deref().unwrap_or("unknown");
 
         // Fetch readable names (cached after first call)
         let sender_name = if sender_id != "unknown" {
@@ -534,7 +579,7 @@ impl FeishuWebSocket {
             .create_time
             .as_deref()
             .and_then(|t| t.parse::<i64>().ok())
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+            .and_then(chrono::DateTime::from_timestamp_millis)
             .unwrap_or_else(chrono::Utc::now);
 
         // Attachments will be saved later in thread directory
@@ -607,7 +652,10 @@ impl FeishuWebSocket {
 /// In Feishu, when someone types "@jyc hello", the text content contains
 /// `"@_user_1 hello"` with a separate mentions array mapping `@_user_1`
 /// to the actual user. We replace placeholder keys with the display name.
-fn strip_mention_placeholders(text: &str, mentions: Option<&[super::types::EventMention]>) -> String {
+fn strip_mention_placeholders(
+    text: &str,
+    mentions: Option<&[super::types::EventMention]>,
+) -> String {
     let Some(mentions) = mentions else {
         return text.to_string();
     };
@@ -623,6 +671,11 @@ fn strip_mention_placeholders(text: &str, mentions: Option<&[super::types::Event
     result.trim().to_string()
 }
 
+/// Derive thread name from chat_id for thread close events.
+/// This matches the logic in FeishuMatcher::derive_thread_name().
+fn derive_thread_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
+    format!("{}_{}", channel_name, chat_id)
+}
 
 #[cfg(test)]
 mod tests {
@@ -639,9 +692,12 @@ mod tests {
         assert_eq!(helpers::parse_file_size("1m").unwrap(), 1024 * 1024);
         assert_eq!(helpers::parse_file_size("1gb").unwrap(), 1024 * 1024 * 1024);
         assert_eq!(helpers::parse_file_size("1g").unwrap(), 1024 * 1024 * 1024);
-        assert_eq!(helpers::parse_file_size("2.5mb").unwrap(), (2.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            helpers::parse_file_size("2.5mb").unwrap(),
+            (2.5 * 1024.0 * 1024.0) as u64
+        );
         assert_eq!(helpers::parse_file_size("  150kb  ").unwrap(), 150 * 1024);
-        
+
         // Test invalid inputs
         assert!(helpers::parse_file_size("abc").is_err());
         assert!(helpers::parse_file_size("10xb").is_err());
@@ -682,7 +738,7 @@ mod tests {
         let result = strip_mention_placeholders("@_user_1 hello", Some(&mentions));
         assert_eq!(result, "hello");
     }
-    
+
     #[test]
     fn test_derive_thread_name_from_chat_id() {
         let thread_name = super::derive_thread_name_from_chat_id("feishu", "oc_12345678");
@@ -717,11 +773,11 @@ mod tests {
                 }
             }
         }"#;
-        
+
         let envelope: super::EventEnvelope = serde_json::from_str(json).unwrap();
         assert_eq!(envelope.header.event_type, "im.chat.disbanded_v1");
         assert!(envelope.event.chat_disbanded.is_some());
-        
+
         let disband = envelope.event.chat_disbanded.unwrap();
         assert_eq!(disband.chat_id, "oc_12345678");
         assert_eq!(disband.operator_id, "ou_87654321");
@@ -783,10 +839,4 @@ mod tests {
         ws.reset_reconnection_count();
         assert_eq!(ws.reconnect_count, 0);
     }
-}
-
-/// Derive thread name from chat_id for thread close events.
-/// This matches the logic in FeishuMatcher::derive_thread_name().
-fn derive_thread_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
-    format!("{}_{}", channel_name, chat_id)
 }

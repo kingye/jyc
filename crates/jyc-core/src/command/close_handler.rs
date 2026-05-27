@@ -49,10 +49,7 @@ impl CommandHandler for CloseCommandHandler {
                 tracing::info!(thread = %thread_name, "Thread closed successfully via /close command");
                 Ok(CommandResult {
                     success: true,
-                    message: format!(
-                        "Thread '{}' closed and directory deleted.",
-                        thread_name
-                    ),
+                    message: format!("Thread '{}' closed and directory deleted.", thread_name),
                     error: None,
                 })
             }

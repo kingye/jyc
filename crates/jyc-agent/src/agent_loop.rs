@@ -14,7 +14,7 @@ use tracing;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 
-use crate::provider::{is_transient_sse_error, Provider};
+use crate::provider::{Provider, is_transient_sse_error};
 use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -64,9 +64,20 @@ pub struct AgentLoopConfig<'a> {
 /// Returns the final text response and metadata about tool usage.
 pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
-        provider, small_provider, tools, system_prompt, user_blocks,
-        working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
-        max_iterations, additional_read_roots, pattern_inject_images,
+        provider,
+        small_provider,
+        tools,
+        system_prompt,
+        user_blocks,
+        working_dir,
+        cancel,
+        thread_name,
+        event_bus,
+        prior_history,
+        prior_raw_context,
+        max_iterations,
+        additional_read_roots,
+        pattern_inject_images,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -97,11 +108,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut total_iterations: usize = 0;
 
     // Publish ProcessingStarted
-    publish_event(event_bus, ThreadEvent::ProcessingStarted {
-        thread_name: thread_name.to_string(),
-        message_id: "agent-loop".to_string(),
-        timestamp: Utc::now(),
-    }).await;
+    publish_event(
+        event_bus,
+        ThreadEvent::ProcessingStarted {
+            thread_name: thread_name.to_string(),
+            message_id: "agent-loop".to_string(),
+            timestamp: Utc::now(),
+        },
+    )
+    .await;
 
     loop {
         if cancel.is_cancelled() {
@@ -154,19 +169,26 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
             let synthetic_args = serde_json::json!({"message": &progress_text}).to_string();
 
-            publish_event(event_bus, ThreadEvent::ToolStarted {
-                thread_name: thread_name.to_string(),
-                tool_name: "jyc_reply_reply_message".to_string(),
-                input: Some(truncate_str(&synthetic_args, 200)),
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ToolStarted {
+                    thread_name: thread_name.to_string(),
+                    tool_name: "jyc_reply_reply_message".to_string(),
+                    input: Some(truncate_str(&synthetic_args, 200)),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             let tool_start = Instant::now();
             let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
             ctx.pattern_inject_images = pattern_inject_images;
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            let synthetic_output = match tools.execute("jyc_reply_reply_message", synthetic_input, &ctx).await {
+            let synthetic_output = match tools
+                .execute("jyc_reply_reply_message", synthetic_input, &ctx)
+                .await
+            {
                 Ok(output) => output,
                 Err(e) => {
                     tracing::warn!(error = %e, "Synthetic reply tool execution failed");
@@ -174,14 +196,22 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 }
             };
 
-            publish_event(event_bus, ThreadEvent::ToolCompleted {
-                thread_name: thread_name.to_string(),
-                tool_name: "jyc_reply_reply_message".to_string(),
-                success: !synthetic_output.is_error,
-                duration_secs: tool_start.elapsed().as_secs(),
-                output: if synthetic_output.is_error { Some(truncate_str(&synthetic_output.content, 200)) } else { None },
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ToolCompleted {
+                    thread_name: thread_name.to_string(),
+                    tool_name: "jyc_reply_reply_message".to_string(),
+                    success: !synthetic_output.is_error,
+                    duration_secs: tool_start.elapsed().as_secs(),
+                    output: if synthetic_output.is_error {
+                        Some(truncate_str(&synthetic_output.content, 200))
+                    } else {
+                        None
+                    },
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             // 3. Append the synthetic event to internal `history` for
             //    diagnostics only. `history` is used for chat-log rendering
@@ -232,7 +262,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             system_prompt,
             thread_name,
             event_bus,
-        ).await?;
+        )
+        .await?;
 
         // Track tokens: input_tokens from last call is the current context size
         // (each call sends full context, so latest = total). Output tokens accumulate.
@@ -242,7 +273,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_output_tokens += response.output_tokens;
 
         // 3. Check for empty response (likely an API error we didn't catch)
-        if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0 {
+        if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0
+        {
             tracing::warn!(
                 iteration = total_iterations,
                 "LLM returned empty response (no text, no tools, 0 tokens) — possible API error"
@@ -267,13 +299,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             );
 
             let duration = start_time.elapsed();
-            publish_event(event_bus, ThreadEvent::ProcessingCompleted {
-                thread_name: thread_name.to_string(),
-                message_id: "agent-loop".to_string(),
-                success: true,
-                duration_secs: duration.as_secs(),
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ProcessingCompleted {
+                    thread_name: thread_name.to_string(),
+                    message_id: "agent-loop".to_string(),
+                    success: true,
+                    duration_secs: duration.as_secs(),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             return Ok(AgentLoopResult {
                 text: response.text,
@@ -308,12 +344,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             // Publish ToolStarted
             let input_preview = truncate_str(&tool_call.arguments, 200);
-            publish_event(event_bus, ThreadEvent::ToolStarted {
-                thread_name: thread_name.to_string(),
-                tool_name: tool_call.name.clone(),
-                input: Some(input_preview),
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ToolStarted {
+                    thread_name: thread_name.to_string(),
+                    tool_name: tool_call.name.clone(),
+                    input: Some(input_preview),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             let tool_start = Instant::now();
 
@@ -328,14 +368,22 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_duration = tool_start.elapsed();
 
             // Publish ToolCompleted
-            publish_event(event_bus, ThreadEvent::ToolCompleted {
-                thread_name: thread_name.to_string(),
-                tool_name: tool_call.name.clone(),
-                success: !output.is_error,
-                duration_secs: tool_duration.as_secs(),
-                output: if output.is_error { Some(truncate_str(&output.content, 200)) } else { None },
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ToolCompleted {
+                    thread_name: thread_name.to_string(),
+                    tool_name: tool_call.name.clone(),
+                    success: !output.is_error,
+                    duration_secs: tool_duration.as_secs(),
+                    output: if output.is_error {
+                        Some(truncate_str(&output.content, 200))
+                    } else {
+                        None
+                    },
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             tracing::debug!(
                 tool = %tool_call.name,
@@ -346,13 +394,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             );
 
             // Check if this was the reply_message tool
-            if tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply") {
-                if !output.is_error {
-                    reply_sent_by_tool = true;
-                    // Extract the message text from the tool input
-                    if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
-                        reply_text_from_tool = Some(msg.to_string());
-                    }
+            if (tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply"))
+                && !output.is_error
+            {
+                reply_sent_by_tool = true;
+                // Extract the message text from the tool input
+                if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
+                    reply_text_from_tool = Some(msg.to_string());
                 }
             }
 
@@ -395,13 +443,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             tracing::info!(total_iterations, "Reply sent by MCP tool, stopping loop");
 
             let duration = start_time.elapsed();
-            publish_event(event_bus, ThreadEvent::ProcessingCompleted {
-                thread_name: thread_name.to_string(),
-                message_id: "agent-loop".to_string(),
-                success: true,
-                duration_secs: duration.as_secs(),
-                timestamp: Utc::now(),
-            }).await;
+            publish_event(
+                event_bus,
+                ThreadEvent::ProcessingCompleted {
+                    thread_name: thread_name.to_string(),
+                    message_id: "agent-loop".to_string(),
+                    success: true,
+                    duration_secs: duration.as_secs(),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
 
             return Ok(AgentLoopResult {
                 text: String::new(),
@@ -416,18 +468,25 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
-        publish_event(event_bus, ThreadEvent::ProcessingProgress {
-            thread_name: thread_name.to_string(),
-            elapsed_secs: elapsed.as_secs(),
-            activity: "tool execution".to_string(),
-            progress: Some(format!(
-                "cycle {}, iteration {} ({}), {} tokens",
-                cycle_count + 1, total_iterations + 1, iter_in_cycle + 1, total_input_tokens
-            )),
-            parts_count: total_iterations + 1,
-            output_length: total_output_tokens as usize,
-            timestamp: Utc::now(),
-        }).await;
+        publish_event(
+            event_bus,
+            ThreadEvent::ProcessingProgress {
+                thread_name: thread_name.to_string(),
+                elapsed_secs: elapsed.as_secs(),
+                activity: "tool execution".to_string(),
+                progress: Some(format!(
+                    "cycle {}, iteration {} ({}), {} tokens",
+                    cycle_count + 1,
+                    total_iterations + 1,
+                    iter_in_cycle + 1,
+                    total_input_tokens
+                )),
+                parts_count: total_iterations + 1,
+                output_length: total_output_tokens as usize,
+                timestamp: Utc::now(),
+            },
+        )
+        .await;
 
         iter_in_cycle += 1;
         total_iterations += 1;
@@ -435,13 +494,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     // Loop ended (cancellation only — there's no max-cycles limit)
     let duration = start_time.elapsed();
-    publish_event(event_bus, ThreadEvent::ProcessingCompleted {
-        thread_name: thread_name.to_string(),
-        message_id: "agent-loop".to_string(),
-        success: false,
-        duration_secs: duration.as_secs(),
-        timestamp: Utc::now(),
-    }).await;
+    publish_event(
+        event_bus,
+        ThreadEvent::ProcessingCompleted {
+            thread_name: thread_name.to_string(),
+            message_id: "agent-loop".to_string(),
+            success: false,
+            duration_secs: duration.as_secs(),
+            timestamp: Utc::now(),
+        },
+    )
+    .await;
 
     Ok(AgentLoopResult {
         text: String::new(),
@@ -501,7 +564,8 @@ async fn generate_summary_from_joined_history(
         &summary_system,
         thread_name,
         event_bus,
-    ).await?;
+    )
+    .await?;
 
     if response.text.is_empty() {
         anyhow::bail!("LLM returned empty progress summary");
@@ -520,7 +584,10 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
     out.push_str("=== Conversation transcript ===\n\n");
     for msg in raw_context {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+        let role = msg
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("unknown");
         match role {
             "user" => {
                 let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -533,11 +600,11 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
             "assistant" => {
                 out.push_str("ASSISTANT");
                 // OpenAI: content as string
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() {
-                        out.push_str(": ");
-                        out.push_str(text);
-                    }
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+                    && !text.is_empty()
+                {
+                    out.push_str(": ");
+                    out.push_str(text);
                 }
                 // Anthropic: content as array of blocks
                 if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
@@ -551,7 +618,8 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
                                 }
                             }
                             "tool_use" => {
-                                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                let name =
+                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
                                 out.push_str(&format!("\n  [tool_use: {}]", name));
                             }
                             _ => {}
@@ -651,14 +719,12 @@ impl CollectedResponse {
 
     /// Build the raw provider JSON for this assistant response.
     fn to_raw_message(&self, provider: &dyn crate::provider::Provider) -> serde_json::Value {
-        let tool_calls: Vec<(String, String, String)> = self.tool_calls.iter()
+        let tool_calls: Vec<(String, String, String)> = self
+            .tool_calls
+            .iter()
             .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
             .collect();
-        provider.build_raw_assistant_message(
-            &self.text,
-            &self.reasoning_content,
-            &tool_calls,
-        )
+        provider.build_raw_assistant_message(&self.text, &self.reasoning_content, &tool_calls)
     }
 }
 
@@ -692,9 +758,8 @@ async fn complete_with_retry(
     thread_name: &str,
     event_bus: Option<&ThreadEventBusRef>,
 ) -> Result<CollectedResponse> {
-    let mut last_err: anyhow::Error = anyhow::anyhow!(
-        "complete_with_retry exited without attempting any call"
-    );
+    let mut last_err: anyhow::Error =
+        anyhow::anyhow!("complete_with_retry exited without attempting any call");
 
     for attempt_idx in 0..SSE_MAX_ATTEMPTS {
         let result: Result<CollectedResponse> = async {
@@ -752,9 +817,7 @@ async fn complete_with_retry(
 }
 
 /// Collect a streaming response into a complete response.
-async fn collect_response(
-    stream: crate::provider::EventStream,
-) -> Result<CollectedResponse> {
+async fn collect_response(stream: crate::provider::EventStream) -> Result<CollectedResponse> {
     let mut response = CollectedResponse::default();
     let mut current_tool_id: Option<String> = None;
     let mut current_tool_name: Option<String> = None;
@@ -787,7 +850,10 @@ async fn collect_response(
                     });
                 }
             }
-            StreamEvent::Usage { input_tokens, output_tokens } => {
+            StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+            } => {
                 response.input_tokens = input_tokens;
                 response.output_tokens += output_tokens;
             }
@@ -862,8 +928,8 @@ mod retry_tests {
     use async_trait::async_trait;
     use futures::stream;
     use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Mock provider that fails its first `fail_count` calls with the given
     /// error message, then succeeds with an empty-but-valid stream.
@@ -875,8 +941,12 @@ mod retry_tests {
 
     #[async_trait]
     impl Provider for FlakyProvider {
-        fn name(&self) -> &str { "flaky" }
-        fn model(&self) -> &str { "flaky-1" }
+        fn name(&self) -> &str {
+            "flaky"
+        }
+        fn model(&self) -> &str {
+            "flaky-1"
+        }
 
         async fn complete(
             &self,
@@ -906,10 +976,14 @@ mod retry_tests {
         }
 
         fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
-            let text: String = blocks.iter().filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("");
+            let text: String = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
             serde_json::json!({"role": "user", "content": text})
         }
 
@@ -938,15 +1012,13 @@ mod retry_tests {
 
     /// Drain a receiver synchronously to a Vec, with a small grace timeout
     /// so any in-flight publishes complete.
-    async fn drain_events(
-        rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>,
-    ) -> Vec<ThreadEvent> {
+    async fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>) -> Vec<ThreadEvent> {
         let mut out = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
                 Ok(Some(e)) => out.push(e),
                 Ok(None) => break, // sender closed
-                Err(_) => break,    // timeout — no more events
+                Err(_) => break,   // timeout — no more events
             }
         }
         out
@@ -967,27 +1039,27 @@ mod retry_tests {
         // backoff (1s + 2s = 3s). That's fine for a unit test but let's
         // verify the path works regardless. (Fast timers would require
         // tokio's pause/advance which complicates this minimal test.)
-        let result = complete_with_retry(
-            &provider,
-            &[],
-            &[],
-            "system",
-            "thread-x",
-            Some(&bus),
-        )
-        .await;
+        let result =
+            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
         let response = result.unwrap();
         assert_eq!(response.text, "ok");
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 3, "expected 3 total calls (2 fails + 1 success)");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            3,
+            "expected 3 total calls (2 fails + 1 success)"
+        );
 
         let events = drain_events(&mut rx).await;
         let retry_events: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ThreadEvent::SessionStatus { status_type, attempt, .. }
-                    if status_type == "retry" => Some(*attempt),
+                ThreadEvent::SessionStatus {
+                    status_type,
+                    attempt,
+                    ..
+                } if status_type == "retry" => Some(*attempt),
                 _ => None,
             })
             .collect();
@@ -1010,15 +1082,8 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result = complete_with_retry(
-            &provider,
-            &[],
-            &[],
-            "system",
-            "thread-x",
-            Some(&bus),
-        )
-        .await;
+        let result =
+            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
 
         assert!(result.is_err(), "expected Err after exhausting retries");
         assert_eq!(
@@ -1045,21 +1110,15 @@ mod retry_tests {
     async fn non_transient_errors_fail_immediately() {
         let provider = FlakyProvider {
             fail_count: 99,
-            fail_message: "server overload (HTTP 429 body: {\"error\": \"rate limit\"})".to_string(),
+            fail_message: "server overload (HTTP 429 body: {\"error\": \"rate limit\"})"
+                .to_string(),
             calls: AtomicUsize::new(0),
         };
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result = complete_with_retry(
-            &provider,
-            &[],
-            &[],
-            "system",
-            "thread-x",
-            Some(&bus),
-        )
-        .await;
+        let result =
+            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -1073,7 +1132,10 @@ mod retry_tests {
             .iter()
             .filter(|e| matches!(e, ThreadEvent::SessionStatus { status_type, .. } if status_type == "retry"))
             .count();
-        assert_eq!(retry_count, 0, "non-transient errors must not publish retry events");
+        assert_eq!(
+            retry_count, 0,
+            "non-transient errors must not publish retry events"
+        );
     }
 
     /// Regression for the May 26 production failure on bare-metal:
@@ -1100,15 +1162,8 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result = complete_with_retry(
-            &provider,
-            &[],
-            &[],
-            "system",
-            "thread-x",
-            Some(&bus),
-        )
-        .await;
+        let result =
+            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
 
         assert!(
             result.is_ok(),
@@ -1125,8 +1180,11 @@ mod retry_tests {
         let retry_attempts: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ThreadEvent::SessionStatus { status_type, attempt, .. }
-                    if status_type == "retry" => Some(*attempt),
+                ThreadEvent::SessionStatus {
+                    status_type,
+                    attempt,
+                    ..
+                } if status_type == "retry" => Some(*attempt),
                 _ => None,
             })
             .collect();
@@ -1137,4 +1195,3 @@ mod retry_tests {
         );
     }
 }
-

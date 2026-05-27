@@ -112,31 +112,33 @@ impl Provider for OpenAiCompatProvider {
         if !tools.is_empty() {
             let openai_tools: Vec<serde_json::Value> = tools
                 .iter()
-                .map(|t| serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.input_schema,
-                    }
-                }))
+                .map(|t| {
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema,
+                        }
+                    })
+                })
                 .collect();
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
         // Merge extra params from config (provider-level + model-level)
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
         // Build request
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&url)
             .header("content-type", "application/json");
 
@@ -149,8 +151,8 @@ impl Provider for OpenAiCompatProvider {
         req = req.json(&body);
 
         // Use EventSource for proper SSE streaming (same as Anthropic provider)
-        let es = EventSource::new(req)
-            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        let es =
+            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
@@ -217,7 +219,12 @@ impl Provider for OpenAiCompatProvider {
         build_openai_user_content(blocks)
     }
 
-    fn format_tool_result(&self, tool_call_id: &str, content: &str, _is_error: bool) -> serde_json::Value {
+    fn format_tool_result(
+        &self,
+        tool_call_id: &str,
+        content: &str,
+        _is_error: bool,
+    ) -> serde_json::Value {
         serde_json::json!({
             "role": "tool",
             "tool_call_id": tool_call_id,
@@ -247,16 +254,19 @@ impl Provider for OpenAiCompatProvider {
 
         // Tool calls
         if !tool_calls.is_empty() {
-            let tc_json: Vec<serde_json::Value> = tool_calls.iter().map(|(id, name, args)| {
-                serde_json::json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": args,
-                    }
+            let tc_json: Vec<serde_json::Value> = tool_calls
+                .iter()
+                .map(|(id, name, args)| {
+                    serde_json::json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": args,
+                        }
+                    })
                 })
-            }).collect();
+                .collect();
             msg["tool_calls"] = serde_json::Value::Array(tc_json);
         }
 
@@ -291,31 +301,33 @@ impl Provider for OpenAiCompatProvider {
         if !tools.is_empty() {
             let openai_tools: Vec<serde_json::Value> = tools
                 .iter()
-                .map(|t| serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.input_schema,
-                    }
-                }))
+                .map(|t| {
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema,
+                        }
+                    })
+                })
                 .collect();
             body["tools"] = serde_json::Value::Array(openai_tools);
         }
 
         // Merge extra params
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
             }
         }
 
         // Build and send request
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&url)
             .header("content-type", "application/json");
 
@@ -336,11 +348,15 @@ impl Provider for OpenAiCompatProvider {
         let diag_api_key = self.api_key.clone();
         let diag_client = self.client.clone();
 
-        let es = EventSource::new(req)
-            .map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        let es =
+            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
 
         let stream = futures::stream::unfold(
-            (es, OpenAiStreamState::default(), Some((diag_client, diag_url, diag_body, diag_api_key))),
+            (
+                es,
+                OpenAiStreamState::default(),
+                Some((diag_client, diag_url, diag_body, diag_api_key)),
+            ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
                     if let Some(event) = state.pending_events.pop() {
@@ -382,7 +398,8 @@ impl Provider for OpenAiCompatProvider {
                             // a diagnostic POST with the same body so the caller
                             // sees the provider's actual error (validation message,
                             // rate limit reason, etc.).
-                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take() {
+                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take()
+                            {
                                 super::fetch_error_body(&client, &url, &body, |req| {
                                     if let Some(key) = api_key.as_deref() {
                                         req.header("authorization", format!("Bearer {key}"))
@@ -395,15 +412,12 @@ impl Provider for OpenAiCompatProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => format!(
-                                    "SSE stream error: {e} (HTTP {status} body: {body})"
-                                ),
+                                Some((status, body)) => {
+                                    format!("SSE stream error: {e} (HTTP {status} body: {body})")
+                                }
                                 None => format!("SSE stream error: {e}"),
                             };
-                            return Some((
-                                Err(anyhow::anyhow!(final_msg)),
-                                (es, state, diag),
-                            ));
+                            return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
                         }
                         None => {
                             if let Some(event) = state.pending_events.pop() {
@@ -447,10 +461,7 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         }
     };
 
-    let choices = match value.get("choices").and_then(|c| c.as_array()) {
-        Some(c) => c,
-        None => return None,
-    };
+    let choices = value.get("choices").and_then(|c| c.as_array())?;
 
     let mut events = Vec::new();
 
@@ -461,28 +472,28 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         };
 
         // Text content (standard OpenAI field)
-        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-            if !content.is_empty() {
-                events.push(StreamEvent::TextDelta(content.to_string()));
-            }
+        if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+            && !content.is_empty()
+        {
+            events.push(StreamEvent::TextDelta(content.to_string()));
         }
 
         // Reasoning content (DeepSeek v4-pro style thinking)
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-            if !reasoning.is_empty() {
-                events.push(StreamEvent::ReasoningDelta(reasoning.to_string()));
-            }
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str())
+            && !reasoning.is_empty()
+        {
+            events.push(StreamEvent::ReasoningDelta(reasoning.to_string()));
         }
 
         // Check finish_reason and extract usage from the same chunk
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
-            if finish_reason == "tool_calls" || finish_reason == "stop" {
-                // Emit ToolUseEnd for each accumulated tool call
-                for _ in &state.tool_calls {
-                    events.push(StreamEvent::ToolUseEnd);
-                }
-                state.tool_calls.clear();
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
+            && (finish_reason == "tool_calls" || finish_reason == "stop")
+        {
+            // Emit ToolUseEnd for each accumulated tool call
+            for _ in &state.tool_calls {
+                events.push(StreamEvent::ToolUseEnd);
             }
+            state.tool_calls.clear();
         }
 
         // Tool calls
@@ -530,8 +541,14 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
 
     // Usage info (some providers include it in stream)
     if let Some(usage) = value.get("usage") {
-        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let input = usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if input > 0 || output > 0 {
             events.push(StreamEvent::Usage {
                 input_tokens: input,
@@ -555,17 +572,21 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
             let mut result = serde_json::json!({ "role": "assistant" });
 
             let text = msg.text();
-            let tool_uses: Vec<_> = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => Some(serde_json::json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": input.to_string(),
-                    }
-                })),
-                _ => None,
-            }).collect();
+            let tool_uses: Vec<_> = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse { id, name, input } => Some(serde_json::json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": input.to_string(),
+                        }
+                    })),
+                    _ => None,
+                })
+                .collect();
 
             // Always set content (some APIs require it even when tool_calls are present)
             if !text.is_empty() {
@@ -582,7 +603,12 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
         }
         Role::Tool => {
             // Tool results in OpenAI format
-            if let Some(ContentBlock::ToolResult { tool_use_id, content, .. }) = msg.content.first() {
+            if let Some(ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            }) = msg.content.first()
+            {
                 serde_json::json!({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
@@ -609,14 +635,20 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
 /// minimal-friction string form for the common case and only escalate to the
 /// array form when actually needed for multimodal input.
 fn build_openai_user_content(content: &[ContentBlock]) -> serde_json::Value {
-    let has_image = content.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+    let has_image = content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
 
     if !has_image {
         // Legacy string-content form
-        let text = content.iter().filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>().join("");
+        let text = content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
         return serde_json::json!({
             "role": "user",
             "content": text,
@@ -624,14 +656,17 @@ fn build_openai_user_content(content: &[ContentBlock]) -> serde_json::Value {
     }
 
     // Array-content form (multimodal)
-    let parts: Vec<serde_json::Value> = content.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(serde_json::json!({
-            "type": "text",
-            "text": text,
-        })),
-        ContentBlock::Image { source } => Some(image_block_openai(source)),
-        _ => None,
-    }).collect();
+    let parts: Vec<serde_json::Value> = content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(serde_json::json!({
+                "type": "text",
+                "text": text,
+            })),
+            ContentBlock::Image { source } => Some(image_block_openai(source)),
+            _ => None,
+        })
+        .collect();
 
     serde_json::json!({
         "role": "user",

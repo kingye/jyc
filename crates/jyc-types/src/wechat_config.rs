@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Uses OpenILink WebSocket Bridge to connect to WeChat.
 /// Both inbound and outbound messages share the same WebSocket connection.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WechatConfig {
     /// Hostname of the OpenILink server (e.g., "openilink.example.com").
     /// Do NOT include protocol prefix — the WebSocket URL is constructed
@@ -33,16 +33,6 @@ pub struct WechatWebSocketConfig {
     /// Maximum reconnect attempts (default: 10)
     #[serde(default = "default_max_reconnect_attempts")]
     pub max_reconnect_attempts: usize,
-}
-
-impl Default for WechatConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            token: String::new(),
-            websocket: WechatWebSocketConfig::default(),
-        }
-    }
 }
 
 impl Default for WechatWebSocketConfig {

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    # Skip draft PRs — only run when the PR is marked as ready
+    # (github.event.pull_request.draft == false check via job-level if)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Formatting, linting, testing, and coverage enforcement
+  ci:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Coverage
+        run: |
+          echo '## 📊 Coverage Report' > coverage.txt
+          echo '' >> coverage.txt
+          echo '```' >> coverage.txt
+          cargo llvm-cov --workspace --all-targets --summary-only \
+            --ignore-filename-regex 'crates/jyc-cli/src/main\.rs' >> coverage.txt
+          echo '```' >> coverage.txt
+
+      - name: Check coverage threshold
+        run: |
+          threshold=55
+          pct=$(awk '/^TOTAL/ {gsub(/%/,"",$10); printf "%.0f", $10}' coverage.txt)
+          echo "Line coverage: ${pct}%"
+          if [ -z "${pct}" ]; then
+            echo "❌ Could not parse coverage from coverage.txt"
+            exit 1
+          fi
+          if [ "${pct}" -lt "${threshold}" ]; then
+            echo "❌ Coverage ${pct}% is below ${threshold}% threshold"
+            exit 1
+          fi
+          echo "✅ Coverage ${pct}% meets ${threshold}% threshold"
+
+      - name: Ensure coverage file exists
+        if: always()
+        run: |
+          if [ ! -f coverage.txt ]; then
+            echo "⚠️ Coverage report not generated (previous step failed or was skipped)" > coverage.txt
+          fi
+
+      - name: Post coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        if: always()
+        with:
+          path: coverage.txt

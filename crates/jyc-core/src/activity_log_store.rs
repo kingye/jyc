@@ -55,7 +55,7 @@ impl ActivityLogStore {
         }
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
         let start = lines.len().saturating_sub(max_entries);
         Ok(lines[start..]
             .iter()
@@ -78,7 +78,7 @@ impl ActivityLogStore {
         }
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
         if lines.len() <= max_entries {
             return Ok(());
         }

@@ -6,27 +6,27 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use jyc_agent::JycAgentService;
 use jyc_core::agent::AgentService;
 use jyc_core::static_agent::StaticAgentService;
-use jyc_agent::JycAgentService;
 
-use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::email::inbound::EmailMatcher;
+use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
 use jyc_channels::wechat::outbound::WechatOutboundAdapter;
-use jyc_types::OutboundAdapter;
-use jyc_types::MonitorConfig;
-use jyc_types::{load_config, validation};
-use jyc_core::metrics::MetricsCollector;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
+use jyc_core::metrics::MetricsCollector;
 use jyc_core::state_manager::StateManager;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_services::imap::monitor::ImapMonitor;
+use jyc_types::MonitorConfig;
+use jyc_types::OutboundAdapter;
+use jyc_types::{load_config, validation};
 
 /// Monitor command — start the agent, monitor inbound channels, process messages.
 #[derive(Debug, Args)]
@@ -89,37 +89,30 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let workspace_dir = jyc_core::thread_path::resolve_workspace(workdir, channel_name);
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
 
-        let patterns = channel_config
-            .patterns
-            .clone()
-            .unwrap_or_default();
+        let patterns = channel_config.patterns.clone().unwrap_or_default();
 
         // Get attachment configuration from unified config
-        let outbound_attachment_config = config_snapshot.attachments
+        let outbound_attachment_config = config_snapshot
+            .attachments
             .as_ref()
             .and_then(|att| att.outbound.clone());
-        let inbound_attachment_config = config_snapshot.attachments
+        let inbound_attachment_config = config_snapshot
+            .attachments
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
-        let footer_enabled = channel_config
-            .footer
-            .as_ref()
-            .map_or(true, |f| f.enabled);
+        let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
 
         // Create the outbound adapter based on channel type
         // For wechat, we need to share the WebSocket sender between inbound and outbound
         let mut wechat_sender_arc: Option<
-            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>
+            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
         > = None;
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
-                let outbound_config = channel_config
-                    .outbound
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing outbound config")
-                    })?;
+                let outbound_config = channel_config.outbound.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("channel '{channel_name}': missing outbound config")
+                })?;
                 Arc::new(EmailOutboundAdapter::new_with_attachments(
                     outbound_config,
                     storage.clone(),
@@ -179,42 +172,57 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         };
 
         // Connect the outbound adapter
-        outbound.connect().await.with_context(|| {
-            format!("channel '{channel_name}': outbound connection failed")
-        })?;
+        outbound
+            .connect()
+            .await
+            .with_context(|| format!("channel '{channel_name}': outbound connection failed"))?;
         tracing::info!(channel = %channel_name, channel_type = %channel_type, "Outbound connected");
 
         // Create agent based on configured mode
         // Resolve effective model per-channel: channel-level override beats global
-        let effective_model = channel_config.model.clone()
+        let effective_model = channel_config
+            .model
+            .clone()
             .or_else(|| agent_config.model.clone());
-        let effective_small_model = channel_config.small_model.clone()
+        let effective_small_model = channel_config
+            .small_model
+            .clone()
             .or_else(|| agent_config.small_model.clone());
         let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
             "agent" => {
                 // In-process agent
                 let model = effective_model;
                 tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
-                let providers = agent_config.providers.iter()
+                let providers = agent_config
+                    .providers
+                    .iter()
                     .map(|(name, def)| {
-                        let models = def.models.iter()
+                        let models = def
+                            .models
+                            .iter()
                             .map(|(model_name, model_def)| {
-                                (model_name.clone(), jyc_agent::types::ModelConfig {
-                                    context_window: model_def.context_window,
-                                    supports_images: model_def.supports_images,
-                                    params: model_def.params.clone(),
-                                })
+                                (
+                                    model_name.clone(),
+                                    jyc_agent::types::ModelConfig {
+                                        context_window: model_def.context_window,
+                                        supports_images: model_def.supports_images,
+                                        params: model_def.params.clone(),
+                                    },
+                                )
                             })
                             .collect();
-                        (name.clone(), jyc_agent::types::ProviderConfig {
-                            provider_type: def.provider_type.clone(),
-                            base_url: def.base_url.clone(),
-                            api_key_env: def.api_key_env.clone(),
-                            context_window: def.context_window,
-                            supports_images: def.supports_images,
-                            params: def.params.clone(),
-                            models,
-                        })
+                        (
+                            name.clone(),
+                            jyc_agent::types::ProviderConfig {
+                                provider_type: def.provider_type.clone(),
+                                base_url: def.base_url.clone(),
+                                api_key_env: def.api_key_env.clone(),
+                                context_window: def.context_window,
+                                supports_images: def.supports_images,
+                                params: def.params.clone(),
+                                models,
+                            },
+                        )
                     })
                     .collect();
                 let agent_cfg = jyc_agent::types::AgentConfig {
@@ -222,30 +230,40 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     small_model: effective_small_model.clone(),
                     providers,
                     max_iterations: agent_config.max_iterations,
-                    vision: agent_config.vision.clone().map(|v| jyc_agent::types::VisionConfig {
-                        enabled: v.enabled,
-                        provider: v.provider,
-                        model: v.model,
-                        prompt: v.prompt,
-                    }),
+                    vision: agent_config
+                        .vision
+                        .clone()
+                        .map(|v| jyc_agent::types::VisionConfig {
+                            enabled: v.enabled,
+                            provider: v.provider,
+                            model: v.model,
+                            prompt: v.prompt,
+                        }),
                 };
                 // Flatten patterns from all channels so the agent can look up
                 // per-pattern flags (e.g. inject_inbound_images) by
                 // InboundMessage.matched_pattern regardless of channel.
-                let all_patterns: Vec<jyc_types::ChannelPattern> = config_snapshot.channels
+                let all_patterns: Vec<jyc_types::ChannelPattern> = config_snapshot
+                    .channels
                     .values()
                     .filter_map(|c| c.patterns.clone())
                     .flatten()
                     .collect();
                 // Build optional VisionClient for vision fallback
                 let vision_client: Option<std::sync::Arc<jyc_agent::vision::VisionClient>> = {
-                    agent_config.vision.as_ref()
+                    agent_config
+                        .vision
+                        .as_ref()
                         .filter(|v| v.enabled)
                         .and_then(|v| {
                             let provider_def = agent_config.providers.get(&v.provider)?;
-                            let base_url = provider_def.base_url.clone()
+                            let base_url = provider_def
+                                .base_url
+                                .clone()
                                 .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-                            let api_key_env = provider_def.api_key_env.clone()
+                            let api_key_env = provider_def
+                                .api_key_env
+                                .clone()
                                 .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
                             let api_key = std::env::var(&api_key_env).unwrap_or_default();
                             if api_key.is_empty() {
@@ -256,14 +274,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                                 );
                                 return None;
                             }
-                            Some(std::sync::Arc::new(
-                                jyc_agent::vision::VisionClient::new(
-                                    base_url,
-                                    api_key,
-                                    v.model.clone(),
-                                    v.prompt.clone(),
-                                )
-                            ))
+                            Some(std::sync::Arc::new(jyc_agent::vision::VisionClient::new(
+                                base_url,
+                                api_key,
+                                v.model.clone(),
+                                v.prompt.clone(),
+                            )))
                         })
                 };
                 Arc::new(JycAgentService::new(
@@ -288,7 +304,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         };
 
         let template_dir = workdir.join("templates");
-        
+
         let thread_manager = Arc::new(ThreadManager::new_with_options(
             config_snapshot.general.max_concurrent_threads,
             config_snapshot.general.max_queue_size_per_thread,
@@ -316,8 +332,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
         let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
 
-        let mut state_manager =
-            StateManager::for_channel(workdir, channel_name);
+        let mut state_manager = StateManager::for_channel(workdir, channel_name);
         state_manager.initialize().await?;
 
         if args.reset {
@@ -345,13 +360,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let inbound_config = channel_config
                     .inbound
                     .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing inbound config"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing inbound config")
+                    })?
                     .clone();
 
-                let monitor_config = channel_config
-                    .monitor
-                    .clone()
-                    .unwrap_or_default();
+                let monitor_config = channel_config.monitor.clone().unwrap_or_default();
 
                 // Override IDLE mode if --no-idle flag
                 let monitor_config = if args.no_idle {
@@ -363,28 +377,31 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     monitor_config
                 };
 
-                let task = tokio::spawn(async move {
-                    let mut monitor = ImapMonitor::new(
-                        channel_name_owned.clone(),
-                        inbound_config,
-                        monitor_config,
-                        patterns,
-                        router,
-                        state_manager,
-                        cancel_child,
-                        Arc::new(EmailMatcher),
-                    );
-
-                    if let Err(e) = monitor.start().await {
-                        tracing::error!(
-                            error = %e,
-                            "IMAP monitor error"
+                let task = tokio::spawn(
+                    async move {
+                        let mut monitor = ImapMonitor::new(
+                            channel_name_owned.clone(),
+                            inbound_config,
+                            monitor_config,
+                            patterns,
+                            router,
+                            state_manager,
+                            cancel_child,
+                            Arc::new(EmailMatcher),
                         );
-                    }
 
-                    // Shutdown thread manager for this channel
-                    tm.shutdown().await;
-                }.instrument(channel_span));
+                        if let Err(e) = monitor.start().await {
+                            tracing::error!(
+                                error = %e,
+                                "IMAP monitor error"
+                            );
+                        }
+
+                        // Shutdown thread manager for this channel
+                        tm.shutdown().await;
+                    }
+                    .instrument(channel_span),
+                );
 
                 tasks.push(task);
             }
@@ -404,25 +421,25 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     // Clone configs before moving into closures
                     let feishu_config_cloned = feishu_config.clone();
                     let inbound_attachment_config_for_callback = inbound_attachment_config.clone();
-                    
+
                     let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
 
                     // Wire on_message to route through FeishuMatcher → MessageRouter
 
                     use jyc_types::InboundAdapter;
-                    
+
                     let thread_manager_clone = thread_manager.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |mut message| {
                             let router = router_for_callback.clone();
                             let patterns = patterns_for_callback.clone();
-                            
+
                             // Clone values for the async move closure
 
                             let feishu_config_clone = feishu_config_cloned.clone();
                             let channel_name_clone = channel_name_owned.clone();
                             let attachment_config_clone = inbound_attachment_config_for_callback.clone();
-                            
+
                             tokio::spawn(async move {
                                 // 1. Create adapter and save attachments to thread directory
 
@@ -430,7 +447,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                                 // The adapter will calculate thread name internally
 
                                 let adapter = FeishuInboundAdapter::new(&feishu_config_clone, channel_name_clone);
-                                
+
                                 if let Err(e) = adapter.save_attachments_to_thread_directory(
                                     &mut message,
                                     &patterns,
@@ -438,7 +455,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                                 ).await {
                                     tracing::warn!("Failed to save attachments: {}", e);
                                 }
-                                
+
                                 // 2. Route the message
 
                                 router.route(&FeishuMatcher, message, &patterns).await;
@@ -621,7 +638,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     }
 
     // 5. Start inspect server (if configured)
-    let inspect_task = if config_snapshot.inspect.as_ref().map_or(false, |i| i.enabled) {
+    let inspect_task = if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
         let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: jyc_inspect::server::SharedActivityMap =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));

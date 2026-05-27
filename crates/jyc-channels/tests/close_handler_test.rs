@@ -1,15 +1,15 @@
+use arc_swap::ArcSwap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use arc_swap::ArcSwap;
 use tempfile::TempDir;
 
-use jyc_core::thread_manager::ThreadManager;
-use jyc_core::static_agent::StaticAgentService;
+use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_core::command::close_handler::CloseCommandHandler;
 use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
-use jyc_channels::email::outbound::EmailOutboundAdapter;
+use jyc_core::static_agent::StaticAgentService;
+use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{AppConfig, SmtpConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {

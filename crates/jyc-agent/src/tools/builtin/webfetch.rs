@@ -41,20 +41,20 @@ impl Tool for WebfetchTool {
     }
 
     async fn execute(&self, input: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let url = input.get("url")
+        let url = input
+            .get("url")
             .and_then(|u| u.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'url' parameter"))?;
 
-        let timeout_secs = input.get("timeout")
-            .and_then(|t| t.as_u64())
-            .unwrap_or(30);
+        let timeout_secs = input.get("timeout").and_then(|t| t.as_u64()).unwrap_or(30);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
 
-        let resp = client.get(url)
+        let resp = client
+            .get(url)
             .header("user-agent", "jyc-agent/0.1")
             .send()
             .await
@@ -63,11 +63,15 @@ impl Tool for WebfetchTool {
         let status = resp.status();
         if !status.is_success() {
             return Ok(ToolOutput::error(format!(
-                "HTTP {} {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")
+                "HTTP {} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown")
             )));
         }
 
-        let body = resp.text().await
+        let body = resp
+            .text()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to read response: {e}"))?;
 
         let mut result = body;

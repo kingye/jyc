@@ -23,14 +23,9 @@ pub enum Role {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ImageSource {
     /// Inline base64-encoded image bytes (no `data:` prefix).
-    Base64 {
-        media_type: String,
-        data: String,
-    },
+    Base64 { media_type: String, data: String },
     /// Remote http(s) URL — the provider fetches it.
-    Url {
-        url: String,
-    },
+    Url { url: String },
 }
 
 /// A content block within a message.
@@ -38,13 +33,9 @@ pub enum ImageSource {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// Plain text content.
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// Image content (multimodal input).
-    Image {
-        source: ImageSource,
-    },
+    Image { source: ImageSource },
     /// A tool use request from the assistant.
     ToolUse {
         id: String,
@@ -92,7 +83,11 @@ impl Message {
     }
 
     /// Create a tool result message.
-    pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Self {
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult {
@@ -132,10 +127,7 @@ pub enum StreamEvent {
     /// A chunk of reasoning/thinking content (provider-specific, e.g., DeepSeek).
     ReasoningDelta(String),
     /// Start of a tool use block.
-    ToolUseStart {
-        id: String,
-        name: String,
-    },
+    ToolUseStart { id: String, name: String },
     /// A chunk of tool input JSON.
     ToolInputDelta(String),
     /// End of a tool use block (input is complete).
@@ -246,6 +238,7 @@ pub struct AgentConfig {
     /// - between-messages context reset summary (in `session::summarize_context`)
     /// Falls back to the main `model` if unset, or if provider construction
     /// fails (logged as a warning, the agent loop continues).
+    #[allow(clippy::doc_lazy_continuation)]
     #[serde(default)]
     pub small_model: Option<String>,
     /// Provider definitions

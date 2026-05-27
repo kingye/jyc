@@ -32,14 +32,14 @@ pub fn strip_reply_prefix(subject: &str) -> String {
 /// system adds its own footer starting with `---\n\n`.
 pub fn strip_trailing_separators(text: &str) -> String {
     let trimmed = text.trim_end();
-    
+
     // Check if text ends with `---` (with optional preceding whitespace)
     if trimmed.ends_with("---") {
         // Find the start of the last `---` sequence
         let without_separators = trimmed
             .trim_end_matches(|c: char| c.is_whitespace() || c == '-')
             .trim_end();
-        
+
         without_separators.to_string()
     } else {
         trimmed.to_string()
@@ -56,7 +56,7 @@ pub fn derive_thread_name(subject: &str, pattern_prefixes: &[String]) -> String 
 
     // Strip configured prefixes (longest first to avoid partial matches)
     let mut sorted_prefixes: Vec<&String> = pattern_prefixes.iter().collect();
-    sorted_prefixes.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted_prefixes.sort_by_key(|a| std::cmp::Reverse(a.len()));
 
     for prefix in sorted_prefixes {
         let lower_name = name.to_lowercase();
@@ -132,8 +132,7 @@ pub fn strip_quoted_history(text: &str) -> String {
 }
 
 /// Regex for collapsing excessive blank lines (4+ newlines → 3).
-static BLANK_LINE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\n{4,}").unwrap());
+static BLANK_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{4,}").unwrap());
 
 /// Clean an email body at the inbound boundary.
 ///
@@ -167,10 +166,10 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 
     // Try to break at a word boundary
-    if let Some(space_pos) = text[..end].rfind(char::is_whitespace) {
-        if space_pos > max_chars / 2 {
-            return format!("{}...", &text[..space_pos]);
-        }
+    if let Some(space_pos) = text[..end].rfind(char::is_whitespace)
+        && space_pos > max_chars / 2
+    {
+        return format!("{}...", &text[..space_pos]);
     }
 
     format!("{}...", &text[..end])
@@ -358,7 +357,13 @@ pub fn parse_stored_reply(content: &str) -> String {
 /// Build a footer with model, mode, and token information.
 ///
 /// When `footer_enabled` is `false`, returns an empty string immediately.
-pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Option<u64>, max_tokens: Option<u64>, footer_enabled: bool) -> String {
+pub fn build_footer(
+    model: Option<&str>,
+    mode: Option<&str>,
+    input_tokens: Option<u64>,
+    max_tokens: Option<u64>,
+    footer_enabled: bool,
+) -> String {
     if !footer_enabled {
         return String::new();
     }
@@ -400,6 +405,7 @@ pub fn build_footer(model: Option<&str>, mode: Option<&str>, input_tokens: Optio
 /// ---
 /// Model: <model> | Mode: <mode> | Tokens: <current>K/<max>K
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub async fn build_full_reply_text(
     reply_text: &str,
     _thread_path: &std::path::Path,
@@ -415,7 +421,7 @@ pub async fn build_full_reply_text(
     footer_enabled: bool,
 ) -> String {
     let footer = build_footer(model, mode, input_tokens, max_tokens, footer_enabled);
-    
+
     // Clean reply text to remove any trailing `---` separators
     let clean_reply = strip_trailing_separators(reply_text);
 
@@ -641,7 +647,6 @@ Hello, I need help with X.
 
     // --- format_quoted_reply tests ---
 
-
     // --- strip_trailing_separators tests ---
 
     #[test]
@@ -660,7 +665,7 @@ Hello, I need help with X.
     fn test_strip_trailing_separators_with_whitespace() {
         let text = "This is a reply.\n\n---\n";
         assert_eq!(strip_trailing_separators(text), "This is a reply.");
-        
+
         let text2 = "This is a reply.  ---  ";
         assert_eq!(strip_trailing_separators(text2), "This is a reply.");
     }
@@ -675,7 +680,7 @@ Hello, I need help with X.
     fn test_strip_trailing_separators_only_separators() {
         let text = "---";
         assert_eq!(strip_trailing_separators(text), "");
-        
+
         let text2 = "---\n\n---";
         assert_eq!(strip_trailing_separators(text2), "");
     }
@@ -693,7 +698,7 @@ Hello, I need help with X.
     fn test_strip_trailing_separators_empty() {
         let text = "";
         assert_eq!(strip_trailing_separators(text), "");
-        
+
         let text2 = "   ";
         assert_eq!(strip_trailing_separators(text2), "");
     }
@@ -709,7 +714,13 @@ Hello, I need help with X.
 
     #[test]
     fn test_build_footer_disabled_returns_empty() {
-        let footer = build_footer(Some("test-model"), Some("agent"), Some(5000), Some(120000), false);
+        let footer = build_footer(
+            Some("test-model"),
+            Some("agent"),
+            Some(5000),
+            Some(120000),
+            false,
+        );
         assert!(footer.is_empty());
     }
 
@@ -721,7 +732,13 @@ Hello, I need help with X.
 
     #[test]
     fn test_build_footer_enabled_all_fields() {
-        let footer = build_footer(Some("gpt-4"), Some("agent"), Some(10240), Some(122880), true);
+        let footer = build_footer(
+            Some("gpt-4"),
+            Some("agent"),
+            Some(10240),
+            Some(122880),
+            true,
+        );
         assert!(footer.contains("Model: gpt-4"));
         assert!(footer.contains("Mode: agent"));
         assert!(footer.contains("Tokens:"));

@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
-use jyc_types::InboundMessage;
 use jyc_types::InboundAttachmentConfig;
+use jyc_types::InboundMessage;
 
 /// Result of storing a message.
 #[derive(Debug, Clone)]
@@ -43,15 +43,16 @@ impl MessageStorage {
         _attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
         let thread_path = self.workspace.join(thread_name);
-        
+
         // Generate a timestamp identifier for this message
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        
+
         // Attachments are now saved in the channel-specific inbound adapter
         // before the message reaches the MessageRouter
-        
+
         // Append to chat log
-        self.append_to_chat_log(&thread_path, message, is_matched).await?;
+        self.append_to_chat_log(&thread_path, message, is_matched)
+            .await?;
 
         tracing::info!(
             thread = %thread_name,
@@ -75,7 +76,8 @@ impl MessageStorage {
         thread_name: &str,
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
-        self.store_with_match(message, thread_name, true, attachment_config).await
+        self.store_with_match(message, thread_name, true, attachment_config)
+            .await
     }
 
     /// Store a reply for an existing message.
@@ -88,10 +90,11 @@ impl MessageStorage {
         message_dir: &str,
     ) -> Result<()> {
         // Append to chat log
-        self.append_reply_to_chat_log(thread_path, reply_text, message_dir).await?;
-        
+        self.append_reply_to_chat_log(thread_path, reply_text, message_dir)
+            .await?;
+
         tracing::debug!("Reply stored to chat log");
-        
+
         Ok(())
     }
 
@@ -103,11 +106,14 @@ impl MessageStorage {
         is_matched: bool,
     ) -> Result<()> {
         use crate::chat_log_store::ChatLogStore;
-        
+
         let mut chat_log = ChatLogStore::new(thread_path);
-        chat_log.append_message(message, is_matched)
-            .with_context(|| format!("Failed to append to chat log in {}", thread_path.display()))?;
-        
+        chat_log
+            .append_message(message, is_matched)
+            .with_context(|| {
+                format!("Failed to append to chat log in {}", thread_path.display())
+            })?;
+
         tracing::debug!("Message appended to chat log");
         Ok(())
     }
@@ -120,7 +126,7 @@ impl MessageStorage {
         _message_dir: &str,
     ) -> Result<()> {
         use crate::chat_log_store::{ChatLogStore, ReplyMetadata};
-        
+
         // For now, use simple metadata
         let metadata = ReplyMetadata {
             sender: "jyc-bot".to_string(),
@@ -128,11 +134,17 @@ impl MessageStorage {
             model: None,
             mode: None,
         };
-        
+
         let mut chat_log = ChatLogStore::new(thread_path);
-        chat_log.append_reply(reply_text, &metadata)
-            .with_context(|| format!("Failed to append reply to chat log in {}", thread_path.display()))?;
-        
+        chat_log
+            .append_reply(reply_text, &metadata)
+            .with_context(|| {
+                format!(
+                    "Failed to append reply to chat log in {}",
+                    thread_path.display()
+                )
+            })?;
+
         tracing::debug!("Reply appended to chat log");
         Ok(())
     }
@@ -141,8 +153,8 @@ impl MessageStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::MessageContent;
     use chrono::Utc;
+    use jyc_types::MessageContent;
     use std::collections::HashMap;
 
     fn test_message() -> InboundMessage {
@@ -193,7 +205,11 @@ mod tests {
 
         let result = storage.store(&msg, "test-thread", None).await.unwrap();
         storage
-            .store_reply(&result.thread_path, "Here is my reply.", &result.message_dir)
+            .store_reply(
+                &result.thread_path,
+                "Here is my reply.",
+                &result.message_dir,
+            )
             .await
             .unwrap();
 

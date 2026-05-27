@@ -32,11 +32,12 @@ async fn run_list(workdir: &Path, config_file: &str) -> Result<()> {
         if let Some(ref patterns) = channel_config.patterns {
             for pattern in patterns {
                 total += 1;
-                let status = if pattern.enabled { "enabled" } else { "disabled" };
-                println!(
-                    "[{channel_name}] {} ({status})",
-                    pattern.name
-                );
+                let status = if pattern.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                println!("[{channel_name}] {} ({status})", pattern.name);
 
                 if let Some(ref sender) = pattern.rules.sender {
                     if let Some(ref exact) = sender.exact {

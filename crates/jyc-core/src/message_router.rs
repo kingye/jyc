@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 use crate::message_storage::MessageStorage;
 use crate::thread_manager::ThreadManager;
+use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 
 /// Routes inbound messages to the appropriate thread queue.
 ///
@@ -15,7 +15,10 @@ pub struct MessageRouter {
 
 impl MessageRouter {
     pub fn new(thread_manager: Arc<ThreadManager>, storage: Arc<MessageStorage>) -> Self {
-        Self { thread_manager, storage }
+        Self {
+            thread_manager,
+            storage,
+        }
     }
 
     /// Route a message from any channel type.
@@ -54,7 +57,8 @@ impl MessageRouter {
                         "No pattern matched, but storing for channel context"
                     );
                     // Store the message but don't process it
-                    self.store_unmatched_message(matcher, &message, patterns).await;
+                    self.store_unmatched_message(matcher, &message, patterns)
+                        .await;
                 } else {
                     tracing::debug!(
                         channel = %ch,
@@ -70,13 +74,19 @@ impl MessageRouter {
         // 2. Derive thread name
         // If the matched pattern has a fixed thread_name, use it (channel-agnostic).
         // Otherwise, derive from message content (channel-specific).
-        let pattern_name = pattern_match.as_ref().expect("pattern_match should be Some").pattern_name.clone();
-        
+        let pattern_name = pattern_match
+            .as_ref()
+            .expect("pattern_match should be Some")
+            .pattern_name
+            .clone();
+
         let thread_name = patterns
             .iter()
             .find(|p| p.name == pattern_name)
             .and_then(|p| p.thread_name.clone())
-            .unwrap_or_else(|| matcher.derive_thread_name(&message, patterns, pattern_match.as_ref()));
+            .unwrap_or_else(|| {
+                matcher.derive_thread_name(&message, patterns, pattern_match.as_ref())
+            });
 
         tracing::info!(
             channel = %ch,
@@ -87,32 +97,35 @@ impl MessageRouter {
 
         // 3. Get attachment config, template, and live_injection from the matched pattern
         let matched_pattern_name = pattern_name;
-        let matched_pattern = patterns
-            .iter()
-            .find(|p| p.name == matched_pattern_name);
+        let matched_pattern = patterns.iter().find(|p| p.name == matched_pattern_name);
         let attachment_config = matched_pattern.and_then(|p| p.attachments.clone());
         let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
-        
+
         // Store template name in message metadata for thread initialization
-        if let Some(template) = matched_pattern.and_then(|p| p.template.clone())
-        {
-            message.metadata.insert("template".to_string(), serde_json::Value::String(template));
+        if let Some(template) = matched_pattern.and_then(|p| p.template.clone()) {
+            message
+                .metadata
+                .insert("template".to_string(), serde_json::Value::String(template));
         }
 
         // Store role in message metadata for outbound adapter (e.g., GitHub comment prefix)
-        if let Some(role) = matched_pattern.and_then(|p| p.role.clone())
-        {
-            message.metadata.insert("role".to_string(), serde_json::Value::String(role));
+        if let Some(role) = matched_pattern.and_then(|p| p.role.clone()) {
+            message
+                .metadata
+                .insert("role".to_string(), serde_json::Value::String(role));
         }
 
         // Store repo_group_key in message metadata if repo_group is configured
         if let Some(repo_group) = matched_pattern.and_then(|p| p.repo_group.clone())
+            && let Some(github_number) = message
+                .metadata
+                .get("github_number")
+                .and_then(|v| v.as_u64())
         {
-            if let Some(github_number) = message.metadata.get("github_number").and_then(|v| v.as_u64())
-            {
-                let key = crate::thread_path::compute_repo_group_key(&repo_group, github_number);
-                message.metadata.insert("repo_group_key".to_string(), serde_json::Value::String(key));
-            }
+            let key = crate::thread_path::compute_repo_group_key(&repo_group, github_number);
+            message
+                .metadata
+                .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
         // 4. Enqueue (channel-agnostic)
@@ -141,7 +154,11 @@ impl MessageRouter {
         );
 
         // Store the message without processing (is_matched = false)
-        match self.storage.store_with_match(message, &thread_name, false, None).await {
+        match self
+            .storage
+            .store_with_match(message, &thread_name, false, None)
+            .await
+        {
             Ok(store_result) => {
                 tracing::debug!(
                     channel = %message.channel,
@@ -164,10 +181,8 @@ impl MessageRouter {
 
 #[cfg(test)]
 mod tests {
-    
-    use jyc_types::{
-        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent, PatternMatch,
-    };
+
+    use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage, MessageContent, PatternMatch};
     use std::collections::HashMap;
 
     /// Mock matcher that always matches with the first pattern
@@ -245,7 +260,9 @@ mod tests {
             .iter()
             .find(|p| p.name == pattern_name)
             .and_then(|p| p.thread_name.clone())
-            .unwrap_or_else(|| matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref()));
+            .unwrap_or_else(|| {
+                matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+            });
 
         assert_eq!(thread_name, "invoices");
     }
@@ -266,7 +283,9 @@ mod tests {
             .iter()
             .find(|p| p.name == pattern_name)
             .and_then(|p| p.thread_name.clone())
-            .unwrap_or_else(|| matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref()));
+            .unwrap_or_else(|| {
+                matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+            });
 
         assert_eq!(thread_name, "Invoice for food");
     }
@@ -285,16 +304,25 @@ mod tests {
                 .iter()
                 .find(|p| p.name == pattern_name)
                 .and_then(|p| p.thread_name.clone())
-                .unwrap_or_else(|| matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref()));
+                .unwrap_or_else(|| {
+                    matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+                });
 
-            assert_eq!(thread_name, "invoices", "Topic '{}' should route to 'invoices'", topic);
+            assert_eq!(
+                thread_name, "invoices",
+                "Topic '{}' should route to 'invoices'",
+                topic
+            );
         }
     }
 
     #[test]
     fn test_live_injection_defaults_to_true() {
         let pattern = ChannelPattern::default();
-        assert!(pattern.live_injection, "live_injection should default to true");
+        assert!(
+            pattern.live_injection,
+            "live_injection should default to true"
+        );
     }
 
     #[test]
@@ -314,7 +342,10 @@ mod tests {
         let matched = patterns.iter().find(|p| &p.name == pattern_name);
         let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
 
-        assert!(!live_injection, "live_injection should be false when pattern sets it");
+        assert!(
+            !live_injection,
+            "live_injection should be false when pattern sets it"
+        );
     }
 
     #[test]
@@ -332,26 +363,41 @@ mod tests {
         let matched = patterns.iter().find(|p| &p.name == pattern_name);
         let live_injection = matched.map(|p| p.live_injection).unwrap_or(true);
 
-        assert!(live_injection, "live_injection should be true when pattern enables it");
+        assert!(
+            live_injection,
+            "live_injection should be true when pattern enables it"
+        );
     }
 
     #[test]
     fn test_live_injection_defaults_true_via_serde() {
         // Simulate deserialization without the live_injection field
-        let pattern: ChannelPattern = toml::from_str(r#"
+        let pattern: ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             [rules]
-        "#).unwrap();
-        assert!(pattern.live_injection, "live_injection should default to true when omitted from config");
+        "#,
+        )
+        .unwrap();
+        assert!(
+            pattern.live_injection,
+            "live_injection should default to true when omitted from config"
+        );
     }
 
     #[test]
     fn test_live_injection_false_via_serde() {
-        let pattern: ChannelPattern = toml::from_str(r#"
+        let pattern: ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             live_injection = false
             [rules]
-        "#).unwrap();
-        assert!(!pattern.live_injection, "live_injection should be false when explicitly set in config");
+        "#,
+        )
+        .unwrap();
+        assert!(
+            !pattern.live_injection,
+            "live_injection should be false when explicitly set in config"
+        );
     }
 }

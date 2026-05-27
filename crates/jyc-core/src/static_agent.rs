@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentResult, AgentService};
-use jyc_types::InboundMessage;
 use crate::thread_event_bus::ThreadEventBusRef;
+use jyc_types::InboundMessage;
 use jyc_types::QueueItem;
 
 /// Static agent — replies with a fixed text (no AI).
@@ -49,7 +49,11 @@ impl AgentService for StaticAgentService {
         })
     }
 
-    async fn set_thread_event_bus(&self, _thread_name: &str, _event_bus: Option<ThreadEventBusRef>) {
+    async fn set_thread_event_bus(
+        &self,
+        _thread_name: &str,
+        _event_bus: Option<ThreadEventBusRef>,
+    ) {
         // Static agent doesn't use event bus
     }
 }

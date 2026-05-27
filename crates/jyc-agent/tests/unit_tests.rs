@@ -1,43 +1,35 @@
 //! Unit tests for jyc-agent crate.
 
 mod filter_valid_messages {
-    use serde_json::json;
     use jyc_agent::provider::filter_valid_messages;
+    use serde_json::json;
 
     #[test]
     fn keeps_user_messages() {
-        let messages = vec![
-            json!({"role": "user", "content": "hello"}),
-        ];
+        let messages = vec![json!({"role": "user", "content": "hello"})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn keeps_tool_messages() {
-        let messages = vec![
-            json!({"role": "tool", "tool_call_id": "123", "content": "result"}),
-        ];
+        let messages = vec![json!({"role": "tool", "tool_call_id": "123", "content": "result"})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn keeps_assistant_with_content() {
-        let messages = vec![
-            json!({"role": "assistant", "content": "Hello!"}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": "Hello!"})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn keeps_assistant_with_tool_calls() {
-        let messages = vec![
-            json!({"role": "assistant", "content": null, "tool_calls": [
-                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
-            ]}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": null, "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+        ]})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
@@ -55,18 +47,14 @@ mod filter_valid_messages {
 
     #[test]
     fn removes_assistant_with_null_content_no_tool_calls() {
-        let messages = vec![
-            json!({"role": "assistant", "content": null}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": null})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 0);
     }
 
     #[test]
     fn removes_assistant_with_empty_content_no_tool_calls() {
-        let messages = vec![
-            json!({"role": "assistant", "content": ""}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": ""})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 0);
     }
@@ -83,51 +71,41 @@ mod filter_valid_messages {
 
     #[test]
     fn removes_assistant_with_empty_tool_calls() {
-        let messages = vec![
-            json!({"role": "assistant", "content": null, "tool_calls": []}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": null, "tool_calls": []})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 0);
     }
 
     #[test]
     fn keeps_anthropic_assistant_with_text_block() {
-        let messages = vec![
-            json!({"role": "assistant", "content": [
-                {"type": "text", "text": "Hello!"}
-            ]}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": [
+            {"type": "text", "text": "Hello!"}
+        ]})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn keeps_anthropic_assistant_with_tool_use_block() {
-        let messages = vec![
-            json!({"role": "assistant", "content": [
-                {"type": "tool_use", "id": "1", "name": "bash", "input": {}}
-            ]}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": "1", "name": "bash", "input": {}}
+        ]})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn removes_anthropic_assistant_with_empty_content_array() {
-        let messages = vec![
-            json!({"role": "assistant", "content": []}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": []})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 0);
     }
 
     #[test]
     fn removes_anthropic_assistant_with_empty_text_block() {
-        let messages = vec![
-            json!({"role": "assistant", "content": [
-                {"type": "text", "text": ""}
-            ]}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": [
+            {"type": "text", "text": ""}
+        ]})];
         let result = filter_valid_messages(&messages);
         assert_eq!(result.len(), 0);
     }
@@ -136,15 +114,15 @@ mod filter_valid_messages {
     fn mixed_conversation_filters_correctly() {
         let messages = vec![
             json!({"role": "user", "content": "hello"}),
-            json!({"role": "assistant", "content": null, "reasoning_content": "thinking"}),  // invalid
-            json!({"role": "assistant", "content": null, "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),  // valid
+            json!({"role": "assistant", "content": null, "reasoning_content": "thinking"}), // invalid
+            json!({"role": "assistant", "content": null, "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}), // valid
             json!({"role": "tool", "tool_call_id": "1", "content": "done"}),
-            json!({"role": "assistant", "content": "Here's the result."}),  // valid
+            json!({"role": "assistant", "content": "Here's the result."}), // valid
             json!({"role": "user", "content": "thanks"}),
-            json!({"role": "assistant", "content": null}),  // invalid
+            json!({"role": "assistant", "content": null}), // invalid
         ];
         let result = filter_valid_messages(&messages);
-        assert_eq!(result.len(), 5);  // user, assistant+tool_calls, tool, assistant+content, user
+        assert_eq!(result.len(), 5); // user, assistant+tool_calls, tool, assistant+content, user
     }
 
     /// Regression test for v0.3.7. The v0.3.6 release introduced
@@ -182,7 +160,8 @@ mod parse_openai_chunk {
     use jyc_agent::types::StreamEvent;
 
     // Helper to parse a chunk and collect events
-    fn parse_chunk(data: &str) -> Vec<StreamEvent> {
+    #[allow(dead_code)]
+    fn parse_chunk(_data: &str) -> Vec<StreamEvent> {
         // We need access to the internal parse function.
         // Since it's private, we test via the public stream interface indirectly.
         // For now, test the stream behavior through type checking.
@@ -226,7 +205,6 @@ mod parse_openai_chunk {
 
 mod session {
     use jyc_agent::session;
-    use std::path::Path;
 
     /// Minimal stub provider that panics if any LLM method is invoked.
     /// Used by `update_tokens` tests where the auto-reset threshold is NOT
@@ -235,8 +213,12 @@ mod session {
 
     #[async_trait::async_trait]
     impl jyc_agent::provider::Provider for StubProvider {
-        fn name(&self) -> &str { "stub" }
-        fn model(&self) -> &str { "stub" }
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn model(&self) -> &str {
+            "stub"
+        }
 
         async fn complete(
             &self,
@@ -247,11 +229,19 @@ mod session {
             panic!("stub provider should not be invoked in these tests")
         }
 
-        fn format_user_message(&self, _blocks: &[jyc_agent::types::ContentBlock]) -> serde_json::Value {
+        fn format_user_message(
+            &self,
+            _blocks: &[jyc_agent::types::ContentBlock],
+        ) -> serde_json::Value {
             panic!("stub")
         }
 
-        fn format_tool_result(&self, _id: &str, _content: &str, _is_error: bool) -> serde_json::Value {
+        fn format_tool_result(
+            &self,
+            _id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
             panic!("stub")
         }
 
@@ -328,7 +318,9 @@ mod session {
         tokio::fs::write(
             jyc_dir.join("agent-context.json"),
             serde_json::to_string(&context).unwrap(),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Load — should filter out the invalid message
         let (messages, raw_context) = session::load_context(tmp.path()).await;
@@ -356,7 +348,9 @@ mod session {
         tokio::fs::write(
             jyc_dir.join("agent-context.json"),
             serde_json::to_string(&context).unwrap(),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Load — should return empty (no valid assistant messages)
         let (messages, raw_context) = session::load_context(tmp.path()).await;
@@ -374,7 +368,9 @@ mod session {
         assert!(jyc_dir.join("agent-session.json").exists());
 
         // Verify content
-        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json")).await.unwrap();
+        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["total_input_tokens"], 1000);
         assert_eq!(state["total_output_tokens"], 200);
@@ -390,7 +386,9 @@ mod session {
         // Second call — input_tokens should be latest, not accumulated
         session::update_tokens(tmp.path(), 2000, 150, Some(100000), &StubProvider).await;
 
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json")).await.unwrap();
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["total_input_tokens"], 2000); // Latest, not 3000
         assert_eq!(state["total_output_tokens"], 250); // Accumulated: 100 + 150
@@ -403,8 +401,12 @@ mod session {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         // Create session and context files
-        tokio::fs::write(jyc_dir.join("agent-session.json"), "{}").await.unwrap();
-        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]").await.unwrap();
+        tokio::fs::write(jyc_dir.join("agent-session.json"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+            .await
+            .unwrap();
 
         session::reset_session(tmp.path()).await;
 
@@ -472,7 +474,10 @@ mod tools {
     async fn bash_executes_simple_command() {
         let tmp = tempfile::tempdir().unwrap();
         let tool = builtin::bash::BashTool;
-        let result = tool.execute(json!({"command": "echo hello"}), &ctx(tmp.path())).await.unwrap();
+        let result = tool
+            .execute(json!({"command": "echo hello"}), &ctx(tmp.path()))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("hello"));
     }
@@ -481,7 +486,10 @@ mod tools {
     async fn bash_reports_error_on_failure() {
         let tmp = tempfile::tempdir().unwrap();
         let tool = builtin::bash::BashTool;
-        let result = tool.execute(json!({"command": "false"}), &ctx(tmp.path())).await.unwrap();
+        let result = tool
+            .execute(json!({"command": "false"}), &ctx(tmp.path()))
+            .await
+            .unwrap();
         assert!(result.is_error);
     }
 
@@ -498,7 +506,10 @@ mod tools {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("test.txt"), "line1\nline2\nline3").unwrap();
         let tool = builtin::read::ReadTool;
-        let result = tool.execute(json!({"file_path": "test.txt"}), &ctx(tmp.path())).await.unwrap();
+        let result = tool
+            .execute(json!({"file_path": "test.txt"}), &ctx(tmp.path()))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("1: line1"));
         assert!(result.content.contains("2: line2"));
@@ -508,12 +519,18 @@ mod tools {
     async fn write_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
         let tool = builtin::write::WriteTool;
-        let result = tool.execute(
-            json!({"file_path": "new.txt", "content": "hello world"}),
-            &ctx(tmp.path()),
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"file_path": "new.txt", "content": "hello world"}),
+                &ctx(tmp.path()),
+            )
+            .await
+            .unwrap();
         assert!(!result.is_error);
-        assert_eq!(std::fs::read_to_string(tmp.path().join("new.txt")).unwrap(), "hello world");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new.txt")).unwrap(),
+            "hello world"
+        );
     }
 
     #[tokio::test]
@@ -521,12 +538,18 @@ mod tools {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("file.txt"), "hello world").unwrap();
         let tool = builtin::edit::EditTool;
-        let result = tool.execute(
-            json!({"file_path": "file.txt", "old_string": "hello", "new_string": "goodbye"}),
-            &ctx(tmp.path()),
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"file_path": "file.txt", "old_string": "hello", "new_string": "goodbye"}),
+                &ctx(tmp.path()),
+            )
+            .await
+            .unwrap();
         assert!(!result.is_error);
-        assert_eq!(std::fs::read_to_string(tmp.path().join("file.txt")).unwrap(), "goodbye world");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("file.txt")).unwrap(),
+            "goodbye world"
+        );
     }
 
     #[tokio::test]
@@ -534,10 +557,13 @@ mod tools {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("file.txt"), "hello world").unwrap();
         let tool = builtin::edit::EditTool;
-        let result = tool.execute(
-            json!({"file_path": "file.txt", "old_string": "xyz", "new_string": "abc"}),
-            &ctx(tmp.path()),
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"file_path": "file.txt", "old_string": "xyz", "new_string": "abc"}),
+                &ctx(tmp.path()),
+            )
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("not found"));
     }
@@ -547,10 +573,13 @@ mod tools {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("file.txt"), "aaa bbb aaa").unwrap();
         let tool = builtin::edit::EditTool;
-        let result = tool.execute(
-            json!({"file_path": "file.txt", "old_string": "aaa", "new_string": "ccc"}),
-            &ctx(tmp.path()),
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                json!({"file_path": "file.txt", "old_string": "aaa", "new_string": "ccc"}),
+                &ctx(tmp.path()),
+            )
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("2 matches"));
     }
@@ -562,7 +591,10 @@ mod tools {
         std::fs::write(tmp.path().join("b.rs"), "").unwrap();
         std::fs::write(tmp.path().join("c.txt"), "").unwrap();
         let tool = builtin::glob_tool::GlobTool;
-        let result = tool.execute(json!({"pattern": "*.rs"}), &ctx(tmp.path())).await.unwrap();
+        let result = tool
+            .execute(json!({"pattern": "*.rs"}), &ctx(tmp.path()))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("2 file(s)"));
         assert!(result.content.contains("a.rs"));
@@ -574,7 +606,10 @@ mod tools {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("file.rs"), "fn main() {}\nfn helper() {}").unwrap();
         let tool = builtin::grep::GrepTool;
-        let result = tool.execute(json!({"pattern": "fn \\w+"}), &ctx(tmp.path())).await.unwrap();
+        let result = tool
+            .execute(json!({"pattern": "fn \\w+"}), &ctx(tmp.path()))
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("fn main"));
         assert!(result.content.contains("fn helper"));
@@ -582,8 +617,8 @@ mod tools {
 }
 
 mod mcp_bridge {
-    use jyc_agent::tools::{Tool, ToolContext};
     use jyc_agent::tools::mcp_bridge::ReplyMessageTool;
+    use jyc_agent::tools::{Tool, ToolContext};
     use serde_json::json;
 
     #[tokio::test]
@@ -607,7 +642,10 @@ mod mcp_bridge {
 
         let tool = ReplyMessageTool;
         let ctx = ToolContext::new(tmp.path());
-        let result = tool.execute(json!({"message": "Hello user!"}), &ctx).await.unwrap();
+        let result = tool
+            .execute(json!({"message": "Hello user!"}), &ctx)
+            .await
+            .unwrap();
         assert!(!result.is_error);
 
         // Verify signal files
@@ -621,10 +659,10 @@ mod mcp_bridge {
 }
 
 mod skills {
-    use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
     use jyc_agent::JycAgentService;
+    use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
     use jyc_agent::types::AgentConfig;
-    use std::collections::HashMap;
+
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -640,24 +678,21 @@ mod skills {
         std::fs::create_dir_all(tmp.join(".config/opencode/skills")).ok();
         std::fs::create_dir_all(tmp.join(".claude/skills")).ok();
         // SAFETY: guarded by HOME_LOCK mutex and restored after f() returns
-        unsafe { std::env::set_var("HOME", tmp.as_os_str()); }
+        unsafe {
+            std::env::set_var("HOME", tmp.as_os_str());
+        }
         f();
         if let Some(old) = old_home {
             // SAFETY: restoring original value within same lock scope
-            unsafe { std::env::set_var("HOME", old); }
+            unsafe {
+                std::env::set_var("HOME", old);
+            }
         }
     }
 
     /// Helper: create a JycAgentService with a specific workdir.
     fn make_service(workdir: PathBuf) -> JycAgentService {
-        JycAgentService::new(
-            AgentConfig::default(),
-            workdir,
-            vec![],
-            vec![],
-            None,
-            None,
-        )
+        JycAgentService::new(AgentConfig::default(), workdir, vec![], vec![], None, None)
     }
 
     #[test]
@@ -679,7 +714,8 @@ mod skills {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: test-skill\ndescription: A test skill\n---\n\n# Full content here\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
@@ -713,7 +749,8 @@ mod skills {
         std::fs::write(
             good_dir.join("SKILL.md"),
             "---\nname: good-skill\ndescription: Valid\n---\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create a malformed skill (no frontmatter)
         let bad_dir = tmp.path().join(".jyc/skills/bad-skill");
@@ -737,7 +774,8 @@ mod skills {
         std::fs::write(
             claude_dir.join("SKILL.md"),
             "---\nname: my-skill\ndescription: From claude\n---\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create .jyc/skills/my-skill/ (higher priority — scanned later, overwrites)
         let jyc_dir = tmp.path().join(".jyc/skills/my-skill");
@@ -745,7 +783,8 @@ mod skills {
         std::fs::write(
             jyc_dir.join("SKILL.md"),
             "---\nname: my-skill\ndescription: From JYC (overrides)\n---\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
@@ -762,12 +801,20 @@ mod skills {
         // Skill 1 in .jyc/skills/
         let d1 = tmp.path().join(".jyc/skills/skill-one");
         std::fs::create_dir_all(&d1).unwrap();
-        std::fs::write(d1.join("SKILL.md"), "---\nname: skill-one\ndescription: One\n---\n").unwrap();
+        std::fs::write(
+            d1.join("SKILL.md"),
+            "---\nname: skill-one\ndescription: One\n---\n",
+        )
+        .unwrap();
 
         // Skill 2 in repo/.opencode/skills/
         let d2 = tmp.path().join("repo/.opencode/skills/skill-two");
         std::fs::create_dir_all(&d2).unwrap();
-        std::fs::write(d2.join("SKILL.md"), "---\nname: skill-two\ndescription: Two\n---\n").unwrap();
+        std::fs::write(
+            d2.join("SKILL.md"),
+            "---\nname: skill-two\ndescription: Two\n---\n",
+        )
+        .unwrap();
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
@@ -802,7 +849,8 @@ mod skills {
 
     #[test]
     fn parse_frontmatter_valid() {
-        let content = "---\nname: my-skill\ndescription: Does something useful\n---\n\nBody text here";
+        let content =
+            "---\nname: my-skill\ndescription: Does something useful\n---\n\nBody text here";
         let meta = parse_skill_frontmatter(content).unwrap();
         assert_eq!(meta.name, "my-skill");
         assert_eq!(meta.description, "Does something useful");

@@ -1,13 +1,13 @@
 //! Built-in tool implementations.
 
 pub mod bash;
-pub mod read;
-pub mod read_image;
-pub mod write;
 pub mod edit;
 pub mod glob_tool;
 pub mod grep;
+pub mod read;
+pub mod read_image;
 pub mod webfetch;
+pub mod write;
 
 use std::sync::Arc;
 
@@ -35,6 +35,13 @@ pub fn create_builtin_registry() -> ToolRegistry {
 /// - `true`: images are queued for injection into the next user turn.
 /// - `false`: `vision_client` (if configured) is used to analyze the image
 ///   and return text. If both are false/unavailable, the tool returns an error.
-pub fn register_read_image(registry: &mut ToolRegistry, supports_images: bool, vision_client: Option<Arc<VisionClient>>) {
-    registry.register(Box::new(read_image::ReadImageTool::new(supports_images, vision_client)));
+pub fn register_read_image(
+    registry: &mut ToolRegistry,
+    supports_images: bool,
+    vision_client: Option<Arc<VisionClient>>,
+) {
+    registry.register(Box::new(read_image::ReadImageTool::new(
+        supports_images,
+        vision_client,
+    )));
 }

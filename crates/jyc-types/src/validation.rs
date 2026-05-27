@@ -197,22 +197,22 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 // Feishu-specific pattern validation
                 if channel.channel_type == "feishu" && pattern.enabled {
                     // Validate mentions list is non-empty if present
-                    if let Some(ref mentions) = pattern.rules.mentions {
-                        if mentions.is_empty() {
-                            errors.push(ValidationError {
-                                path: format!("{pp}.rules.mentions"),
-                                message: "mentions list must not be empty".into(),
-                            });
-                        }
+                    if let Some(ref mentions) = pattern.rules.mentions
+                        && mentions.is_empty()
+                    {
+                        errors.push(ValidationError {
+                            path: format!("{pp}.rules.mentions"),
+                            message: "mentions list must not be empty".into(),
+                        });
                     }
                     // Validate keywords list is non-empty if present
-                    if let Some(ref keywords) = pattern.rules.keywords {
-                        if keywords.is_empty() {
-                            errors.push(ValidationError {
-                                path: format!("{pp}.rules.keywords"),
-                                message: "keywords list must not be empty".into(),
-                            });
-                        }
+                    if let Some(ref keywords) = pattern.rules.keywords
+                        && keywords.is_empty()
+                    {
+                        errors.push(ValidationError {
+                            path: format!("{pp}.rules.keywords"),
+                            message: "keywords list must not be empty".into(),
+                        });
                     }
                 }
             }
@@ -223,10 +223,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     if config.agent.mode != "agent" && config.agent.mode != "static" {
         errors.push(ValidationError {
             path: "agent.mode".into(),
-            message: format!(
-                "must be 'agent' or 'static', got '{}'",
-                config.agent.mode
-            ),
+            message: format!("must be 'agent' or 'static', got '{}'", config.agent.mode),
         });
     }
 
@@ -280,27 +277,25 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
     }
 
     // Validate sender regex if present
-    if let Some(ref sender) = pattern.rules.sender {
-        if let Some(ref regex_str) = sender.regex {
-            if let Err(e) = validate_regex(regex_str) {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.rules.sender.regex"),
-                    message: e.to_string(),
-                });
-            }
-        }
+    if let Some(ref sender) = pattern.rules.sender
+        && let Some(ref regex_str) = sender.regex
+        && let Err(e) = validate_regex(regex_str)
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.rules.sender.regex"),
+            message: e.to_string(),
+        });
     }
 
     // Validate subject regex if present
-    if let Some(ref subject) = pattern.rules.subject {
-        if let Some(ref regex_str) = subject.regex {
-            if let Err(e) = validate_regex(regex_str) {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.rules.subject.regex"),
-                    message: e.to_string(),
-                });
-            }
-        }
+    if let Some(ref subject) = pattern.rules.subject
+        && let Some(ref regex_str) = subject.regex
+        && let Err(e) = validate_regex(regex_str)
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.rules.subject.regex"),
+            message: e.to_string(),
+        });
     }
 
     // Validate attachment config if present
@@ -346,13 +341,13 @@ fn validate_inbound_attachment_config(
     att: &crate::config::InboundAttachmentConfig,
     errors: &mut Vec<ValidationError>,
 ) {
-    if let Some(ref size_str) = att.max_file_size {
-        if let Err(e) = parse_file_size(size_str) {
-            errors.push(ValidationError {
-                path: format!("{prefix}.max_file_size"),
-                message: format!("invalid file size '{}': {}", size_str, e),
-            });
-        }
+    if let Some(ref size_str) = att.max_file_size
+        && let Err(e) = parse_file_size(size_str)
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.max_file_size"),
+            message: format!("invalid file size '{}': {}", size_str, e),
+        });
     }
 
     for ext in &att.allowed_extensions {
@@ -364,13 +359,13 @@ fn validate_inbound_attachment_config(
         }
     }
 
-    if let Some(max_per_message) = att.max_per_message {
-        if max_per_message == 0 {
-            errors.push(ValidationError {
-                path: format!("{prefix}.max_per_message"),
-                message: "must be at least 1".into(),
-            });
-        }
+    if let Some(max_per_message) = att.max_per_message
+        && max_per_message == 0
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.max_per_message"),
+            message: "must be at least 1".into(),
+        });
     }
 }
 
@@ -380,13 +375,13 @@ fn validate_outbound_attachment_config(
     att: &crate::config::OutboundAttachmentConfig,
     errors: &mut Vec<ValidationError>,
 ) {
-    if let Some(ref size_str) = att.max_file_size {
-        if let Err(e) = parse_file_size(size_str) {
-            errors.push(ValidationError {
-                path: format!("{prefix}.max_file_size"),
-                message: format!("invalid file size '{}': {}", size_str, e),
-            });
-        }
+    if let Some(ref size_str) = att.max_file_size
+        && let Err(e) = parse_file_size(size_str)
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.max_file_size"),
+            message: format!("invalid file size '{}': {}", size_str, e),
+        });
     }
 
     for ext in &att.allowed_extensions {
@@ -398,13 +393,13 @@ fn validate_outbound_attachment_config(
         }
     }
 
-    if let Some(max_per_message) = att.max_per_message {
-        if max_per_message == 0 {
-            errors.push(ValidationError {
-                path: format!("{prefix}.max_per_message"),
-                message: "must be at least 1".into(),
-            });
-        }
+    if let Some(max_per_message) = att.max_per_message
+        && max_per_message == 0
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.max_per_message"),
+            message: "must be at least 1".into(),
+        });
     }
 }
 
@@ -828,5 +823,4 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("max_file_size")));
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
     }
-
 }

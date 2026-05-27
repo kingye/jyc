@@ -109,8 +109,8 @@ async fn load_templates_config(source_dir: &Path) -> Result<TemplatesConfig> {
     let content = tokio::fs::read_to_string(&config_path)
         .await
         .with_context(|| format!("failed to read {}", config_path.display()))?;
-    let config: TemplatesConfig =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", config_path.display()))?;
+    let config: TemplatesConfig = toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
     Ok(config)
 }
 
@@ -127,10 +127,10 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
     let mut names = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                names.push(name.to_string());
-            }
+        if path.is_dir()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+        {
+            names.push(name.to_string());
         }
     }
     names.sort();
@@ -201,20 +201,20 @@ async fn run_deploy(
     let mut template_dirs = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                template_dirs.push(name.to_string());
-            }
+        if path.is_dir()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+        {
+            template_dirs.push(name.to_string());
         }
     }
     template_dirs.sort();
 
     for tpl_name in &template_dirs {
         // Filter by template name if specified
-        if let Some(filter) = template_name {
-            if tpl_name != filter {
-                continue;
-            }
+        if let Some(filter) = template_name
+            && tpl_name != filter
+        {
+            continue;
         }
 
         let deploy_name = as_name.unwrap_or(tpl_name.as_str());
@@ -277,7 +277,10 @@ async fn run_deploy(
                     overwrite_template_files(&skill_src, &skill_dst).await?;
                     println!("  skill: {skill}");
                 } else {
-                    println!("  WARNING: skill '{skill}' not found at {}", skill_src.display());
+                    println!(
+                        "  WARNING: skill '{skill}' not found at {}",
+                        skill_src.display()
+                    );
                 }
             }
         }

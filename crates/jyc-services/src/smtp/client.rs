@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use lettre::message::header::{ContentType, InReplyTo, References};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::Error as SmtpError;
+use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use regex::Regex;
 use std::sync::LazyLock;
@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use jyc_types::SmtpConfig;
 use jyc_utils::constants::{
-    SMTP_MAX_CONNECTION_RETRIES, SMTP_MAX_TRANSIENT_RETRIES,
-    SMTP_RETRY_BASE_DELAY_SECS, SMTP_RETRY_MAX_DELAY_SECS,
+    SMTP_MAX_CONNECTION_RETRIES, SMTP_MAX_TRANSIENT_RETRIES, SMTP_RETRY_BASE_DELAY_SECS,
+    SMTP_RETRY_MAX_DELAY_SECS,
 };
 
 /// An outbound file attachment.
@@ -44,18 +44,14 @@ static SCRIPT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap());
 static HEAD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?si)<head[^>]*>.*?</head>").unwrap());
-static COMMENT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
-static META_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<meta[^>]*>").unwrap());
-static LINK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<link[^>]*>").unwrap());
+static COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
+static META_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<meta[^>]*>").unwrap());
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<link[^>]*>").unwrap());
 static CSS_RULE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"@(?:import|media)[^{]*\{[^}]*\}").unwrap());
 static CSS_IMPORT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"@import\s+url\([^)]*\)\s*;?").unwrap());
-static TAG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 
 /// HTML to Markdown conversion using htmd.
 ///
@@ -111,10 +107,7 @@ impl SmtpClient {
 
     /// Connect to the SMTP server.
     pub async fn connect(&mut self) -> Result<()> {
-        let creds = Credentials::new(
-            self.config.username.clone(),
-            self.config.password.clone(),
-        );
+        let creds = Credentials::new(self.config.username.clone(), self.config.password.clone());
 
         let transport = if self.config.secure {
             AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.host)
@@ -158,6 +151,7 @@ impl SmtpClient {
     /// - Sets `In-Reply-To` and `References` headers for threading
     /// - Converts markdown body to HTML for multipart email
     /// - Attaches files if provided
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_reply(
         &mut self,
         from: &str,
@@ -227,11 +221,12 @@ impl SmtpClient {
             } else {
                 let mut mixed = MultiPart::mixed().multipart(body_part);
                 for att in atts {
-                    let ct: ContentType = att.content_type.parse().unwrap_or(ContentType::parse(
-                        "application/octet-stream",
-                    ).unwrap());
-                    let attachment = Attachment::new(att.filename.clone())
-                        .body(att.data.clone(), ct);
+                    let ct: ContentType = att
+                        .content_type
+                        .parse()
+                        .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
+                    let attachment =
+                        Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
                     mixed = mixed.singlepart(attachment);
                 }
                 builder
@@ -431,8 +426,8 @@ impl SmtpClient {
 ///   attempt 3 → 20s
 ///   attempt 4 → 40s (capped at 60s)
 fn smtp_backoff_delay(attempt: u32) -> Duration {
-    let delay_secs = SMTP_RETRY_BASE_DELAY_SECS
-        .saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
+    let delay_secs =
+        SMTP_RETRY_BASE_DELAY_SECS.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
     let capped = delay_secs.min(SMTP_RETRY_MAX_DELAY_SECS);
     Duration::from_secs(capped)
 }
@@ -460,7 +455,8 @@ fn classify_smtp_error(e: &SmtpError) -> &'static str {
 
 /// Format an optional SMTP code for error messages.
 fn format_smtp_code(code: Option<u16>) -> String {
-    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+    code.map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]

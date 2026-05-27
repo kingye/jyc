@@ -4,9 +4,9 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::thread_event_bus::ThreadEventBusRef;
 use jyc_types::InboundMessage;
 use jyc_types::QueueItem;
-use crate::thread_event_bus::ThreadEventBusRef;
 
 /// Result of agent processing.
 ///
@@ -60,5 +60,10 @@ pub trait AgentService: Send + Sync {
 
     /// Set thread event bus for this thread.
     /// This is optional - some agent implementations may not use event buses.
-    async fn set_thread_event_bus(&self, _thread_name: &str, _event_bus: Option<ThreadEventBusRef>) {}
+    async fn set_thread_event_bus(
+        &self,
+        _thread_name: &str,
+        _event_bus: Option<ThreadEventBusRef>,
+    ) {
+    }
 }

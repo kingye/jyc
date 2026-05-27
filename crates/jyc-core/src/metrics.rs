@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
@@ -115,7 +115,13 @@ impl MetricsCollector {
 
     /// Start the metrics collector. Returns a handle for sending events
     /// and the shared stats reference for querying.
-    pub fn start(self) -> (MetricsHandle, SharedHealthStats, tokio::task::JoinHandle<()>) {
+    pub fn start(
+        self,
+    ) -> (
+        MetricsHandle,
+        SharedHealthStats,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (tx, rx) = mpsc::channel::<MetricEvent>(1000);
         let handle = MetricsHandle { sender: tx };
         let stats = Arc::new(Mutex::new(HealthStats::default()));
@@ -160,12 +166,20 @@ impl MetricsCollector {
             MetricEvent::ReplyByTool { ref thread } => {
                 stats.messages_processed += 1;
                 stats.replies_by_tool += 1;
-                stats.per_thread.entry(thread.clone()).or_default().processed += 1;
+                stats
+                    .per_thread
+                    .entry(thread.clone())
+                    .or_default()
+                    .processed += 1;
             }
             MetricEvent::ReplyByFallback { ref thread } => {
                 stats.messages_processed += 1;
                 stats.replies_by_fallback += 1;
-                stats.per_thread.entry(thread.clone()).or_default().processed += 1;
+                stats
+                    .per_thread
+                    .entry(thread.clone())
+                    .or_default()
+                    .processed += 1;
             }
             MetricEvent::ProcessingError { ref thread, .. } => {
                 stats.errors += 1;

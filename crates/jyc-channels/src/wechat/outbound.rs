@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use jyc_core::email_parser;
 use jyc_core::message_storage::MessageStorage;
-use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
 use jyc_types::OutboundAttachmentConfig;
+use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
 
 /// WeChat outbound adapter for sending messages via WebSocket.
 ///
@@ -104,7 +104,9 @@ impl OutboundAdapter for WechatOutboundAdapter {
         if guard.is_some() {
             tracing::info!("WeChat outbound adapter connected (sender available)");
         } else {
-            tracing::warn!("WeChat outbound adapter: no sender set yet (WebSocket may not be connected)");
+            tracing::warn!(
+                "WeChat outbound adapter: no sender set yet (WebSocket may not be connected)"
+            );
         }
         Ok(())
     }
@@ -138,13 +140,8 @@ impl OutboundAdapter for WechatOutboundAdapter {
             jyc_core::session_state::read_input_tokens(thread_path).await;
 
         // 2. Build footer with model/mode/tokens information
-        let footer = email_parser::build_footer(
-            model,
-            mode,
-            input_tokens,
-            max_tokens,
-            self.footer_enabled,
-        );
+        let footer =
+            email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
 
         // 3. Clean reply text to remove any trailing `---` separators
         let clean_reply = email_parser::strip_trailing_separators(reply_text);
@@ -190,7 +187,8 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
         let message_id = uuid::Uuid::new_v4().to_string();
 
-        self.send_internal(&json_msg).await
+        self.send_internal(&json_msg)
+            .await
             .context("Failed to send WeChat reply through WebSocket")?;
 
         tracing::info!(
@@ -201,13 +199,13 @@ impl OutboundAdapter for WechatOutboundAdapter {
         );
 
         // 8. Handle attachments (WeChat v1: text-only, log a warning)
-        if let Some(atts) = attachments {
-            if !atts.is_empty() {
-                tracing::warn!(
-                    count = atts.len(),
-                    "WeChat v1 does not support attachments, skipping"
-                );
-            }
+        if let Some(atts) = attachments
+            && !atts.is_empty()
+        {
+            tracing::warn!(
+                count = atts.len(),
+                "WeChat v1 does not support attachments, skipping"
+            );
         }
 
         // 9. Store reply to chat log
@@ -223,12 +221,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
         Ok(SendResult { message_id })
     }
 
-    async fn send_alert(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult> {
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         // The OpenILink Bridge requires `to` on every send. For alerts
         // (proactive, no inbound message to reply to) we use the
         // configured `recipient` directly. The recipient is whatever
@@ -254,7 +247,8 @@ impl OutboundAdapter for WechatOutboundAdapter {
         })
         .to_string();
 
-        self.send_internal(&json_msg).await
+        self.send_internal(&json_msg)
+            .await
             .context("Failed to send WeChat alert through WebSocket")?;
 
         tracing::info!("WeChat alert sent to {}: {}", recipient, subject);
@@ -280,20 +274,18 @@ fn resolve_outbound_to(original: &InboundMessage) -> Option<String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if is_group {
-        if let Some(group_id) = original
+    if is_group
+        && let Some(group_id) = original
             .metadata
             .get("group")
             .and_then(|g| g.get("id"))
             .and_then(|v| v.as_str())
-        {
-            if !group_id.is_empty() {
-                return Some(group_id.to_string());
-            }
-        }
-        // Group flag set but no group.id available — fall through to
-        // sender_address rather than failing outright.
+        && !group_id.is_empty()
+    {
+        return Some(group_id.to_string());
     }
+    // Group flag set but no group.id available — fall through to
+    // sender_address rather than failing outright.
 
     if !original.sender_address.is_empty() {
         return Some(original.sender_address.clone());
@@ -349,10 +341,8 @@ mod tests {
     #[test]
     fn resolve_to_uses_group_id_when_is_group_true() {
         let mut msg = make_inbound_with_sender("u1@im.wechat");
-        msg.metadata.insert(
-            "is_group".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        msg.metadata
+            .insert("is_group".to_string(), serde_json::Value::Bool(true));
         msg.metadata.insert(
             "group".to_string(),
             serde_json::json!({"id": "grp_abc", "name": "Group X"}),
@@ -369,15 +359,11 @@ mod tests {
     #[test]
     fn resolve_to_falls_back_to_sender_when_group_id_missing() {
         let mut msg = make_inbound_with_sender("u1@im.wechat");
-        msg.metadata.insert(
-            "is_group".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        msg.metadata
+            .insert("is_group".to_string(), serde_json::Value::Bool(true));
         // group object exists but has no `id` field.
-        msg.metadata.insert(
-            "group".to_string(),
-            serde_json::json!({"name": "Group X"}),
-        );
+        msg.metadata
+            .insert("group".to_string(), serde_json::json!({"name": "Group X"}));
 
         let to = resolve_outbound_to(&msg);
         assert_eq!(to.as_deref(), Some("u1@im.wechat"));
@@ -425,27 +411,19 @@ mod tests {
 
     #[test]
     fn test_outbound_adapter_creation() {
-        let storage = Arc::new(MessageStorage::new(
-            &std::path::PathBuf::from("/tmp/test_wechat"),
-        ));
-        let adapter = WechatOutboundAdapter::new_with_attachments(
-            storage,
-            None,
-            true,
-        );
+        let storage = Arc::new(MessageStorage::new(&std::path::PathBuf::from(
+            "/tmp/test_wechat",
+        )));
+        let adapter = WechatOutboundAdapter::new_with_attachments(storage, None, true);
         assert_eq!(adapter.channel_type(), "wechat");
     }
 
     #[test]
     fn test_sender_set_and_connect() {
-        let storage = Arc::new(MessageStorage::new(
-            &std::path::PathBuf::from("/tmp/test_wechat"),
-        ));
-        let adapter = WechatOutboundAdapter::new_with_attachments(
-            storage,
-            None,
-            true,
-        );
+        let storage = Arc::new(MessageStorage::new(&std::path::PathBuf::from(
+            "/tmp/test_wechat",
+        )));
+        let adapter = WechatOutboundAdapter::new_with_attachments(storage, None, true);
 
         // Initially no sender
         let guard = adapter.sender.blocking_lock();
@@ -462,9 +440,9 @@ mod tests {
 
     #[test]
     fn test_clean_body() {
-        let storage = Arc::new(MessageStorage::new(
-            &std::path::PathBuf::from("/tmp/test_wechat"),
-        ));
+        let storage = Arc::new(MessageStorage::new(&std::path::PathBuf::from(
+            "/tmp/test_wechat",
+        )));
         let adapter = WechatOutboundAdapter::new(storage);
         assert_eq!(adapter.clean_body("  hello  "), "hello");
         assert_eq!(adapter.clean_body("hello\n\nworld"), "hello\n\nworld");

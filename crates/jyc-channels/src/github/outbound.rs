@@ -3,10 +3,10 @@ use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
 
-use jyc_types::{OutboundAdapter, OutboundAttachment, SendResult};
-use jyc_core::message_storage::MessageStorage;
 use super::client::GithubClient;
+use jyc_core::message_storage::MessageStorage;
 use jyc_types::GithubConfig;
+use jyc_types::{OutboundAdapter, OutboundAttachment, SendResult};
 
 /// GitHub outbound adapter — posts comments on issues/PRs.
 pub struct GithubOutboundAdapter {
@@ -21,10 +21,19 @@ impl GithubOutboundAdapter {
         Self::with_footer_enabled(config, storage, true)
     }
 
-    pub fn with_footer_enabled(config: GithubConfig, storage: Arc<MessageStorage>, footer_enabled: bool) -> Result<Self> {
-        let client = GithubClient::new(&config)
-            .context("Failed to create GitHub client for outbound")?;
-        Ok(Self { config, storage, client, footer_enabled })
+    pub fn with_footer_enabled(
+        config: GithubConfig,
+        storage: Arc<MessageStorage>,
+        footer_enabled: bool,
+    ) -> Result<Self> {
+        let client =
+            GithubClient::new(&config).context("Failed to create GitHub client for outbound")?;
+        Ok(Self {
+            config,
+            storage,
+            client,
+            footer_enabled,
+        })
     }
 }
 
@@ -79,10 +88,17 @@ impl OutboundAdapter for GithubOutboundAdapter {
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state (agent-agnostic)
-        let (input_tokens, max_tokens) = jyc_core::session_state::read_input_tokens(thread_path).await;
+        let (input_tokens, max_tokens) =
+            jyc_core::session_state::read_input_tokens(thread_path).await;
 
         // Build footer with model/mode/tokens information
-        let footer = jyc_core::email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
+        let footer = jyc_core::email_parser::build_footer(
+            model,
+            mode,
+            input_tokens,
+            max_tokens,
+            self.footer_enabled,
+        );
 
         // Clean reply text
         let clean_reply = jyc_core::email_parser::strip_trailing_separators(reply_text);
@@ -97,7 +113,10 @@ impl OutboundAdapter for GithubOutboundAdapter {
         // Build comment body with role prefix (avoid double-prefix if AI already added it)
         let comment_body = if role.is_empty() {
             reply_with_footer
-        } else if reply_with_footer.trim_start().starts_with(&format!("[{}]", role)) {
+        } else if reply_with_footer
+            .trim_start()
+            .starts_with(&format!("[{}]", role))
+        {
             // AI already included the role prefix — don't add again
             reply_with_footer
         } else {
@@ -105,7 +124,10 @@ impl OutboundAdapter for GithubOutboundAdapter {
         };
 
         // Post comment via GitHub API
-        let comment_id = self.client.create_comment(number, &comment_body).await
+        let comment_id = self
+            .client
+            .create_comment(number, &comment_body)
+            .await
             .with_context(|| format!("Failed to post comment on #{}", number))?;
 
         tracing::info!(

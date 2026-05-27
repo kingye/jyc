@@ -65,8 +65,7 @@ fn init_tracing(debug: bool, verbose: bool) {
         "jyc=info,jyc_agent=info,async_imap=warn"
     };
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(filter));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
 
     let base = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -113,24 +112,12 @@ async fn main() -> Result<()> {
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
-        Commands::Monitor(args) => {
-            cli::monitor::run(args, &workdir).await
-        }
-        Commands::Dashboard(args) => {
-            cli::dashboard::run(args).await
-        }
-        Commands::Config { action } => {
-            cli::config::run(action, &workdir).await
-        }
-        Commands::Patterns { action } => {
-            cli::patterns::run(action, &workdir).await
-        }
-        Commands::Templates { action } => {
-            cli::templates::run(action, &workdir).await
-        }
-        Commands::McpReplyTool => {
-            cli::mcp_reply::run().await
-        }
+        Commands::Monitor(args) => cli::monitor::run(args, &workdir).await,
+        Commands::Dashboard(args) => cli::dashboard::run(args).await,
+        Commands::Config { action } => cli::config::run(action, &workdir).await,
+        Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
+        Commands::Templates { action } => cli::templates::run(action, &workdir).await,
+        Commands::McpReplyTool => cli::mcp_reply::run().await,
     };
 
     if let Err(ref e) = result {

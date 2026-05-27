@@ -29,11 +29,9 @@ pub fn compute_repo_group_key(repo_group: &str, github_number: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::{
-        ChannelMatcher, ChannelPattern, InboundMessage, MessageContent,
-    };
     use crate::email_parser;
     use crate::message_storage::MessageStorage;
+    use jyc_types::{ChannelPattern, InboundMessage, MessageContent};
     use std::collections::HashMap;
     use tempfile::tempdir;
 
@@ -59,8 +57,10 @@ mod tests {
 
     fn make_feishu_message(chat_name: &str, chat_type: &str) -> InboundMessage {
         let mut msg = make_message("feishu_bot", "");
-        msg.metadata.insert("chat_name".to_string(), serde_json::json!(chat_name));
-        msg.metadata.insert("chat_type".to_string(), serde_json::json!(chat_type));
+        msg.metadata
+            .insert("chat_name".to_string(), serde_json::json!(chat_name));
+        msg.metadata
+            .insert("chat_type".to_string(), serde_json::json!(chat_type));
         msg
     }
 
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn test_resolve_shared_repo_dir() {
         let ws = Path::new("/data/github/workspace");
-        let shared = resolve_shared_repo_dir(&ws, "pr-42");
+        let shared = resolve_shared_repo_dir(ws, "pr-42");
         assert_eq!(shared, PathBuf::from("/data/github/workspace/repos/pr-42"));
     }
 
@@ -109,7 +109,13 @@ mod tests {
 
         std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path).unwrap();
         assert!(symlink_path.exists());
-        assert!(tokio::fs::symlink_metadata(&symlink_path).await.unwrap().file_type().is_symlink());
+        assert!(
+            tokio::fs::symlink_metadata(&symlink_path)
+                .await
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
 
         let target = std::fs::read_link(&symlink_path).unwrap();
         assert_eq!(target, shared_repo_dir);
@@ -117,20 +123,29 @@ mod tests {
 
     #[test]
     fn test_repo_group_backward_compatibility_no_field() {
-        let pattern: jyc_types::ChannelPattern = toml::from_str(r#"
+        let pattern: jyc_types::ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             [rules]
-        "#).unwrap();
-        assert!(pattern.repo_group.is_none(), "repo_group should default to None when omitted from config");
+        "#,
+        )
+        .unwrap();
+        assert!(
+            pattern.repo_group.is_none(),
+            "repo_group should default to None when omitted from config"
+        );
     }
 
     #[test]
     fn test_repo_group_set_via_serde() {
-        let pattern: jyc_types::ChannelPattern = toml::from_str(r#"
+        let pattern: jyc_types::ChannelPattern = toml::from_str(
+            r#"
             name = "test"
             repo_group = "pr"
             [rules]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(pattern.repo_group.as_deref(), Some("pr"));
     }
 
@@ -149,13 +164,21 @@ mod tests {
         let thread_name = email_parser::derive_thread_name("Re: Test Subject", &[]);
         assert_eq!(thread_name, "Test Subject");
 
-        let result = storage.store_with_match(&msg, &thread_name, true, None).await.unwrap();
+        let result = storage
+            .store_with_match(&msg, &thread_name, true, None)
+            .await
+            .unwrap();
 
         // Verify: <workdir>/jiny283a/workspace/Test Subject/
         assert_eq!(result.thread_path, ws.join("Test Subject"));
         assert!(result.thread_path.exists());
         // No double nesting
-        assert!(!result.thread_path.to_string_lossy().contains("workspace/jiny283a"));
+        assert!(
+            !result
+                .thread_path
+                .to_string_lossy()
+                .contains("workspace/jiny283a")
+        );
     }
 
     #[tokio::test]
@@ -166,13 +189,22 @@ mod tests {
 
         let storage = MessageStorage::new(&ws);
         let thread_name = email_parser::derive_thread_name(
-            "Fw: 您收到来自上海栋菁餐饮管理有限公司的电子发票", &[]
+            "Fw: 您收到来自上海栋菁餐饮管理有限公司的电子发票",
+            &[],
         );
         let msg = make_message("jiny283a", &thread_name);
 
-        let result = storage.store_with_match(&msg, &thread_name, true, None).await.unwrap();
+        let result = storage
+            .store_with_match(&msg, &thread_name, true, None)
+            .await
+            .unwrap();
         assert!(result.thread_path.exists());
-        assert!(result.thread_path.to_string_lossy().contains("上海栋菁餐饮"));
+        assert!(
+            result
+                .thread_path
+                .to_string_lossy()
+                .contains("上海栋菁餐饮")
+        );
     }
 
     #[tokio::test]
@@ -198,7 +230,10 @@ mod tests {
         }
 
         let msg = make_message("jiny283a", "Invoice food");
-        let result = storage.store_with_match(&msg, "invoice-processing", true, None).await.unwrap();
+        let result = storage
+            .store_with_match(&msg, "invoice-processing", true, None)
+            .await
+            .unwrap();
 
         assert_eq!(result.thread_path, ws.join("invoice-processing"));
         assert!(result.thread_path.exists());
@@ -223,7 +258,10 @@ mod tests {
         assert_eq!(thread_name, "invoice-processing");
 
         let msg = make_feishu_message("发票群", "group");
-        let result = storage.store_with_match(&msg, thread_name, true, None).await.unwrap();
+        let result = storage
+            .store_with_match(&msg, thread_name, true, None)
+            .await
+            .unwrap();
         assert_eq!(result.thread_path, ws.join("invoice-processing"));
     }
 
@@ -247,9 +285,9 @@ mod tests {
             saved_path: None,
         });
 
-        crate::attachment_storage::save_attachments_to_dir(
-            &mut msg, &thread_path, None,
-        ).await.unwrap();
+        crate::attachment_storage::save_attachments_to_dir(&mut msg, &thread_path, None)
+            .await
+            .unwrap();
 
         // Verify attachment saved under thread_path/attachments/
         let att_dir = thread_path.join("attachments");

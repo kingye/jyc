@@ -64,10 +64,7 @@ impl VisionClient {
     ///
     /// Returns the model's text response.
     pub async fn analyze(&self, media_type: &str, base64_data: &str) -> Result<String> {
-        let url = format!(
-            "{}/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let data_url = format!("data:{};base64,{}", media_type, base64_data);
 
@@ -97,12 +94,7 @@ impl VisionClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "VisionClient: HTTP {} from {}: {}",
-                status,
-                url,
-                body_text
-            );
+            anyhow::bail!("VisionClient: HTTP {} from {}: {}", status, url, body_text);
         }
 
         let chat_resp: ChatCompletionResponse = resp
@@ -140,7 +132,6 @@ struct ResponseMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     /// Verify that the request body is serialized as expected.
     #[test]
@@ -168,6 +159,11 @@ mod tests {
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "describe this image");
         assert_eq!(content[1]["type"], "image_url");
-        assert!(content[1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(
+            content[1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
     }
 }

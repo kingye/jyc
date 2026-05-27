@@ -47,11 +47,13 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let pattern = input.get("pattern")
+        let pattern = input
+            .get("pattern")
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
 
-        let search_dir = input.get("path")
+        let search_dir = input
+            .get("path")
             .and_then(|p| p.as_str())
             .map(|p| {
                 if Path::new(p).is_absolute() {
@@ -62,8 +64,7 @@ impl Tool for GrepTool {
             })
             .unwrap_or_else(|| ctx.working_dir.to_path_buf());
 
-        let include_pattern = input.get("include")
-            .and_then(|i| i.as_str());
+        let include_pattern = input.get("include").and_then(|i| i.as_str());
 
         let regex = Regex::new(pattern)
             .map_err(|e| anyhow::anyhow!("Invalid regex pattern '{}': {e}", pattern))?;
@@ -72,18 +73,29 @@ impl Tool for GrepTool {
         let mut results = Vec::new();
         let mut files_searched = 0;
 
-        search_recursive(&search_dir, &regex, include_pattern, ctx.working_dir, &mut results, &mut files_searched)?;
+        search_recursive(
+            &search_dir,
+            &regex,
+            include_pattern,
+            ctx.working_dir,
+            &mut results,
+            &mut files_searched,
+        )?;
 
         if results.is_empty() {
             Ok(ToolOutput::success(format!(
-                "No matches for '{}' (searched {} files)", pattern, files_searched
+                "No matches for '{}' (searched {} files)",
+                pattern, files_searched
             )))
         } else {
             let total = results.len();
             results.truncate(MAX_RESULTS);
             let mut output = results.join("\n");
             if total > MAX_RESULTS {
-                output.push_str(&format!("\n\n... ({} total matches, showing first {})", total, MAX_RESULTS));
+                output.push_str(&format!(
+                    "\n\n... ({} total matches, showing first {})",
+                    total, MAX_RESULTS
+                ));
             }
             Ok(ToolOutput::success(output))
         }
@@ -104,14 +116,24 @@ fn search_recursive(
         let path = entry.path();
 
         // Skip hidden directories and common non-source dirs
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "vendor" {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (name.starts_with('.')
+                || name == "node_modules"
+                || name == "target"
+                || name == "vendor")
+        {
+            continue;
         }
 
         if path.is_dir() {
-            search_recursive(&path, regex, include_pattern, working_dir, results, files_searched)?;
+            search_recursive(
+                &path,
+                regex,
+                include_pattern,
+                working_dir,
+                results,
+                files_searched,
+            )?;
         } else if path.is_file() {
             // Check include pattern
             if let Some(pattern) = include_pattern {
@@ -124,7 +146,8 @@ fn search_recursive(
             // Read and search file
             if let Ok(content) = std::fs::read_to_string(&path) {
                 *files_searched += 1;
-                let rel_path = path.strip_prefix(working_dir)
+                let rel_path = path
+                    .strip_prefix(working_dir)
                     .unwrap_or(&path)
                     .to_string_lossy();
 
@@ -144,8 +167,10 @@ fn search_recursive(
 fn matches_include_pattern(filename: &str, pattern: &str) -> bool {
     if pattern.starts_with("*.{") && pattern.ends_with('}') {
         // Handle *.{rs,ts,tsx} format
-        let extensions = &pattern[3..pattern.len()-1];
-        extensions.split(',').any(|ext| filename.ends_with(&format!(".{}", ext.trim())))
+        let extensions = &pattern[3..pattern.len() - 1];
+        extensions
+            .split(',')
+            .any(|ext| filename.ends_with(&format!(".{}", ext.trim())))
     } else if let Some(ext) = pattern.strip_prefix("*.") {
         filename.ends_with(&format!(".{}", ext))
     } else {

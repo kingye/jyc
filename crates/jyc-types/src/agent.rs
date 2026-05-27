@@ -1,9 +1,3 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use std::path::Path;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
 use crate::channel::InboundMessage;
 use crate::channel::PatternMatch;
 use crate::config::InboundAttachmentConfig;

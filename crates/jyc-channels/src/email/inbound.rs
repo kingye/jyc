@@ -6,11 +6,11 @@ use mail_parser::MimeHeaders;
 use regex::Regex;
 use uuid::Uuid;
 
+use jyc_core::email_parser;
+use jyc_types::InboundAttachmentConfig;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundMessage, MessageAttachment, MessageContent, PatternMatch,
 };
-use jyc_types::InboundAttachmentConfig;
-use jyc_core::email_parser;
 use jyc_utils::helpers::extract_domain;
 
 /// Email-specific pattern matching and thread name derivation.
@@ -130,14 +130,18 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
     // Extract attachments
     let attachments_iter = parsed.attachments();
     let attachments_count = attachments_iter.count();
-    tracing::debug!("Email UID={}: Found {} attachments via attachments()", uid, attachments_count);
-    
+    tracing::debug!(
+        "Email UID={}: Found {} attachments via attachments()",
+        uid,
+        attachments_count
+    );
+
     // Reset iterator after counting
     let attachments: Vec<MessageAttachment> = parsed
         .attachments()
         .map(|att| {
             let filename = jyc_core::attachment_storage::sanitize_attachment_filename(
-                att.attachment_name().unwrap_or("unnamed")
+                att.attachment_name().unwrap_or("unnamed"),
             );
             let content_type = att
                 .content_type()
@@ -149,7 +153,13 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
             let content = att.contents().to_vec();
             let size = content.len();
 
-            tracing::debug!("Email UID={}: Attachment '{}' ({} bytes, {})", uid, filename, size, content_type);
+            tracing::debug!(
+                "Email UID={}: Attachment '{}' ({} bytes, {})",
+                uid,
+                filename,
+                size,
+                content_type
+            );
             MessageAttachment {
                 filename,
                 content_type,
@@ -234,21 +244,21 @@ pub fn match_message(
 
                 if let Some(ref domains) = sender_rule.domain {
                     any_rule_present = true;
-                    if let Some(domain) = extract_domain(&addr) {
-                        if domains.iter().any(|d| d.to_lowercase() == domain) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.domain".to_string(), domain);
-                        }
+                    if let Some(domain) = extract_domain(&addr)
+                        && domains.iter().any(|d| d.to_lowercase() == domain)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.domain".to_string(), domain);
                     }
                 }
 
                 if let Some(ref regex_str) = sender_rule.regex {
                     any_rule_present = true;
-                    if let Ok(re) = Regex::new(regex_str) {
-                        if re.is_match(&addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.regex".to_string(), addr.clone());
-                        }
+                    if let Ok(re) = Regex::new(regex_str)
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
                     }
                 }
 
@@ -261,38 +271,36 @@ pub fn match_message(
         }
 
         // Check subject rules
-        if matches {
-            if let Some(ref subject_rule) = pattern.rules.subject {
-                let subj = message.topic.to_lowercase();
+        if matches && let Some(ref subject_rule) = pattern.rules.subject {
+            let subj = message.topic.to_lowercase();
 
-                let subject_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let subject_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref prefixes) = subject_rule.prefix {
-                        any_rule_present = true;
-                        if prefixes.iter().any(|p| subj.starts_with(&p.to_lowercase())) {
-                            any_rule_matched = true;
-                            match_details.insert("subject.prefix".to_string(), subj.clone());
-                        }
+                if let Some(ref prefixes) = subject_rule.prefix {
+                    any_rule_present = true;
+                    if prefixes.iter().any(|p| subj.starts_with(&p.to_lowercase())) {
+                        any_rule_matched = true;
+                        match_details.insert("subject.prefix".to_string(), subj.clone());
                     }
-
-                    if let Some(ref regex_str) = subject_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = Regex::new(regex_str) {
-                            if re.is_match(&subj) {
-                                any_rule_matched = true;
-                                match_details.insert("subject.regex".to_string(), subj.clone());
-                            }
-                        }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !subject_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = subject_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = Regex::new(regex_str)
+                        && re.is_match(&subj)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("subject.regex".to_string(), subj.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !subject_matches {
+                matches = false;
             }
         }
 
@@ -320,15 +328,15 @@ impl EmailInboundAdapter {
     /// Create a new Email inbound adapter.
     pub fn new(channel_name: String) -> Self {
         // Determine workspace root from current working directory
-        let workspace_root = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
         Self {
             channel_name,
             workspace_root,
         }
     }
-    
+
     /// Create a new Email inbound adapter with custom workspace root.
     #[allow(dead_code)]
     pub fn new_with_workspace(channel_name: String, workspace_root: std::path::PathBuf) -> Self {
@@ -600,24 +608,32 @@ mod tests {
         let patterns = vec![];
 
         // Save attachments
-        let result = adapter.save_attachments_to_thread_directory(
-            &mut message,
-            &patterns,
-            None,
-        ).await;
+        let result = adapter
+            .save_attachments_to_thread_directory(&mut message, &patterns, None)
+            .await;
 
         // Verify the operation succeeded
-        assert!(result.is_ok(), "Failed to save attachments: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to save attachments: {:?}",
+            result.err()
+        );
 
         // Verify attachments have saved_path set
         for attachment in &message.attachments {
-            assert!(attachment.saved_path.is_some(), 
-                "Attachment {} should have saved_path set", attachment.filename);
-            
+            assert!(
+                attachment.saved_path.is_some(),
+                "Attachment {} should have saved_path set",
+                attachment.filename
+            );
+
             let saved_path = attachment.saved_path.as_ref().unwrap();
-            assert!(saved_path.exists(), 
-                "File should exist at: {}", saved_path.display());
-            
+            assert!(
+                saved_path.exists(),
+                "File should exist at: {}",
+                saved_path.display()
+            );
+
             // Verify file content
             let content = std::fs::read(saved_path).unwrap();
             assert_eq!(content, *attachment.content.as_ref().unwrap());
@@ -630,24 +646,37 @@ mod tests {
             .join("workspace")
             .join(&thread_name)
             .join("attachments");
-        
-        assert!(expected_attachments_dir.exists(), 
-            "Attachments directory should exist: {}", expected_attachments_dir.display());
-        
+
+        assert!(
+            expected_attachments_dir.exists(),
+            "Attachments directory should exist: {}",
+            expected_attachments_dir.display()
+        );
+
         // List files in directory
         let entries: Vec<_> = std::fs::read_dir(&expected_attachments_dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        
-        assert_eq!(entries.len(), 2, "Should have 2 files in attachments directory");
-        
+
+        assert_eq!(
+            entries.len(),
+            2,
+            "Should have 2 files in attachments directory"
+        );
+
         // Verify filename patterns
         for entry in entries {
-            assert!(entry.contains("_test1") || entry.contains("_test2"), 
-                "Filename should contain original name: {}", entry);
-            assert!(entry.ends_with(".txt") || entry.ends_with(".pdf"),
-                "Filename should preserve extension: {}", entry);
+            assert!(
+                entry.contains("_test1") || entry.contains("_test2"),
+                "Filename should contain original name: {}",
+                entry
+            );
+            assert!(
+                entry.ends_with(".txt") || entry.ends_with(".pdf"),
+                "Filename should preserve extension: {}",
+                entry
+            );
         }
     }
 }

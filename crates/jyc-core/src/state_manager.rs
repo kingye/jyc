@@ -4,23 +4,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Per-channel IMAP monitoring state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitorState {
     pub last_sequence_number: u32,
     pub last_processed_uid: Option<u32>,
     pub last_processed_timestamp: Option<String>,
     pub uid_validity: Option<u32>,
-}
-
-impl Default for MonitorState {
-    fn default() -> Self {
-        Self {
-            last_sequence_number: 0,
-            last_processed_uid: None,
-            last_processed_timestamp: None,
-            uid_validity: None,
-        }
-    }
 }
 
 /// Manages per-channel IMAP state (sequence numbers, processed UIDs).
@@ -91,8 +80,8 @@ impl StateManager {
     /// Save state to .state.json.
     pub async fn save(&self) -> Result<()> {
         let state_file = self.state_dir.join(".state.json");
-        let content = serde_json::to_string_pretty(&self.state)
-            .context("failed to serialize state")?;
+        let content =
+            serde_json::to_string_pretty(&self.state).context("failed to serialize state")?;
         tokio::fs::write(&state_file, content)
             .await
             .with_context(|| format!("failed to write {}", state_file.display()))?;
@@ -110,10 +99,7 @@ impl StateManager {
                 .lines()
                 .filter_map(|line| line.trim().parse::<u32>().ok())
                 .collect();
-            tracing::debug!(
-                count = self.processed_uids.len(),
-                "Loaded processed UIDs"
-            );
+            tracing::debug!(count = self.processed_uids.len(), "Loaded processed UIDs");
         }
         Ok(())
     }
@@ -201,8 +187,7 @@ impl StateManager {
         if let Some(uid) = uid {
             self.state.last_processed_uid = Some(uid);
         }
-        self.state.last_processed_timestamp =
-            Some(chrono::Utc::now().to_rfc3339());
+        self.state.last_processed_timestamp = Some(chrono::Utc::now().to_rfc3339());
     }
 
     /// Get the UID validity value.

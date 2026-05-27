@@ -6,13 +6,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_types::{InboundMessage, QueueItem, McpServerConfig, ChannelPattern};
+use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
@@ -61,7 +61,7 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
             if val == "|" || val == "|-" || val == ">" {
                 // YAML block scalar: collect indented lines until --- or non-indented line
                 let mut desc = String::new();
-                while let Some(line) = lines.next() {
+                for line in lines.by_ref() {
                     let trimmed = line.trim();
                     if trimmed == "---" {
                         // Put back the --- terminator so the outer loop can handle it
@@ -239,22 +239,22 @@ impl JycAgentService {
 
         // Load AGENTS.md if present in the working directory
         let agents_md = thread_path.join("AGENTS.md");
-        if agents_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&agents_md) {
-                prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("\n\n");
-            }
+        if agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&agents_md)
+        {
+            prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
         }
 
         // Also check repo/AGENTS.md (common for GitHub threads)
         let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
-        if repo_agents_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&repo_agents_md) {
-                prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("\n\n");
-            }
+        if repo_agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
+        {
+            prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
         }
 
         // Discover and inject skill metadata
@@ -285,7 +285,7 @@ impl JycAgentService {
         prompt.push_str(
             "## Chat History\n\
              This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.md`.\n\
-             You can read it with the `read` tool if you need context from prior conversations.\n"
+             You can read it with the `read` tool if you need context from prior conversations.\n",
         );
 
         prompt
@@ -296,7 +296,10 @@ impl JycAgentService {
         let mut prompt = String::new();
 
         prompt.push_str("## Incoming Message\n");
-        prompt.push_str(&format!("**From:** {} <{}>\n", message.sender, message.sender_address));
+        prompt.push_str(&format!(
+            "**From:** {} <{}>\n",
+            message.sender, message.sender_address
+        ));
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
         prompt.push_str(&format!("**Date:** {}\n\n", message.timestamp.to_rfc3339()));
 
@@ -306,12 +309,17 @@ impl JycAgentService {
         // the model's context honest instead of dropping in an opaque
         // "[no text content]".
         let body_owned: String;
-        let body: &str = match message.content.text.as_deref()
+        let body: &str = match message
+            .content
+            .text
+            .as_deref()
             .or(message.content.markdown.as_deref())
         {
             Some(b) if !b.trim().is_empty() => b,
             _ if !message.attachments.is_empty() => {
-                let images = message.attachments.iter()
+                let images = message
+                    .attachments
+                    .iter()
                     .filter(|a| a.content_type.starts_with("image/"))
                     .count();
                 let total = message.attachments.len();
@@ -348,7 +356,9 @@ impl JycAgentService {
         message: &InboundMessage,
         thread_path: &Path,
     ) -> Vec<PathBuf> {
-        let pattern_cfg = message.matched_pattern.as_deref()
+        let pattern_cfg = message
+            .matched_pattern
+            .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.attachments.as_ref());
         let cfg = pattern_cfg.or(self.global_inbound_attachments.as_ref());
@@ -387,7 +397,9 @@ impl JycAgentService {
 
         // Per-pattern opt-in. Default false when the message did not match a
         // pattern or the pattern is not in our flattened list.
-        let pattern_inject = message.matched_pattern.as_deref()
+        let pattern_inject = message
+            .matched_pattern
+            .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .map(|p| p.inject_inbound_images)
             .unwrap_or(false);
@@ -397,7 +409,8 @@ impl JycAgentService {
             // image file path hints so the LLM knows which images are available
             // and can invoke `read_image` to analyze them via vision fallback.
             if !supports_images && pattern_inject {
-                let image_hints: Vec<String> = message.attachments
+                let image_hints: Vec<String> = message
+                    .attachments
                     .iter()
                     .filter(|a| a.content_type.starts_with("image/"))
                     .filter_map(|a| a.saved_path.as_ref().map(|p| p.display().to_string()))
@@ -409,7 +422,9 @@ impl JycAgentService {
                     // assuming the first block type.
                     let hint_text = {
                         let mut lines = String::new();
-                        lines.push_str("\n\nImage attachments available (use read_image tool to analyze):\n");
+                        lines.push_str(
+                            "\n\nImage attachments available (use read_image tool to analyze):\n",
+                        );
                         for hint in &image_hints {
                             lines.push_str(&format!("- {}\n", hint));
                         }
@@ -527,10 +542,7 @@ impl JycAgentService {
 
         // Load external MCP tools from resolved configs
         if !mcp_configs.is_empty() {
-            tracing::info!(
-                mcp_count = mcp_configs.len(),
-                "Loading external MCP tools"
-            );
+            tracing::info!(mcp_count = mcp_configs.len(), "Loading external MCP tools");
             let mcp_tools = crate::tools::mcp_client::load_mcp_tools(mcp_configs).await;
             for tool in mcp_tools {
                 registry.register(tool);
@@ -544,7 +556,9 @@ impl JycAgentService {
     fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn provider::Provider>> {
         let model = model_override
             .or(self.config.model.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("No model configured. Set [agent].model in config.toml"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("No model configured. Set [agent].model in config.toml")
+            })?;
 
         provider::create_provider(model, &self.config.providers)
     }
@@ -593,7 +607,7 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
     section.push_str(
         "To load a skill's full instructions, use `read <skill-path>/SKILL.md`.\n\
          All file paths within a SKILL.md are relative to that skill's directory.\n\
-         When running skill scripts: cd <skill-path> && <command>\n\n"
+         When running skill scripts: cd <skill-path> && <command>\n\n",
     );
 
     section
@@ -635,15 +649,19 @@ impl AgentService for JycAgentService {
         } else {
             None
         };
-        let pattern_override = message.matched_pattern.as_deref()
+        let pattern_override = message
+            .matched_pattern
+            .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.model.as_deref());
-        let model_override = file_override.clone()
+        let model_override = file_override
+            .clone()
             .or_else(|| pattern_override.map(|s| s.to_string()))
             .or_else(|| self.config.model.clone());
 
         // 2. Create provider
-        let provider = self.create_provider(model_override.as_deref())
+        let provider = self
+            .create_provider(model_override.as_deref())
             .context("Failed to create LLM provider")?;
 
         tracing::info!(
@@ -657,29 +675,31 @@ impl AgentService for JycAgentService {
         //     2. Config-level small_model (from self.config.small_model, already
         //        channel-resolved or global fallback)
         //     Falls back to main model at call site if unset or construction fails.
-        let pattern_small_model = message.matched_pattern.as_deref()
+        let pattern_small_model = message
+            .matched_pattern
+            .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.small_model.as_deref());
-        let small_model_resolved = pattern_small_model
-            .or(self.config.small_model.as_deref());
-        let small_provider: Option<Box<dyn provider::Provider>> = small_model_resolved
-            .as_deref()
-            .and_then(|m| match provider::create_provider(m, &self.config.providers) {
-                Ok(p) => {
-                    tracing::info!(
-                        small_provider = %p.name(),
-                        small_model = %p.model(),
-                        "Using small model for ancillary LLM calls"
-                    );
-                    Some(p)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        small_model = m,
-                        "Failed to construct small_model provider; falling back to main model"
-                    );
-                    None
+        let small_model_resolved = pattern_small_model.or(self.config.small_model.as_deref());
+        let small_provider: Option<Box<dyn provider::Provider>> =
+            small_model_resolved.and_then(|m| {
+                match provider::create_provider(m, &self.config.providers) {
+                    Ok(p) => {
+                        tracing::info!(
+                            small_provider = %p.name(),
+                            small_model = %p.model(),
+                            "Using small model for ancillary LLM calls"
+                        );
+                        Some(p)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            small_model = m,
+                            "Failed to construct small_model provider; falling back to main model"
+                        );
+                        None
+                    }
                 }
             });
 
@@ -699,7 +719,11 @@ impl AgentService for JycAgentService {
 
         // 5. Build tool registry
         let tools = self
-            .build_tool_registry(thread_path, provider.supports_images(), message.matched_pattern.as_deref())
+            .build_tool_registry(
+                thread_path,
+                provider.supports_images(),
+                message.matched_pattern.as_deref(),
+            )
             .await;
 
         // 6. Get event bus for this thread
@@ -708,7 +732,9 @@ impl AgentService for JycAgentService {
         // 6b. Determine per-pattern image injection flag for consistency
         // between `build_user_blocks` and the `read_image` tool's
         // vision-fallback decision.
-        let pattern_inject = message.matched_pattern.as_deref()
+        let pattern_inject = message
+            .matched_pattern
+            .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .map(|p| p.inject_inbound_images)
             .unwrap_or(false);
@@ -717,7 +743,9 @@ impl AgentService for JycAgentService {
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
-            small_provider: small_provider.as_deref().map(|p| p as &dyn provider::Provider),
+            small_provider: small_provider
+                .as_deref()
+                .map(|p| p as &dyn provider::Provider),
             tools: &tools,
             system_prompt: &system_prompt,
             user_blocks,
@@ -746,12 +774,12 @@ impl AgentService for JycAgentService {
 
         // 9. Update session token tracking
         // Resolve context_window: per-model override > provider default
-        let model_str = model_override.as_deref()
-            .unwrap_or("");
+        let model_str = model_override.as_deref().unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
             self.config.providers.get(provider_name).and_then(|p| {
                 // Check per-model override first, then provider default
-                p.models.get(model_id)
+                p.models
+                    .get(model_id)
                     .and_then(|m| m.context_window)
                     .or(p.context_window)
             })
@@ -772,7 +800,8 @@ impl AgentService for JycAgentService {
             result.output_tokens,
             context_window,
             summary_provider,
-        ).await;
+        )
+        .await;
 
         // 9. Return result
         if result.reply_sent_by_tool {
@@ -783,7 +812,11 @@ impl AgentService for JycAgentService {
         } else {
             Ok(AgentResult {
                 reply_sent_by_tool: false,
-                reply_text: if result.text.is_empty() { None } else { Some(result.text) },
+                reply_text: if result.text.is_empty() {
+                    None
+                } else {
+                    Some(result.text)
+                },
             })
         }
     }
@@ -791,8 +824,12 @@ impl AgentService for JycAgentService {
     async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
         let mut buses = self.event_buses.lock().await;
         match event_bus {
-            Some(bus) => { buses.insert(thread_name.to_string(), bus); }
-            None => { buses.remove(thread_name); }
+            Some(bus) => {
+                buses.insert(thread_name.to_string(), bus);
+            }
+            None => {
+                buses.remove(thread_name);
+            }
         }
     }
 }

@@ -34,24 +34,34 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// - OpenAI: `"content": "text"` + `"tool_calls": [...]`
 /// - Anthropic: `"content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]`
 pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    raw_messages.iter()
+    raw_messages
+        .iter()
         .filter(|m| {
             if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
                 return true;
             }
             // OpenAI format: content as non-empty string
-            let has_string_content = m.get("content")
+            let has_string_content = m
+                .get("content")
                 .and_then(|c| c.as_str())
                 .is_some_and(|s| !s.is_empty());
             // Anthropic format: content as array with meaningful blocks
-            let has_array_content = m.get("content")
-                .and_then(|c| c.as_array())
-                .is_some_and(|blocks| blocks.iter().any(|b| {
-                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    t == "tool_use" || (t == "text" && b.get("text").and_then(|x| x.as_str()).is_some_and(|s| !s.is_empty()))
-                }));
+            let has_array_content =
+                m.get("content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|b| {
+                            let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            t == "tool_use"
+                                || (t == "text"
+                                    && b.get("text")
+                                        .and_then(|x| x.as_str())
+                                        .is_some_and(|s| !s.is_empty()))
+                        })
+                    });
             // OpenAI format: tool_calls array
-            let has_tool_calls = m.get("tool_calls")
+            let has_tool_calls = m
+                .get("tool_calls")
                 .and_then(|t| t.as_array())
                 .is_some_and(|a| !a.is_empty());
 
@@ -76,7 +86,9 @@ pub trait Provider: Send + Sync {
     /// Whether the active model accepts image content blocks (multimodal input).
     /// Resolved at construction time from config (`ModelConfig.supports_images`
     /// overrides `ProviderConfig.supports_images`; default false).
-    fn supports_images(&self) -> bool { false }
+    fn supports_images(&self) -> bool {
+        false
+    }
 
     /// Send messages and get a streaming response.
     async fn complete(
@@ -94,7 +106,12 @@ pub trait Provider: Send + Sync {
     fn format_user_message(&self, blocks: &[crate::types::ContentBlock]) -> serde_json::Value;
 
     /// Format a tool result as raw provider JSON (for context persistence).
-    fn format_tool_result(&self, tool_call_id: &str, content: &str, is_error: bool) -> serde_json::Value;
+    fn format_tool_result(
+        &self,
+        tool_call_id: &str,
+        content: &str,
+        is_error: bool,
+    ) -> serde_json::Value;
 
     /// Build the raw assistant message JSON from a collected streaming response.
     /// This captures provider-specific fields (e.g., DeepSeek's reasoning_content)
@@ -103,7 +120,7 @@ pub trait Provider: Send + Sync {
         &self,
         text: &str,
         reasoning: &str,
-        tool_calls: &[(String, String, String)],  // (id, name, arguments)
+        tool_calls: &[(String, String, String)], // (id, name, arguments)
     ) -> serde_json::Value;
 
     /// Send raw context messages directly to the API (for replaying persisted context).
@@ -138,15 +155,15 @@ pub fn create_provider(
             model
         ))?;
 
-    let config = providers
-        .get(provider_name)
-        .ok_or_else(|| anyhow::anyhow!(
+    let config = providers.get(provider_name).ok_or_else(|| {
+        anyhow::anyhow!(
             "Provider '{}' not found in [agent.providers]. Available: {:?}. \
              Add [agent.providers.{}] to config.toml.",
             provider_name,
             providers.keys().collect::<Vec<_>>(),
             provider_name
-        ))?;
+        )
+    })?;
 
     // Read API key from environment
     let api_key = if let Some(env_var) = &config.api_key_env {
@@ -156,17 +173,24 @@ pub fn create_provider(
     };
 
     // Resolve params: model-level overrides provider-level (shallow merge)
-    let params = resolve_params(config.params.as_ref(), config.models.get(model_id).and_then(|m| m.params.as_ref()));
+    let params = resolve_params(
+        config.params.as_ref(),
+        config.models.get(model_id).and_then(|m| m.params.as_ref()),
+    );
 
     // Resolve supports_images: model-level overrides provider-level; default false.
-    let supports_images = config.models.get(model_id)
+    let supports_images = config
+        .models
+        .get(model_id)
         .and_then(|m| m.supports_images)
         .or(config.supports_images)
         .unwrap_or(false);
 
     match config.provider_type.as_str() {
         "anthropic" => {
-            let base_url = config.base_url.as_deref()
+            let base_url = config
+                .base_url
+                .as_deref()
                 .unwrap_or("https://api.anthropic.com/v1");
             Ok(Box::new(anthropic::AnthropicProvider::new(
                 base_url,
@@ -177,8 +201,12 @@ pub fn create_provider(
             )?))
         }
         "openai-compatible" | "openai" => {
-            let base_url = config.base_url.as_deref()
-                .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible provider '{}' requires base_url", provider_name))?;
+            let base_url = config.base_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenAI-compatible provider '{}' requires base_url",
+                    provider_name
+                )
+            })?;
             Ok(Box::new(openai_compat::OpenAiCompatProvider::new(
                 base_url,
                 model_id,
@@ -187,7 +215,11 @@ pub fn create_provider(
                 supports_images,
             )?))
         }
-        other => anyhow::bail!("Unknown provider type '{}' for provider '{}'", other, provider_name),
+        other => anyhow::bail!(
+            "Unknown provider type '{}' for provider '{}'",
+            other,
+            provider_name
+        ),
     }
 }
 
@@ -384,11 +416,9 @@ mod classifier_tests {
         // Real production case (May 26 12:04:05): SSE failed mid-flight,
         // diag re-POST returned 200 with a healthy first chunk.
         // Retrying must succeed.
-        let e = err(
-            "SSE stream error: error sending request for url \
+        let e = err("SSE stream error: error sending request for url \
              (https://api.deepseek.com/chat/completions) \
-             (HTTP 200 body: data: {\"id\":\"abc\",\"choices\":[...]})"
-        );
+             (HTTP 200 body: data: {\"id\":\"abc\",\"choices\":[...]})");
         assert!(
             is_transient_sse_error(&e),
             "diag-200 confirms upstream healthy → must be transient"
@@ -398,10 +428,8 @@ mod classifier_tests {
     #[test]
     fn diag_status_4xx_is_terminal() {
         // Diag captured a structured rejection — retrying won't help.
-        let e = err(
-            "SSE stream error: Invalid status code: 400 Bad Request \
-             (HTTP 400 body: {\"error\":{\"message\":\"bad payload\"}})"
-        );
+        let e = err("SSE stream error: Invalid status code: 400 Bad Request \
+             (HTTP 400 body: {\"error\":{\"message\":\"bad payload\"}})");
         assert!(
             !is_transient_sse_error(&e),
             "diag-400 is a structured rejection → terminal"
@@ -415,7 +443,7 @@ mod classifier_tests {
         // retrying tight against a known-broken upstream.
         let e = err(
             "SSE stream error: Invalid status code: 503 Service Unavailable \
-             (HTTP 503 body: {\"error\":\"upstream down\"})"
+             (HTTP 503 body: {\"error\":\"upstream down\"})",
         );
         assert!(
             !is_transient_sse_error(&e),
@@ -443,19 +471,14 @@ mod classifier_tests {
     fn error_sending_request_is_transient() {
         // Stale-connection-from-pool failure. Without a diag suffix it
         // still matches the "error sending request" pattern.
-        let e = err(
-            "SSE stream error: error sending request for url \
-             (https://api.deepseek.com/chat/completions)"
-        );
+        let e = err("SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions)");
         assert!(is_transient_sse_error(&e));
     }
 
     #[test]
     fn extract_diag_status_basic() {
-        assert_eq!(
-            extract_diag_status("foo (HTTP 200 body: bar)"),
-            Some(200)
-        );
+        assert_eq!(extract_diag_status("foo (HTTP 200 body: bar)"), Some(200));
         assert_eq!(
             extract_diag_status("foo (HTTP 400 body: {\"error\": ...})"),
             Some(400)

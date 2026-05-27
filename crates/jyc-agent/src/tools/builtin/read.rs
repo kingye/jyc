@@ -72,25 +72,11 @@ impl Tool for ReadTool {
         }
 
         // Security: ensure path is within working directory.
-        // Skip this check if path traverses a symlink (e.g., repo/ -> /other/path),
-        // since JYC's repo_group feature uses symlinks within the working directory.
-        let has_symlink = path
-            .ancestors()
-            .any(|ancestor| ancestor != ctx.working_dir && ancestor.is_symlink());
-
-        if !has_symlink {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            let working_canonical = ctx
-                .working_dir
-                .canonicalize()
-                .unwrap_or_else(|_| ctx.working_dir.to_path_buf());
-
-            if !canonical.starts_with(&working_canonical) {
-                return Ok(ToolOutput::error(format!(
-                    "Access denied: path '{}' is outside the working directory",
-                    file_path
-                )));
-            }
+        // Uses the shared boundary check from ToolContext, which handles
+        // canonicalization, repo_group symlink exemption, and
+        // additional_read_roots.
+        if let Err(msg) = ctx.check_path_boundary(file_path, &path) {
+            return Ok(ToolOutput::error(msg));
         }
 
         if path.is_dir() {

@@ -33,6 +33,14 @@ pub enum McpServerKind {
         url: String,
         #[serde(default = "default_true")]
         enabled: bool,
+        /// Bearer token for authentication (without "Bearer " prefix).
+        /// Sent as `Authorization: Bearer <token>` header with every request.
+        #[serde(default)]
+        auth_header: Option<String>,
+        /// Custom HTTP headers to include with every request.
+        /// Keys are header names, values are header values.
+        #[serde(default)]
+        custom_headers: HashMap<String, String>,
     },
 }
 
@@ -649,9 +657,16 @@ enabled = true
         let remote = &config.mcps[1];
         assert_eq!(remote.name, "remote_mcp");
         match &remote.kind {
-            super::McpServerKind::Remote { url, enabled } => {
+            super::McpServerKind::Remote {
+                url,
+                enabled,
+                auth_header,
+                custom_headers,
+            } => {
                 assert_eq!(url, "https://mcp.example.com/handler");
                 assert!(*enabled);
+                assert!(auth_header.is_none());
+                assert!(custom_headers.is_empty());
             }
             _ => panic!("Expected Remote variant for remote_mcp"),
         }

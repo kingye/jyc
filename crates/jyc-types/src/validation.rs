@@ -307,6 +307,37 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
     if let Some(ref att) = pattern.attachments {
         validate_inbound_attachment_config(&format!("{prefix}.attachments"), att, errors);
     }
+
+    // Validate per-pattern MCP configs if present
+    if let Some(ref mcps) = pattern.mcps {
+        for (j, mcp) in mcps.iter().enumerate() {
+            let mcp_prefix = format!("{prefix}.mcps[{j}]");
+            if mcp.name.is_empty() {
+                errors.push(ValidationError {
+                    path: format!("{mcp_prefix}.name"),
+                    message: "MCP server name is required".into(),
+                });
+            }
+            match &mcp.kind {
+                crate::config::McpServerKind::Local { command, .. } => {
+                    if command.is_empty() {
+                        errors.push(ValidationError {
+                            path: format!("{mcp_prefix}.command"),
+                            message: format!("MCP '{}' local command is required", mcp.name),
+                        });
+                    }
+                }
+                crate::config::McpServerKind::Remote { url, .. } => {
+                    if url.is_empty() {
+                        errors.push(ValidationError {
+                            path: format!("{mcp_prefix}.url"),
+                            message: format!("MCP '{}' remote url is required", mcp.name),
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Validate inbound attachment configuration.
@@ -525,6 +556,163 @@ mode = "static"
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
         assert!(errors.iter().any(|e| e.path == "agent.text"));
+    }
+
+    #[test]
+    fn test_invalid_mcp_in_pattern() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = ""
+type = "local"
+command = []
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors.iter().any(|e| e.path.contains("mcps[0].name")),
+            "expected mcps[0].name error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_mcp_local_no_command() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-mcp"
+type = "local"
+command = []
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors.iter().any(|e| e.path.contains("mcps[0].command")),
+            "expected mcps[0].command error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_mcp_remote_no_url() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-remote"
+type = "remote"
+url = ""
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors.iter().any(|e| e.path.contains("mcps[0].url")),
+            "expected mcps[0].url error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_valid_mcp_in_pattern_passes() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-local"
+type = "local"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        let mcp_errors: Vec<_> = errors.iter().filter(|e| e.path.contains("mcps")).collect();
+        assert!(
+            mcp_errors.is_empty(),
+            "expected no mcp errors, got: {:?}",
+            mcp_errors
+        );
     }
 
     #[test]

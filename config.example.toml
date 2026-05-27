@@ -304,6 +304,22 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # type = "remote"
 # url = "https://mcp.example.com/handler"
 # enabled = true
+# # auth_header = "sk-..."    # Bearer token (sent as Authorization: Bearer <token>)
+# # [mcps.custom_headers]
+# # "X-API-Key" = "your-api-key"
+# # "X-Organization" = "my-org"
+#
+# # --- Per-Pattern MCP Configuration ---
+# # You can also configure MCP servers per pattern, overriding the global `[[mcps]]`
+# # list for threads matching that pattern. This allows different patterns to use
+# # different tools, credentials, and remote endpoints.
+# #
+# # When a pattern has `mcps` set, only those MCP servers are loaded for threads
+# # matching that pattern. When `mcps` is not set (default), the global `[[mcps]]`
+# # list is used for backward compatibility. Set `mcps = []` to disable all MCP
+# # tools for a specific pattern.
+# #
+# # Example — see the GitHub channel patterns section below for a complete example.
 
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.
@@ -416,6 +432,60 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # github_type = ["pull_request"]
 # labels = ["ready-for-review"]
 # assignees = ["alice"]
+#
+# # --- Per-Pattern MCP Examples ---
+# # Each pattern can declare its own `mcps` list to use different MCP tools,
+# # different credentials, or different remote endpoints. When set, only these
+# # MCP servers are loaded for threads matching this pattern.
+#
+# # Pattern: Invoice processing with dedicated local MCP
+# # [[channels.my_repo.patterns]]
+# # name = "invoice-processor"
+# # enabled = true
+# # template = "github-developer"
+# #
+# # [channels.my_repo.patterns.rules]
+# # github_type = ["issue"]
+# # labels = ["invoice"]
+# #
+# # # Per-pattern MCP: only the invoice MCP is available for this pattern
+# # [[channels.my_repo.patterns.mcps]]
+# # name = "invoice"
+# # type = "local"
+# # command = ["invoice", "mcp"]
+#
+# # Pattern: Code review with remote MCP service + auth
+# # [[channels.my_repo.patterns]]
+# # name = "ai-reviewer"
+# # enabled = true
+# # template = "github-reviewer"
+# #
+# # [channels.my_repo.patterns.rules]
+# # github_type = ["pull_request"]
+# # labels = ["ai-review"]
+# #
+# # # Remote MCP with Bearer token authentication
+# # [[channels.my_repo.patterns.mcps]]
+# # name = "code-review-mcp"
+# # type = "remote"
+# # url = "https://review.example.com/mcp"
+# # enabled = true
+# # auth_header = "sk-xxx-review-token"
+# #
+# # # Remote MCP with custom headers
+# # [channels.my_repo.patterns.mcps.custom_headers]
+# # "X-API-Key" = "abc123"
+# # "X-Organization" = "my-org"
+#
+# # Pattern: No MCP tools at all (empty mcps list)
+# # [[channels.my_repo.patterns]]
+# # name = "simple-reply"
+# # enabled = true
+# # template = "github-developer"
+# # mcps = []  # Disable all MCP tools for this pattern
+# #
+# # [channels.my_repo.patterns.rules]
+# # github_type = ["issue"]
 #
 # # --- Channel: my_wechat_bot ---
 # # WeChat channel via OpenILink WebSocket Bridge

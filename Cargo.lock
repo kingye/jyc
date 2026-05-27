@@ -1502,6 +1502,7 @@ dependencies = [
  "chrono",
  "futures",
  "glob",
+ "http",
  "jyc-core",
  "jyc-mcp",
  "jyc-types",

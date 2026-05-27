@@ -4,10 +4,13 @@
 //! protocol, calls `list_tools()`, and wraps each discovered tool as a
 //! jyc-agent `Tool` implementation for the agent loop.
 
+use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use http::{HeaderName, HeaderValue};
 use serde_json::Value;
 use tracing;
 
@@ -15,7 +18,7 @@ use jyc_types::McpServerConfig;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::{RoleClient, RunningService, serve_client};
 use rmcp::transport::child_process::TokioChildProcess;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
+use rmcp::transport::streamable_http_client::{StreamableHttpClientTransport, StreamableHttpClientTransportConfig};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -76,12 +79,35 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to connect to MCP server via stdio: {}", e))?
         }
-        jyc_types::McpServerKind::Remote { url, enabled } => {
+        jyc_types::McpServerKind::Remote {
+            url,
+            enabled,
+            auth_header,
+            custom_headers,
+        } => {
             if !enabled {
                 anyhow::bail!("remote MCP '{}' is disabled", cfg.name);
             }
 
-            let transport = StreamableHttpClientTransport::from_uri(url.as_str());
+            let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+            if let Some(token) = auth_header {
+                config = config.auth_header(token.clone());
+            }
+            if !custom_headers.is_empty() {
+                let headers: Result<HashMap<HeaderName, HeaderValue>> = custom_headers
+                    .iter()
+                    .map(|(k, v)| {
+                        let name = HeaderName::from_str(k)
+                            .map_err(|e| anyhow::anyhow!("invalid header name '{}': {}", k, e))?;
+                        let value = HeaderValue::from_str(v)
+                            .map_err(|e| anyhow::anyhow!("invalid header value '{}': {}", v, e))?;
+                        Ok((name, value))
+                    })
+                    .collect();
+                config = config.custom_headers(headers?);
+            }
+
+            let transport = StreamableHttpClientTransport::from_config(config);
 
             serve_client((), transport)
                 .await

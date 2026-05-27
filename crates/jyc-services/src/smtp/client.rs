@@ -151,6 +151,7 @@ impl SmtpClient {
     /// - Sets `In-Reply-To` and `References` headers for threading
     /// - Converts markdown body to HTML for multipart email
     /// - Attaches files if provided
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_reply(
         &mut self,
         from: &str,

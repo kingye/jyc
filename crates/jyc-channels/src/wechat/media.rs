@@ -69,8 +69,8 @@ pub async fn download_media(url: &str, bearer_token: Option<&str>) -> Result<Med
 
     // Retry once with bearer token if the server demanded auth.
     let needs_auth = status.as_u16() == 401 || status.as_u16() == 403;
-    if needs_auth {
-        if let Some(token) = bearer_token {
+    if needs_auth
+        && let Some(token) = bearer_token {
             tracing::debug!(
                 status = %status,
                 "WeChat media fetch returned auth challenge, retrying with bearer token"
@@ -96,7 +96,6 @@ pub async fn download_media(url: &str, bearer_token: Option<&str>) -> Result<Med
                 resp.status()
             );
         }
-    }
 
     anyhow::bail!("WeChat media fetch failed: HTTP {}", status);
 }

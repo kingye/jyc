@@ -127,15 +127,13 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Merge extra params from config (provider-level + model-level)
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+                && let Some(body_obj) = body.as_object_mut() {
                     for (k, v) in params_obj {
                         body_obj.insert(k.clone(), v.clone());
                     }
                 }
-            }
-        }
 
         // Build request
         let mut req = self
@@ -317,15 +315,13 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Merge extra params
-        if let Some(ref params) = self.params {
-            if let Some(params_obj) = params.as_object() {
-                if let Some(body_obj) = body.as_object_mut() {
+        if let Some(ref params) = self.params
+            && let Some(params_obj) = params.as_object()
+                && let Some(body_obj) = body.as_object_mut() {
                     for (k, v) in params_obj {
                         body_obj.insert(k.clone(), v.clone());
                     }
                 }
-            }
-        }
 
         // Build and send request
         let mut req = self
@@ -463,10 +459,7 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         }
     };
 
-    let choices = match value.get("choices").and_then(|c| c.as_array()) {
-        Some(c) => c,
-        None => return None,
-    };
+    let choices = value.get("choices").and_then(|c| c.as_array())?;
 
     let mut events = Vec::new();
 
@@ -477,29 +470,26 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         };
 
         // Text content (standard OpenAI field)
-        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-            if !content.is_empty() {
+        if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+            && !content.is_empty() {
                 events.push(StreamEvent::TextDelta(content.to_string()));
             }
-        }
 
         // Reasoning content (DeepSeek v4-pro style thinking)
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-            if !reasoning.is_empty() {
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str())
+            && !reasoning.is_empty() {
                 events.push(StreamEvent::ReasoningDelta(reasoning.to_string()));
             }
-        }
 
         // Check finish_reason and extract usage from the same chunk
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
-            if finish_reason == "tool_calls" || finish_reason == "stop" {
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
+            && (finish_reason == "tool_calls" || finish_reason == "stop") {
                 // Emit ToolUseEnd for each accumulated tool call
                 for _ in &state.tool_calls {
                     events.push(StreamEvent::ToolUseEnd);
                 }
                 state.tool_calls.clear();
             }
-        }
 
         // Tool calls
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {

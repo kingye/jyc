@@ -116,15 +116,14 @@ fn search_recursive(
         let path = entry.path();
 
         // Skip hidden directories and common non-source dirs
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.')
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (name.starts_with('.')
                 || name == "node_modules"
                 || name == "target"
-                || name == "vendor"
+                || name == "vendor")
             {
                 continue;
             }
-        }
 
         if path.is_dir() {
             search_recursive(

@@ -388,23 +388,19 @@ impl ActivityTracker {
                     let thread_path = workspace_dir.join(&thread.name);
                     if let Ok(entries) =
                         ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES)
-                    {
-                        if !entries.is_empty() {
+                        && !entries.is_empty() {
                             let mut map = activity_map.lock().await;
                             let state = map
                                 .entry((channel.clone(), thread.name.clone()))
                                 .or_default();
                             state.entries = entries.into_iter().collect();
                             state.is_processing = false;
-                            if let Some(last) = state.entries.back() {
-                                if let Some(ref ts) = last.timestamp {
-                                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+                            if let Some(last) = state.entries.back()
+                                && let Some(ref ts) = last.timestamp
+                                    && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
                                         state.last_active_at = Some(dt.with_timezone(&chrono::Utc));
                                     }
-                                }
-                            }
                         }
-                    }
                 }
             }
 
@@ -424,8 +420,8 @@ impl ActivityTracker {
                                 if subscribed.contains(&key) {
                                     continue;
                                 }
-                                if let Some(bus) = tm.get_event_bus(&thread.name).await {
-                                    if let Ok(mut rx) = bus.subscribe().await {
+                                if let Some(bus) = tm.get_event_bus(&thread.name).await
+                                    && let Ok(mut rx) = bus.subscribe().await {
                                         subscribed.insert(key.clone());
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
@@ -450,11 +446,10 @@ impl ActivityTracker {
                                                                 );
                                                                  let entry = event_to_activity(&event);
                                                                  let is_error = entry.severity == Severity::Error;
-                                                                 if let Some(ref path) = thread_path {
-                                                                     if let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                 if let Some(ref path) = thread_path
+                                                                     && let Err(e) = ActivityLogStore::append(path, &entry) {
                                                                          tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                      }
-                                                                 }
                                                                  let mut map = map.lock().await;
                                                                  let state = map
                                                                      .entry((channel_for_task.clone(), name.clone()))
@@ -482,7 +477,6 @@ impl ActivityTracker {
                                             }
                                         });
                                     }
-                                }
                             }
                         }
                     }

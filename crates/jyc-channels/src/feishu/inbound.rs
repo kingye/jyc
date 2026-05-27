@@ -47,25 +47,21 @@ impl ChannelMatcher for FeishuMatcher {
         // Group chat: use chat name directly (e.g., "self-hosting-jyc")
         // P2P: use sender display name (e.g., "Zhang San")
         // Fallback: use opaque IDs with prefix
-        if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str()) {
-            if !chat_name.is_empty() {
+        if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str())
+            && !chat_name.is_empty() {
                 return sanitize_for_filesystem(chat_name);
             }
-        }
 
         let chat_type = message
             .metadata
             .get("chat_type")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if chat_type == "p2p" {
-            if let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str())
-            {
-                if !sender_name.is_empty() {
+        if chat_type == "p2p"
+            && let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str())
+                && !sender_name.is_empty() {
                     return sanitize_for_filesystem(sender_name);
                 }
-            }
-        }
 
         // Fallback to opaque IDs with prefix (if name API calls failed)
         if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
@@ -139,7 +135,7 @@ pub fn feishu_match_message(
                 // Check if any configured mention value matches (case-insensitive)
                 mention_ids.iter().any(|configured| {
                     let lower = configured.to_lowercase();
-                    matchable.iter().any(|m| *m == lower)
+                    matchable.contains(&lower)
                 })
             } else {
                 false
@@ -170,8 +166,8 @@ pub fn feishu_match_message(
 
         // --- Keywords rule ---
         // Check if the message body contains any of the configured keywords
-        if matches {
-            if let Some(ref keywords) = pattern.rules.keywords {
+        if matches
+            && let Some(ref keywords) = pattern.rules.keywords {
                 let body = message
                     .content
                     .text
@@ -193,12 +189,11 @@ pub fn feishu_match_message(
                     match_details.insert("keywords".to_string(), matched_kw.join(","));
                 }
             }
-        }
 
         // --- Chat name rule ---
         // Check if the message's group chat name matches any configured name (case-insensitive)
-        if matches {
-            if let Some(ref chat_names) = pattern.rules.chat_name {
+        if matches
+            && let Some(ref chat_names) = pattern.rules.chat_name {
                 let msg_chat_name = message
                     .metadata
                     .get("chat_name")
@@ -216,12 +211,11 @@ pub fn feishu_match_message(
                     match_details.insert("chat_name".to_string(), msg_chat_name);
                 }
             }
-        }
 
         // --- Sender rule (shared) ---
         // Feishu uses sender_address as the user's open_id
-        if matches {
-            if let Some(ref sender_rule) = pattern.rules.sender {
+        if matches
+            && let Some(ref sender_rule) = pattern.rules.sender {
                 let addr = message.sender_address.to_lowercase();
 
                 let sender_matches = {
@@ -238,12 +232,11 @@ pub fn feishu_match_message(
 
                     if let Some(ref regex_str) = sender_rule.regex {
                         any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str) {
-                            if re.is_match(&addr) {
+                        if let Ok(re) = regex::Regex::new(regex_str)
+                            && re.is_match(&addr) {
                                 any_rule_matched = true;
                                 match_details.insert("sender.regex".to_string(), addr.clone());
                             }
-                        }
                     }
 
                     !any_rule_present || any_rule_matched
@@ -253,7 +246,6 @@ pub fn feishu_match_message(
                     matches = false;
                 }
             }
-        }
 
         if matches {
             return Some(PatternMatch {

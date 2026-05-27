@@ -5,8 +5,8 @@ use std::path::Path;
 /// Returns (current_tokens, max_tokens).
 pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>) {
     let agent_path = thread_path.join(".jyc").join("agent-session.json");
-    if let Ok(content) = tokio::fs::read_to_string(&agent_path).await {
-        if let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) {
+    if let Ok(content) = tokio::fs::read_to_string(&agent_path).await
+        && let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) {
             let current = if state.total_input_tokens > 0 {
                 Some(state.total_input_tokens)
             } else {
@@ -21,7 +21,6 @@ pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>)
                 return (current, max);
             }
         }
-    }
     (None, None)
 }
 
@@ -31,6 +30,7 @@ struct AgentSessionState {
     #[serde(default)]
     total_input_tokens: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     total_output_tokens: u64,
     #[serde(default)]
     max_input_tokens: u64,

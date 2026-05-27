@@ -31,7 +31,7 @@ mod tests {
     use super::*;
     use crate::email_parser;
     use crate::message_storage::MessageStorage;
-    use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage, MessageContent};
+    use jyc_types::{ChannelPattern, InboundMessage, MessageContent};
     use std::collections::HashMap;
     use tempfile::tempdir;
 
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn test_resolve_shared_repo_dir() {
         let ws = Path::new("/data/github/workspace");
-        let shared = resolve_shared_repo_dir(&ws, "pr-42");
+        let shared = resolve_shared_repo_dir(ws, "pr-42");
         assert_eq!(shared, PathBuf::from("/data/github/workspace/repos/pr-42"));
     }
 

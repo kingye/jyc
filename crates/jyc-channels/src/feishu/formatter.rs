@@ -156,7 +156,6 @@ mod tests {
         let config = FeishuConfig::default();
         let _formatter = FeishuFormatter::new(config);
         // Just verify it doesn't panic
-        assert!(true);
     }
 
     #[test]

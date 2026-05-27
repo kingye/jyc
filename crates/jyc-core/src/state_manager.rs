@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Per-channel IMAP monitoring state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MonitorState {
     pub last_sequence_number: u32,
     pub last_processed_uid: Option<u32>,
@@ -12,16 +13,6 @@ pub struct MonitorState {
     pub uid_validity: Option<u32>,
 }
 
-impl Default for MonitorState {
-    fn default() -> Self {
-        Self {
-            last_sequence_number: 0,
-            last_processed_uid: None,
-            last_processed_timestamp: None,
-            uid_validity: None,
-        }
-    }
-}
 
 /// Manages per-channel IMAP state (sequence numbers, processed UIDs).
 ///

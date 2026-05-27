@@ -160,7 +160,8 @@ mod parse_openai_chunk {
     use jyc_agent::types::StreamEvent;
 
     // Helper to parse a chunk and collect events
-    fn parse_chunk(data: &str) -> Vec<StreamEvent> {
+    #[allow(dead_code)]
+    fn parse_chunk(_data: &str) -> Vec<StreamEvent> {
         // We need access to the internal parse function.
         // Since it's private, we test via the public stream interface indirectly.
         // For now, test the stream behavior through type checking.
@@ -204,7 +205,7 @@ mod parse_openai_chunk {
 
 mod session {
     use jyc_agent::session;
-    use std::path::Path;
+    
 
     /// Minimal stub provider that panics if any LLM method is invoked.
     /// Used by `update_tokens` tests where the auto-reset threshold is NOT
@@ -662,7 +663,7 @@ mod skills {
     use jyc_agent::JycAgentService;
     use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
     use jyc_agent::types::AgentConfig;
-    use std::collections::HashMap;
+    
     use std::path::PathBuf;
     use std::sync::Mutex;
 

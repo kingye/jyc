@@ -238,6 +238,7 @@ pub struct AgentConfig {
     /// - between-messages context reset summary (in `session::summarize_context`)
     /// Falls back to the main `model` if unset, or if provider construction
     /// fails (logged as a warning, the agent loop continues).
+    #[allow(clippy::doc_lazy_continuation)]
     #[serde(default)]
     pub small_model: Option<String>,
     /// Provider definitions

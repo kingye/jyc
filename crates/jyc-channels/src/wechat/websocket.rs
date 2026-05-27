@@ -158,7 +158,7 @@ impl WechatWebSocket {
 
                 // Outbound message to send
                 Some(outbound_msg) = outbound_rx.recv() => {
-                    if let Err(e) = write.send(Message::Text(outbound_msg.into())).await {
+                    if let Err(e) = write.send(Message::Text(outbound_msg)).await {
                         tracing::error!(error = %format!("{:#}", e), "Failed to send WeChat outbound message");
                         break;
                     }
@@ -408,7 +408,7 @@ impl WechatWebSocket {
         // Each item is best-effort: if a single download fails, log a
         // warning and continue with the rest. The text body and other
         // attachments are still delivered.
-        let attachments = self.extract_attachments(&data, &message_id).await;
+        let attachments = self.extract_attachments(data, &message_id).await;
 
         // Body normalisation for non-text events.
         //
@@ -629,8 +629,8 @@ impl WechatWebSocket {
                 .to_string();
 
             // Post-download size check.
-            if let Some(max) = max_size_bytes {
-                if (resp.bytes.len() as u64) > max {
+            if let Some(max) = max_size_bytes
+                && (resp.bytes.len() as u64) > max {
                     tracing::warn!(
                         size = resp.bytes.len(),
                         max,
@@ -639,7 +639,6 @@ impl WechatWebSocket {
                     );
                     continue;
                 }
-            }
 
             // Synthesise filename. Bridge doesn't ship one in the image
             // shape we've seen; voice/file shapes might (we'll surface it

@@ -132,7 +132,7 @@ pub async fn save_attachments_to_dir(
         .await
         .context("Failed to create attachment directory")?;
 
-    for (_i, attachment) in message.attachments.iter_mut().enumerate() {
+    for attachment in message.attachments.iter_mut() {
         if attachment.content.is_none() {
             tracing::warn!("Attachment has no content: {}", attachment.filename);
             continue;
@@ -340,7 +340,7 @@ mod tests {
         let name = generate_attachment_filename(&attachment);
         assert!(name.ends_with(".pdf"));
         // Should not panic - this was the bug
-        assert!(name.len() > 0);
+        assert!(!name.is_empty());
     }
 
     #[test]

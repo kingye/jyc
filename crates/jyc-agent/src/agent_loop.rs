@@ -394,15 +394,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             );
 
             // Check if this was the reply_message tool
-            if tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply") {
-                if !output.is_error {
+            if (tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply"))
+                && !output.is_error {
                     reply_sent_by_tool = true;
                     // Extract the message text from the tool input
                     if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
                         reply_text_from_tool = Some(msg.to_string());
                     }
                 }
-            }
 
             // Add tool result to internal history AND raw context
             history.push(Message::tool_result(
@@ -600,12 +599,11 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
             "assistant" => {
                 out.push_str("ASSISTANT");
                 // OpenAI: content as string
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() {
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+                    && !text.is_empty() {
                         out.push_str(": ");
                         out.push_str(text);
                     }
-                }
                 // Anthropic: content as array of blocks
                 if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
                     for block in blocks {

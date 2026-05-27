@@ -96,8 +96,8 @@ pub fn wechat_match_message(
         }
 
         // --- Sender rule (shared) ---
-        if matches {
-            if let Some(ref sender_rule) = pattern.rules.sender {
+        if matches
+            && let Some(ref sender_rule) = pattern.rules.sender {
                 let addr = message.sender_address.to_lowercase();
 
                 let sender_matches = {
@@ -114,12 +114,11 @@ pub fn wechat_match_message(
 
                     if let Some(ref regex_str) = sender_rule.regex {
                         any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str) {
-                            if re.is_match(&addr) {
+                        if let Ok(re) = regex::Regex::new(regex_str)
+                            && re.is_match(&addr) {
                                 any_rule_matched = true;
                                 match_details.insert("sender.regex".to_string(), addr.clone());
                             }
-                        }
                     }
 
                     !any_rule_present || any_rule_matched
@@ -129,7 +128,6 @@ pub fn wechat_match_message(
                     matches = false;
                 }
             }
-        }
 
         if matches {
             return Some(PatternMatch {

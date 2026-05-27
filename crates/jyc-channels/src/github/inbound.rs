@@ -7,10 +7,8 @@ use tokio_util::sync::CancellationToken;
 use super::client::{GithubClient, GithubComment};
 use jyc_types::GithubConfig;
 use jyc_types::{
-    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    LabelRule, MessageContent, PatternMatch, PatternRules,
+    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage, MessageContent, PatternMatch, PatternRules,
 };
-use jyc_utils::helpers::truncate_str;
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
 pub struct GithubMatcher;
@@ -43,11 +41,10 @@ impl ChannelMatcher for GithubMatcher {
         // separate workspace directories so each can carry its own template
         // and AGENTS.md without collision.
         if let Some(pm) = pattern_match {
-            if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name) {
-                if let Some(prefix) = pattern.thread_prefix.as_deref() {
+            if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
+                && let Some(prefix) = pattern.thread_prefix.as_deref() {
                     return format!("{}-{}", prefix, number);
                 }
-            }
 
             // Backwards-compatible fallback: a pattern named "reviewer"
             // without an explicit `thread_prefix` keeps the historical
@@ -124,11 +121,9 @@ impl ChannelMatcher for GithubMatcher {
                 .metadata
                 .get("comment_role")
                 .and_then(|v| v.as_str())
-            {
-                if pattern_role.eq_ignore_ascii_case(comment_role) {
+                && pattern_role.eq_ignore_ascii_case(comment_role) {
                     continue;
                 }
-            }
 
             return Some(PatternMatch {
                 pattern_name: pattern.name.clone(),
@@ -198,11 +193,10 @@ impl GithubMatcher {
             .unwrap_or_default();
 
         // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
-        if let Some(ref label_rule) = rules.labels {
-            if !label_rule.matches(&msg_labels) {
+        if let Some(ref label_rule) = rules.labels
+            && !label_rule.matches(&msg_labels) {
                 return false;
             }
-        }
 
         // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
         if let Some(ref exclude_labels) = rules.exclude_labels {
@@ -640,17 +634,17 @@ impl GithubInboundAdapter {
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy().to_string();
             // Require strict suffix `-{N}` AND a non-empty prefix before it.
-            if let Some(prefix) = name.strip_suffix(&suffix) {
-                if !prefix.is_empty() {
+            if let Some(prefix) = name.strip_suffix(&suffix)
+                && !prefix.is_empty() {
                     matches.push(name);
                 }
-            }
         }
         matches
     }
 
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
+    #[allow(clippy::too_many_arguments)]
     fn build_trigger_message(
         &self,
         event_type: &str,
@@ -894,6 +888,7 @@ impl InboundAdapter for GithubInboundAdapter {
 impl GithubInboundAdapter {
     /// Execute one poll cycle: fetch comments and route via pattern matching.
     /// Routes events to threads via on_message callback.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn poll_once(
         &self,
         client: &GithubClient,
@@ -1683,8 +1678,8 @@ impl GithubInboundAdapter {
 ///
 /// Only recognizes known agent roles to avoid false positives.
 fn extract_comment_role(text: &str) -> Option<String> {
-    if text.starts_with('[') {
-        if let Some(end) = text.find(']') {
+    if text.starts_with('[')
+        && let Some(end) = text.find(']') {
             let role = &text[1..end];
             match role {
                 "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => {
@@ -1693,7 +1688,6 @@ fn extract_comment_role(text: &str) -> Option<String> {
                 _ => {}
             }
         }
-    }
     None
 }
 
@@ -1711,6 +1705,7 @@ fn should_process_comment(comment: &GithubComment, open_numbers: &HashSet<u64>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::LabelRule;
 
     fn make_message(github_type: &str, number: u64) -> InboundMessage {
         let mut metadata = HashMap::new();
@@ -2143,7 +2138,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_blocks_wrong_assignee() {
         // Pattern requires assignee "alice", but issue is assigned to "bob"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2166,7 +2161,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_allows_matching_assignee() {
         // Pattern requires assignee "alice", issue is assigned to "alice"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2187,7 +2182,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_or_logic() {
         // Pattern allows "alice" or "bob", issue assigned to "bob"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2210,7 +2205,7 @@ mod tests {
     #[test]
     fn test_assignees_rule_case_insensitive() {
         // Pattern has "Alice", issue has "alice"
-        let mut msg = make_message_with_rules("issue", 42, &[], &["alice"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2233,7 +2228,7 @@ mod tests {
     #[test]
     fn test_labels_rule_blocks_wrong_label() {
         // Pattern requires label "bug", but issue has "enhancement"
-        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2256,7 +2251,7 @@ mod tests {
     #[test]
     fn test_labels_rule_allows_matching_label() {
         // Pattern requires label "bug", issue has "bug"
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "priority-high"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2276,7 +2271,7 @@ mod tests {
     #[test]
     fn test_labels_rule_case_insensitive() {
         // Pattern has "Bug", issue has "bug"
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2300,7 +2295,7 @@ mod tests {
     fn test_all_rules_and_logic() {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
-        let mut msg =
+        let msg =
             make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
 
         let patterns = vec![ChannelPattern {
@@ -2323,7 +2318,7 @@ mod tests {
     fn test_and_logic_partial_fail() {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has correct type and label but wrong assignee — should NOT match
-        let mut msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
+        let msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["bob"]);
 
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),
@@ -2344,7 +2339,7 @@ mod tests {
     #[test]
     fn test_no_rules_always_matches() {
         // Pattern with no rules (all None) — should match purely on role
-        let mut msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
+        let msg = make_message_with_rules("issue", 42, &["any-label"], &["anyone"]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2360,7 +2355,7 @@ mod tests {
     #[test]
     fn test_no_assignees_on_issue_fails_assignee_rule() {
         // Pattern requires assignee "alice", but issue has no assignees
-        let mut msg = make_message_with_rules("issue", 42, &[], &[]);
+        let msg = make_message_with_rules("issue", 42, &[], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "planner".to_string(),
@@ -2385,7 +2380,7 @@ mod tests {
         // Two patterns with same role but different rules.
         // First requires assignee "alice", second has no assignee rule.
         // Message has assignee "bob" — should skip first, match second.
-        let mut msg = make_message_with_rules("issue", 42, &[], &["bob"]);
+        let msg = make_message_with_rules("issue", 42, &[], &["bob"]);
 
         let patterns = vec![
             ChannelPattern {
@@ -2777,7 +2772,7 @@ mod tests {
     fn test_labels_nested_and_or() {
         // Nested: [["bug", "enhancement"], ["test"]] → (bug OR enhancement) AND test
         // Message has ["bug", "test"] → should match
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "test"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2800,7 +2795,7 @@ mod tests {
         );
 
         // Message has ["bug", "other"] → should NOT match (missing "test" group)
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["bug", "other"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(
@@ -2812,7 +2807,7 @@ mod tests {
     #[test]
     fn test_labels_nested_single_group() {
         // Nested with single group: [["bug"]] behaves same as flat ["bug"]
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2835,7 +2830,7 @@ mod tests {
     #[test]
     fn test_labels_nested_all_and() {
         // Nested: [["bug"], ["test"], ["v2"]] → requires all three labels
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug", "test", "v2"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2859,7 +2854,7 @@ mod tests {
         );
 
         // Missing one label → should NOT match
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["bug", "test"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(
@@ -2871,7 +2866,7 @@ mod tests {
     #[test]
     fn test_labels_nested_empty_group() {
         // Edge case: empty inner group [[]] should not block matching
-        let mut msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2897,7 +2892,7 @@ mod tests {
     #[test]
     fn test_labels_flat_backward_compat() {
         // Verify Flat(vec!["bug", "enhancement"]) still uses OR logic
-        let mut msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
+        let msg = make_message_with_rules("pull_request", 43, &["enhancement"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "developer".to_string(),
@@ -2920,7 +2915,7 @@ mod tests {
         );
 
         // Neither label present → should NOT match
-        let mut msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
+        let msg2 = make_message_with_rules("pull_request", 44, &["other"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(
@@ -3051,7 +3046,7 @@ mod tests {
     #[test]
     fn test_exclude_labels_blocks_matching_label() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -3074,7 +3069,7 @@ mod tests {
     #[test]
     fn test_exclude_labels_allows_non_matching_label() {
         // Message has "bug", pattern has exclude_labels = ["feature-plan"] → should match
-        let mut msg = make_message_with_rules("issue", 42, &["bug"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["bug"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -3097,7 +3092,7 @@ mod tests {
     #[test]
     fn test_exclude_labels_multiple() {
         // Message has "feature-plan", pattern has exclude_labels = ["feature-plan", "wip"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -3120,7 +3115,7 @@ mod tests {
     #[test]
     fn test_exclude_labels_case_insensitive() {
         // Message has "Feature-Plan", pattern has exclude_labels = ["feature-plan"] → should NOT match
-        let mut msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["Feature-Plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "detail-planner".to_string(),
@@ -3164,7 +3159,7 @@ mod tests {
     #[test]
     fn test_high_level_planner_with_feature_plan_label() {
         // High-level planner pattern: labels = ["feature-plan"]
-        let mut msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![ChannelPattern {
             name: "high-level-planner".to_string(),
@@ -3189,7 +3184,7 @@ mod tests {
     #[test]
     fn test_two_level_routing() {
         // Issue with feature-plan → high-level planner
-        let mut msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
+        let msg1 = make_message_with_rules("issue", 42, &["feature-plan"], &[]);
 
         let patterns = vec![
             ChannelPattern {
@@ -3222,7 +3217,7 @@ mod tests {
         assert_eq!(result1.unwrap().pattern_name, "high-level-planner");
 
         // Issue with bug → detail planner (no feature-plan)
-        let mut msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
+        let msg2 = make_message_with_rules("issue", 43, &["bug"], &[]);
 
         let result2 = GithubMatcher.match_message(&msg2, &patterns);
         assert!(result2.is_some());
@@ -3523,7 +3518,7 @@ mod tests {
 
     #[test]
     fn test_ci_timed_out_triggers_failure() {
-        let check_runs = vec![super::super::client::GithubCheckRun {
+        let check_runs = [super::super::client::GithubCheckRun {
             id: 1,
             name: "CI".to_string(),
             status: "completed".to_string(),

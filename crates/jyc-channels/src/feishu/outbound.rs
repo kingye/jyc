@@ -117,14 +117,13 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         };
 
         // 4. Validate attachments if configuration is present
-        if let Some(attachments) = attachments {
-            if let Some(ref config) = self.attachment_config {
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config {
                 attachment_validator::validate_outbound_attachments(attachments, config)
                     .await
                     .context("Failed to validate outbound attachments")?;
                 tracing::debug!("Outbound attachments validated successfully for Feishu");
             }
-        }
 
         // 5. Send text reply
         let result = self

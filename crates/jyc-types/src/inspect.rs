@@ -96,17 +96,14 @@ pub struct ThreadInfo {
 /// Severity level for an activity entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Severity {
+    #[default]
     Info,
     Warning,
     Error,
 }
 
-impl Default for Severity {
-    fn default() -> Self {
-        Self::Info
-    }
-}
 
 /// A single activity event from the thread's SSE stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,12 +121,14 @@ pub struct ActivityEntry {
 /// Thread processing status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ThreadStatus {
     /// Waiting for semaphore permit
     Queued,
     /// AI processing active
     Processing,
     /// Worker running, waiting for messages
+    #[default]
     Idle,
     /// Question tool waiting for user reply
     WaitingForAnswer,
@@ -137,11 +136,6 @@ pub enum ThreadStatus {
     Error,
 }
 
-impl Default for ThreadStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 impl std::fmt::Display for ThreadStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

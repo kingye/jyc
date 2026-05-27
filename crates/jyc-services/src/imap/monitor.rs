@@ -27,6 +27,7 @@ pub struct ImapMonitor {
 }
 
 impl ImapMonitor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_name: String,
         imap_config: ImapConfig,

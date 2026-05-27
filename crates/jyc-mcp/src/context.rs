@@ -98,11 +98,10 @@ pub async fn cleanup_reply_context(thread_path: &Path) {
 /// Falls back to `std::env::current_dir()` for backward compatibility.
 /// Returns an empty PathBuf only if both fail (should never happen in practice).
 pub fn resolve_thread_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("JYC_THREAD_DIR") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("JYC_THREAD_DIR")
+        && !dir.is_empty() {
             return PathBuf::from(dir);
         }
-    }
     std::env::current_dir().unwrap_or_default()
 }
 

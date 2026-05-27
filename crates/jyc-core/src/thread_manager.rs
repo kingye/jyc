@@ -87,6 +87,7 @@ pub struct ThreadManager {
 #[allow(dead_code)]
 impl ThreadManager {
     /// Create a new ThreadManager with event support enabled by default.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_concurrent: usize,
         max_queue_size: usize,
@@ -117,6 +118,7 @@ impl ThreadManager {
     }
 
     /// Create a new ThreadManager with configurable event support.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_options(
         max_concurrent: usize,
         max_queue_size: usize,
@@ -378,7 +380,7 @@ impl ThreadManager {
                     }
 
                     if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                        let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
+                        let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(workspace, repo_group_key);
                         let symlink_path = thread_path.join("repo");
 
                         if let Err(e) = tokio::fs::create_dir_all(&shared_repo_dir).await {
@@ -431,7 +433,7 @@ impl ThreadManager {
                     };
 
                     let workspace = storage.workspace();
-                    let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
+                    let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(workspace, repo_group_key);
 
                     if let Ok(guard) = lock.clone().try_lock_owned() {
                         let is_empty = match tokio::fs::read_dir(&shared_repo_dir).await {
@@ -630,11 +632,10 @@ impl ThreadManager {
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if path.is_dir() && path.join(".jyc").is_dir() {
-                    if let Some(name) = entry.file_name().to_str() {
+                if path.is_dir() && path.join(".jyc").is_dir()
+                    && let Some(name) = entry.file_name().to_str() {
                         thread_names.push(name.to_string());
                     }
-                }
             }
         }
         thread_names.sort();
@@ -864,12 +865,11 @@ impl ThreadManager {
                     let repo_link = thread_path.join("repo");
                     match tokio::fs::symlink_metadata(&repo_link).await {
                         Ok(meta) if meta.file_type().is_symlink() => {
-                            if let Ok(target) = std::fs::read_link(&repo_link) {
-                                if target == shared_repo_path {
+                            if let Ok(target) = std::fs::read_link(&repo_link)
+                                && target == shared_repo_path {
                                     is_referenced = true;
                                     break;
                                 }
-                            }
                         }
                         _ => {}
                     }
@@ -902,6 +902,7 @@ impl ThreadManager {
 /// 3. REPLY COMMAND RESULTS → direct reply (if commands found)
 /// 4. CHECK BODY → if empty after commands + quoted history stripping → stop
 /// 5. DISPATCH TO AGENT → agent.process() handles everything
+#[allow(clippy::too_many_arguments)]
 async fn process_message(
     item: &mut QueueItem,
     thread_name: &str,
@@ -909,7 +910,7 @@ async fn process_message(
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
-    template_dir: &PathBuf,
+    template_dir: &Path,
     config: &Arc<ArcSwap<jyc_types::AppConfig>>,
     thread_manager: Arc<ThreadManager>,
     thread_cancel: CancellationToken,
@@ -942,8 +943,8 @@ async fn process_message(
     // The previous `&mut message.clone()` here mutated a temporary that
     // was immediately dropped, so `saved_path` never reached the agent
     // and image-only WeChat messages were silently text-only.
-    if !item.message.attachments.is_empty() {
-        if let Err(e) = crate::attachment_storage::save_attachments_to_dir(
+    if !item.message.attachments.is_empty()
+        && let Err(e) = crate::attachment_storage::save_attachments_to_dir(
             &mut item.message,
             &store_result.thread_path,
             item.attachment_config.as_ref(),
@@ -952,7 +953,6 @@ async fn process_message(
         {
             tracing::warn!(error = %e, "Failed to save attachments");
         }
-    }
 
     // From here on we only need a shared borrow of the message.
     let message = &item.message;
@@ -978,7 +978,7 @@ async fn process_message(
         config: config.load_full(),
         channel: message.channel.clone(),
         agent: Some(agent.clone()),
-        template_dir: template_dir.clone(),
+        template_dir: template_dir.to_path_buf(),
     };
 
     let cmd_output = command_registry

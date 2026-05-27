@@ -101,7 +101,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
-        let footer_enabled = channel_config.footer.as_ref().map_or(true, |f| f.enabled);
+        let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
 
         // Create the outbound adapter based on channel type
         // For wechat, we need to share the WebSocket sender between inbound and outbound
@@ -641,7 +641,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let inspect_task = if config_snapshot
         .inspect
         .as_ref()
-        .map_or(false, |i| i.enabled)
+        .is_some_and(|i| i.enabled)
     {
         let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: jyc_inspect::server::SharedActivityMap =

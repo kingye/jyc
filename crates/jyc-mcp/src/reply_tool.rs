@@ -58,6 +58,12 @@ pub struct ReplyToolHandler {
     tool_router: ToolRouter<Self>,
 }
 
+impl Default for ReplyToolHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReplyToolHandler {
     pub fn new() -> Self {
         Self {

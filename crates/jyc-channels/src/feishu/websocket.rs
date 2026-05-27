@@ -192,8 +192,8 @@ impl FeishuWebSocket {
                     .and_then(|e| e.get("name"))
                     .and_then(|n| n.as_str());
 
-                let thread_name = if chat_name.is_some() {
-                    helpers::sanitize_for_filesystem(chat_name.unwrap())
+                let thread_name = if let Some(chat_name) = chat_name {
+                    helpers::sanitize_for_filesystem(chat_name)
                 } else if let Ok(Some(name)) = self.client.get_chat_name(chat_id).await {
                     name
                 } else {
@@ -579,7 +579,7 @@ impl FeishuWebSocket {
             .create_time
             .as_deref()
             .and_then(|t| t.parse::<i64>().ok())
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+            .and_then(chrono::DateTime::from_timestamp_millis)
             .unwrap_or_else(chrono::Utc::now);
 
         // Attachments will be saved later in thread directory
@@ -669,6 +669,12 @@ fn strip_mention_placeholders(
         result = result.replace(&mention.key, "");
     }
     result.trim().to_string()
+}
+
+/// Derive thread name from chat_id for thread close events.
+/// This matches the logic in FeishuMatcher::derive_thread_name().
+fn derive_thread_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
+    format!("{}_{}", channel_name, chat_id)
 }
 
 #[cfg(test)]
@@ -833,10 +839,4 @@ mod tests {
         ws.reset_reconnection_count();
         assert_eq!(ws.reconnect_count, 0);
     }
-}
-
-/// Derive thread name from chat_id for thread close events.
-/// This matches the logic in FeishuMatcher::derive_thread_name().
-fn derive_thread_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
-    format!("{}_{}", channel_name, chat_id)
 }

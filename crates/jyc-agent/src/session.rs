@@ -73,9 +73,9 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
     }
 
     // Load raw context (provider-formatted JSON)
-    if context_path.exists() {
-        if let Ok(content) = tokio::fs::read_to_string(&context_path).await {
-            if let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+    if context_path.exists()
+        && let Ok(content) = tokio::fs::read_to_string(&context_path).await
+            && let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
                 // Filter out invalid assistant messages (no content, no tool_calls)
                 let raw_context = crate::provider::filter_valid_messages(&raw_context);
 
@@ -100,8 +100,6 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
                     }
                 }
             }
-        }
-    }
 
     // Fallback: no raw context available, start fresh
     (Vec::new(), Vec::new())
@@ -392,12 +390,11 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
             }
             "assistant" => {
                 out.push_str("ASSISTANT");
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() {
+                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
+                    && !text.is_empty() {
                         out.push_str(": ");
                         out.push_str(text);
                     }
-                }
                 if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
                     for block in blocks {
                         let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -483,8 +480,8 @@ async fn summarize_context_heuristic(thread_path: &Path) {
             }
             "assistant" => {
                 let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !content.is_empty() {
-                    if let Some(user_msg) = last_user.take() {
+                if !content.is_empty()
+                    && let Some(user_msg) = last_user.take() {
                         // Keep only role + content (strip reasoning_content, tool_calls)
                         let clean_assistant = serde_json::json!({
                             "role": "assistant",
@@ -492,7 +489,6 @@ async fn summarize_context_heuristic(thread_path: &Path) {
                         });
                         pairs.push((user_msg, clean_assistant));
                     }
-                }
             }
             _ => {} // Skip tool messages
         }
@@ -534,13 +530,11 @@ async fn summarize_context_heuristic(thread_path: &Path) {
 
 /// Load session state from disk.
 async fn load_session_state(path: &Path) -> SessionState {
-    if path.exists() {
-        if let Ok(content) = tokio::fs::read_to_string(path).await {
-            if let Ok(state) = serde_json::from_str(&content) {
+    if path.exists()
+        && let Ok(content) = tokio::fs::read_to_string(path).await
+            && let Ok(state) = serde_json::from_str(&content) {
                 return state;
             }
-        }
-    }
     SessionState::default()
 }
 
@@ -555,6 +549,7 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 }
 
 /// Fallback: Load context from chat_history_*.md files (text-only).
+#[allow(dead_code)]
 async fn load_from_chat_history(
     thread_path: &Path,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
@@ -608,6 +603,7 @@ async fn load_from_chat_history(
 }
 
 /// Parse chat history markdown entries into Messages.
+#[allow(dead_code)]
 fn parse_chat_entries(
     content: &str,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
@@ -619,8 +615,8 @@ fn parse_chat_entries(
 
     for line in content.lines() {
         if line.starts_with("<!-- ") && line.ends_with(" -->") {
-            if let Some(msg_type) = current_type {
-                if current_after_cutoff && !current_text.trim().is_empty() {
+            if let Some(msg_type) = current_type
+                && current_after_cutoff && !current_text.trim().is_empty() {
                     let msg = if msg_type == "received" {
                         Message::user(current_text.trim().to_string())
                     } else {
@@ -628,7 +624,6 @@ fn parse_chat_entries(
                     };
                     messages.push(msg);
                 }
-            }
 
             current_type = if line.contains("type:received") {
                 Some("received")
@@ -645,8 +640,8 @@ fn parse_chat_entries(
                     .unwrap_or(false);
             }
         } else if line == "---" {
-            if let Some(msg_type) = current_type {
-                if current_after_cutoff && !current_text.trim().is_empty() {
+            if let Some(msg_type) = current_type
+                && current_after_cutoff && !current_text.trim().is_empty() {
                     let msg = if msg_type == "received" {
                         Message::user(current_text.trim().to_string())
                     } else {
@@ -654,19 +649,17 @@ fn parse_chat_entries(
                     };
                     messages.push(msg);
                 }
-            }
             current_type = None;
             current_text.clear();
-        } else if current_type.is_some() {
-            if !line.starts_with("**FROM:**") && !line.starts_with("**SUBJECT:**") {
+        } else if current_type.is_some()
+            && !line.starts_with("**FROM:**") && !line.starts_with("**SUBJECT:**") {
                 current_text.push_str(line);
                 current_text.push('\n');
             }
-        }
     }
 
-    if let Some(msg_type) = current_type {
-        if current_after_cutoff && !current_text.trim().is_empty() {
+    if let Some(msg_type) = current_type
+        && current_after_cutoff && !current_text.trim().is_empty() {
             let msg = if msg_type == "received" {
                 Message::user(current_text.trim().to_string())
             } else {
@@ -674,12 +667,12 @@ fn parse_chat_entries(
             };
             messages.push(msg);
         }
-    }
 
     messages
 }
 
 /// Extract timestamp from a chat history metadata comment line.
+#[allow(dead_code)]
 fn extract_timestamp(line: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let inner = line.strip_prefix("<!-- ")?.strip_suffix(" -->")?;
     let ts_str = inner.split('|').next()?.trim();

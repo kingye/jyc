@@ -57,16 +57,14 @@ impl App {
     }
 
     fn tick_status(&mut self) {
-        if let Some((_, at)) = &self.status_message {
-            if at.elapsed() > Duration::from_secs(5) {
+        if let Some((_, at)) = &self.status_message
+            && at.elapsed() > Duration::from_secs(5) {
                 self.status_message = None;
             }
-        }
-        if let Some((_, at)) = &self.pending_reset {
-            if at.elapsed() > Duration::from_secs(3) {
+        if let Some((_, at)) = &self.pending_reset
+            && at.elapsed() > Duration::from_secs(3) {
                 self.pending_reset = None;
             }
-        }
     }
 
     fn next_thread(&mut self) {
@@ -135,9 +133,9 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
         terminal.draw(|f| ui(f, &mut app))?;
 
         // Handle input (non-blocking, 50ms timeout)
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             app.should_quit = true;
@@ -212,8 +210,6 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                         }
                     }
                 }
-            }
-        }
 
         if app.should_quit {
             break Ok(());

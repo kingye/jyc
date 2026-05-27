@@ -61,7 +61,7 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
             if val == "|" || val == "|-" || val == ">" {
                 // YAML block scalar: collect indented lines until --- or non-indented line
                 let mut desc = String::new();
-                while let Some(line) = lines.next() {
+                for line in lines.by_ref() {
                     let trimmed = line.trim();
                     if trimmed == "---" {
                         // Put back the --- terminator so the outer loop can handle it
@@ -239,23 +239,21 @@ impl JycAgentService {
 
         // Load AGENTS.md if present in the working directory
         let agents_md = thread_path.join("AGENTS.md");
-        if agents_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&agents_md) {
+        if agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&agents_md) {
                 prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
                 prompt.push_str(&content);
                 prompt.push_str("\n\n");
             }
-        }
 
         // Also check repo/AGENTS.md (common for GitHub threads)
         let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
-        if repo_agents_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&repo_agents_md) {
+        if repo_agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&repo_agents_md) {
                 prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
                 prompt.push_str(&content);
                 prompt.push_str("\n\n");
             }
-        }
 
         // Discover and inject skill metadata
         let skills = self.discover_skills(thread_path);
@@ -682,7 +680,7 @@ impl AgentService for JycAgentService {
             .and_then(|p| p.small_model.as_deref());
         let small_model_resolved = pattern_small_model.or(self.config.small_model.as_deref());
         let small_provider: Option<Box<dyn provider::Provider>> =
-            small_model_resolved.as_deref().and_then(|m| {
+            small_model_resolved.and_then(|m| {
                 match provider::create_provider(m, &self.config.providers) {
                     Ok(p) => {
                         tracing::info!(

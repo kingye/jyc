@@ -15,7 +15,7 @@ pub use service::JycAgentService;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::provider::{self, Provider};
+    use crate::provider;
     use crate::types::{Message, ProviderConfig};
     use futures::StreamExt;
     use std::collections::HashMap;

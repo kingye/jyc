@@ -56,7 +56,7 @@ pub fn derive_thread_name(subject: &str, pattern_prefixes: &[String]) -> String 
 
     // Strip configured prefixes (longest first to avoid partial matches)
     let mut sorted_prefixes: Vec<&String> = pattern_prefixes.iter().collect();
-    sorted_prefixes.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted_prefixes.sort_by_key(|a| std::cmp::Reverse(a.len()));
 
     for prefix in sorted_prefixes {
         let lower_name = name.to_lowercase();
@@ -166,11 +166,10 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 
     // Try to break at a word boundary
-    if let Some(space_pos) = text[..end].rfind(char::is_whitespace) {
-        if space_pos > max_chars / 2 {
+    if let Some(space_pos) = text[..end].rfind(char::is_whitespace)
+        && space_pos > max_chars / 2 {
             return format!("{}...", &text[..space_pos]);
         }
-    }
 
     format!("{}...", &text[..end])
 }
@@ -405,6 +404,7 @@ pub fn build_footer(
 /// ---
 /// Model: <model> | Mode: <mode> | Tokens: <current>K/<max>K
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub async fn build_full_reply_text(
     reply_text: &str,
     _thread_path: &std::path::Path,

@@ -132,7 +132,7 @@ struct ResponseMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     /// Verify that the request body is serialized as expected.
     #[test]

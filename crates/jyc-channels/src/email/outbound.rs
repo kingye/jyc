@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -176,8 +176,8 @@ impl OutboundAdapter for EmailOutboundAdapter {
         .await;
 
         // 3. Validate attachments if configuration is present
-        if let Some(attachments) = attachments {
-            if let Some(ref config) = self.attachment_config {
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config {
                 if let Err(e) =
                     attachment_validator::validate_outbound_attachments(attachments, config).await
                 {
@@ -192,7 +192,6 @@ impl OutboundAdapter for EmailOutboundAdapter {
                 }
                 tracing::debug!("Outbound attachments validated successfully");
             }
-        }
 
         // 4. Send via SMTP
         let send_result = self.smtp_send(original, &full_reply, attachments).await?;

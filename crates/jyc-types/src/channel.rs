@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::InboundAttachmentConfig;
+use crate::config::McpServerConfig;
 
 /// Channel type identifier (e.g., "email", "feishu", "slack")
 pub type ChannelType = String;
@@ -297,6 +298,15 @@ pub struct ChannelPattern {
     /// but below the runtime `.jyc/model-override` file.
     #[serde(default)]
     pub small_model: Option<String>,
+    /// Per-pattern MCP server configurations.
+    ///
+    /// When set to `Some(list)`, only these MCP servers are loaded for threads
+    /// matching this pattern. When `None` (default), the global `[[mcps]]` list
+    /// is used for backward compatibility.
+    ///
+    /// Set to `Some([])` (empty list) to disable all MCP tools for this pattern.
+    #[serde(default)]
+    pub mcps: Option<Vec<McpServerConfig>>,
 }
 
 impl Default for ChannelPattern {
@@ -316,6 +326,7 @@ impl Default for ChannelPattern {
             inject_inbound_images: false,
             model: None,
             small_model: None,
+            mcps: None,
         }
     }
 }

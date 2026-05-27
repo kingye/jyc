@@ -176,7 +176,7 @@ impl ReadImageTool {
         // additional_read_roots. Uses the shared check_path_boundary
         // method from ToolContext which handles canonicalization, symlink
         // exemption, and additional_read_roots.
-        if let Err(msg) = ctx.check_path_boundary(path_str, &path) {
+        if let Err(msg) = ctx.check_path_boundary(path_str, path) {
             return Ok(ToolOutput::error(msg));
         }
 

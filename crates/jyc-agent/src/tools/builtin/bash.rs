@@ -80,10 +80,10 @@ impl Tool for BashTool {
                 // existing filesystem paths. This catches obvious escape
                 // attempts (e.g. `cat /etc/passwd`) while allowing flags
                 // like `-C` and commands that shell out to relative paths.
-                if candidate.exists() {
-                    if let Err(msg) = ctx.check_path_boundary(token, candidate) {
-                        return Ok(ToolOutput::error(msg));
-                    }
+                if candidate.exists()
+                    && let Err(msg) = ctx.check_path_boundary(token, candidate)
+                {
+                    return Ok(ToolOutput::error(msg));
                 }
             }
         }

@@ -217,6 +217,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     small_model: agent_config.small_model.clone(),
                     providers,
                     max_iterations: agent_config.max_iterations,
+                    vision: agent_config.vision.clone().map(|v| jyc_agent::types::VisionConfig {
+                        enabled: v.enabled,
+                        provider: v.provider,
+                        model: v.model,
+                        prompt: v.prompt,
+                    }),
                 };
                 // Flatten patterns from all channels so the agent can look up
                 // per-pattern flags (e.g. inject_inbound_images) by

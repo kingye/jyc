@@ -215,6 +215,27 @@ pub struct ModelConfig {
     pub params: Option<serde_json::Value>,
 }
 
+/// Vision model configuration for the `read_image` tool fallback.
+///
+/// When the primary model does not support images (`supports_images = false`),
+/// the `read_image` tool uses this configuration to call an independent vision
+/// model (e.g., DeepSeek-OCR) to analyze images and return text descriptions.
+///
+/// The `provider` field references a named entry in `[agent.providers.xxx]`
+/// to reuse its `base_url` and `api_key_env`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisionConfig {
+    /// Whether vision fallback is enabled (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+    /// Name of the provider in `[agent.providers]` to use for vision calls
+    pub provider: String,
+    /// Model identifier (e.g., "deepseek-ocr")
+    pub model: String,
+    /// Optional custom prompt for the vision model
+    pub prompt: Option<String>,
+}
+
 /// Agent configuration section from config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -234,6 +255,9 @@ pub struct AgentConfig {
     /// When exceeded, agent sends progress reply, resets counter, and continues.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    /// Vision fallback configuration for text-only models to use an external
+    /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
+    pub vision: Option<VisionConfig>,
 }
 
 impl Default for AgentConfig {
@@ -243,6 +267,7 @@ impl Default for AgentConfig {
             small_model: None,
             providers: std::collections::HashMap::new(),
             max_iterations: default_max_iterations(),
+            vision: None,
         }
     }
 }

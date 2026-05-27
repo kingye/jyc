@@ -190,6 +190,27 @@ impl Default for MonitorConfig {
     }
 }
 
+/// Vision model configuration for the `read_image` tool fallback.
+///
+/// When the primary model does not support images (`supports_images = false`),
+/// the `read_image` tool uses this configuration to call an independent vision
+/// model (e.g., DeepSeek-OCR) to analyze images and return text descriptions.
+///
+/// The `provider` field references a named entry in `[agent.providers.xxx]`
+/// to reuse its `base_url` and `api_key_env`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VisionConfig {
+    /// Whether vision fallback is enabled (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+    /// Name of the provider in `[agent.providers]` to use for vision calls
+    pub provider: String,
+    /// Model identifier (e.g., "deepseek-ocr")
+    pub model: String,
+    /// Optional custom prompt for the vision model (e.g., "请仔细识别并提取图片中的所有文字内容")
+    pub prompt: Option<String>,
+}
+
 /// Agent configuration — how the AI responds to messages.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
@@ -232,6 +253,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub providers: std::collections::HashMap<String, ProviderDef>,
 
+    /// Vision fallback configuration for text-only models to use an external
+    /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
+    pub vision: Option<VisionConfig>,
 }
 
 /// Provider definition for the in-process agent.

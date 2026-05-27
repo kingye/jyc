@@ -549,6 +549,22 @@ impl JycAgentService {
             }
         }
 
+        // Apply per-pattern disabled_builtin_tools: remove any built-in
+        // tools that the pattern explicitly disables.
+        if let Some(disabled) = matched_pattern_name
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.disabled_builtin_tools.as_ref())
+        {
+            for tool_name in disabled {
+                tracing::debug!(
+                    tool = %tool_name,
+                    pattern = %matched_pattern_name.unwrap_or("?"),
+                    "Removing disabled built-in tool"
+                );
+                registry.remove(tool_name);
+            }
+        }
+
         registry
     }
 

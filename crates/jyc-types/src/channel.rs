@@ -307,6 +307,16 @@ pub struct ChannelPattern {
     /// Set to `Some([])` (empty list) to disable all MCP tools for this pattern.
     #[serde(default)]
     pub mcps: Option<Vec<McpServerConfig>>,
+    /// Built-in tools to disable for this pattern.
+    ///
+    /// Tool names match `Tool::name()`: `"bash"`, `"write"`, `"edit"`,
+    /// `"grep"`, `"glob"`, `"read"`, `"webfetch"`, `"read_image"`.
+    ///
+    /// When set to `Some(list)`, those tools are removed from the registry
+    /// before the agent loop starts. When `None` (default), all built-in
+    /// tools remain enabled.
+    #[serde(default)]
+    pub disabled_builtin_tools: Option<Vec<String>>,
 }
 
 impl Default for ChannelPattern {
@@ -327,6 +337,7 @@ impl Default for ChannelPattern {
             model: None,
             small_model: None,
             mcps: None,
+            disabled_builtin_tools: None,
         }
     }
 }

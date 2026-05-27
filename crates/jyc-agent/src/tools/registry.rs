@@ -26,6 +26,11 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Remove a tool by name. No-op if the tool is not registered.
+    pub fn remove(&mut self, name: &str) {
+        self.tools.remove(name);
+    }
+
     /// Get all tool definitions for the LLM.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.to_definition()).collect()

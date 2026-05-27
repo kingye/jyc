@@ -66,6 +66,15 @@ impl Tool for GrepTool {
 
         let include_pattern = input.get("include").and_then(|i| i.as_str());
 
+        // Security: only check boundary when an explicit search_dir is
+        // provided (i.e. different from the default working_dir).
+        if search_dir != ctx.working_dir {
+            let display = input.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            if let Err(msg) = ctx.check_path_boundary(display, &search_dir) {
+                return Ok(ToolOutput::error(msg));
+            }
+        }
+
         let regex = Regex::new(pattern)
             .map_err(|e| anyhow::anyhow!("Invalid regex pattern '{}': {e}", pattern))?;
 

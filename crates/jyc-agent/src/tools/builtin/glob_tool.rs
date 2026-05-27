@@ -55,6 +55,15 @@ impl Tool for GlobTool {
             })
             .unwrap_or_else(|| ctx.working_dir.to_path_buf());
 
+        // Security: only check boundary when an explicit search_dir is
+        // provided (different from the default working_dir).
+        if search_dir != ctx.working_dir {
+            let display = input.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            if let Err(msg) = ctx.check_path_boundary(display, &search_dir) {
+                return Ok(ToolOutput::error(msg));
+            }
+        }
+
         // Build full glob pattern
         let full_pattern = search_dir.join(pattern).to_string_lossy().to_string();
 

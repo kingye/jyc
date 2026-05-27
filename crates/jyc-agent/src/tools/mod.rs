@@ -67,6 +67,57 @@ impl<'a> ToolContext<'a> {
     pub fn take_pending_images(&self) -> Vec<ImageSource> {
         std::mem::take(&mut *self.pending_images.lock().expect("pending_images poisoned"))
     }
+
+    /// Check that `resolved` is within `working_dir` (or one of the
+    /// `additional_read_roots`). Returns `Ok(())` when the path is inside
+    /// the boundary, or an `Err` with a user-facing access-denied message.
+    ///
+    /// **Symlink exemption**: when any ancestor component of `resolved`
+    /// above `working_dir` is a symlink (e.g. the `repo_group` feature
+    /// where `repo/ -> /other/path`), the check is skipped. This lets the
+    /// agent work with symlinked repos without false positives.
+    pub fn check_path_boundary(
+        &self,
+        display_path: &str,
+        resolved: &Path,
+    ) -> std::result::Result<(), String> {
+        // Symlink exemption: skip the boundary check when a symlink
+        // component is found above working_dir. This preserves the
+        // repo_group feature where working_dir/repo -> /other/path.
+        let has_symlink = resolved
+            .ancestors()
+            .any(|ancestor| ancestor != self.working_dir && ancestor.is_symlink());
+
+        if has_symlink {
+            return Ok(());
+        }
+
+        let canonical = resolved
+            .canonicalize()
+            .unwrap_or_else(|_| resolved.to_path_buf());
+        let working_canonical = self
+            .working_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.working_dir.to_path_buf());
+
+        if canonical.starts_with(&working_canonical) {
+            return Ok(());
+        }
+
+        // Also check additional_read_roots (e.g. configured attachment
+        // save paths outside working_dir).
+        for root in &self.additional_read_roots {
+            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            if canonical.starts_with(&root_canonical) {
+                return Ok(());
+            }
+        }
+
+        Err(format!(
+            "Access denied: path '{}' is outside the working directory",
+            display_path
+        ))
+    }
 }
 
 /// Trait for tools that can be invoked by the agent.

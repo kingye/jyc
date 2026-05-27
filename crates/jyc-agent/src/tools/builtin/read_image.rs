@@ -173,28 +173,11 @@ impl ReadImageTool {
         }
 
         // Boundary check: path must lie under working_dir or one of the
-        // additional_read_roots.
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let working_canonical = ctx
-            .working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| ctx.working_dir.to_path_buf());
-
-        let mut allowed = canonical.starts_with(&working_canonical);
-        if !allowed {
-            for root in &ctx.additional_read_roots {
-                let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-                if canonical.starts_with(&root_canonical) {
-                    allowed = true;
-                    break;
-                }
-            }
-        }
-        if !allowed {
-            return Ok(ToolOutput::error(format!(
-                "Access denied: path '{}' is outside the working directory and configured attachment roots",
-                path_str
-            )));
+        // additional_read_roots. Uses the shared check_path_boundary
+        // method from ToolContext which handles canonicalization, symlink
+        // exemption, and additional_read_roots.
+        if let Err(msg) = ctx.check_path_boundary(path_str, path) {
+            return Ok(ToolOutput::error(msg));
         }
 
         // Detect MIME from extension.

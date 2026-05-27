@@ -1,4 +1,18 @@
 //! Bash tool — execute shell commands.
+//!
+//! ## Security boundary
+//!
+//! `bash` applies a **best-effort heuristic check** before execution: it
+//! scans the command string for absolute-path tokens (words starting with
+//! `/`). Each such token is resolved against `working_dir` and passed
+//! through `ToolContext::check_path_boundary`. This catches obvious escape
+//! attempts like `cat /etc/passwd`, `ls /root`, or `rm -rf /tmp/evil`.
+//!
+//! **Limitations**: this is a simple lexer heuristic, not a full sandbox.
+//! Bash is inherently capable of arbitrary system access via shell
+//! builtins (`cd /`, variable expansion, process substitution, etc.).
+//! A determined attacker can bypass it. Full sandboxing requires OS-level
+//! isolation (Linux namespaces, chroot, containers).
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -55,6 +69,24 @@ impl Tool for BashTool {
             .get("timeout")
             .and_then(|t| t.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+        // Best-effort boundary check: scan for absolute-path tokens and
+        // verify each is within the working directory. This catches obvious
+        // escape attempts (cat /etc/passwd) without fully sandboxing bash.
+        for token in command.split_whitespace() {
+            if token.starts_with('/') {
+                let candidate = std::path::Path::new(token);
+                // Only check tokens that start with `/` and correspond to
+                // existing filesystem paths. This catches obvious escape
+                // attempts (e.g. `cat /etc/passwd`) while allowing flags
+                // like `-C` and commands that shell out to relative paths.
+                if candidate.exists()
+                    && let Err(msg) = ctx.check_path_boundary(token, candidate)
+                {
+                    return Ok(ToolOutput::error(msg));
+                }
+            }
+        }
 
         tracing::debug!(command = %command, timeout = timeout_secs, "Executing bash command");
 

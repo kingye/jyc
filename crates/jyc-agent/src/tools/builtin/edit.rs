@@ -70,6 +70,11 @@ impl Tool for EditTool {
             ctx.working_dir.join(file_path)
         };
 
+        // Security: ensure path is within working directory.
+        if let Err(msg) = ctx.check_path_boundary(file_path, &path) {
+            return Ok(ToolOutput::error(msg));
+        }
+
         // Read current content
         let content = tokio::fs::read_to_string(&path)
             .await

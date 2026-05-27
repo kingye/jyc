@@ -8,6 +8,7 @@ pub mod types;
 pub mod agent_loop;
 pub mod session;
 pub mod service;
+pub mod vision;
 
 pub use service::JycAgentService;
 

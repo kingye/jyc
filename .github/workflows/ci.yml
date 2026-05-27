@@ -41,9 +41,21 @@ jobs:
         run: >
           cargo llvm-cov --workspace --all-targets --summary-only
           --ignore-filename-regex 'crates/jyc-cli/src/main\.rs'
-          --fail-under-lines 70 | tee coverage.txt
+          | tee coverage.txt
+
+      - name: Check coverage threshold
+        run: |
+          threshold=70
+          pct=$(awk '/lines.*:/ {gsub(/%/,"",$2); printf "%.0f", $2}' coverage.txt)
+          echo "Line coverage: ${pct}%"
+          if [ "${pct}" -lt "${threshold}" ]; then
+            echo "❌ Coverage ${pct}% is below ${threshold}% threshold"
+            exit 1
+          fi
+          echo "✅ Coverage ${pct}% meets ${threshold}% threshold"
 
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@v2
+        if: always()
         with:
           path: coverage.txt

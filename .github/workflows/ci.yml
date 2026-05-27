@@ -11,6 +11,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Formatting, linting, testing, and coverage enforcement
   ci:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest

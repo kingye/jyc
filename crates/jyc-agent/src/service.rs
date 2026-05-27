@@ -404,17 +404,39 @@ impl JycAgentService {
                     .collect();
 
                 if !image_hints.is_empty() {
-                    // Extract existing text and append image hints
-                    let existing_text = match &blocks[0] {
-                        ContentBlock::Text { text } => text.clone(),
-                        _ => String::new(),
+                    // Append image path hints to the first Text block, or
+                    // insert a new one if none exists. Using `find` avoids
+                    // assuming the first block type.
+                    let hint_text = {
+                        let mut lines = String::new();
+                        lines.push_str("\n\nImage attachments available (use read_image tool to analyze):\n");
+                        for hint in &image_hints {
+                            lines.push_str(&format!("- {}\n", hint));
+                        }
+                        lines
                     };
-                    let mut new_text = existing_text;
-                    new_text.push_str("\n\nImage attachments available (use read_image tool to analyze):\n");
-                    for hint in &image_hints {
-                        new_text.push_str(&format!("- {}\n", hint));
+
+                    let found = blocks.iter_mut().find_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            text.push_str(&hint_text);
+                            Some(())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if found.is_none() {
+                        // No Text block found; prepend a new one
+                        blocks.insert(
+                            0,
+                            ContentBlock::Text {
+                                text: format!(
+                                    "Image attachments available (use read_image tool to analyze):\n{}",
+                                    image_hints.join("\n")
+                                ),
+                            },
+                        );
                     }
-                    blocks[0] = ContentBlock::Text { text: new_text };
                 }
             }
 

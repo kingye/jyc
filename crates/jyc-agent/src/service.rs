@@ -604,9 +604,12 @@ impl AgentService for JycAgentService {
             "Processing message with in-process agent"
         );
 
-        // 1. Read model override if present
+        // 1. Read model override with priority:
+        //    a) .jyc/model-override file (highest priority, manual runtime override)
+        //    b) Pattern-level model (from matched pattern config)
+        //    c) Config-level model (from self.config.model, i.e. global or channel-level)
         let model_override_path = thread_path.join(".jyc").join("model-override");
-        let model_override = if model_override_path.exists() {
+        let file_override = if model_override_path.exists() {
             tokio::fs::read_to_string(&model_override_path)
                 .await
                 .ok()
@@ -615,6 +618,12 @@ impl AgentService for JycAgentService {
         } else {
             None
         };
+        let pattern_override = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref());
+        let model_override = file_override.clone()
+            .or_else(|| pattern_override.map(|s| s.to_string()))
+            .or_else(|| self.config.model.clone());
 
         // 2. Create provider
         let provider = self.create_provider(model_override.as_deref())
@@ -626,11 +635,17 @@ impl AgentService for JycAgentService {
             "Using provider"
         );
 
-        // 2b. Optionally create the small provider for ancillary calls
-        //     (cycle-boundary progress summary, between-message context
-        //     reset). Construction failures are non-fatal — log a warning
-        //     and fall back to the main provider for those calls.
-        let small_provider: Option<Box<dyn provider::Provider>> = self.config.small_model
+        // 2b. Resolve small_model with priority:
+        //     1. Pattern-level small_model (from matched pattern config)
+        //     2. Config-level small_model (from self.config.small_model, already
+        //        channel-resolved or global fallback)
+        //     Falls back to main model at call site if unset or construction fails.
+        let pattern_small_model = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.small_model.as_deref());
+        let small_model_resolved = pattern_small_model
+            .or(self.config.small_model.as_deref());
+        let small_provider: Option<Box<dyn provider::Provider>> = small_model_resolved
             .as_deref()
             .and_then(|m| match provider::create_provider(m, &self.config.providers) {
                 Ok(p) => {
@@ -713,7 +728,6 @@ impl AgentService for JycAgentService {
         // 9. Update session token tracking
         // Resolve context_window: per-model override > provider default
         let model_str = model_override.as_deref()
-            .or(self.config.model.as_deref())
             .unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
             self.config.providers.get(provider_name).and_then(|p| {

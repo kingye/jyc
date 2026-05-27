@@ -542,10 +542,7 @@ impl JycAgentService {
 
         // Load external MCP tools from resolved configs
         if !mcp_configs.is_empty() {
-            tracing::info!(
-                mcp_count = mcp_configs.len(),
-                "Loading external MCP tools"
-            );
+            tracing::info!(mcp_count = mcp_configs.len(), "Loading external MCP tools");
             let mcp_tools = crate::tools::mcp_client::load_mcp_tools(mcp_configs).await;
             for tool in mcp_tools {
                 registry.register(tool);
@@ -722,7 +719,11 @@ impl AgentService for JycAgentService {
 
         // 5. Build tool registry
         let tools = self
-            .build_tool_registry(thread_path, provider.supports_images(), message.matched_pattern.as_deref())
+            .build_tool_registry(
+                thread_path,
+                provider.supports_images(),
+                message.matched_pattern.as_deref(),
+            )
             .await;
 
         // 6. Get event bus for this thread

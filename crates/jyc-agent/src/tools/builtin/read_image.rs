@@ -1,17 +1,34 @@
-//! `read_image` tool — load an image file or URL into the next user turn.
+//! `read_image` tool — the **single entry point** for all image analysis.
 //!
-//! Dual-mode operation:
+//! All images, whether loaded by the LLM on demand or auto-injected from
+//! inbound attachments, go through `read_image` for processing. The tool
+//! operates in one of two modes:
 //!
 //! 1. **Image injection mode** (when `supports_images = true`):
 //!    Pushes the loaded image onto `ToolContext.pending_images`; the agent loop
 //!    drains the queue after the tool batch completes and emits a synthetic
 //!    user-role message carrying the image content blocks. This is the original
-//!    behavior.
+//!    behavior for multimodal models.
 //!
 //! 2. **Vision fallback mode** (when `supports_images = false` + VisionClient):
 //!    Loads the image, sends it to an external vision model (e.g., DeepSeek-OCR)
 //!    via the VisionClient, and returns the textual analysis directly as the
-//!    tool output. No pending_images queue is used.
+//!    tool output. No pending_images queue is used. This mode is only active
+//!    when the current message's pattern has `inject_inbound_images = true`,
+//!    ensuring consistent behavior with the auto-injection path in
+//!    `build_user_blocks` (see `service.rs`).
+//!
+//! ## Design rationale
+//!
+//! - `read_image` is always registered regardless of model capabilities, so
+//!   the tool schema is stable and honest across sessions.
+//! - The execution mode (injection vs. fallback) is determined at runtime
+//!   based on `ToolContext.pattern_inject_images` (set from the per-message
+//!   pattern config) and the tool's own `supports_images` / `vision_client`
+//!   fields.
+//! - When neither condition is met, the tool returns a descriptive error
+//!   guiding the user to configure `[agent.vision]` or enable
+//!   `inject_inbound_images`.
 //!
 //! ## Why a side-channel instead of a tool-result block (mode 1 only)
 //!
@@ -297,8 +314,11 @@ impl ReadImageTool {
                 })
                 .to_string(),
             ))
-        } else if let Some(vc) = &self.vision_client {
-            // Mode 2: Vision fallback — send to vision model
+        } else if ctx.pattern_inject_images && self.vision_client.is_some() {
+            // Mode 2: Vision fallback — send to vision model (only when
+            // the pattern allows image handling, consistent with
+            // `build_user_blocks` in service.rs).
+            let vc = self.vision_client.as_ref().unwrap();
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             match vc.analyze(media_type, &data).await {
                 Ok(text) => Ok(ToolOutput::success(
@@ -316,11 +336,17 @@ impl ReadImageTool {
             }
         } else {
             // No vision capability available
-            Ok(ToolOutput::error(
+            let msg = if !ctx.pattern_inject_images {
+                "The current pattern does not allow image handling \
+                 (inject_inbound_images is disabled). Enable it in \
+                 config.toml or use a different pattern to use the \
+                 read_image tool with vision fallback."
+            } else {
                 "The current model does not support images and no vision \
                  fallback model is configured. Set [agent.vision] in \
-                 config.toml to enable image analysis via a separate vision model.",
-            ))
+                 config.toml to enable image analysis via a separate vision model."
+            };
+            Ok(ToolOutput::error(msg))
         }
     }
 }

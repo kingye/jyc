@@ -649,6 +649,14 @@ impl AgentService for JycAgentService {
         // 6. Get event bus for this thread
         let event_bus = self.get_event_bus(thread_name).await;
 
+        // 6b. Determine per-pattern image injection flag for consistency
+        // between `build_user_blocks` and the `read_image` tool's
+        // vision-fallback decision.
+        let pattern_inject = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .map(|p| p.inject_inbound_images)
+            .unwrap_or(false);
+
         // 7. Run agent loop
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let result = agent_loop::run(AgentLoopConfig {
@@ -665,6 +673,7 @@ impl AgentService for JycAgentService {
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
             additional_read_roots,
+            pattern_inject_images: pattern_inject,
         })
         .await?;
 

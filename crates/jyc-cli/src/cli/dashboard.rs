@@ -459,7 +459,13 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     ];
 
     if let (Some(cur), Some(max)) = (selected.input_tokens, selected.max_tokens) {
-        let pct = if max > 0 { cur.checked_mul(100).and_then(|v| v.checked_div(max)).unwrap_or(0) } else { 0 };
+        let pct = if max > 0 {
+            cur.checked_mul(100)
+                .and_then(|v| v.checked_div(max))
+                .unwrap_or(0)
+        } else {
+            0
+        };
         status_line.push(Span::raw("  "));
         status_line.push(Span::styled(
             "Tokens: ",

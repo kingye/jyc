@@ -53,6 +53,11 @@ impl Tool for WriteTool {
             ctx.working_dir.join(file_path)
         };
 
+        // Security: ensure path is within working directory.
+        if let Err(msg) = ctx.check_path_boundary(file_path, &path) {
+            return Ok(ToolOutput::error(msg));
+        }
+
         // Create parent directories
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)

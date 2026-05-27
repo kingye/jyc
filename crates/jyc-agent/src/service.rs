@@ -386,6 +386,31 @@ impl JycAgentService {
             .unwrap_or(false);
 
         if !(supports_images && pattern_inject) {
+            // For text-only models with inject_inbound_images enabled, append
+            // image file path hints so the LLM knows which images are available
+            // and can invoke `read_image` to analyze them via vision fallback.
+            if !supports_images && pattern_inject {
+                let image_hints: Vec<String> = message.attachments
+                    .iter()
+                    .filter(|a| a.content_type.starts_with("image/"))
+                    .filter_map(|a| a.saved_path.as_ref().map(|p| p.display().to_string()))
+                    .collect();
+
+                if !image_hints.is_empty() {
+                    // Extract existing text and append image hints
+                    let existing_text = match &blocks[0] {
+                        ContentBlock::Text { text } => text.clone(),
+                        _ => String::new(),
+                    };
+                    let mut new_text = existing_text;
+                    new_text.push_str("\n\nImage attachments available (use read_image tool to analyze):\n");
+                    for hint in &image_hints {
+                        new_text.push_str(&format!("- {}\n", hint));
+                    }
+                    blocks[0] = ContentBlock::Text { text: new_text };
+                }
+            }
+
             return blocks;
         }
 

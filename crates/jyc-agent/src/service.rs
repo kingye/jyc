@@ -19,6 +19,8 @@ use crate::provider;
 use crate::session;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
+use crate::vision::VisionClient;
+use std::sync::Arc;
 
 /// Metadata for a discovered skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,17 +115,21 @@ pub struct JycAgentService {
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
+    /// Vision fallback client for text-only models to analyze images.
+    vision_client: Option<Arc<VisionClient>>,
 }
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
-    /// MCP configs, channel patterns, and global inbound-attachment config.
+    /// MCP configs, channel patterns, global inbound-attachment config,
+    /// and optional vision fallback client.
     pub fn new(
         config: AgentConfig,
         workdir: PathBuf,
         mcp_configs: Vec<McpServerConfig>,
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
+        vision_client: Option<Arc<VisionClient>>,
     ) -> Self {
         Self {
             config,
@@ -132,6 +138,7 @@ impl JycAgentService {
             mcp_configs,
             patterns,
             global_inbound_attachments,
+            vision_client,
         }
     }
 
@@ -465,10 +472,16 @@ impl JycAgentService {
         // Start with all built-in tools
         let mut registry = crate::tools::builtin::create_builtin_registry();
 
-        // Image-loading built-in (only when the model accepts images).
-        if supports_images {
-            crate::tools::builtin::register_read_image(&mut registry, true, None);
-        }
+        // Always register read_image. When the model supports images, images
+        // are queued for injection into the next user turn. When the model is
+        // text-only and a VisionClient is configured, the tool falls back to
+        // the vision model for analysis. When neither condition is met, the
+        // tool returns a helpful error message.
+        crate::tools::builtin::register_read_image(
+            &mut registry,
+            supports_images,
+            self.vision_client.clone(),
+        );
 
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);

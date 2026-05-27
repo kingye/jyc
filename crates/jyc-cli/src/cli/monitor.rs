@@ -232,12 +232,42 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .filter_map(|c| c.patterns.clone())
                     .flatten()
                     .collect();
+                // Build optional VisionClient for vision fallback
+                let vision_client: Option<std::sync::Arc<jyc_agent::vision::VisionClient>> = {
+                    agent_config.vision.as_ref()
+                        .filter(|v| v.enabled)
+                        .and_then(|v| {
+                            let provider_def = agent_config.providers.get(&v.provider)?;
+                            let base_url = provider_def.base_url.clone()
+                                .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+                            let api_key_env = provider_def.api_key_env.clone()
+                                .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
+                            let api_key = std::env::var(&api_key_env).unwrap_or_default();
+                            if api_key.is_empty() {
+                                tracing::warn!(
+                                    provider = %v.provider,
+                                    api_key_env = %api_key_env,
+                                    "Vision fallback: API key not found in environment"
+                                );
+                                return None;
+                            }
+                            Some(std::sync::Arc::new(
+                                jyc_agent::vision::VisionClient::new(
+                                    base_url,
+                                    api_key,
+                                    v.model.clone(),
+                                    v.prompt.clone(),
+                                )
+                            ))
+                        })
+                };
                 Arc::new(JycAgentService::new(
                     agent_cfg,
                     workdir.to_path_buf(),
                     config_snapshot.mcps.clone(),
                     all_patterns,
                     inbound_attachment_config.clone(),
+                    vision_client,
                 ))
             }
             "static" => {

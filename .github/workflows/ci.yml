@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    # Skip draft PRs — only run when the PR is marked as ready
+    # (github.event.pull_request.draft == false check via job-level if)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Coverage
+        run: >
+          cargo llvm-cov --workspace --all-targets --summary-only
+          --ignore-filename-regex 'crates/jyc-cli/src/main\.rs'
+          --fail-under-lines 70 | tee coverage.txt
+
+      - name: Post coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: coverage.txt

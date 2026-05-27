@@ -245,19 +245,21 @@ pub fn match_message(
                 if let Some(ref domains) = sender_rule.domain {
                     any_rule_present = true;
                     if let Some(domain) = extract_domain(&addr)
-                        && domains.iter().any(|d| d.to_lowercase() == domain) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.domain".to_string(), domain);
-                        }
+                        && domains.iter().any(|d| d.to_lowercase() == domain)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.domain".to_string(), domain);
+                    }
                 }
 
                 if let Some(ref regex_str) = sender_rule.regex {
                     any_rule_present = true;
                     if let Ok(re) = Regex::new(regex_str)
-                        && re.is_match(&addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.regex".to_string(), addr.clone());
-                        }
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
+                    }
                 }
 
                 !any_rule_present || any_rule_matched
@@ -269,38 +271,38 @@ pub fn match_message(
         }
 
         // Check subject rules
-        if matches
-            && let Some(ref subject_rule) = pattern.rules.subject {
-                let subj = message.topic.to_lowercase();
+        if matches && let Some(ref subject_rule) = pattern.rules.subject {
+            let subj = message.topic.to_lowercase();
 
-                let subject_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let subject_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref prefixes) = subject_rule.prefix {
-                        any_rule_present = true;
-                        if prefixes.iter().any(|p| subj.starts_with(&p.to_lowercase())) {
-                            any_rule_matched = true;
-                            match_details.insert("subject.prefix".to_string(), subj.clone());
-                        }
+                if let Some(ref prefixes) = subject_rule.prefix {
+                    any_rule_present = true;
+                    if prefixes.iter().any(|p| subj.starts_with(&p.to_lowercase())) {
+                        any_rule_matched = true;
+                        match_details.insert("subject.prefix".to_string(), subj.clone());
                     }
-
-                    if let Some(ref regex_str) = subject_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = Regex::new(regex_str)
-                            && re.is_match(&subj) {
-                                any_rule_matched = true;
-                                match_details.insert("subject.regex".to_string(), subj.clone());
-                            }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !subject_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = subject_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = Regex::new(regex_str)
+                        && re.is_match(&subj)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("subject.regex".to_string(), subj.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !subject_matches {
+                matches = false;
             }
+        }
 
         if matches {
             return Some(PatternMatch {

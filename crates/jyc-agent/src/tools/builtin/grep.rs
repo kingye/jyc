@@ -121,9 +121,9 @@ fn search_recursive(
                 || name == "node_modules"
                 || name == "target"
                 || name == "vendor")
-            {
-                continue;
-            }
+        {
+            continue;
+        }
 
         if path.is_dir() {
             search_recursive(

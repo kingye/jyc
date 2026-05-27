@@ -58,13 +58,15 @@ impl App {
 
     fn tick_status(&mut self) {
         if let Some((_, at)) = &self.status_message
-            && at.elapsed() > Duration::from_secs(5) {
-                self.status_message = None;
-            }
+            && at.elapsed() > Duration::from_secs(5)
+        {
+            self.status_message = None;
+        }
         if let Some((_, at)) = &self.pending_reset
-            && at.elapsed() > Duration::from_secs(3) {
-                self.pending_reset = None;
-            }
+            && at.elapsed() > Duration::from_secs(3)
+        {
+            self.pending_reset = None;
+        }
     }
 
     fn next_thread(&mut self) {
@@ -135,81 +137,81 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
         // Handle input (non-blocking, 50ms timeout)
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next_thread();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.prev_thread();
-                        }
-                        KeyCode::Char('r') => {
-                            // Force refresh
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    app.should_quit = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.next_thread();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.prev_thread();
+                }
+                KeyCode::Char('r') => {
+                    // Force refresh
+                    last_poll = std::time::Instant::now() - poll_interval;
+                }
+                KeyCode::Char('R') => {
+                    // Reload config
+                    match client.reload_config().await {
+                        Ok((true, msg)) => {
+                            app.set_status(format!("Config reloaded: {msg}"));
                             last_poll = std::time::Instant::now() - poll_interval;
                         }
-                        KeyCode::Char('R') => {
-                            // Reload config
-                            match client.reload_config().await {
-                                Ok((true, msg)) => {
-                                    app.set_status(format!("Config reloaded: {msg}"));
-                                    last_poll = std::time::Instant::now() - poll_interval;
-                                }
-                                Ok((false, msg)) => {
-                                    app.set_status(format!("Reload failed: {msg}"));
-                                }
-                                Err(e) => {
-                                    app.set_status(format!("Reload error: {e:#}"));
-                                }
-                            }
+                        Ok((false, msg)) => {
+                            app.set_status(format!("Reload failed: {msg}"));
                         }
-                        KeyCode::Char('s') => {
-                            if let Some((ref thread_name, at)) = app.pending_reset {
-                                if at.elapsed() <= Duration::from_secs(3) {
-                                    let name = thread_name.clone();
-                                    app.clear_pending_reset();
-                                    match client.reset_session(&name).await {
-                                        Ok((true, msg)) => {
-                                            app.set_status(format!("Session reset: {msg}"));
-                                            last_poll = std::time::Instant::now() - poll_interval;
-                                        }
-                                        Ok((false, msg)) => {
-                                            app.set_status(format!("Reset failed: {msg}"));
-                                        }
-                                        Err(e) => {
-                                            app.set_status(format!("Reset error: {e:#}"));
-                                        }
-                                    }
-                                } else {
-                                    app.clear_pending_reset();
-                                }
-                            } else {
-                                let thread_name = app.state.as_ref().and_then(|s| {
-                                    app.table_state
-                                        .selected()
-                                        .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
-                                });
-                                match thread_name {
-                                    Some(name) => {
-                                        app.pending_reset =
-                                            Some((name.clone(), std::time::Instant::now()));
-                                        app.set_status(format!(
-                                            "Press `s` again to confirm reset session for {name}"
-                                        ));
-                                    }
-                                    None => {
-                                        app.set_status("No thread selected".to_string());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            app.clear_pending_reset();
+                        Err(e) => {
+                            app.set_status(format!("Reload error: {e:#}"));
                         }
                     }
                 }
+                KeyCode::Char('s') => {
+                    if let Some((ref thread_name, at)) = app.pending_reset {
+                        if at.elapsed() <= Duration::from_secs(3) {
+                            let name = thread_name.clone();
+                            app.clear_pending_reset();
+                            match client.reset_session(&name).await {
+                                Ok((true, msg)) => {
+                                    app.set_status(format!("Session reset: {msg}"));
+                                    last_poll = std::time::Instant::now() - poll_interval;
+                                }
+                                Ok((false, msg)) => {
+                                    app.set_status(format!("Reset failed: {msg}"));
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Reset error: {e:#}"));
+                                }
+                            }
+                        } else {
+                            app.clear_pending_reset();
+                        }
+                    } else {
+                        let thread_name = app.state.as_ref().and_then(|s| {
+                            app.table_state
+                                .selected()
+                                .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
+                        });
+                        match thread_name {
+                            Some(name) => {
+                                app.pending_reset = Some((name.clone(), std::time::Instant::now()));
+                                app.set_status(format!(
+                                    "Press `s` again to confirm reset session for {name}"
+                                ));
+                            }
+                            None => {
+                                app.set_status("No thread selected".to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    app.clear_pending_reset();
+                }
+            }
+        }
 
         if app.should_quit {
             break Ok(());

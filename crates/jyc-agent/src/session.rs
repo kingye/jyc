@@ -75,31 +75,30 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
     // Load raw context (provider-formatted JSON)
     if context_path.exists()
         && let Ok(content) = tokio::fs::read_to_string(&context_path).await
-            && let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-                // Filter out invalid assistant messages (no content, no tool_calls)
-                let raw_context = crate::provider::filter_valid_messages(&raw_context);
+        && let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content)
+    {
+        // Filter out invalid assistant messages (no content, no tool_calls)
+        let raw_context = crate::provider::filter_valid_messages(&raw_context);
 
-                if !raw_context.is_empty() {
-                    // Validate: must contain at least one assistant message
-                    let has_assistant = raw_context
-                        .iter()
-                        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
-                    if has_assistant {
-                        tracing::debug!(
-                            context_messages = raw_context.len(),
-                            "Loaded raw context from agent-context.json"
-                        );
-                        // Build internal messages from raw context (for reply detection logic)
-                        let internal = raw_context_to_messages(&raw_context);
-                        return (internal, raw_context);
-                    } else {
-                        tracing::warn!(
-                            "Context file has no assistant messages (corrupted), ignoring"
-                        );
-                        tokio::fs::remove_file(&context_path).await.ok();
-                    }
-                }
+        if !raw_context.is_empty() {
+            // Validate: must contain at least one assistant message
+            let has_assistant = raw_context
+                .iter()
+                .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+            if has_assistant {
+                tracing::debug!(
+                    context_messages = raw_context.len(),
+                    "Loaded raw context from agent-context.json"
+                );
+                // Build internal messages from raw context (for reply detection logic)
+                let internal = raw_context_to_messages(&raw_context);
+                return (internal, raw_context);
+            } else {
+                tracing::warn!("Context file has no assistant messages (corrupted), ignoring");
+                tokio::fs::remove_file(&context_path).await.ok();
             }
+        }
+    }
 
     // Fallback: no raw context available, start fresh
     (Vec::new(), Vec::new())
@@ -391,10 +390,11 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
             "assistant" => {
                 out.push_str("ASSISTANT");
                 if let Some(text) = msg.get("content").and_then(|c| c.as_str())
-                    && !text.is_empty() {
-                        out.push_str(": ");
-                        out.push_str(text);
-                    }
+                    && !text.is_empty()
+                {
+                    out.push_str(": ");
+                    out.push_str(text);
+                }
                 if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
                     for block in blocks {
                         let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -481,14 +481,15 @@ async fn summarize_context_heuristic(thread_path: &Path) {
             "assistant" => {
                 let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                 if !content.is_empty()
-                    && let Some(user_msg) = last_user.take() {
-                        // Keep only role + content (strip reasoning_content, tool_calls)
-                        let clean_assistant = serde_json::json!({
-                            "role": "assistant",
-                            "content": content,
-                        });
-                        pairs.push((user_msg, clean_assistant));
-                    }
+                    && let Some(user_msg) = last_user.take()
+                {
+                    // Keep only role + content (strip reasoning_content, tool_calls)
+                    let clean_assistant = serde_json::json!({
+                        "role": "assistant",
+                        "content": content,
+                    });
+                    pairs.push((user_msg, clean_assistant));
+                }
             }
             _ => {} // Skip tool messages
         }
@@ -532,9 +533,10 @@ async fn summarize_context_heuristic(thread_path: &Path) {
 async fn load_session_state(path: &Path) -> SessionState {
     if path.exists()
         && let Ok(content) = tokio::fs::read_to_string(path).await
-            && let Ok(state) = serde_json::from_str(&content) {
-                return state;
-            }
+        && let Ok(state) = serde_json::from_str(&content)
+    {
+        return state;
+    }
     SessionState::default()
 }
 
@@ -616,14 +618,16 @@ fn parse_chat_entries(
     for line in content.lines() {
         if line.starts_with("<!-- ") && line.ends_with(" -->") {
             if let Some(msg_type) = current_type
-                && current_after_cutoff && !current_text.trim().is_empty() {
-                    let msg = if msg_type == "received" {
-                        Message::user(current_text.trim().to_string())
-                    } else {
-                        Message::assistant(current_text.trim().to_string())
-                    };
-                    messages.push(msg);
-                }
+                && current_after_cutoff
+                && !current_text.trim().is_empty()
+            {
+                let msg = if msg_type == "received" {
+                    Message::user(current_text.trim().to_string())
+                } else {
+                    Message::assistant(current_text.trim().to_string())
+                };
+                messages.push(msg);
+            }
 
             current_type = if line.contains("type:received") {
                 Some("received")
@@ -641,32 +645,38 @@ fn parse_chat_entries(
             }
         } else if line == "---" {
             if let Some(msg_type) = current_type
-                && current_after_cutoff && !current_text.trim().is_empty() {
-                    let msg = if msg_type == "received" {
-                        Message::user(current_text.trim().to_string())
-                    } else {
-                        Message::assistant(current_text.trim().to_string())
-                    };
-                    messages.push(msg);
-                }
+                && current_after_cutoff
+                && !current_text.trim().is_empty()
+            {
+                let msg = if msg_type == "received" {
+                    Message::user(current_text.trim().to_string())
+                } else {
+                    Message::assistant(current_text.trim().to_string())
+                };
+                messages.push(msg);
+            }
             current_type = None;
             current_text.clear();
         } else if current_type.is_some()
-            && !line.starts_with("**FROM:**") && !line.starts_with("**SUBJECT:**") {
-                current_text.push_str(line);
-                current_text.push('\n');
-            }
+            && !line.starts_with("**FROM:**")
+            && !line.starts_with("**SUBJECT:**")
+        {
+            current_text.push_str(line);
+            current_text.push('\n');
+        }
     }
 
     if let Some(msg_type) = current_type
-        && current_after_cutoff && !current_text.trim().is_empty() {
-            let msg = if msg_type == "received" {
-                Message::user(current_text.trim().to_string())
-            } else {
-                Message::assistant(current_text.trim().to_string())
-            };
-            messages.push(msg);
-        }
+        && current_after_cutoff
+        && !current_text.trim().is_empty()
+    {
+        let msg = if msg_type == "received" {
+            Message::user(current_text.trim().to_string())
+        } else {
+            Message::assistant(current_text.trim().to_string())
+        };
+        messages.push(msg);
+    }
 
     messages
 }

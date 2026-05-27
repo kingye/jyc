@@ -338,8 +338,7 @@ impl Default for ChannelPattern {
 /// - Email checks: `sender`, `subject`
 /// - Feishu checks: `mentions`, `keywords`, `sender`, `chat_name`
 /// - GitHub checks: `github_type`, `labels`, `assignees`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PatternRules {
     // --- Shared rules ---
     /// Sender matching rules (email address, feishu user ID, etc.)
@@ -380,7 +379,6 @@ pub struct PatternRules {
     #[serde(default)]
     pub exclude_labels: Option<Vec<String>>,
 }
-
 
 /// Rules for matching the sender of a message.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

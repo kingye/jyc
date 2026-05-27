@@ -96,38 +96,38 @@ pub fn wechat_match_message(
         }
 
         // --- Sender rule (shared) ---
-        if matches
-            && let Some(ref sender_rule) = pattern.rules.sender {
-                let addr = message.sender_address.to_lowercase();
+        if matches && let Some(ref sender_rule) = pattern.rules.sender {
+            let addr = message.sender_address.to_lowercase();
 
-                let sender_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let sender_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref exact_addrs) = sender_rule.exact {
-                        any_rule_present = true;
-                        if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.exact".to_string(), addr.clone());
-                        }
+                if let Some(ref exact_addrs) = sender_rule.exact {
+                    any_rule_present = true;
+                    if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
+                        any_rule_matched = true;
+                        match_details.insert("sender.exact".to_string(), addr.clone());
                     }
-
-                    if let Some(ref regex_str) = sender_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str)
-                            && re.is_match(&addr) {
-                                any_rule_matched = true;
-                                match_details.insert("sender.regex".to_string(), addr.clone());
-                            }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !sender_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = sender_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = regex::Regex::new(regex_str)
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !sender_matches {
+                matches = false;
             }
+        }
 
         if matches {
             return Some(PatternMatch {

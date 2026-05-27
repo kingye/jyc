@@ -177,21 +177,22 @@ impl OutboundAdapter for EmailOutboundAdapter {
 
         // 3. Validate attachments if configuration is present
         if let Some(attachments) = attachments
-            && let Some(ref config) = self.attachment_config {
-                if let Err(e) =
-                    attachment_validator::validate_outbound_attachments(attachments, config).await
-                {
-                    let filenames: Vec<&str> =
-                        attachments.iter().map(|a| a.filename.as_str()).collect();
-                    tracing::error!(
-                        error = %format!("{:#}", e),
-                        attachments = ?filenames,
-                        "Outbound attachment validation failed"
-                    );
-                    return Err(e.context("Failed to validate outbound attachments"));
-                }
-                tracing::debug!("Outbound attachments validated successfully");
+            && let Some(ref config) = self.attachment_config
+        {
+            if let Err(e) =
+                attachment_validator::validate_outbound_attachments(attachments, config).await
+            {
+                let filenames: Vec<&str> =
+                    attachments.iter().map(|a| a.filename.as_str()).collect();
+                tracing::error!(
+                    error = %format!("{:#}", e),
+                    attachments = ?filenames,
+                    "Outbound attachment validation failed"
+                );
+                return Err(e.context("Failed to validate outbound attachments"));
             }
+            tracing::debug!("Outbound attachments validated successfully");
+        }
 
         // 4. Send via SMTP
         let send_result = self.smtp_send(original, &full_reply, attachments).await?;

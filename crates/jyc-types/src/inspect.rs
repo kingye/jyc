@@ -104,7 +104,6 @@ pub enum Severity {
     Error,
 }
 
-
 /// A single activity event from the thread's SSE stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
@@ -135,7 +134,6 @@ pub enum ThreadStatus {
     /// Thread encountered an error
     Error,
 }
-
 
 impl std::fmt::Display for ThreadStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

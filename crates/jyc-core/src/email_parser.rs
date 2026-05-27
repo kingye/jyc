@@ -167,9 +167,10 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
 
     // Try to break at a word boundary
     if let Some(space_pos) = text[..end].rfind(char::is_whitespace)
-        && space_pos > max_chars / 2 {
-            return format!("{}...", &text[..space_pos]);
-        }
+        && space_pos > max_chars / 2
+    {
+        return format!("{}...", &text[..space_pos]);
+    }
 
     format!("{}...", &text[..end])
 }

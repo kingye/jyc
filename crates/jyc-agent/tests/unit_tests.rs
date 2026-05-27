@@ -205,7 +205,6 @@ mod parse_openai_chunk {
 
 mod session {
     use jyc_agent::session;
-    
 
     /// Minimal stub provider that panics if any LLM method is invoked.
     /// Used by `update_tokens` tests where the auto-reset threshold is NOT
@@ -663,7 +662,7 @@ mod skills {
     use jyc_agent::JycAgentService;
     use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
     use jyc_agent::types::AgentConfig;
-    
+
     use std::path::PathBuf;
     use std::sync::Mutex;
 

@@ -128,9 +128,10 @@ async fn run_list(source_dir_arg: Option<&Path>) -> Result<()> {
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if path.is_dir()
-            && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                names.push(name.to_string());
-            }
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+        {
+            names.push(name.to_string());
+        }
     }
     names.sort();
 
@@ -201,18 +202,20 @@ async fn run_deploy(
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if path.is_dir()
-            && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                template_dirs.push(name.to_string());
-            }
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+        {
+            template_dirs.push(name.to_string());
+        }
     }
     template_dirs.sort();
 
     for tpl_name in &template_dirs {
         // Filter by template name if specified
         if let Some(filter) = template_name
-            && tpl_name != filter {
-                continue;
-            }
+            && tpl_name != filter
+        {
+            continue;
+        }
 
         let deploy_name = as_name.unwrap_or(tpl_name.as_str());
         let target = target_dir.join(deploy_name);

@@ -630,15 +630,16 @@ impl WechatWebSocket {
 
             // Post-download size check.
             if let Some(max) = max_size_bytes
-                && (resp.bytes.len() as u64) > max {
-                    tracing::warn!(
-                        size = resp.bytes.len(),
-                        max,
-                        item_type,
-                        "WeChat media item exceeds max_file_size, skipping"
-                    );
-                    continue;
-                }
+                && (resp.bytes.len() as u64) > max
+            {
+                tracing::warn!(
+                    size = resp.bytes.len(),
+                    max,
+                    item_type,
+                    "WeChat media item exceeds max_file_size, skipping"
+                );
+                continue;
+            }
 
             // Synthesise filename. Bridge doesn't ship one in the image
             // shape we've seen; voice/file shapes might (we'll surface it

@@ -200,12 +200,13 @@ impl OutboundAdapter for WechatOutboundAdapter {
 
         // 8. Handle attachments (WeChat v1: text-only, log a warning)
         if let Some(atts) = attachments
-            && !atts.is_empty() {
-                tracing::warn!(
-                    count = atts.len(),
-                    "WeChat v1 does not support attachments, skipping"
-                );
-            }
+            && !atts.is_empty()
+        {
+            tracing::warn!(
+                count = atts.len(),
+                "WeChat v1 does not support attachments, skipping"
+            );
+        }
 
         // 9. Store reply to chat log
         self.storage
@@ -279,11 +280,12 @@ fn resolve_outbound_to(original: &InboundMessage) -> Option<String> {
             .get("group")
             .and_then(|g| g.get("id"))
             .and_then(|v| v.as_str())
-            && !group_id.is_empty() {
-                return Some(group_id.to_string());
-            }
-        // Group flag set but no group.id available — fall through to
-        // sender_address rather than failing outright.
+        && !group_id.is_empty()
+    {
+        return Some(group_id.to_string());
+    }
+    // Group flag set but no group.id available — fall through to
+    // sender_address rather than failing outright.
 
     if !original.sender_address.is_empty() {
         return Some(original.sender_address.clone());

@@ -638,11 +638,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     }
 
     // 5. Start inspect server (if configured)
-    let inspect_task = if config_snapshot
-        .inspect
-        .as_ref()
-        .is_some_and(|i| i.enabled)
-    {
+    let inspect_task = if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
         let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: jyc_inspect::server::SharedActivityMap =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));

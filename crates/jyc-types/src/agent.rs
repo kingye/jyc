@@ -1,4 +1,3 @@
-
 use crate::channel::InboundMessage;
 use crate::channel::PatternMatch;
 use crate::config::InboundAttachmentConfig;

@@ -48,9 +48,10 @@ impl ChannelMatcher for FeishuMatcher {
         // P2P: use sender display name (e.g., "Zhang San")
         // Fallback: use opaque IDs with prefix
         if let Some(chat_name) = message.metadata.get("chat_name").and_then(|v| v.as_str())
-            && !chat_name.is_empty() {
-                return sanitize_for_filesystem(chat_name);
-            }
+            && !chat_name.is_empty()
+        {
+            return sanitize_for_filesystem(chat_name);
+        }
 
         let chat_type = message
             .metadata
@@ -59,9 +60,10 @@ impl ChannelMatcher for FeishuMatcher {
             .unwrap_or("");
         if chat_type == "p2p"
             && let Some(sender_name) = message.metadata.get("sender_name").and_then(|v| v.as_str())
-                && !sender_name.is_empty() {
-                    return sanitize_for_filesystem(sender_name);
-                }
+            && !sender_name.is_empty()
+        {
+            return sanitize_for_filesystem(sender_name);
+        }
 
         // Fallback to opaque IDs with prefix (if name API calls failed)
         if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
@@ -166,86 +168,84 @@ pub fn feishu_match_message(
 
         // --- Keywords rule ---
         // Check if the message body contains any of the configured keywords
-        if matches
-            && let Some(ref keywords) = pattern.rules.keywords {
-                let body = message
-                    .content
-                    .text
-                    .as_deref()
-                    .or(message.content.markdown.as_deref())
-                    .unwrap_or("")
-                    .to_lowercase();
+        if matches && let Some(ref keywords) = pattern.rules.keywords {
+            let body = message
+                .content
+                .text
+                .as_deref()
+                .or(message.content.markdown.as_deref())
+                .unwrap_or("")
+                .to_lowercase();
 
-                let keyword_matches = keywords.iter().any(|kw| body.contains(&kw.to_lowercase()));
+            let keyword_matches = keywords.iter().any(|kw| body.contains(&kw.to_lowercase()));
 
-                if !keyword_matches {
-                    matches = false;
-                } else {
-                    let matched_kw: Vec<&str> = keywords
-                        .iter()
-                        .filter(|kw| body.contains(&kw.to_lowercase()))
-                        .map(|s| s.as_str())
-                        .collect();
-                    match_details.insert("keywords".to_string(), matched_kw.join(","));
-                }
+            if !keyword_matches {
+                matches = false;
+            } else {
+                let matched_kw: Vec<&str> = keywords
+                    .iter()
+                    .filter(|kw| body.contains(&kw.to_lowercase()))
+                    .map(|s| s.as_str())
+                    .collect();
+                match_details.insert("keywords".to_string(), matched_kw.join(","));
             }
+        }
 
         // --- Chat name rule ---
         // Check if the message's group chat name matches any configured name (case-insensitive)
-        if matches
-            && let Some(ref chat_names) = pattern.rules.chat_name {
-                let msg_chat_name = message
-                    .metadata
-                    .get("chat_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
+        if matches && let Some(ref chat_names) = pattern.rules.chat_name {
+            let msg_chat_name = message
+                .metadata
+                .get("chat_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
 
-                let chat_name_matches = chat_names
-                    .iter()
-                    .any(|cn| msg_chat_name.starts_with(&cn.to_lowercase()));
+            let chat_name_matches = chat_names
+                .iter()
+                .any(|cn| msg_chat_name.starts_with(&cn.to_lowercase()));
 
-                if !chat_name_matches {
-                    matches = false;
-                } else {
-                    match_details.insert("chat_name".to_string(), msg_chat_name);
-                }
+            if !chat_name_matches {
+                matches = false;
+            } else {
+                match_details.insert("chat_name".to_string(), msg_chat_name);
             }
+        }
 
         // --- Sender rule (shared) ---
         // Feishu uses sender_address as the user's open_id
-        if matches
-            && let Some(ref sender_rule) = pattern.rules.sender {
-                let addr = message.sender_address.to_lowercase();
+        if matches && let Some(ref sender_rule) = pattern.rules.sender {
+            let addr = message.sender_address.to_lowercase();
 
-                let sender_matches = {
-                    let mut any_rule_present = false;
-                    let mut any_rule_matched = false;
+            let sender_matches = {
+                let mut any_rule_present = false;
+                let mut any_rule_matched = false;
 
-                    if let Some(ref exact_addrs) = sender_rule.exact {
-                        any_rule_present = true;
-                        if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
-                            any_rule_matched = true;
-                            match_details.insert("sender.exact".to_string(), addr.clone());
-                        }
+                if let Some(ref exact_addrs) = sender_rule.exact {
+                    any_rule_present = true;
+                    if exact_addrs.iter().any(|e| e.to_lowercase() == addr) {
+                        any_rule_matched = true;
+                        match_details.insert("sender.exact".to_string(), addr.clone());
                     }
-
-                    if let Some(ref regex_str) = sender_rule.regex {
-                        any_rule_present = true;
-                        if let Ok(re) = regex::Regex::new(regex_str)
-                            && re.is_match(&addr) {
-                                any_rule_matched = true;
-                                match_details.insert("sender.regex".to_string(), addr.clone());
-                            }
-                    }
-
-                    !any_rule_present || any_rule_matched
-                };
-
-                if !sender_matches {
-                    matches = false;
                 }
+
+                if let Some(ref regex_str) = sender_rule.regex {
+                    any_rule_present = true;
+                    if let Ok(re) = regex::Regex::new(regex_str)
+                        && re.is_match(&addr)
+                    {
+                        any_rule_matched = true;
+                        match_details.insert("sender.regex".to_string(), addr.clone());
+                    }
+                }
+
+                !any_rule_present || any_rule_matched
+            };
+
+            if !sender_matches {
+                matches = false;
             }
+        }
 
         if matches {
             return Some(PatternMatch {

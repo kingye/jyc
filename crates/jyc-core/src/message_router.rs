@@ -121,12 +121,12 @@ impl MessageRouter {
                 .metadata
                 .get("github_number")
                 .and_then(|v| v.as_u64())
-            {
-                let key = crate::thread_path::compute_repo_group_key(&repo_group, github_number);
-                message
-                    .metadata
-                    .insert("repo_group_key".to_string(), serde_json::Value::String(key));
-            }
+        {
+            let key = crate::thread_path::compute_repo_group_key(&repo_group, github_number);
+            message
+                .metadata
+                .insert("repo_group_key".to_string(), serde_json::Value::String(key));
+        }
 
         // 4. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");

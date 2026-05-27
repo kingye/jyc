@@ -632,10 +632,12 @@ impl ThreadManager {
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if path.is_dir() && path.join(".jyc").is_dir()
-                    && let Some(name) = entry.file_name().to_str() {
-                        thread_names.push(name.to_string());
-                    }
+                if path.is_dir()
+                    && path.join(".jyc").is_dir()
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    thread_names.push(name.to_string());
+                }
             }
         }
         thread_names.sort();
@@ -866,10 +868,11 @@ impl ThreadManager {
                     match tokio::fs::symlink_metadata(&repo_link).await {
                         Ok(meta) if meta.file_type().is_symlink() => {
                             if let Ok(target) = std::fs::read_link(&repo_link)
-                                && target == shared_repo_path {
-                                    is_referenced = true;
-                                    break;
-                                }
+                                && target == shared_repo_path
+                            {
+                                is_referenced = true;
+                                break;
+                            }
                         }
                         _ => {}
                     }
@@ -950,9 +953,9 @@ async fn process_message(
             item.attachment_config.as_ref(),
         )
         .await
-        {
-            tracing::warn!(error = %e, "Failed to save attachments");
-        }
+    {
+        tracing::warn!(error = %e, "Failed to save attachments");
+    }
 
     // From here on we only need a shared borrow of the message.
     let message = &item.message;

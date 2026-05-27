@@ -110,11 +110,12 @@ impl Provider for AnthropicProvider {
         // Merge extra params from config (provider-level + model-level)
         if let Some(ref params) = self.params
             && let Some(params_obj) = params.as_object()
-                && let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
+            }
+        }
 
         // Build request
         let mut req = self
@@ -331,11 +332,12 @@ impl Provider for AnthropicProvider {
         // Merge extra params
         if let Some(ref params) = self.params
             && let Some(params_obj) = params.as_object()
-                && let Some(body_obj) = body.as_object_mut() {
-                    for (k, v) in params_obj {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
-                }
+            && let Some(body_obj) = body.as_object_mut()
+        {
+            for (k, v) in params_obj {
+                body_obj.insert(k.clone(), v.clone());
+            }
+        }
 
         let mut req = self
             .client

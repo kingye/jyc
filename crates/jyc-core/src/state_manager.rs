@@ -4,15 +4,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Per-channel IMAP monitoring state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitorState {
     pub last_sequence_number: u32,
     pub last_processed_uid: Option<u32>,
     pub last_processed_timestamp: Option<String>,
     pub uid_validity: Option<u32>,
 }
-
 
 /// Manages per-channel IMAP state (sequence numbers, processed UIDs).
 ///

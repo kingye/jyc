@@ -7,7 +7,8 @@ use tokio_util::sync::CancellationToken;
 use super::client::{GithubClient, GithubComment};
 use jyc_types::GithubConfig;
 use jyc_types::{
-    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage, MessageContent, PatternMatch, PatternRules,
+    ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
+    MessageContent, PatternMatch, PatternRules,
 };
 
 /// GitHub channel matcher — stateless pattern matching for GitHub events.
@@ -42,9 +43,10 @@ impl ChannelMatcher for GithubMatcher {
         // and AGENTS.md without collision.
         if let Some(pm) = pattern_match {
             if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
-                && let Some(prefix) = pattern.thread_prefix.as_deref() {
-                    return format!("{}-{}", prefix, number);
-                }
+                && let Some(prefix) = pattern.thread_prefix.as_deref()
+            {
+                return format!("{}-{}", prefix, number);
+            }
 
             // Backwards-compatible fallback: a pattern named "reviewer"
             // without an explicit `thread_prefix` keeps the historical
@@ -121,9 +123,10 @@ impl ChannelMatcher for GithubMatcher {
                 .metadata
                 .get("comment_role")
                 .and_then(|v| v.as_str())
-                && pattern_role.eq_ignore_ascii_case(comment_role) {
-                    continue;
-                }
+                && pattern_role.eq_ignore_ascii_case(comment_role)
+            {
+                continue;
+            }
 
             return Some(PatternMatch {
                 pattern_name: pattern.name.clone(),
@@ -194,9 +197,10 @@ impl GithubMatcher {
 
         // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
         if let Some(ref label_rule) = rules.labels
-            && !label_rule.matches(&msg_labels) {
-                return false;
-            }
+            && !label_rule.matches(&msg_labels)
+        {
+            return false;
+        }
 
         // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
         if let Some(ref exclude_labels) = rules.exclude_labels {
@@ -635,9 +639,10 @@ impl GithubInboundAdapter {
             let name = file_name.to_string_lossy().to_string();
             // Require strict suffix `-{N}` AND a non-empty prefix before it.
             if let Some(prefix) = name.strip_suffix(&suffix)
-                && !prefix.is_empty() {
-                    matches.push(name);
-                }
+                && !prefix.is_empty()
+            {
+                matches.push(name);
+            }
         }
         matches
     }
@@ -1679,15 +1684,16 @@ impl GithubInboundAdapter {
 /// Only recognizes known agent roles to avoid false positives.
 fn extract_comment_role(text: &str) -> Option<String> {
     if text.starts_with('[')
-        && let Some(end) = text.find(']') {
-            let role = &text[1..end];
-            match role {
-                "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => {
-                    return Some(role.to_string());
-                }
-                _ => {}
+        && let Some(end) = text.find(']')
+    {
+        let role = &text[1..end];
+        match role {
+            "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => {
+                return Some(role.to_string());
             }
+            _ => {}
         }
+    }
     None
 }
 
@@ -2295,8 +2301,7 @@ mod tests {
     fn test_all_rules_and_logic() {
         // Pattern requires: pull_request AND label "ready-for-review" AND assignee "alice"
         // Message has all three — should match
-        let msg =
-            make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
+        let msg = make_message_with_rules("pull_request", 43, &["ready-for-review"], &["alice"]);
 
         let patterns = vec![ChannelPattern {
             name: "reviewer".to_string(),

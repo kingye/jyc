@@ -240,20 +240,22 @@ impl JycAgentService {
         // Load AGENTS.md if present in the working directory
         let agents_md = thread_path.join("AGENTS.md");
         if agents_md.exists()
-            && let Ok(content) = std::fs::read_to_string(&agents_md) {
-                prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("\n\n");
-            }
+            && let Ok(content) = std::fs::read_to_string(&agents_md)
+        {
+            prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
+        }
 
         // Also check repo/AGENTS.md (common for GitHub threads)
         let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
         if repo_agents_md.exists()
-            && let Ok(content) = std::fs::read_to_string(&repo_agents_md) {
-                prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("\n\n");
-            }
+            && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
+        {
+            prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
+        }
 
         // Discover and inject skill metadata
         let skills = self.discover_skills(thread_path);

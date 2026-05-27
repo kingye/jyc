@@ -490,7 +490,17 @@ impl JycAgentService {
     /// local files or URLs into subsequent user turns. When the model is
     /// text-only, the tool is omitted to keep the schema honest (no point
     /// advertising a capability the model can't act on).
-    async fn build_tool_registry(&self, _thread_path: &Path, supports_images: bool) -> ToolRegistry {
+    ///
+    /// `matched_pattern_name` optionally selects per-pattern MCP configurations.
+    /// When the matched pattern has `mcps: Some(list)`, only those MCP servers
+    /// are loaded. When `None`, the global `[[mcps]]` list is used (backward
+    /// compatible fallback).
+    async fn build_tool_registry(
+        &self,
+        _thread_path: &Path,
+        supports_images: bool,
+        matched_pattern_name: Option<&str>,
+    ) -> ToolRegistry {
         // Start with all built-in tools
         let mut registry = crate::tools::builtin::create_builtin_registry();
 
@@ -508,13 +518,20 @@ impl JycAgentService {
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
-        // Load external MCP tools from config.toml [[mcps]]
-        if !self.mcp_configs.is_empty() {
+        // Resolve MCP configs: per-pattern first, global fallback
+        let mcp_configs: &[McpServerConfig] = matched_pattern_name
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.mcps.as_ref())
+            .map(|mcps| mcps.as_slice())
+            .unwrap_or_else(|| self.mcp_configs.as_slice());
+
+        // Load external MCP tools from resolved configs
+        if !mcp_configs.is_empty() {
             tracing::info!(
-                mcp_count = self.mcp_configs.len(),
+                mcp_count = mcp_configs.len(),
                 "Loading external MCP tools"
             );
-            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&self.mcp_configs).await;
+            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(mcp_configs).await;
             for tool in mcp_tools {
                 registry.register(tool);
             }
@@ -681,7 +698,9 @@ impl AgentService for JycAgentService {
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry
-        let tools = self.build_tool_registry(thread_path, provider.supports_images()).await;
+        let tools = self
+            .build_tool_registry(thread_path, provider.supports_images(), message.matched_pattern.as_deref())
+            .await;
 
         // 6. Get event bus for this thread
         let event_bus = self.get_event_bus(thread_name).await;

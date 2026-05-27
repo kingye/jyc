@@ -296,6 +296,16 @@ pub struct ChannelPattern {
     /// must use the `read_image` built-in tool to load them on demand.
     #[serde(default)]
     pub inject_inbound_images: bool,
+    /// Override model for this pattern's thread (e.g., "anthropic/claude-opus-4-6").
+    /// Takes priority over channel-level model and global [agent].model,
+    /// but below the runtime `.jyc/model-override` file.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Override small_model for this pattern's thread.
+    /// Takes priority over channel-level small_model and global [agent].small_model,
+    /// but below the runtime `.jyc/model-override` file.
+    #[serde(default)]
+    pub small_model: Option<String>,
 }
 
 impl Default for ChannelPattern {
@@ -313,6 +323,8 @@ impl Default for ChannelPattern {
             live_injection: true,
             repo_group: None,
             inject_inbound_images: false,
+            model: None,
+            small_model: None,
         }
     }
 }

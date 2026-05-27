@@ -126,6 +126,15 @@ pub struct ChannelConfig {
     /// Channel-specific agent config override
     pub agent: Option<AgentConfig>,
 
+    /// Override model for this channel (e.g., "anthropic/claude-opus-4-6").
+    /// Takes priority over global [agent].model, but below pattern-level model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Override small_model for this channel.
+    /// Takes priority over global [agent].small_model, but below pattern-level small_model.
+    #[serde(default)]
+    pub small_model: Option<String>,
+
     /// Footer display configuration (omit for default: footer enabled)
     pub footer: Option<FooterConfig>,
 }

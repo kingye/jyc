@@ -40,14 +40,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace
-
       - name: Coverage
-        run: >
-          cargo llvm-cov --workspace --all-targets --summary-only
-          --ignore-filename-regex 'crates/jyc-cli/src/main\.rs'
-          | tee coverage.txt
+        run: |
+          echo '## 📊 Coverage Report' > coverage.txt
+          echo '' >> coverage.txt
+          echo '```' >> coverage.txt
+          cargo llvm-cov --workspace --all-targets --summary-only \
+            --ignore-filename-regex 'crates/jyc-cli/src/main\.rs' >> coverage.txt
+          echo '```' >> coverage.txt
 
       - name: Check coverage threshold
         run: |

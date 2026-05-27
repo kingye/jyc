@@ -14,7 +14,7 @@
 //!   so users don't duplicate credentials.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::time::Duration;
 
 /// A lightweight, stateless client that sends images to a vision model and
@@ -71,19 +71,7 @@ impl VisionClient {
 
         let data_url = format!("data:{};base64,{}", media_type, base64_data);
 
-        let body = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentPart {
-                    r#type: "text".to_string(),
-                    text: Some(self.prompt.clone()),
-                    image_url: None,
-                }],
-            }],
-        };
-
-        // Build request with image_url as a separate content part
+        // Build request with text prompt + image_url content blocks
         let request_body = serde_json::json!({
             "model": self.model,
             "messages": [{
@@ -133,34 +121,7 @@ impl VisionClient {
     }
 }
 
-// ── OpenAI-compatible chat completion types ──
-
-#[derive(Debug, Serialize)]
-struct ChatCompletionRequest {
-    model: String,
-    messages: Vec<Message>,
-}
-
-#[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: Vec<ContentPart>,
-}
-
-#[derive(Debug, Serialize)]
-struct ContentPart {
-    #[serde(rename = "type")]
-    r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image_url: Option<ImageUrl>,
-}
-
-#[derive(Debug, Serialize)]
-struct ImageUrl {
-    url: String,
-}
+// ── OpenAI-compatible chat completion response types ──
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {

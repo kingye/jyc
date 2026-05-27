@@ -81,7 +81,10 @@ pub async fn download_media(url: &str, bearer_token: Option<&str>) -> Result<Med
                 .send()
                 .await
                 .with_context(|| {
-                    format!("WeChat media GET {} (with token) failed at the transport layer", url)
+                    format!(
+                        "WeChat media GET {} (with token) failed at the transport layer",
+                        url
+                    )
                 })?;
 
             if resp.status().is_success() {

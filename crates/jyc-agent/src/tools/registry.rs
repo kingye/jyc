@@ -39,7 +39,11 @@ impl ToolRegistry {
         ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput> {
         let tool = self.tools.get(name).ok_or_else(|| {
-            anyhow::anyhow!("Tool '{}' not found. Available: {:?}", name, self.tools.keys().collect::<Vec<_>>())
+            anyhow::anyhow!(
+                "Tool '{}' not found. Available: {:?}",
+                name,
+                self.tools.keys().collect::<Vec<_>>()
+            )
         })?;
 
         tool.execute(input, ctx).await

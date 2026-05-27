@@ -48,11 +48,13 @@ impl Tool for ReplyMessageTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let message = input.get("message")
+        let message = input
+            .get("message")
             .and_then(|m| m.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
 
-        let attachments: Option<Vec<String>> = input.get("attachments")
+        let attachments: Option<Vec<String>> = input
+            .get("attachments")
             .and_then(|a| serde_json::from_value(a.clone()).ok());
 
         if message.trim().is_empty() {
@@ -70,16 +72,19 @@ impl Tool for ReplyMessageTool {
                 let file_path = thread_path.join(filename);
                 if !file_path.exists() {
                     return Ok(ToolOutput::error(format!(
-                        "Attachment not found: '{}'", filename
+                        "Attachment not found: '{}'",
+                        filename
                     )));
                 }
                 // Security: ensure within thread directory
                 if let Ok(canonical) = file_path.canonicalize() {
-                    let thread_canonical = thread_path.canonicalize()
+                    let thread_canonical = thread_path
+                        .canonicalize()
                         .unwrap_or_else(|_| thread_path.to_path_buf());
                     if !canonical.starts_with(&thread_canonical) {
                         return Ok(ToolOutput::error(format!(
-                            "Attachment '{}' is outside thread directory", filename
+                            "Attachment '{}' is outside thread directory",
+                            filename
                         )));
                     }
                 }
@@ -91,7 +96,8 @@ impl Tool for ReplyMessageTool {
         };
 
         // Write reply.md for background delivery watcher
-        tokio::fs::write(jyc_dir.join("reply.md"), message).await
+        tokio::fs::write(jyc_dir.join("reply.md"), message)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to write reply.md: {e}"))?;
 
         // Write signal file
@@ -104,8 +110,9 @@ impl Tool for ReplyMessageTool {
         tokio::fs::write(
             jyc_dir.join("reply-sent.flag"),
             serde_json::to_string_pretty(&signal)?,
-        ).await
-            .map_err(|e| anyhow::anyhow!("Failed to write signal file: {e}"))?;
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to write signal file: {e}"))?;
 
         tracing::info!(
             message_len = message.len(),
@@ -114,7 +121,8 @@ impl Tool for ReplyMessageTool {
         );
 
         Ok(ToolOutput::success(format!(
-            "Reply sent ({} chars). The monitor will deliver it.", message.len()
+            "Reply sent ({} chars). The monitor will deliver it.",
+            message.len()
         )))
     }
 }

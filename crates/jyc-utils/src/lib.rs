@@ -1,7 +1,7 @@
+pub mod attachment_validator;
 #[allow(dead_code)]
 pub mod constants;
 pub mod helpers;
-pub mod attachment_validator;
 
 use thiserror::Error;
 

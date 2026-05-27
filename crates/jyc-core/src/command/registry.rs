@@ -75,8 +75,7 @@ impl CommandRegistry {
                     let cmd_name = parts[0].to_lowercase();
 
                     if let Some(handler) = self.handlers.get(&cmd_name) {
-                        let args: Vec<String> =
-                            parts[1..].iter().map(|s| s.to_string()).collect();
+                        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
                         let ctx = CommandContext {
                             args,
                             ..context.clone()
@@ -181,8 +180,9 @@ mod tests {
         CommandContext {
             args: vec![],
             thread_path: PathBuf::from("/tmp/test"),
-            config: Arc::new(jyc_types::load_config_from_str(
-                r#"
+            config: Arc::new(
+                jyc_types::load_config_from_str(
+                    r#"
 [general]
 [channels.test]
 type = "email"
@@ -200,7 +200,9 @@ password = "p"
 enabled = true
 mode = "agent"
 "#,
-            ).unwrap()),
+                )
+                .unwrap(),
+            ),
             channel: "test".into(),
             agent: None,
             template_dir: PathBuf::from("/tmp/test/templates"),

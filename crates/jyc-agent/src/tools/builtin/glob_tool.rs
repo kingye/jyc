@@ -38,11 +38,13 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let pattern = input.get("pattern")
+        let pattern = input
+            .get("pattern")
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
 
-        let search_dir = input.get("path")
+        let search_dir = input
+            .get("path")
             .and_then(|p| p.as_str())
             .map(|p| {
                 if std::path::Path::new(p).is_absolute() {
@@ -68,7 +70,10 @@ impl Tool for GlobTool {
             .collect();
 
         if matches.is_empty() {
-            Ok(ToolOutput::success(format!("No files matching '{}'", pattern)))
+            Ok(ToolOutput::success(format!(
+                "No files matching '{}'",
+                pattern
+            )))
         } else {
             Ok(ToolOutput::success(format!(
                 "{} file(s) found:\n{}",

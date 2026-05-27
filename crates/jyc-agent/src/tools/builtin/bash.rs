@@ -46,11 +46,13 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let command = input.get("command")
+        let command = input
+            .get("command")
             .and_then(|c| c.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' parameter"))?;
 
-        let timeout_secs = input.get("timeout")
+        let timeout_secs = input
+            .get("timeout")
             .and_then(|t| t.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
@@ -91,7 +93,10 @@ impl Tool for BashTool {
                 }
 
                 if result_text.is_empty() {
-                    result_text = format!("Command completed with exit code {}", output.status.code().unwrap_or(-1));
+                    result_text = format!(
+                        "Command completed with exit code {}",
+                        output.status.code().unwrap_or(-1)
+                    );
                 }
 
                 let is_error = !output.status.success();
@@ -106,14 +111,11 @@ impl Tool for BashTool {
                     ToolOutput::success(result_text)
                 })
             }
-            Ok(Err(e)) => {
-                Ok(ToolOutput::error(format!("Failed to execute command: {e}")))
-            }
-            Err(_) => {
-                Ok(ToolOutput::error(format!(
-                    "Command timed out after {}s", timeout_secs
-                )))
-            }
+            Ok(Err(e)) => Ok(ToolOutput::error(format!("Failed to execute command: {e}"))),
+            Err(_) => Ok(ToolOutput::error(format!(
+                "Command timed out after {}s",
+                timeout_secs
+            ))),
         }
     }
 }

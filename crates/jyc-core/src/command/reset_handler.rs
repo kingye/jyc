@@ -36,13 +36,16 @@ impl CommandHandler for ResetCommandHandler {
         if deleted {
             Ok(CommandResult {
                 success: true,
-                message: "/reset: session deleted. Next AI prompt will start with a fresh session.".into(),
+                message: "/reset: session deleted. Next AI prompt will start with a fresh session."
+                    .into(),
                 error: None,
             })
         } else {
             Ok(CommandResult {
                 success: true,
-                message: "/reset: no session exists. Next AI prompt will start with a fresh session.".into(),
+                message:
+                    "/reset: no session exists. Next AI prompt will start with a fresh session."
+                        .into(),
                 error: None,
             })
         }

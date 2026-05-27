@@ -56,7 +56,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use super::super::{Tool, ToolContext, ToolOutput};
@@ -174,9 +174,7 @@ impl ReadImageTool {
 
         // Boundary check: path must lie under working_dir or one of the
         // additional_read_roots.
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let working_canonical = ctx
             .working_dir
             .canonicalize()
@@ -276,7 +274,11 @@ impl ReadImageTool {
 
         let bytes = match resp.bytes().await {
             Ok(b) => b.to_vec(),
-            Err(e) => return Ok(ToolOutput::error(format!("Failed to read response body: {e}"))),
+            Err(e) => {
+                return Ok(ToolOutput::error(format!(
+                    "Failed to read response body: {e}"
+                )));
+            }
         };
 
         self.process_image(&media_type, bytes, url, ctx).await
@@ -285,7 +287,13 @@ impl ReadImageTool {
     /// Process loaded image bytes according to the current mode.
     ///
     /// `input_str` is the original path or URL for display in the response.
-    async fn process_image(&self, media_type: &str, bytes: Vec<u8>, input_str: &str, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+    async fn process_image(
+        &self,
+        media_type: &str,
+        bytes: Vec<u8>,
+        input_str: &str,
+        ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput> {
         if bytes.len() > MAX_IMAGE_BYTES {
             return Ok(ToolOutput::error(format!(
                 "Image too large: {} bytes (max {} bytes)",
@@ -330,9 +338,7 @@ impl ReadImageTool {
                     })
                     .to_string(),
                 )),
-                Err(e) => Ok(ToolOutput::error(format!(
-                    "Vision analysis failed: {e}"
-                ))),
+                Err(e) => Ok(ToolOutput::error(format!("Vision analysis failed: {e}"))),
             }
         } else {
             // No vision capability available

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use jyc_types::{InspectRequest, InspectResponse, InspectState};
 
@@ -83,14 +83,18 @@ impl InspectClient {
             anyhow::bail!("server closed connection");
         }
 
-        let resp: InspectResponse =
-            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
+        let resp: InspectResponse = serde_json::from_str(response_line.trim())
+            .context("failed to parse inspect response")?;
 
         match resp {
             InspectResponse::State(state) => Ok(state),
             InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
-            InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for get_state"),
-            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for get_state"),
+            InspectResponse::ReloadResult { .. } => {
+                anyhow::bail!("unexpected reload_result for get_state")
+            }
+            InspectResponse::ResetSessionResult { .. } => {
+                anyhow::bail!("unexpected reset_session_result for get_state")
+            }
         }
     }
 
@@ -123,14 +127,16 @@ impl InspectClient {
             anyhow::bail!("server closed connection");
         }
 
-        let resp: InspectResponse =
-            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
+        let resp: InspectResponse = serde_json::from_str(response_line.trim())
+            .context("failed to parse inspect response")?;
 
         match resp {
             InspectResponse::ReloadResult { success, message } => Ok((success, message)),
             InspectResponse::Error { error } => Ok((false, error)),
             InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
-            InspectResponse::ResetSessionResult { .. } => anyhow::bail!("unexpected reset_session_result for reload_config"),
+            InspectResponse::ResetSessionResult { .. } => {
+                anyhow::bail!("unexpected reset_session_result for reload_config")
+            }
         }
     }
 
@@ -162,14 +168,16 @@ impl InspectClient {
             anyhow::bail!("server closed connection");
         }
 
-        let resp: InspectResponse =
-            serde_json::from_str(response_line.trim()).context("failed to parse inspect response")?;
+        let resp: InspectResponse = serde_json::from_str(response_line.trim())
+            .context("failed to parse inspect response")?;
 
         match resp {
             InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
             InspectResponse::Error { error } => Ok((false, error)),
             InspectResponse::State(_) => anyhow::bail!("unexpected state for reset_session"),
-            InspectResponse::ReloadResult { .. } => anyhow::bail!("unexpected reload_result for reset_session"),
+            InspectResponse::ReloadResult { .. } => {
+                anyhow::bail!("unexpected reload_result for reset_session")
+            }
         }
     }
 }
@@ -195,9 +203,7 @@ mod tests {
                 active_workers: 0,
                 max_concurrent: 0,
             }],
-            health_stats: Arc::new(Mutex::new(
-                jyc_core::metrics::HealthStats::default(),
-            )),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
@@ -323,9 +329,7 @@ mod tests {
                 active_workers: 0,
                 max_concurrent: 0,
             }],
-            health_stats: Arc::new(Mutex::new(
-                jyc_core::metrics::HealthStats::default(),
-            )),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,

@@ -119,7 +119,9 @@ impl FeishuClient {
             .await
             .context("Failed to request Feishu tenant access token")?;
 
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .context("Failed to parse Feishu token response")?;
 
         let code = body["code"].as_i64().unwrap_or(-1);
@@ -308,7 +310,8 @@ impl FeishuClient {
         file_type: &str,
     ) -> Result<String> {
         let core_config = self.get_core_config().await?;
-        let file_bytes = tokio::fs::read(path).await
+        let file_bytes = tokio::fs::read(path)
+            .await
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
         use open_lark::communication::im::im::v1::file::create::{
@@ -335,13 +338,10 @@ impl FeishuClient {
     ///
     /// Returns the `image_key` for use in image messages.
     /// Requires scope: `im:resource`.
-    pub async fn upload_image(
-        &self,
-        path: &Path,
-        filename: &str,
-    ) -> Result<String> {
+    pub async fn upload_image(&self, path: &Path, filename: &str) -> Result<String> {
         let core_config = self.get_core_config().await?;
-        let image_bytes = tokio::fs::read(path).await
+        let image_bytes = tokio::fs::read(path)
+            .await
             .with_context(|| format!("Failed to read image: {}", path.display()))?;
 
         use open_lark::communication::im::im::v1::image::create::CreateImageRequest;
@@ -451,10 +451,11 @@ impl FeishuClient {
 
         use open_lark::communication::im::im::v1::file::get::GetFileRequest;
 
-        let request = GetFileRequest::new(core_config)
-            .file_key(file_key);
+        let request = GetFileRequest::new(core_config).file_key(file_key);
 
-        let file_bytes = request.execute().await
+        let file_bytes = request
+            .execute()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to download file from Feishu: {e}"))?;
 
         // Validate response is actual file data, not a JSON error
@@ -467,7 +468,10 @@ impl FeishuClient {
         }
 
         if file_bytes.is_empty() {
-            anyhow::bail!("Feishu file download returned empty data for file_key={}", file_key);
+            anyhow::bail!(
+                "Feishu file download returned empty data for file_key={}",
+                file_key
+            );
         }
 
         tracing::debug!(
@@ -484,7 +488,11 @@ impl FeishuClient {
     /// Uses the message resource endpoint which requires both message_id and image_key.
     /// The standalone image endpoint (/im/v1/images/:image_key) returns 400 for
     /// chat message images.
-    pub async fn download_image(&self, image_key: &str, message_id: Option<&str>) -> Result<Vec<u8>> {
+    pub async fn download_image(
+        &self,
+        image_key: &str,
+        message_id: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
         let base_url = self.config.base_url.trim_end_matches('/');
 
@@ -518,7 +526,9 @@ impl FeishuClient {
             .unwrap_or("")
             .to_string();
 
-        let image_bytes = resp.bytes().await
+        let image_bytes = resp
+            .bytes()
+            .await
             .context("Failed to read image response body")?
             .to_vec();
 
@@ -533,7 +543,10 @@ impl FeishuClient {
         }
 
         if image_bytes.is_empty() {
-            anyhow::bail!("Feishu image download returned empty data for image_key={}", image_key);
+            anyhow::bail!(
+                "Feishu image download returned empty data for image_key={}",
+                image_key
+            );
         }
 
         tracing::debug!(

@@ -171,11 +171,7 @@ pub trait ChannelMatcher: Send + Sync {
 pub trait InboundAdapter: ChannelMatcher {
     /// Start the adapter (e.g., connect to WebSocket and begin monitoring).
     /// Should run until the cancellation token is triggered.
-    async fn start(
-        &self,
-        options: InboundAdapterOptions,
-        cancel: CancellationToken,
-    ) -> Result<()>;
+    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()>;
 }
 
 /// Outbound adapter trait — one implementation per channel type.
@@ -221,12 +217,7 @@ pub trait OutboundAdapter: Send + Sync {
     ) -> Result<SendResult>;
 
     /// Send a fresh (non-reply) alert/notification.
-    async fn send_alert(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<SendResult>;
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
 }
 
 // --- Pattern Types ---
@@ -434,15 +425,12 @@ impl LabelRule {
     /// - Nested: outer AND, inner OR — each group must have at least one match
     pub fn matches(&self, msg_labels: &[String]) -> bool {
         match self {
-            LabelRule::Flat(labels) => {
-                labels.iter().any(|l| msg_labels.contains(&l.to_lowercase()))
-            }
-            LabelRule::Nested(groups) => {
-                groups.iter().all(|group| {
-                    group.is_empty()
-                        || group.iter().any(|l| msg_labels.contains(&l.to_lowercase()))
-                })
-            }
+            LabelRule::Flat(labels) => labels
+                .iter()
+                .any(|l| msg_labels.contains(&l.to_lowercase())),
+            LabelRule::Nested(groups) => groups.iter().all(|group| {
+                group.is_empty() || group.iter().any(|l| msg_labels.contains(&l.to_lowercase()))
+            }),
         }
     }
 }

@@ -1,30 +1,30 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::thread_event::ThreadEvent;
 
 /// Thread-isolated event bus trait.
-/// 
+///
 /// Each thread has its own event bus instance to ensure complete isolation
 /// between threads. Events from one thread never leak to another.
 #[async_trait]
 pub trait ThreadEventBus: Send + Sync {
     /// Publish an event to this thread's event bus.
-    /// 
+    ///
     /// Returns an error if the event bus is closed or the channel is full.
     async fn publish(&self, event: ThreadEvent) -> Result<()>;
-    
+
     /// Subscribe to events from this thread's event bus.
-    /// 
+    ///
     /// Returns a receiver that will receive events published to this bus.
     /// Each subscriber gets its own copy of events (broadcast semantics).
     async fn subscribe(&self) -> Result<mpsc::Receiver<ThreadEvent>>;
 }
 
 /// Simple implementation of a thread-isolated event bus.
-/// 
+///
 /// Uses a broadcast channel to support multiple subscribers.
 /// Events are sent to all active subscribers.
 pub struct SimpleThreadEventBus {
@@ -33,7 +33,7 @@ pub struct SimpleThreadEventBus {
 
 impl SimpleThreadEventBus {
     /// Create a new thread event bus with the given capacity.
-    /// 
+    ///
     /// The capacity determines how many events can be queued before
     /// `publish` starts blocking or returning errors.
     pub fn new(_capacity: usize) -> Self {
@@ -41,7 +41,7 @@ impl SimpleThreadEventBus {
             subscribers: Mutex::new(Vec::new()),
         }
     }
-    
+
     /// Internal method to forward events to all subscribers.
     ///
     /// Sends events sequentially (awaited) to preserve ordering. The mpsc channel
@@ -64,20 +64,20 @@ impl SimpleThreadEventBus {
 impl ThreadEventBus for SimpleThreadEventBus {
     async fn publish(&self, event: ThreadEvent) -> Result<()> {
         tracing::trace!("Publishing event to thread event bus");
-        
+
         // Forward to all subscribers (no main channel needed)
         self.forward_to_subscribers(event).await;
-        
+
         Ok(())
     }
-    
+
     async fn subscribe(&self) -> Result<mpsc::Receiver<ThreadEvent>> {
         let (tx, rx) = mpsc::channel(10);
-        
+
         // Add to subscribers list
         let mut subscribers = self.subscribers.lock().await;
         subscribers.push(tx);
-        
+
         Ok(rx)
     }
 }
@@ -108,7 +108,9 @@ mod tests {
 
         // Publish 5 events rapidly
         for i in 0..5 {
-            bus.publish(make_event(&format!("event-{}", i))).await.unwrap();
+            bus.publish(make_event(&format!("event-{}", i)))
+                .await
+                .unwrap();
         }
 
         // Verify order
@@ -116,7 +118,12 @@ mod tests {
             let event = rx.recv().await.expect("Expected event");
             match event {
                 ThreadEvent::ProcessingStarted { thread_name, .. } => {
-                    assert_eq!(thread_name, format!("event-{}", i), "Event {} out of order", i);
+                    assert_eq!(
+                        thread_name,
+                        format!("event-{}", i),
+                        "Event {} out of order",
+                        i
+                    );
                 }
                 _ => panic!("Unexpected event type"),
             }
@@ -135,8 +142,12 @@ mod tests {
         for rx in [&mut rx1, &mut rx2] {
             let e1 = rx.recv().await.unwrap();
             let e2 = rx.recv().await.unwrap();
-            assert!(matches!(&e1, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "first"));
-            assert!(matches!(&e2, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "second"));
+            assert!(
+                matches!(&e1, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "first")
+            );
+            assert!(
+                matches!(&e2, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "second")
+            );
         }
     }
 

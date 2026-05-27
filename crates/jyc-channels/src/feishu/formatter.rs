@@ -167,10 +167,12 @@ mod tests {
         let result = formatter.format_text_message("Hello, world!")?;
         assert!(result.is_object());
         assert_eq!(result["msg_type"], "text");
-        assert!(result["content"]
-            .as_str()
-            .unwrap()
-            .contains("Hello, world!"));
+        assert!(
+            result["content"]
+                .as_str()
+                .unwrap()
+                .contains("Hello, world!")
+        );
 
         Ok(())
     }

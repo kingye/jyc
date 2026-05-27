@@ -45,14 +45,14 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let file_path = input.get("file_path")
+        let file_path = input
+            .get("file_path")
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' parameter"))?;
 
-        let offset = input.get("offset")
-            .and_then(|o| o.as_u64())
-            .unwrap_or(1) as usize;
-        let limit = input.get("limit")
+        let offset = input.get("offset").and_then(|o| o.as_u64()).unwrap_or(1) as usize;
+        let limit = input
+            .get("limit")
             .and_then(|l| l.as_u64())
             .unwrap_or(DEFAULT_LIMIT as u64) as usize;
 
@@ -66,26 +66,29 @@ impl Tool for ReadTool {
         // Check the path exists
         if !path.exists() {
             return Ok(ToolOutput::error(format!(
-                "Path not found: '{}'", file_path
+                "Path not found: '{}'",
+                file_path
             )));
         }
 
         // Security: ensure path is within working directory.
         // Skip this check if path traverses a symlink (e.g., repo/ -> /other/path),
         // since JYC's repo_group feature uses symlinks within the working directory.
-        let has_symlink = path.ancestors().any(|ancestor| {
-            ancestor != ctx.working_dir && ancestor.is_symlink()
-        });
+        let has_symlink = path
+            .ancestors()
+            .any(|ancestor| ancestor != ctx.working_dir && ancestor.is_symlink());
 
         if !has_symlink {
-            let canonical = path.canonicalize()
-                .unwrap_or_else(|_| path.clone());
-            let working_canonical = ctx.working_dir.canonicalize()
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let working_canonical = ctx
+                .working_dir
+                .canonicalize()
                 .unwrap_or_else(|_| ctx.working_dir.to_path_buf());
 
             if !canonical.starts_with(&working_canonical) {
                 return Ok(ToolOutput::error(format!(
-                    "Access denied: path '{}' is outside the working directory", file_path
+                    "Access denied: path '{}' is outside the working directory",
+                    file_path
                 )));
             }
         }
@@ -93,7 +96,8 @@ impl Tool for ReadTool {
         if path.is_dir() {
             // Read directory listing
             let mut entries = Vec::new();
-            let mut read_dir = tokio::fs::read_dir(&path).await
+            let mut read_dir = tokio::fs::read_dir(&path)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read directory: {e}"))?;
 
             while let Some(entry) = read_dir.next_entry().await? {
@@ -110,7 +114,8 @@ impl Tool for ReadTool {
             Ok(ToolOutput::success(entries.join("\n")))
         } else {
             // Read file contents
-            let content = tokio::fs::read_to_string(&path).await
+            let content = tokio::fs::read_to_string(&path)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {e}"))?;
 
             let lines: Vec<&str> = content.lines().collect();
@@ -125,7 +130,10 @@ impl Tool for ReadTool {
             if end < lines.len() {
                 result.push_str(&format!(
                     "\n(Showing lines {}-{} of {}. Use offset={} to continue.)",
-                    start + 1, end, lines.len(), end + 1
+                    start + 1,
+                    end,
+                    lines.len(),
+                    end + 1
                 ));
             }
 

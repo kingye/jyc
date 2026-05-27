@@ -109,8 +109,8 @@ async fn load_templates_config(source_dir: &Path) -> Result<TemplatesConfig> {
     let content = tokio::fs::read_to_string(&config_path)
         .await
         .with_context(|| format!("failed to read {}", config_path.display()))?;
-    let config: TemplatesConfig =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", config_path.display()))?;
+    let config: TemplatesConfig = toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
     Ok(config)
 }
 
@@ -277,7 +277,10 @@ async fn run_deploy(
                     overwrite_template_files(&skill_src, &skill_dst).await?;
                     println!("  skill: {skill}");
                 } else {
-                    println!("  WARNING: skill '{skill}' not found at {}", skill_src.display());
+                    println!(
+                        "  WARNING: skill '{skill}' not found at {}",
+                        skill_src.display()
+                    );
                 }
             }
         }

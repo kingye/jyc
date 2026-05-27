@@ -66,10 +66,7 @@ impl CommandOutput {
                 if r.success {
                     r.message.clone()
                 } else {
-                    format!(
-                        "Error: {}",
-                        r.error.as_deref().unwrap_or(&r.message)
-                    )
+                    format!("Error: {}", r.error.as_deref().unwrap_or(&r.message))
                 }
             })
             .collect::<Vec<_>>()

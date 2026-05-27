@@ -223,10 +223,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     if config.agent.mode != "agent" && config.agent.mode != "static" {
         errors.push(ValidationError {
             path: "agent.mode".into(),
-            message: format!(
-                "must be 'agent' or 'static', got '{}'",
-                config.agent.mode
-            ),
+            message: format!("must be 'agent' or 'static', got '{}'", config.agent.mode),
         });
     }
 
@@ -640,5 +637,4 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("max_file_size")));
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
     }
-
 }

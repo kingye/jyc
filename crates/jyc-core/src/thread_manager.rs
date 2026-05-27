@@ -3,27 +3,27 @@ use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::thread_event::ThreadEvent;
-use crate::thread_event_bus::{ThreadEventBusRef, SimpleThreadEventBus};
+use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
 
-use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
-use jyc_types::InboundAttachmentConfig;
 use crate::agent::AgentService;
+use crate::command::close_handler::CloseCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::command::registry::CommandRegistry;
-use crate::command::close_handler::CloseCommandHandler;
 use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::metrics::MetricsHandle;
 use crate::pending_delivery::watch_pending_deliveries;
 use crate::template_utils::copy_template_files;
+use jyc_types::InboundAttachmentConfig;
+use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
 use jyc_types::{ThreadInfo, ThreadStatus};
 
 /// Per-thread queue stats.
@@ -115,7 +115,7 @@ impl ThreadManager {
             metrics,
         )
     }
-    
+
     /// Create a new ThreadManager with configurable event support.
     pub fn new_with_options(
         max_concurrent: usize,
@@ -173,7 +173,7 @@ impl ThreadManager {
             }
             is_open
         });
-        
+
         // Clean up event buses for closed threads
         if !closed_threads.is_empty() && self.enable_events {
             let mut event_buses = self.event_buses.lock().await;
@@ -183,10 +183,12 @@ impl ThreadManager {
             }
         }
 
-        let template = message.metadata.get("template")
+        let template = message
+            .metadata
+            .get("template")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        
+
         let item = QueueItem {
             thread_name: thread_name.clone(),
             message,
@@ -217,13 +219,15 @@ impl ThreadManager {
                         event_buses.remove(&thread_name);
                         tracing::debug!(thread = %thread_name, "Cleaned up event bus for closed queue");
                     }
-                    self.create_and_enqueue(&mut queues, thread_name, item).await;
+                    self.create_and_enqueue(&mut queues, thread_name, item)
+                        .await;
                     return;
                 }
             }
         }
 
-        self.create_and_enqueue(&mut queues, thread_name, item).await;
+        self.create_and_enqueue(&mut queues, thread_name, item)
+            .await;
     }
 
     async fn create_and_enqueue(
@@ -372,7 +376,7 @@ impl ThreadManager {
                             );
                         }
                     }
-                    
+
                     if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
                         let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(&workspace, repo_group_key);
                         let symlink_path = thread_path.join("repo");
@@ -403,7 +407,7 @@ impl ThreadManager {
                             }
                         }
                     }
-                    
+
                     let pattern_file = thread_path.join(".jyc").join("pattern");
                     if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
                         tracing::warn!(error = %e, "Failed to create .jyc directory");
@@ -506,7 +510,7 @@ impl ThreadManager {
                         });
                     }
                 }
-                
+
                 // Check symlink integrity after AI processing completes
                 if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
                     let thread_path = storage.workspace().join(&thread_name);
@@ -601,7 +605,10 @@ impl ThreadManager {
         // This is an approximation: semaphore total - available = active
         // We stored the capacity in the constructor but Semaphore doesn't expose it.
         // We use config's max_concurrent_threads as the total.
-        self.config.load().general.max_concurrent_threads
+        self.config
+            .load()
+            .general
+            .max_concurrent_threads
             .saturating_sub(self.semaphore.available_permits())
     }
 
@@ -611,9 +618,7 @@ impl ThreadManager {
     /// This includes both actively queued threads and idle threads that have been
     /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
-        use crate::session_state::{
-            read_input_tokens, read_model_override, read_mode_override,
-        };
+        use crate::session_state::{read_input_tokens, read_mode_override, read_model_override};
 
         // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
@@ -686,45 +691,45 @@ impl ThreadManager {
                 mode,
                 input_tokens,
                 max_tokens,
-                activity: vec![],  // Filled by InspectServer from event bus
-                last_active_at,  // Filled by activity tracker; falls back to .jyc mtime
+                activity: vec![], // Filled by InspectServer from event bus
+                last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
             });
         }
 
         threads
     }
-    
+
     /// Get the event bus for a specific thread.
-    /// 
+    ///
     /// Returns None if event support is disabled or the thread doesn't have an event bus.
     pub async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
         if !self.enable_events {
             return None;
         }
-        
+
         let event_buses = self.event_buses.lock().await;
         event_buses.get(thread_name).cloned()
     }
-    
+
     /// Create a new event bus for a thread if one doesn't exist.
-    /// 
+    ///
     /// Returns the event bus for the thread, or None if event support is disabled.
     async fn get_or_create_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
         if !self.enable_events {
             return None;
         }
-        
+
         let mut event_buses = self.event_buses.lock().await;
-        
+
         // Check if event bus already exists
         if let Some(event_bus) = event_buses.get(thread_name) {
             return Some(event_bus.clone());
         }
-        
+
         // Create new event bus
         let event_bus = Arc::new(SimpleThreadEventBus::new(10)); // Capacity of 10 events
-        
+
         event_buses.insert(thread_name.to_string(), event_bus.clone());
         Some(event_bus)
     }
@@ -785,7 +790,10 @@ impl ThreadManager {
 
             tokio::fs::remove_dir_all(&thread_path)
                 .await
-                .context(format!("Failed to remove thread directory: {:?}", thread_path))?;
+                .context(format!(
+                    "Failed to remove thread directory: {:?}",
+                    thread_path
+                ))?;
             tracing::info!(thread = %thread_name, "Thread directory deleted");
         }
 
@@ -793,8 +801,8 @@ impl ThreadManager {
         self.cleanup_orphaned_shared_repos().await;
 
         self.cleanup_thread_state(thread_name).await;
-    Ok(())
-}
+        Ok(())
+    }
 
     /// Clean up in-memory state (queues, event buses) for a closed thread.
     async fn cleanup_thread_state(&self, thread_name: &str) {
@@ -909,7 +917,12 @@ async fn process_message(
     // ── 1. STORE ──────────────────────────────────────────────────────
     let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = storage
-        .store_with_match(&item.message, thread_name, is_matched, item.attachment_config.as_ref())
+        .store_with_match(
+            &item.message,
+            thread_name,
+            is_matched,
+            item.attachment_config.as_ref(),
+        )
         .await?;
 
     tracing::info!(
@@ -934,7 +947,9 @@ async fn process_message(
             &mut item.message,
             &store_result.thread_path,
             item.attachment_config.as_ref(),
-        ).await {
+        )
+        .await
+        {
             tracing::warn!(error = %e, "Failed to save attachments");
         }
     }
@@ -1030,10 +1045,16 @@ async fn process_message(
     // If the AI previously asked a question via the ask_user MCP tool,
     // the next user message is the answer — route it to the answer file
     // instead of creating a new AI prompt.
-    let question_flag = store_result.thread_path.join(".jyc").join("question-sent.flag");
+    let question_flag = store_result
+        .thread_path
+        .join(".jyc")
+        .join("question-sent.flag");
     if question_flag.exists() {
         tracing::info!("Thread is waiting for question answer, routing response");
-        let answer_file = store_result.thread_path.join(".jyc").join("question-answer.json");
+        let answer_file = store_result
+            .thread_path
+            .join(".jyc")
+            .join("question-answer.json");
         let answer = serde_json::json!({
             "answer": cleaned_body.trim(),
             "sender": message.sender_address,
@@ -1077,14 +1098,22 @@ async fn process_message(
             &delivery_message,
             &*delivery_outbound,
             delivery_cancel_child,
-        ).await;
+        )
+        .await;
     });
 
     let result = if item.live_injection {
         // Live injection enabled: pass real queue receiver so new messages
         // arriving during AI processing get injected into the active session.
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, pending_rx, thread_cancel.clone())
+            .process(
+                &message,
+                thread_name,
+                &store_result.thread_path,
+                &store_result.message_dir,
+                pending_rx,
+                thread_cancel.clone(),
+            )
             .await?
     } else {
         // Live injection disabled: pass a dummy receiver that never yields.
@@ -1096,7 +1125,14 @@ async fn process_message(
         // making the SSE select loop skip the injection arm.
         drop(_dummy_tx);
         agent
-            .process(&message, thread_name, &store_result.thread_path, &store_result.message_dir, &mut dummy_rx, thread_cancel.clone())
+            .process(
+                &message,
+                thread_name,
+                &store_result.thread_path,
+                &store_result.message_dir,
+                &mut dummy_rx,
+                thread_cancel.clone(),
+            )
             .await?
     };
 
@@ -1123,60 +1159,73 @@ async fn process_message(
     if result.reply_sent_by_tool {
         // Check if the background delivery watcher already delivered the reply.
         // The watcher deletes reply-sent.flag after successful delivery.
-        let signal_path = store_result.thread_path.join(".jyc").join("reply-sent.flag");
+        let signal_path = store_result
+            .thread_path
+            .join(".jyc")
+            .join("reply-sent.flag");
         if !signal_path.exists() {
-            tracing::info!("Reply already delivered by background watcher, skipping post-SSE delivery");
-        } else {
-        // Reply text comes from the SSE tool input (extracted by service layer).
-        // If not available (e.g., question tool), try reading from reply.md.
-        let reply_text = result.reply_text.as_deref()
-            .filter(|t| !t.trim().is_empty())
-            .map(|t| t.to_string());
-
-        let reply_text = match reply_text {
-            Some(t) => Some(t),
-            None => {
-                // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
-                let reply_md = store_result.thread_path.join(".jyc").join("reply.md");
-                if reply_md.exists() {
-                    tokio::fs::read_to_string(&reply_md).await.ok()
-                        .filter(|t| !t.trim().is_empty())
-                } else {
-                    None
-                }
-            }
-        };
-
-        if let Some(ref reply_text) = reply_text {
             tracing::info!(
-                text_len = reply_text.len(),
-                "Delivering reply from MCP tool"
+                "Reply already delivered by background watcher, skipping post-SSE delivery"
             );
-
-            // Read signal file for attachment info
-            let attachments = read_signal_attachments(&signal_path, &store_result.thread_path).await;
-
-            outbound
-                .send_reply(
-                    &message,
-                    reply_text,
-                    &store_result.thread_path,
-                    &store_result.message_dir,
-                    attachments.as_deref(),
-                )
-                .await?;
-            tracing::info!("Reply delivered via outbound adapter");
-            // Clean up signal files after successful delivery to prevent re-delivery on restart
-            tokio::fs::remove_file(&signal_path).await.ok();
-            let reply_md_path = store_result.thread_path.join(".jyc").join("reply.md");
-            tokio::fs::remove_file(&reply_md_path).await.ok();
-            thread_manager.metrics.reply_by_tool(thread_name);
         } else {
-            tracing::warn!("MCP tool signaled reply but no reply text available");
-        }
+            // Reply text comes from the SSE tool input (extracted by service layer).
+            // If not available (e.g., question tool), try reading from reply.md.
+            let reply_text = result
+                .reply_text
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| t.to_string());
+
+            let reply_text = match reply_text {
+                Some(t) => Some(t),
+                None => {
+                    // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
+                    let reply_md = store_result.thread_path.join(".jyc").join("reply.md");
+                    if reply_md.exists() {
+                        tokio::fs::read_to_string(&reply_md)
+                            .await
+                            .ok()
+                            .filter(|t| !t.trim().is_empty())
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(ref reply_text) = reply_text {
+                tracing::info!(
+                    text_len = reply_text.len(),
+                    "Delivering reply from MCP tool"
+                );
+
+                // Read signal file for attachment info
+                let attachments =
+                    read_signal_attachments(&signal_path, &store_result.thread_path).await;
+
+                outbound
+                    .send_reply(
+                        &message,
+                        reply_text,
+                        &store_result.thread_path,
+                        &store_result.message_dir,
+                        attachments.as_deref(),
+                    )
+                    .await?;
+                tracing::info!("Reply delivered via outbound adapter");
+                // Clean up signal files after successful delivery to prevent re-delivery on restart
+                tokio::fs::remove_file(&signal_path).await.ok();
+                let reply_md_path = store_result.thread_path.join(".jyc").join("reply.md");
+                tokio::fs::remove_file(&reply_md_path).await.ok();
+                thread_manager.metrics.reply_by_tool(thread_name);
+            } else {
+                tracing::warn!("MCP tool signaled reply but no reply text available");
+            }
         }
     } else if let Some(ref text) = result.reply_text {
-        tracing::info!(text_len = text.len(), "Fallback: sending AI text via outbound");
+        tracing::info!(
+            text_len = text.len(),
+            "Fallback: sending AI text via outbound"
+        );
         outbound
             .send_reply(
                 &message,
@@ -1220,7 +1269,9 @@ async fn read_signal_attachments(
                 .unwrap_or_default();
             let content_type = match ext.as_str() {
                 "pdf" => "application/pdf",
-                "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "pptx" => {
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                }
                 "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "png" => "image/png",
@@ -1243,9 +1294,7 @@ async fn read_signal_attachments(
 async fn read_skills(thread_path: &Path) -> Vec<String> {
     let skills_path = thread_path.join(".jyc").join("skills.json");
     match tokio::fs::read_to_string(&skills_path).await {
-        Ok(content) => {
-            serde_json::from_str::<Vec<String>>(&content).unwrap_or_default()
-        }
+        Ok(content) => serde_json::from_str::<Vec<String>>(&content).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
 }
@@ -1255,7 +1304,9 @@ async fn read_skills(thread_path: &Path) -> Vec<String> {
 /// thread manager surfaces this and drops the message rather than risk
 /// overwriting AGENTS.md / template files in place.
 #[derive(Debug, thiserror::Error)]
-#[error("thread '{thread}' was initialized from template '{existing}' but pattern requires template '{requested}'; refusing to overwrite. Configure distinct `thread_prefix` values for these patterns.")]
+#[error(
+    "thread '{thread}' was initialized from template '{existing}' but pattern requires template '{requested}'; refusing to overwrite. Configure distinct `thread_prefix` values for these patterns."
+)]
 pub struct TemplateMismatch {
     pub thread: String,
     pub existing: String,
@@ -1352,7 +1403,9 @@ mod template_init_tests {
             .unwrap();
         assert_eq!(marker.trim(), "github-planner");
         assert_eq!(
-            tokio::fs::read_to_string(thread_path.join("AGENTS.md")).await.unwrap(),
+            tokio::fs::read_to_string(thread_path.join("AGENTS.md"))
+                .await
+                .unwrap(),
             "PLANNER"
         );
     }
@@ -1387,22 +1440,14 @@ mod template_init_tests {
 
         let thread_path = workspace.join("issue-1");
         // First, init with HLP.
-        initialize_thread_from_template(
-            &thread_path,
-            "github-high-level-planner",
-            &template_dir,
-        )
-        .await
-        .unwrap();
+        initialize_thread_from_template(&thread_path, "github-high-level-planner", &template_dir)
+            .await
+            .unwrap();
 
         // Then, request a different template for the same thread → must error.
-        let err = initialize_thread_from_template(
-            &thread_path,
-            "github-planner",
-            &template_dir,
-        )
-        .await
-        .expect_err("expected TemplateMismatch");
+        let err = initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
+            .await
+            .expect_err("expected TemplateMismatch");
         assert!(
             err.downcast_ref::<TemplateMismatch>().is_some(),
             "expected TemplateMismatch, got: {:#}",

@@ -1,17 +1,17 @@
 use anyhow::Result;
 use clap::Args;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
-    Frame, Terminal,
 };
 use std::io::stdout;
 use std::time::Duration;
@@ -70,11 +70,7 @@ impl App {
     }
 
     fn next_thread(&mut self) {
-        let count = self
-            .state
-            .as_ref()
-            .map(|s| s.threads.len())
-            .unwrap_or(0);
+        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
         if count == 0 {
             return;
         }
@@ -86,11 +82,7 @@ impl App {
     }
 
     fn prev_thread(&mut self) {
-        let count = self
-            .state
-            .as_ref()
-            .map(|s| s.threads.len())
-            .unwrap_or(0);
+        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
         if count == 0 {
             return;
         }
@@ -158,8 +150,7 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                         }
                         KeyCode::Char('r') => {
                             // Force refresh
-                            last_poll =
-                                std::time::Instant::now() - poll_interval;
+                            last_poll = std::time::Instant::now() - poll_interval;
                         }
                         KeyCode::Char('R') => {
                             // Reload config
@@ -197,18 +188,18 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                                     app.clear_pending_reset();
                                 }
                             } else {
-                                let thread_name = app
-                                    .state
-                                    .as_ref()
-                                    .and_then(|s| {
-                                        app.table_state
-                                            .selected()
-                                            .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
-                                    });
+                                let thread_name = app.state.as_ref().and_then(|s| {
+                                    app.table_state
+                                        .selected()
+                                        .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
+                                });
                                 match thread_name {
                                     Some(name) => {
-                                        app.pending_reset = Some((name.clone(), std::time::Instant::now()));
-                                        app.set_status(format!("Press `s` again to confirm reset session for {name}"));
+                                        app.pending_reset =
+                                            Some((name.clone(), std::time::Instant::now()));
+                                        app.set_status(format!(
+                                            "Press `s` again to confirm reset session for {name}"
+                                        ));
                                     }
                                     None => {
                                         app.set_status("No thread selected".to_string());
@@ -243,10 +234,10 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Channels bar
+            Constraint::Length(3),      // Channels bar
             Constraint::Percentage(40), // Threads table
             Constraint::Percentage(60), // Detail panel + activity log
-            Constraint::Length(1),  // Status bar
+            Constraint::Length(1),      // Status bar
         ])
         .split(area);
 
@@ -257,9 +248,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(" Channels ")
-        .borders(Borders::ALL);
+    let block = Block::default().title(" Channels ").borders(Borders::ALL);
 
     if let Some(ref error) = app.error {
         let text = Paragraph::new(Line::from(vec![
@@ -317,9 +306,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let block = Block::default()
-                .title(" Threads ")
-                .borders(Borders::ALL);
+            let block = Block::default().title(" Threads ").borders(Borders::ALL);
             frame.render_widget(block, area);
             return;
         }
@@ -381,10 +368,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 .title(format!(" Threads ({}) ", state.threads.len()))
                 .borders(Borders::ALL),
         )
-        .row_highlight_style(
-            Style::default()
-                .add_modifier(Modifier::REVERSED),
-        );
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
@@ -393,9 +377,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let block = Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL);
+            let block = Block::default().title(" Details ").borders(Borders::ALL);
             frame.render_widget(block, area);
             return;
         }
@@ -409,9 +391,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let selected = match selected {
         Some(t) => t,
         None => {
-            let block = Block::default()
-                .title(" Details ")
-                .borders(Borders::ALL);
+            let block = Block::default().title(" Details ").borders(Borders::ALL);
             let text = Paragraph::new("Select a thread with ↑/↓").block(block);
             frame.render_widget(text, area);
             return;
@@ -423,7 +403,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8), // Thread info
-            Constraint::Min(4),   // Activity log
+            Constraint::Min(4),    // Activity log
         ])
         .split(area);
 
@@ -483,13 +463,19 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     if let (Some(cur), Some(max)) = (selected.input_tokens, selected.max_tokens) {
         let pct = if max > 0 { cur * 100 / max } else { 0 };
         status_line.push(Span::raw("  "));
-        status_line.push(Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)));
+        status_line.push(Span::styled(
+            "Tokens: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
         status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
     }
     info_lines.push(Line::from(status_line));
 
     info_lines.push(Line::from(vec![
-        Span::styled("Last Active: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Last Active: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(format_last_active(selected.last_active_at.as_deref())),
     ]));
 
@@ -497,9 +483,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(info, detail_chunks[0]);
 
     // Activity log panel
-    let activity_block = Block::default()
-        .title(" Activity ")
-        .borders(Borders::ALL);
+    let activity_block = Block::default().title(" Activity ").borders(Borders::ALL);
 
     if selected.activity.is_empty() {
         let text = Paragraph::new(Span::styled(
@@ -518,11 +502,15 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
             .iter()
             .skip(skip)
             .map(|entry| {
-                let time_str = entry.timestamp.as_deref().and_then(|ts| {
-                    chrono::DateTime::parse_from_rfc3339(ts)
-                        .ok()
-                        .map(|dt| dt.format("%H:%M:%S").to_string())
-                }).unwrap_or_else(|| "-".to_string());
+                let time_str = entry
+                    .timestamp
+                    .as_deref()
+                    .and_then(|ts| {
+                        chrono::DateTime::parse_from_rfc3339(ts)
+                            .ok()
+                            .map(|dt| dt.format("%H:%M:%S").to_string())
+                    })
+                    .unwrap_or_else(|| "-".to_string());
                 let text_style = match entry.severity {
                     Severity::Error => Style::default().fg(Color::Red),
                     Severity::Warning => Style::default().fg(Color::Yellow),

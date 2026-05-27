@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use jyc_types::{InboundMessage, MessageAttachment};
 use jyc_types::InboundAttachmentConfig;
+use jyc_types::{InboundMessage, MessageAttachment};
 use jyc_utils::helpers::sanitize_for_filesystem;
 
 /// Resolve the save directory for inbound attachments.
@@ -146,7 +146,10 @@ pub async fn save_attachments_to_dir(
         if let Some(content) = &attachment.content {
             tokio::fs::write(&file_path, content)
                 .await
-                .context(format!("Failed to write attachment: {}", attachment.filename))?;
+                .context(format!(
+                    "Failed to write attachment: {}",
+                    attachment.filename
+                ))?;
 
             attachment.saved_path = Some(file_path.clone());
 
@@ -255,17 +258,14 @@ pub async fn save_attachments_to_thread_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::MessageContent;
     use chrono::Utc;
+    use jyc_types::MessageContent;
     use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]
     fn test_sanitize_attachment_filename_path_traversal() {
-        assert_eq!(
-            sanitize_attachment_filename("../../etc/passwd"),
-            "passwd"
-        );
+        assert_eq!(sanitize_attachment_filename("../../etc/passwd"), "passwd");
         assert_eq!(
             sanitize_attachment_filename("..\\..\\windows\\system32\\config"),
             "config"
@@ -274,10 +274,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_attachment_filename_normal() {
-        assert_eq!(
-            sanitize_attachment_filename("report.pdf"),
-            "report.pdf"
-        );
+        assert_eq!(sanitize_attachment_filename("report.pdf"), "report.pdf");
         assert_eq!(
             sanitize_attachment_filename("my document (1).docx"),
             "my document (1).docx"
@@ -286,15 +283,9 @@ mod tests {
 
     #[test]
     fn test_sanitize_attachment_filename_empty() {
-        assert_eq!(
-            sanitize_attachment_filename(""),
-            "unnamed_attachment"
-        );
+        assert_eq!(sanitize_attachment_filename(""), "unnamed_attachment");
         // When the caller provides "unnamed" as fallback for missing names
-        assert_eq!(
-            sanitize_attachment_filename("unnamed"),
-            "unnamed"
-        );
+        assert_eq!(sanitize_attachment_filename("unnamed"), "unnamed");
     }
 
     #[test]

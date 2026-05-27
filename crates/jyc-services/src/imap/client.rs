@@ -46,13 +46,15 @@ impl ImapClient {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         tracing::debug!(addr = %addr, "Connecting to IMAP server");
 
-        let tcp = tokio::time::timeout(
-            IMAP_CMD_TIMEOUT,
-            TcpStream::connect(&addr),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("TCP connect to {addr} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
-        .with_context(|| format!("failed to connect to {addr}"))?;
+        let tcp = tokio::time::timeout(IMAP_CMD_TIMEOUT, TcpStream::connect(&addr))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TCP connect to {addr} timed out ({}s)",
+                    IMAP_CMD_TIMEOUT.as_secs()
+                )
+            })?
+            .with_context(|| format!("failed to connect to {addr}"))?;
 
         // tokio TcpStream → futures-io compat (for async-native-tls)
         let tcp_compat = tcp.compat();
@@ -89,8 +91,14 @@ impl ImapClient {
             .await;
         match id_result {
             Ok(Some(server_id)) => {
-                let name = server_id.get("name").map(|s| s.as_str()).unwrap_or("unknown");
-                let vendor = server_id.get("vendor").map(|s| s.as_str()).unwrap_or("unknown");
+                let name = server_id
+                    .get("name")
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
+                let vendor = server_id
+                    .get("vendor")
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
                 let trans_id = server_id.get("TransID").map(|s| s.as_str()).unwrap_or("-");
                 tracing::debug!(
                     server_name = %name,
@@ -124,7 +132,13 @@ impl ImapClient {
 
         let mbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(mailbox))
             .await
-            .map_err(|_| anyhow::anyhow!("IMAP SELECT '{}' timed out ({}s)", mailbox, IMAP_CMD_TIMEOUT.as_secs()))?
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "IMAP SELECT '{}' timed out ({}s)",
+                    mailbox,
+                    IMAP_CMD_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|e| anyhow::anyhow!("IMAP SELECT '{}' failed: {}", mailbox, e))?;
 
         let count = mbox.exists;
@@ -143,7 +157,12 @@ impl ImapClient {
             session.fetch(&range, "(UID BODY.PEEK[] FLAGS)"),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("IMAP FETCH {range} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "IMAP FETCH {range} timed out ({}s)",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
         .with_context(|| format!("failed to fetch range {range}"))?;
 
         let mut results = Vec::new();
@@ -173,7 +192,12 @@ impl ImapClient {
             session.uid_fetch(&uid_str, "(UID BODY.PEEK[] FLAGS)"),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("IMAP UID FETCH {uid} timed out ({}s)", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "IMAP UID FETCH {uid} timed out ({}s)",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
         .with_context(|| format!("failed to fetch UID {uid}"))?;
 
         while let Some(msg) = messages.next().await {
@@ -222,10 +246,7 @@ impl ImapClient {
     /// dead, just drops the session to avoid hanging on TCP retransmissions.
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(mut session) = self.session.take() {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                session.logout(),
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), session.logout()).await {
                 Ok(_) => {
                     tracing::debug!("IMAP disconnected (clean logout)");
                 }

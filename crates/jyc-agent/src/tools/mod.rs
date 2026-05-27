@@ -32,6 +32,13 @@ pub struct ToolContext<'a> {
     /// images. `Mutex<Vec<_>>` to allow tools with `&self` execution to
     /// push without requiring `&mut ToolContext`.
     pub pending_images: Mutex<Vec<ImageSource>>,
+    /// Whether the active pattern allows image handling. Mirrors the
+    /// `inject_inbound_images` flag that `build_user_blocks` checks in
+    /// `service.rs`. When `false`, `read_image` should refuse to process
+    /// images even if a `VisionClient` is configured, ensuring consistent
+    /// behavior between auto-injection and tool-driven image analysis.
+    /// Default: `false` (opt-in for safety).
+    pub pattern_inject_images: bool,
 }
 
 impl<'a> ToolContext<'a> {
@@ -41,6 +48,7 @@ impl<'a> ToolContext<'a> {
             working_dir,
             additional_read_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
+            pattern_inject_images: false,
         }
     }
 
@@ -50,9 +58,9 @@ impl<'a> ToolContext<'a> {
             working_dir,
             additional_read_roots,
             pending_images: Mutex::new(Vec::new()),
+            pattern_inject_images: false,
         }
     }
-
     /// Drain and return any pending image sources accumulated during the
     /// current tool-execution batch. Called by the agent loop after the
     /// batch completes.

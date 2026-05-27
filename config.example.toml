@@ -201,6 +201,22 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [agent.providers.anthropic.models."claude-opus-4-7"]
 # supports_images = true
 
+# --- Agent Vision Fallback ---
+#
+# When the primary model does not support images (supports_images = false),
+# the `read_image` tool can fall back to a separate vision model (e.g.,
+# DeepSeek-OCR) to analyze images and return text descriptions.
+#
+# The `provider` field references a named entry in `[agent.providers]` above
+# to reuse its `base_url` and `api_key_env`, avoiding duplicate credentials.
+#
+# [agent.vision]
+# enabled = true
+# provider = "deepseek"
+# model = "deepseek-ocr"
+# # Optional: custom prompt sent to the vision model alongside each image
+# # prompt = "请仔细识别并提取图片中的所有文字内容"
+
 
 [agent.attachments]
 enabled = true

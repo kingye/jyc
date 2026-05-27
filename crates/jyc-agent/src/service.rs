@@ -19,6 +19,8 @@ use crate::provider;
 use crate::session;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
+use crate::vision::VisionClient;
+use std::sync::Arc;
 
 /// Metadata for a discovered skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,17 +115,21 @@ pub struct JycAgentService {
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
+    /// Vision fallback client for text-only models to analyze images.
+    vision_client: Option<Arc<VisionClient>>,
 }
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
-    /// MCP configs, channel patterns, and global inbound-attachment config.
+    /// MCP configs, channel patterns, global inbound-attachment config,
+    /// and optional vision fallback client.
     pub fn new(
         config: AgentConfig,
         workdir: PathBuf,
         mcp_configs: Vec<McpServerConfig>,
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
+        vision_client: Option<Arc<VisionClient>>,
     ) -> Self {
         Self {
             config,
@@ -132,6 +138,7 @@ impl JycAgentService {
             mcp_configs,
             patterns,
             global_inbound_attachments,
+            vision_client,
         }
     }
 
@@ -386,6 +393,53 @@ impl JycAgentService {
             .unwrap_or(false);
 
         if !(supports_images && pattern_inject) {
+            // For text-only models with inject_inbound_images enabled, append
+            // image file path hints so the LLM knows which images are available
+            // and can invoke `read_image` to analyze them via vision fallback.
+            if !supports_images && pattern_inject {
+                let image_hints: Vec<String> = message.attachments
+                    .iter()
+                    .filter(|a| a.content_type.starts_with("image/"))
+                    .filter_map(|a| a.saved_path.as_ref().map(|p| p.display().to_string()))
+                    .collect();
+
+                if !image_hints.is_empty() {
+                    // Append image path hints to the first Text block, or
+                    // insert a new one if none exists. Using `find` avoids
+                    // assuming the first block type.
+                    let hint_text = {
+                        let mut lines = String::new();
+                        lines.push_str("\n\nImage attachments available (use read_image tool to analyze):\n");
+                        for hint in &image_hints {
+                            lines.push_str(&format!("- {}\n", hint));
+                        }
+                        lines
+                    };
+
+                    let found = blocks.iter_mut().find_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            text.push_str(&hint_text);
+                            Some(())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if found.is_none() {
+                        // No Text block found; prepend a new one
+                        blocks.insert(
+                            0,
+                            ContentBlock::Text {
+                                text: format!(
+                                    "Image attachments available (use read_image tool to analyze):\n{}",
+                                    image_hints.join("\n")
+                                ),
+                            },
+                        );
+                    }
+                }
+            }
+
             return blocks;
         }
 
@@ -440,10 +494,16 @@ impl JycAgentService {
         // Start with all built-in tools
         let mut registry = crate::tools::builtin::create_builtin_registry();
 
-        // Image-loading built-in (only when the model accepts images).
-        if supports_images {
-            crate::tools::builtin::register_read_image(&mut registry);
-        }
+        // Always register read_image. When the model supports images, images
+        // are queued for injection into the next user turn. When the model is
+        // text-only and a VisionClient is configured, the tool falls back to
+        // the vision model for analysis. When neither condition is met, the
+        // tool returns a helpful error message.
+        crate::tools::builtin::register_read_image(
+            &mut registry,
+            supports_images,
+            self.vision_client.clone(),
+        );
 
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
@@ -611,6 +671,14 @@ impl AgentService for JycAgentService {
         // 6. Get event bus for this thread
         let event_bus = self.get_event_bus(thread_name).await;
 
+        // 6b. Determine per-pattern image injection flag for consistency
+        // between `build_user_blocks` and the `read_image` tool's
+        // vision-fallback decision.
+        let pattern_inject = message.matched_pattern.as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .map(|p| p.inject_inbound_images)
+            .unwrap_or(false);
+
         // 7. Run agent loop
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let result = agent_loop::run(AgentLoopConfig {
@@ -627,6 +695,7 @@ impl AgentService for JycAgentService {
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
             additional_read_roots,
+            pattern_inject_images: pattern_inject,
         })
         .await?;
 

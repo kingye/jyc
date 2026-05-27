@@ -52,6 +52,11 @@ pub struct AgentLoopConfig<'a> {
     /// `working_dir`.
     #[allow(dead_code)]
     pub additional_read_roots: Vec<std::path::PathBuf>,
+    /// Whether the inbound-attachment pattern allows image injection.
+    /// Mirrors `inject_inbound_images`: when `false`, the `read_image`
+    /// tool should not use vision-fallback mode even if a `VisionClient`
+    /// is configured (consistent with `build_user_blocks` behavior).
+    pub pattern_inject_images: bool,
 }
 
 /// Run the agent loop to completion.
@@ -61,7 +66,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
         provider, small_provider, tools, system_prompt, user_blocks,
         working_dir, cancel, thread_name, event_bus, prior_history, prior_raw_context,
-        max_iterations, additional_read_roots,
+        max_iterations, additional_read_roots, pattern_inject_images,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -157,7 +162,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }).await;
 
             let tool_start = Instant::now();
-            let ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+            let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+            ctx.pattern_inject_images = pattern_inject_images;
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools.execute("jyc_reply_reply_message", synthetic_input, &ctx).await {
@@ -288,7 +294,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             "Executing tool calls"
         );
 
-        let ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+        let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+        ctx.pattern_inject_images = pattern_inject_images;
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {

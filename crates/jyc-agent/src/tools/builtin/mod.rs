@@ -9,7 +9,10 @@ pub mod glob_tool;
 pub mod grep;
 pub mod webfetch;
 
+use std::sync::Arc;
+
 use super::registry::ToolRegistry;
+use crate::vision::VisionClient;
 
 /// Create a tool registry with all built-in tools.
 pub fn create_builtin_registry() -> ToolRegistry {
@@ -26,8 +29,12 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry
 }
 
-/// Register the `read_image` built-in tool. Call this only when the active
-/// model supports image content blocks.
-pub fn register_read_image(registry: &mut ToolRegistry) {
-    registry.register(Box::new(read_image::ReadImageTool));
+/// Register the `read_image` built-in tool.
+///
+/// `supports_images` controls the execution mode:
+/// - `true`: images are queued for injection into the next user turn.
+/// - `false`: `vision_client` (if configured) is used to analyze the image
+///   and return text. If both are false/unavailable, the tool returns an error.
+pub fn register_read_image(registry: &mut ToolRegistry, supports_images: bool, vision_client: Option<Arc<VisionClient>>) {
+    registry.register(Box::new(read_image::ReadImageTool::new(supports_images, vision_client)));
 }

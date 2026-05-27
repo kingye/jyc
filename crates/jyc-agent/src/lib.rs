@@ -8,6 +8,7 @@ pub mod types;
 pub mod agent_loop;
 pub mod session;
 pub mod service;
+pub mod vision;
 
 pub use service::JycAgentService;
 
@@ -94,6 +95,7 @@ mod integration_tests {
             prior_raw_context: Vec::new(),
             max_iterations: None,
             additional_read_roots: Vec::new(),
+            pattern_inject_images: false,
         }).await.unwrap();
 
         println!("Text: {}", result.text);

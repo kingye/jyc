@@ -54,6 +54,13 @@ jobs:
           fi
           echo "✅ Coverage ${pct}% meets ${threshold}% threshold"
 
+      - name: Ensure coverage file exists
+        if: always()
+        run: |
+          if [ ! -f coverage.txt ]; then
+            echo "⚠️ Coverage report not generated (previous step failed or was skipped)" > coverage.txt
+          fi
+
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@v2
         if: always()

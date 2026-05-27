@@ -442,7 +442,7 @@ impl JycAgentService {
 
         // Image-loading built-in (only when the model accepts images).
         if supports_images {
-            crate::tools::builtin::register_read_image(&mut registry);
+            crate::tools::builtin::register_read_image(&mut registry, true, None);
         }
 
         // Add MCP bridge tools (reply_message, etc.)

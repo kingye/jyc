@@ -118,66 +118,20 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                                                                          │
 │  1. Ensure OpenCode server is running (auto-start)                       │
 │  2. Setup per-thread opencode.json (model, MCP tools, permissions)       │
-│  3. Get or create session (verify via API, persist .jyc/opencode-session.json)    │
-│     - Check if session has exceeded max_input_tokens threshold           │
-│     - If exceeded → delete old session, create new one                   │
-│     - Record if session was reset due to token limit                     │
-│  4. Clean up stale signal file                                           │
-│  5. Build system prompt (config + directory rules + system.md)           │
-│     - Include session reset notification if token limit was hit          │
-│  6. Build user prompt (stripped body )                       │
-│  7. Check mode override (plan/build)                                     │
-│  8. Send prompt via SSE streaming (activity timeout, tool detection)     │
-│     - Track input tokens from step-finish events                         │
-│     - Persist token count immediately after each step                    │
-│  9. Handle result → return GenerateReplyResult                           │
-│     - reply_sent_by_tool: true → done                                    │
-│     - ContextOverflow → new session + retry                              │
-│     - Stale session → delete + retry                                     │
-│     - No tool used → return reply_text for fallback                      │
-│                                                                          │
-│  ┌─────────────────────────────────────┐                            │
-│  │  MCP Tool: reply_message (subprocess)   │                            │
-│  │  Binary: jyc mcp-reply-tool             │                            │
-│  │  Transport: stdio (rmcp)                │                            │
-│  │                                         │                            │
-│  │  1. Decode reply-context.json (routing only)   │                            │
- │  │  2. Append reply to chat log (chat_history_YYYY-MM-DD.md) │                │
- │  │  3. Write reply-sent.flag signal file   │                            │
- │  │  (Monitor reads from chat log + sends via│                            │
- │  │   pre-warmed outbound adapter)          │                            │
-│  └─────────────────────────────────────────┘                            │
-│                                                                          │
-│  ┌─────────────────────────────────────┐                            │
-│  │  MCP Tool: analyze_image (subprocess)   │                            │
-│  │  Binary: jyc mcp-vision-tool            │                            │
-│  │  Transport: stdio (rmcp)                │                            │
-│  │                                         │                            │
-│  │  1. Read image from absolute file path  │                            │
-│  │     or download from HTTP(S) URL        │                            │
-│  │  2. Convert to base64 data URI          │                            │
-│  │  3. Call OpenAI-compatible vision API   │                            │
-│  │  4. Return analysis text                │                            │
-│  │  Config: `[[mcps]]` in config.toml      │                            │
-│  │  (jyc_vision MCP, configured via          │                            │
-│  │   templates.toml mcps list)               │                            │
-│  └─────────────────────────────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│         JycAgentService::process() (mode="agent", in-process)            │
-│                                                                          │
-│  1. Read model override (.jyc/model-override) if present                 │
-│  2. Create LLM provider (Anthropic native or OpenAI-compatible)          │
-│  3. Build system prompt:                                                 │
+│  3. Resolve effective model: .jyc/model-override > pattern > channel >   │
+│     global                                                               │
+│  4. Build system prompt:                                                 │
 │     - Directory boundary rules                                           │
 │     - AGENTS.md (thread-local + repo/AGENTS.md if exist)                 │
 │     - Discovered skills section (lazy: name + description, full content  │
 │       loaded on demand via read tool)                                    │
 │     - Reply instructions                                                 │
-│  4. Build user prompt (incoming message)                                 │
-│  5. Build tool registry (bash, read, write, edit, glob, grep, webfetch   │
-│     + reply_message bridge)                                              │
+│  5. Build user prompt (incoming message)                                 │
+│     - Text blocks + optional ContentBlock::Image for inbound attachments │
+│       when inject_inbound_images=true and model supports images          │
+│  6. Build tool registry (bash, read, write, edit, glob, grep, webfetch   │
+│     + read_image + reply_message bridge)                                 │
+│     - Apply per-pattern disabled_builtin_tools and per-pattern mcps      │
 │  6. Run agent loop:                                                      │
 │     a. Send messages to LLM (streaming)                                  │
 │     b. Collect response (text + tool_calls)                              │
@@ -208,27 +162,27 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 
 ### Components
 
-1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling)
-2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST)
+1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling, WeChat/WebSocket)
+2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST, WeChat/WebSocket)
 3. **Message Router** — Receives messages from all channels, delegates matching to adapters, routes to ThreadManager
 4. **Thread Manager** — Per-thread queues with semaphore concurrency control, worker spawn/manage
 5. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion)
 6. **Thread Event System** — Per-thread isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
-7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage
+7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
 9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
 10. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
 11. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
 12. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
 13. **State Manager** — Track processed UIDs per channel, handle migrations
-14. **Security Module** — Path validation, file size/extension checks for attachments
+14. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
 15. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
 16. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
 17. **MetricsCollector** — Lightweight stats accumulation for monitoring thread/channel activity
 18. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
 19. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
 20. **Template System** — Initialize new threads with predefined files from `templates/` directory
-21. **AgentService** — Unified agent dispatch trait for static and OpenCode modes
+21. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
 
 ### Design Principles: Component Responsibilities
 
@@ -425,6 +379,57 @@ Email arrives
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
+
+## Image Input & Multimodal Support
+
+JYC supports vision-capable models through two complementary paths:
+
+### 1. Inbound Auto-Injection
+
+When a pattern sets `inject_inbound_images = true` and the active model has `supports_images = true`, image attachments on matching messages are automatically base64-encoded and appended as `ContentBlock::Image` to the first user turn.
+
+**Flow:**
+```
+InboundMessage with image attachment
+  → MessageRouter stores attachment to thread dir
+  → ThreadManager calls agent.process()
+  → Agent checks: supports_images? && pattern.inject_inbound_images?
+  → build_user_blocks() reads image bytes from saved_path
+  → base64-encodes → ContentBlock::Image
+  → Provider::format_user_message() emits provider-specific wire format
+     - Anthropic: {"type":"image","source":{"type":"base64",...}}
+     - OpenAI-compat: {"type":"image_url","image_url":{"url":"data:image/..."}}
+```
+
+### 2. Agent-Driven `read_image` Tool
+
+Registered automatically when the provider has `supports_images() == true`. The model can call it mid-loop with either `path` or `url`.
+
+**Boundary checking**: `path` is validated against the working directory + configured attachment roots. `url` must be http/https.
+
+**Side-channel queue**: Images loaded mid-loop are pushed onto `ToolContext.pending_images`. The agent loop drains this queue after each tool batch and emits a synthetic user-role turn carrying the image blocks. This avoids embedding base64 in `tool_result` content (unsupported by most OpenAI-compat servers for `role: "tool"`).
+
+### 3. Vision Fallback (Non-Vision Models)
+
+When the active model does NOT have `supports_images = true`, `read_image` falls back to a vision-capable provider (e.g. DeepSeek-VL) for OCR/description, then returns the extracted text. This lets text-only models still reason about images.
+
+### Configuration
+
+```toml
+[[channels.wechat.patterns]]
+name = "wechat_bot"
+inject_inbound_images = true
+
+[agent.providers.deepseek]
+provider_type = "openai_compat"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+supports_images = true
+
+[agent.providers.deepseek.models.deepseek-v4-flash]
+context_window = 64000
+supports_images = true      # Model-level overrides provider-level
+```
 
 ## Feishu Channel Implementation
 
@@ -2313,6 +2318,37 @@ fn expand_env_vars(value: &mut toml::Value) {
 
 Each channel manages its own state independently. For email, state tracks IMAP sequence numbers and processed UIDs.
 
+### Per-Pattern Overrides
+
+Patterns can override global behavior for their matching threads:
+
+```toml
+[[channels.github.patterns]]
+name = "developer"
+role = "Developer"
+template = "github-developer"
+model = "deepseek/deepseek-v4-flash"           # Override global [agent].model
+small_model = "deepseek/deepseek-v4-flash"     # Override global [agent].small_model
+inject_inbound_images = true                   # Auto-inject image attachments
+mcps = ["mcp-a", "mcp-b"]                      # Only these MCP servers; [] = none
+disabled_builtin_tools = ["bash", "write"]     # Remove these built-in tools
+
+[channels.github.patterns.rules]
+github_type = ["pull_request"]
+assignees = ["kingye"]
+```
+
+**Resolution priority** (same for `model` and `small_model`):
+
+1. `.jyc/model-override` file (runtime `/model` command)
+2. Pattern-level `model` / `small_model`
+3. Channel-level `model` / `small_model`
+4. Global `[agent]` config
+
+**MCP scoping**: When `mcps` is present on a pattern, only those named servers are loaded for matching threads. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
+
+**Built-in tool disable**: `disabled_builtin_tools` removes named tools from the registry before the agent loop starts. Tool names match `Tool::name()`: `bash`, `write`, `edit`, `grep`, `glob`, `read`, `webfetch`, `read_image`.
+
 ## Directory Structure
 
 ### Runtime Data
@@ -3329,7 +3365,7 @@ The WeChat (微信) channel implementation provides messaging capabilities throu
 | Inbound transport | LarkWsClient (SDK) WebSocket | Raw tokio-tungstenite WebSocket |
 | Outbound transport | REST API (HTTP) | Same WebSocket as inbound |
 | Thread model | One thread per chat | One fixed thread per bot |
-| Message format | Rich (text, image, file, card) | v1: text-only |
+| Message format | Rich (text, image, file, card) | Text + attachments (images, files, voice, video) |
 | Name resolution | API-based with caching | Not needed (fixed thread) |
 | SDK dependency | openlark SDK | None (direct WS protocol) |
 
@@ -3355,8 +3391,32 @@ The WeChat (微信) channel implementation provides messaging capabilities throu
 }
 ```
 
+### Attachments
+
+WeChat inbound attachments (images, files, voice, video) are received via the OpenILink Bridge as nested envelope fields:
+
+```json
+{
+  "id": "msg_001",
+  "type": "image",
+  "content": "[image]",
+  "sender": "wx_user_123",
+  "attachment": {
+    "url": "https://...",
+    "filename": "photo.jpg",
+    "content_type": "image/jpeg",
+    "size": 12345
+  }
+}
+```
+
+The WeChat inbound adapter:
+1. Downloads the attachment from the provided URL
+2. Saves it to the thread directory via `attachment_storage`
+3. Populates `MessageAttachment.saved_path` so downstream agent tools can access it
+4. Strips placeholder bodies (`[image]`, `[file]`, etc.) so the agent processes attachment-only messages correctly
+
 ### Limitations (v1)
-- Text-only messages — no image, file, or rich media support
 - Single thread per bot — no multi-chat routing
 - JSON format is OpenILink-specific — no protocol abstraction layer
 

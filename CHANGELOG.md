@@ -37,7 +37,89 @@ All notable changes to JYC will be documented in this file.
   variant) instead of an opaque `[no text content]`, so it has explicit
   context for what the multimodal blocks downstream represent.
 
+- **Dashboard `list_threads()` now resolves the effective model.**
+  Previously the inspect API only read `.jyc/model-override`, so threads
+  with a pattern-level or channel-level model showed `null` / "(default)".
+  It now mirrors the inference priority chain: override file > pattern
+  model > channel model > global model.
+
+- **Channel-scope pattern lookup for model override.**
+  `JycAgentService` receives a flattened `all_patterns` list across all
+  channels; the lookup now matches both pattern name *and* channel to
+  avoid collisions when two channels define a pattern with the same name.
+
+- **GitHub Reviewer pattern priority.** In `GithubMatcher::match_message`,
+  patterns whose `role` is "Reviewer" are evaluated before all other
+  patterns (stable sort, TOML order preserved within each bucket). This
+  ensures a PR labelled `ready-for-review` routes to the reviewer even
+  when leftover developer labels are still present.
+
+- **GitHub per-cycle dedup no longer blocks CI failure events.**
+  The `triggered_in_cycle` HashSet previously deduplicated by issue
+  number, which also dropped follow-up CI status-change events for the
+  same PR. CI failure events now bypass the comment/issue dedup and are
+  routed independently.
+
+- **Prevent duplicate triggers per issue per poll cycle in GitHub channel.**
+  Comments and issue-open events for the same issue number within a single
+  poll cycle are deduplicated so the agent is not invoked twice for the
+  same update.
+
+- **Agent retry logic.**
+  - Retry on `diag-success` transport errors (connection pool staleness).
+  - Retry transient SSE stream errors instead of failing the thread.
+  - Capture and log upstream response body on Anthropic 4xx errors for
+    easier debugging.
+
+- **Inspect activity map scoped by `(channel, thread_name)`.**
+  Previously two channels with identically-named threads collided in the
+  global activity map. The key is now a tuple so each channel's thread
+  has independent activity tracking.
+
+- **WeChat fixes.**
+  - Parse OpenILink Bridge nested envelope schema correctly.
+  - Enable `native-tls` feature on `tokio-tungstenite` for `wss://` support.
+  - Include `to` field in outbound WebSocket send frames.
+  - Align attachment thread name with router; skip agent for placeholder
+    bodies (`[image]`, `[file]`, etc.).
+  - Remove duplicate pre-route attachment save.
+
 ### Added
+
+- **WeChat channel support.** New `wechat` channel type connects via OpenILink
+  Bridge WebSocket. Supports single-bot, single-thread model with auto-reconnect
+  and exponential backoff. Outbound sends via the same WebSocket connection.
+
+- **WeChat inbound attachments.** Images, files, voice, and video attachments
+  are received via OpenILink Bridge, saved to the thread directory, and
+  forwarded to the agent with `MessageAttachment.saved_path` populated.
+  Placeholder bodies (`[image]`, `[file]`, etc.) are stripped so the agent
+  processes attachment-only messages correctly.
+
+- **Per-pattern and per-channel model configuration.** `model` and `small_model`
+  can now be overridden at three levels (highest to lowest):
+  `.jyc/model-override` file > pattern config > channel config > global
+  `[agent]` config. The inference engine (`JycAgentService::process`) resolves
+  the effective model using this priority chain; the inspect dashboard now
+  mirrors the same resolution in `list_threads()`.
+
+- **Per-pattern MCP server configuration.** `[[channels.<name>.patterns]]` entries
+  can declare `mcps = ["server-a", "server-b"]` to load only those MCP servers
+  for matching threads. Set `mcps = []` to disable all MCP tools for a pattern.
+  Falls back to global `[[mcps]]` when omitted.
+
+- **Per-pattern built-in tool disable.** `disabled_builtin_tools = ["bash",
+  "write"]` on a pattern removes those tools from the agent's tool registry
+  before the loop starts. Combined with `mcps = []`, this enables fully
+  restricted sandboxes for sensitive patterns.
+
+- **Tool boundary checks.** `write`, `edit`, `glob`, `grep`, `bash`, and
+  `read_image` now validate that paths stay within the working directory and
+  configured read roots. Violations return a descriptive error to the model
+  instead of silently succeeding or failing with a generic message.
+
+- **CI action with coverage.** GitHub Actions workflow (`.github/workflows/ci.yml`)
+  runs `cargo test` with LLVM coverage reporting on every push and PR.
 
 - **Native image input into the agent loop.** Two complementary entry points
   let vision-capable models receive images directly as prompt content blocks
@@ -76,6 +158,13 @@ All notable changes to JYC will be documented in this file.
 - **Per-model `supports_images` flag** in `[agent.providers.<name>]` and
   `[agent.providers.<name>.models.<id>]`. Model-level overrides
   provider-level. Default `false`. Gates everything described above.
+
+- **`read_image` dual-mode with vision model fallback.** When the active
+  model does not have `supports_images = true`, the `read_image` tool
+  falls back to a vision-capable provider (e.g. DeepSeek-VL) for OCR /
+  description, then returns the extracted text to the text-only model.
+  This lets non-vision models still reason about images without requiring
+  a separate `jyc_vision` MCP round-trip.
 
 ### Changed
 

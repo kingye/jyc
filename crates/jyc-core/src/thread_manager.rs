@@ -656,7 +656,30 @@ impl ThreadManager {
 
             // Read session state
             let (input_tokens, max_tokens) = read_input_tokens(&thread_path).await;
-            let model = read_model_override(&thread_path).await;
+
+            // Resolve effective model with priority:
+            // 1. .jyc/model-override file (manual runtime override)
+            // 2. Pattern-level model from config
+            // 3. Channel-level model from config
+            // 4. Global agent model from config
+            let model = read_model_override(&thread_path).await
+                .or_else(|| {
+                    let pattern_name = pattern.as_ref()?;
+                    let cfg = self.config.load();
+                    let channel_cfg = cfg.channels.get(&self.channel_name)?;
+                    let patterns = channel_cfg.patterns.as_ref()?;
+                    let matched = patterns.iter().find(|p| p.name == *pattern_name)?;
+                    matched.model.clone()
+                })
+                .or_else(|| {
+                    let cfg = self.config.load();
+                    let channel_cfg = cfg.channels.get(&self.channel_name)?;
+                    channel_cfg.model.clone()
+                })
+                .or_else(|| {
+                    self.config.load().agent.model.clone()
+                });
+
             let mode = read_mode_override(&thread_path).await;
 
             // Read skills from .jyc/skills.json

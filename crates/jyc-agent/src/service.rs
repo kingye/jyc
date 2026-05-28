@@ -107,10 +107,10 @@ pub struct JycAgentService {
     workdir: PathBuf,
     /// MCP server configurations for dynamic tool loading.
     mcp_configs: Vec<McpServerConfig>,
-    /// Channel patterns flattened from `[[channels.<name>.patterns]]`. Used
-    /// to look up per-pattern agent runtime flags (e.g.
-    /// `inject_inbound_images`) and per-pattern attachment configuration
-    /// by `InboundMessage.matched_pattern`.
+    /// Channel patterns for the current channel (not cross-channel flattened).
+    /// Used to look up per-pattern agent runtime flags (e.g.
+    /// `inject_inbound_images`, model/small_model overrides, mcps,
+    /// disabled_builtin_tools) by `InboundMessage.matched_pattern`.
     patterns: Vec<ChannelPattern>,
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
@@ -121,7 +121,7 @@ pub struct JycAgentService {
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
-    /// MCP configs, channel patterns, global inbound-attachment config,
+    /// MCP configs, current channel's patterns, global inbound-attachment config,
     /// and optional vision fallback client.
     pub fn new(
         config: AgentConfig,

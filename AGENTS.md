@@ -106,3 +106,4 @@ and uses OpenCode to generate AI replies.
 - See CHANGELOG.md for version history
 - See IMPLEMENTATION.md for implementation phases
 - OpenCode Server API: https://opencode.ai/docs/server/
+- jin AGENTS.md (约束来源参考): https://github.com/kingye/jin/blob/main/AGENTS.md

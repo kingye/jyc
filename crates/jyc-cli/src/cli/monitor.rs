@@ -240,15 +240,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             prompt: v.prompt,
                         }),
                 };
-                // Flatten patterns from all channels so the agent can look up
-                // per-pattern flags (e.g. inject_inbound_images) by
-                // InboundMessage.matched_pattern regardless of channel.
-                let all_patterns: Vec<jyc_types::ChannelPattern> = config_snapshot
-                    .channels
-                    .values()
-                    .filter_map(|c| c.patterns.clone())
-                    .flatten()
-                    .collect();
+                // Use only this channel's patterns so per-pattern overrides
+                // (model, small_model, mcps, disabled_builtin_tools,
+                // inject_inbound_images) are resolved deterministically.
+                // Previously, patterns were flattened from every channel and
+                // find(|p| p.name == name) could return a different channel's
+                // pattern with the same name (HashMap iteration order is
+                // non-deterministic), causing per-pattern overrides to be
+                // silently ignored.
+                let channel_patterns = patterns.clone();
                 // Build optional VisionClient for vision fallback
                 let vision_client: Option<std::sync::Arc<jyc_agent::vision::VisionClient>> = {
                     agent_config
@@ -286,7 +286,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     agent_cfg,
                     workdir.to_path_buf(),
                     config_snapshot.mcps.clone(),
-                    all_patterns,
+                    channel_patterns,
                     inbound_attachment_config.clone(),
                     vision_client,
                 ))

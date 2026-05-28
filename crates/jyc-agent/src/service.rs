@@ -107,10 +107,10 @@ pub struct JycAgentService {
     workdir: PathBuf,
     /// MCP server configurations for dynamic tool loading.
     mcp_configs: Vec<McpServerConfig>,
-    /// Channel patterns flattened from `[[channels.<name>.patterns]]`. Used
-    /// to look up per-pattern agent runtime flags (e.g.
-    /// `inject_inbound_images`) and per-pattern attachment configuration
-    /// by `InboundMessage.matched_pattern`.
+    /// Channel patterns for the current channel (not cross-channel flattened).
+    /// Used to look up per-pattern agent runtime flags (e.g.
+    /// `inject_inbound_images`, model/small_model overrides, mcps,
+    /// disabled_builtin_tools) by `InboundMessage.matched_pattern`.
     patterns: Vec<ChannelPattern>,
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
@@ -121,7 +121,7 @@ pub struct JycAgentService {
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
-    /// MCP configs, channel patterns, global inbound-attachment config,
+    /// MCP configs, current channel's patterns, global inbound-attachment config,
     /// and optional vision fallback client.
     pub fn new(
         config: AgentConfig,
@@ -847,5 +847,130 @@ impl AgentService for JycAgentService {
                 buses.remove(thread_name);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jyc_types::{ChannelPattern, ChannelType};
+    use std::path::PathBuf;
+
+    /// Helper: build a service with given config model and patterns.
+    fn service_with_patterns(
+        config_model: Option<&str>,
+        patterns: Vec<ChannelPattern>,
+    ) -> JycAgentService {
+        JycAgentService::new(
+            AgentConfig {
+                model: config_model.map(|s| s.to_string()),
+                ..AgentConfig::default()
+            },
+            PathBuf::from("/tmp/test-workdir"),
+            vec![],
+            patterns,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn pattern_model_override_is_resolved() {
+        let patterns = vec![ChannelPattern {
+            name: "my-pattern".to_string(),
+            model: Some("provider/model-from-pattern".to_string()),
+            channel: ChannelType::default(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_patterns(Some("provider/default-model"), patterns);
+
+        // Simulate pattern lookup — the same `find` call used in `process`
+        let resolved = Some("my-pattern")
+            .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref())
+            .map(|s| s.to_string())
+            .or_else(|| svc.config.model.clone());
+
+        assert_eq!(resolved.as_deref(), Some("provider/model-from-pattern"));
+    }
+
+    #[test]
+    fn fallback_to_config_model_when_pattern_has_no_model() {
+        let patterns = vec![ChannelPattern {
+            name: "no-override".to_string(),
+            model: None,
+            channel: ChannelType::default(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_patterns(Some("provider/default-model"), patterns);
+
+        let resolved = Some("no-override")
+            .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref())
+            .map(|s| s.to_string())
+            .or_else(|| svc.config.model.clone());
+
+        assert_eq!(resolved.as_deref(), Some("provider/default-model"));
+    }
+
+    #[test]
+    fn fallback_to_config_model_when_no_pattern_matches() {
+        let patterns = vec![ChannelPattern {
+            name: "other-pattern".to_string(),
+            model: Some("provider/other-model".to_string()),
+            channel: ChannelType::default(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_patterns(Some("provider/default-model"), patterns);
+
+        // Look up a name that's not in patterns
+        let resolved: Option<String> = Some("unmatched-name")
+            .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref())
+            .map(|s| s.to_string())
+            .or_else(|| svc.config.model.clone());
+
+        assert_eq!(resolved.as_deref(), Some("provider/default-model"));
+    }
+
+    #[test]
+    fn pattern_model_none_and_config_none_yields_none() {
+        let patterns: Vec<ChannelPattern> = vec![];
+        let svc = service_with_patterns(None, patterns);
+
+        let resolved: Option<String> = Some("anything")
+            .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref())
+            .map(|s| s.to_string())
+            .or_else(|| svc.config.model.clone());
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn first_matching_pattern_wins_with_duplicate_names() {
+        // When two patterns share the same name (still possible within a
+        // single channel), the first in insertion order wins.
+        let patterns = vec![
+            ChannelPattern {
+                name: "dup".to_string(),
+                model: Some("provider/first".to_string()),
+                channel: ChannelType::default(),
+                ..ChannelPattern::default()
+            },
+            ChannelPattern {
+                name: "dup".to_string(),
+                model: Some("provider/second".to_string()),
+                channel: ChannelType::default(),
+                ..ChannelPattern::default()
+            },
+        ];
+        let svc = service_with_patterns(Some("provider/default"), patterns);
+
+        let resolved = Some("dup")
+            .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.model.as_deref());
+
+        assert_eq!(resolved, Some("provider/first"));
     }
 }

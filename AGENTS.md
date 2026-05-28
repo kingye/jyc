@@ -70,6 +70,37 @@ and uses OpenCode to generate AI replies.
 
 示例：`feat: add IMAP idle support for real-time email monitoring`
 
+## 文档约定
+
+### 文件用途映射
+| 文件 | 定位 |
+|------|------|
+| `DESIGN.md` | 系统架构设计文档，记录设计决策和 trade-off |
+| `CHANGELOG.md` | 面向用户的版本变更记录 |
+| `docs/` | 专题文档目录（API 文档、配置指南等） |
+| `AGENTS.md` | AI agent 行为约束规则，使用精简、断言式语言编写 |
+
+> **AGENTS.md 编写规则**：使用断言式语言（"必须……" / "禁止……"），避免冗长描述，每条规则可直接作为判断依据。
+
+### 文档更新触发规则
+| 变更类型 | 需更新文档 |
+|----------|------------|
+| 架构变更、新 crate、模块拆分/合并 | `DESIGN.md` |
+| 新增配置项或环境变量 | `config.example.toml` 及 `README.md` |
+| 新增 channel 类型 | `docs/channels/` 对应文档 |
+| 功能变更（新增/修改/移除） | `CHANGELOG.md` |
+| Agent 行为规则变更 | `AGENTS.md` |
+
+### CHANGELOG 格式约束
+遵循 [Keep a Changelog](https://keepachangelog.com/) 规范，按以下顺序组织：
+
+1. **Added** — 新增功能
+2. **Changed** — 已变更的功能
+3. **Fixed** — 已修复的 bug
+4. **Removed** — 已移除的功能
+
+每项使用 `-` 列表，格式：`- {简短描述} (#{issue/PR 编号})`
+
 ## References
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history

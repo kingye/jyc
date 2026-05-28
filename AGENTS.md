@@ -34,9 +34,9 @@ and uses OpenCode to generate AI replies.
 ## 工作流约定
 
 ### 分支命名
-- 功能分支：`feat/issue-{N}`（如 `feat/issue-220`）
-- 修复分支：`fix/issue-{N}`（如 `fix/issue-42`）
-- 使用下划线分隔多词，禁止大写字母
+- 功能分支：`feat/issue-{N}-<简短描述>`（如 `feat/issue-220-add-imap-idle`）
+- 修复分支：`fix/issue-{N}-<简短描述>`（如 `fix/issue-42-fix-timeout-panic`）
+- 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
 提交 PR 前必须在本地通过以下四步检查：

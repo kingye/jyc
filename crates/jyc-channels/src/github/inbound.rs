@@ -1540,8 +1540,13 @@ impl GithubInboundAdapter {
                             pr_number = pr_number,
                             "Skipping duplicate CI failure trigger for PR already triggered in this cycle"
                         );
-                        self.track_ci_status(*pr_number, &head_sha, previous_status.as_deref().unwrap_or("pending"), ci_status)
-                            .await;
+                        self.track_ci_status(
+                            *pr_number,
+                            &head_sha,
+                            previous_status.as_deref().unwrap_or("pending"),
+                            ci_status,
+                        )
+                        .await;
                         continue;
                     }
 

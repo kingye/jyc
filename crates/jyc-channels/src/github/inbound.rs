@@ -906,7 +906,7 @@ impl GithubInboundAdapter {
         ci_status: &mut HashMap<u64, (String, String)>, // pr_number → (head_sha, overall_status)
     ) -> Result<()> {
         let poll_start = last_poll.clone();
-        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
         tracing::trace!(
             channel = %self.channel_name,
@@ -959,7 +959,7 @@ impl GithubInboundAdapter {
             // without requiring a comment.
             if is_new {
                 // Dedup: skip if this issue already triggered in this poll cycle
-                if !triggered_in_cycle.insert(issue.number) {
+                if !triggered_in_cycle.insert(issue.number.to_string()) {
                     continue;
                 }
 
@@ -1097,7 +1097,7 @@ impl GithubInboundAdapter {
             );
 
             // Dedup: skip if this issue already triggered in this poll cycle
-            if !triggered_in_cycle.insert(issue_number) {
+            if !triggered_in_cycle.insert(issue_number.to_string()) {
                 tracing::debug!(
                     channel = %self.channel_name,
                     issue_number = issue_number,
@@ -1224,7 +1224,7 @@ impl GithubInboundAdapter {
                         );
 
                         // Dedup: skip if this PR already triggered in this poll cycle
-                        if !triggered_in_cycle.insert(*pr_number) {
+                        if !triggered_in_cycle.insert(pr_number.to_string()) {
                             tracing::debug!(
                                 channel = %self.channel_name,
                                 pr_number = pr_number,
@@ -1347,7 +1347,7 @@ impl GithubInboundAdapter {
                         );
 
                         // Dedup: skip if this PR already triggered in this poll cycle
-                        if !triggered_in_cycle.insert(*pr_number) {
+                        if !triggered_in_cycle.insert(pr_number.to_string()) {
                             tracing::debug!(
                                 channel = %self.channel_name,
                                 pr_number = pr_number,
@@ -1534,14 +1534,19 @@ impl GithubInboundAdapter {
                     );
 
                     // Dedup: skip if this PR already triggered in this poll cycle
-                    if !triggered_in_cycle.insert(*pr_number) {
+                    if !triggered_in_cycle.insert(format!("ci-{}", pr_number)) {
                         tracing::debug!(
                             channel = %self.channel_name,
                             pr_number = pr_number,
                             "Skipping duplicate CI failure trigger for PR already triggered in this cycle"
                         );
-                        self.track_ci_status(*pr_number, &head_sha, overall_status, ci_status)
-                            .await;
+                        self.track_ci_status(
+                            *pr_number,
+                            &head_sha,
+                            previous_status.as_deref().unwrap_or("pending"),
+                            ci_status,
+                        )
+                        .await;
                         continue;
                     }
 
@@ -3804,40 +3809,40 @@ mod tests {
         // Simulates the dedup guard pattern used in poll_once() for all
         // trigger types (label, comment, review, review_comment, CI failure).
         // Validates that the first trigger for an issue/PR is allowed through.
-        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
         // First insert for issue 42 should return true (allowed)
         assert!(
-            triggered_in_cycle.insert(42),
+            triggered_in_cycle.insert("42".to_string()),
             "First trigger for an issue should be allowed"
         );
     }
 
     #[test]
     fn test_triggered_in_cycle_blocks_duplicate() {
-        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
         // First insert returns true
-        assert!(triggered_in_cycle.insert(42));
+        assert!(triggered_in_cycle.insert("42".to_string()));
 
         // Second insert for same number returns false (blocked)
         assert!(
-            !triggered_in_cycle.insert(42),
+            !triggered_in_cycle.insert("42".to_string()),
             "Duplicate trigger for same issue should be blocked"
         );
     }
 
     #[test]
     fn test_triggered_in_cycle_allows_different_numbers() {
-        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
         // Insert different issue numbers — all should be allowed
-        assert!(triggered_in_cycle.insert(42));
+        assert!(triggered_in_cycle.insert("42".to_string()));
         assert!(
-            triggered_in_cycle.insert(43),
+            triggered_in_cycle.insert("43".to_string()),
             "Different issue numbers should each be allowed"
         );
-        assert!(triggered_in_cycle.insert(100));
+        assert!(triggered_in_cycle.insert("100".to_string()));
     }
 
     #[test]
@@ -3845,14 +3850,14 @@ mod tests {
         // Validates that the dedup set is scoped per poll cycle — a fresh
         // HashSet is created for each poll_once() call, so the same issue
         // number can trigger again in a new cycle.
-        let mut cycle1: HashSet<u64> = HashSet::new();
-        assert!(cycle1.insert(42)); // First cycle: allowed
-        assert!(!cycle1.insert(42)); // First cycle: duplicate blocked
+        let mut cycle1: HashSet<String> = HashSet::new();
+        assert!(cycle1.insert("42".to_string())); // First cycle: allowed
+        assert!(!cycle1.insert("42".to_string())); // First cycle: duplicate blocked
 
         // New cycle = fresh HashSet
-        let mut cycle2: HashSet<u64> = HashSet::new();
+        let mut cycle2: HashSet<String> = HashSet::new();
         assert!(
-            cycle2.insert(42),
+            cycle2.insert("42".to_string()),
             "Same issue should be allowed in a new poll cycle"
         );
     }
@@ -3862,21 +3867,55 @@ mod tests {
         // Validates realistic scenario: issue 42 triggers via label change,
         // then a comment for issue 42 is blocked, while a comment for
         // issue 43 is still allowed.
-        let mut triggered_in_cycle: HashSet<u64> = HashSet::new();
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
         // Label trigger for issue 42 — allowed
-        assert!(triggered_in_cycle.insert(42));
+        assert!(triggered_in_cycle.insert("42".to_string()));
 
         // Comment trigger for issue 42 — blocked (duplicate)
-        assert!(!triggered_in_cycle.insert(42));
+        assert!(!triggered_in_cycle.insert("42".to_string()));
 
         // Comment trigger for issue 43 — allowed (different issue)
-        assert!(triggered_in_cycle.insert(43));
+        assert!(triggered_in_cycle.insert("43".to_string()));
 
         // Review trigger for PR 42 — blocked (same number, still in cycle)
-        assert!(!triggered_in_cycle.insert(42));
+        assert!(!triggered_in_cycle.insert("42".to_string()));
 
         // Review trigger for PR 99 — allowed
-        assert!(triggered_in_cycle.insert(99));
+        assert!(triggered_in_cycle.insert("99".to_string()));
+    }
+
+    #[test]
+    fn test_ci_failure_not_blocked_by_other_triggers() {
+        // Regression test: CI failure events use a separate dedup key
+        // ("ci-{N}") so they are not blocked when another event type
+        // (comment, review, label change) already triggered for the
+        // same PR in the same poll cycle.
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
+
+        // Simulate a comment trigger for PR 42 that fired first
+        assert!(triggered_in_cycle.insert("42".to_string()));
+
+        // CI failure for PR 42 should still be allowed — different key
+        assert!(
+            triggered_in_cycle.insert("ci-42".to_string()),
+            "CI failure should use a different dedup key than other triggers"
+        );
+    }
+
+    #[test]
+    fn test_ci_failure_self_dedup() {
+        // CI failure events for the same PR should still deduplicate
+        // against each other within the same cycle.
+        let mut triggered_in_cycle: HashSet<String> = HashSet::new();
+
+        // First CI failure trigger for PR 42 — allowed
+        assert!(triggered_in_cycle.insert("ci-42".to_string()));
+
+        // Second CI failure trigger for same PR 42 — blocked (duplicate CI)
+        assert!(
+            !triggered_in_cycle.insert("ci-42".to_string()),
+            "CI failure should deduplicate against itself"
+        );
     }
 }

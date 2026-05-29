@@ -232,9 +232,7 @@ mod tests {
 
     #[test]
     fn test_clean_body() {
-        let storage = Arc::new(MessageStorage::new(&std::path::PathBuf::from(
-            std::env::temp_dir(),
-        )));
+        let storage = Arc::new(MessageStorage::new(&std::env::temp_dir()));
         let adapter = WecomOutboundAdapter::new_with_attachments(
             "https://example.com/webhook".to_string(),
             storage,
@@ -247,9 +245,7 @@ mod tests {
 
     #[test]
     fn test_channel_type() {
-        let storage = Arc::new(MessageStorage::new(&std::path::PathBuf::from(
-            std::env::temp_dir(),
-        )));
+        let storage = Arc::new(MessageStorage::new(&std::env::temp_dir()));
         let adapter = WecomOutboundAdapter::new_with_attachments(
             "https://example.com/webhook".to_string(),
             storage,

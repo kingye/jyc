@@ -163,7 +163,7 @@ mod tests {
     fn test_decrypt_short_key() {
         // Key that decodes to less than 43 bytes
         let short_key =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 20]);
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 20]);
         let result = decrypt_msg(&short_key, "dGVzdA==");
         assert!(result.is_err());
     }
@@ -172,7 +172,7 @@ mod tests {
     fn test_decrypt_invalid_encrypt() {
         // Invalid base64 in encrypt field
         let long_key =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 43]);
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0u8; 43]);
         let result = decrypt_msg(&long_key, "not-base64!!!");
         assert!(result.is_err());
     }

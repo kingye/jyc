@@ -310,12 +310,8 @@ impl OutboundAdapter for WecomOutboundAdapter {
         // Get the access token
         let token = self.get_token().await?;
 
-        // For alerts, we still need a chat_id — use the recipient as chat_id
-        // recipient format: "wecom:{chat_id}"
-        let chat_id = recipient
-            .strip_prefix("wecom:")
-            .or(Some(recipient))
-            .unwrap_or_default();
+        // The recipient is in format "wecom:{chat_id}" — extract the chat_id
+        let chat_id = recipient.strip_prefix("wecom:").unwrap_or(recipient);
 
         let payload = Self::build_alert_payload(chat_id, subject, body);
 
@@ -328,14 +324,26 @@ impl OutboundAdapter for WecomOutboundAdapter {
             .await
             .with_context(|| "failed to send WeCom alert")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let response_body = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or(serde_json::Value::Null);
+
+        if !status.is_success() {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
             anyhow::bail!(
-                "WeCom alert API returned error {}: {}",
+                "WeCom alert API returned error {}: {} (status: {})",
+                body["errcode"],
+                errmsg,
                 status,
-                response_body
             );
+        }
+
+        let errcode = body["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!("WeCom alert API returned error {}: {}", errcode, errmsg);
         }
 
         let message_id = format!("wecom_{}", generate_nonce());

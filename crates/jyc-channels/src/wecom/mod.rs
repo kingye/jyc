@@ -11,4 +11,5 @@
 //! - One channel = one Bot = one fixed thread (similar to WeChat).
 
 pub mod crypto;
+pub mod inbound;
 pub mod server;

@@ -5,7 +5,7 @@
 //! WeCom sends POST requests to the shared axum HTTP server at `/webhook/{channel_name}`.
 //!
 //! Thread name is derived from the `chat_id` field in the WeCom message metadata,
-//! following the pattern `wecom_{sanitized_chat_id}` — one thread per chat group.
+//! following the pattern `{channel_name}_{sanitized_chat_id}` — one thread per chat group.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use jyc_types::WecomConfig;
 /// - `sender`: match sender by exact address (shared with email/feishu/wechat)
 ///
 /// All present rules use AND logic. Empty rules match all messages.
-/// Thread name is derived from `metadata["chat_id"]`: `wecom_{sanitized_chat_id}`.
+/// Thread name is derived from `metadata["chat_id"]`: `{channel_name}_{sanitized_chat_id}`.
 pub struct WecomMatcher;
 
 impl ChannelMatcher for WecomMatcher {

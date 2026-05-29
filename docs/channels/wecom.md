@@ -38,7 +38,7 @@ WeCom (WeChat Work / 企业微信) channel implementation for JYC, using the
   Configured via `[wecom].bind_addr` (default: `127.0.0.1:10001`).
 - **Path-based Routing**: Each channel registers at `/webhook/{channel_name}`.
 - **One Group = One Thread**: Thread name is derived from `chat_id`
-  (`wecom_{sanitized_chat_id}`), ensuring each WeCom chat group maps to a dedicated
+  (`{channel_name}_{sanitized_chat_id}`), ensuring each WeCom chat group maps to a dedicated
   agent thread.
 - **Token-based Outbound**: Uses `corp_id` + `corp_secret` to obtain an access_token
   from the WeCom API, then sends messages via the external contact API.

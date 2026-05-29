@@ -2,7 +2,7 @@
 
 All notable changes to JYC will be documented in this file.
 
-## [Unreleased]
+## [0.3.9] - 2026-05-28
 
 ### Fixed
 
@@ -598,8 +598,6 @@ will produce progress replies automatically for long-running tasks.
 
 - Replace `Arc<AppConfig>` with `ArcSwap` for live config reload support
 - Extend inspect protocol with `reload_config` command and typed responses
-
-## [Unreleased]
 
 ## [0.3.1] - 2026-05-18
 

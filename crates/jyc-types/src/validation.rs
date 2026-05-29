@@ -208,16 +208,10 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                         message: "WeCom corp_id is required".into(),
                     });
                 }
-                if wecom_config.webhook_url.is_empty() {
+                if wecom_config.corp_secret.is_empty() {
                     errors.push(ValidationError {
-                        path: format!("{prefix}.wecom.webhook_url"),
-                        message: "WeCom webhook_url is required (use ${ENV_VAR} syntax)".into(),
-                    });
-                }
-                if !wecom_config.webhook_url.starts_with("https://") {
-                    errors.push(ValidationError {
-                        path: format!("{prefix}.wecom.webhook_url"),
-                        message: "WeCom webhook_url must start with https://".into(),
+                        path: format!("{prefix}.wecom.corp_secret"),
+                        message: "WeCom corp_secret is required (use ${ENV_VAR} syntax)".into(),
                     });
                 }
             } else {
@@ -877,7 +871,7 @@ type = "wecom"
 token = "wecom_token_xxx"
 encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
 corp_id = "ww1234567890abcdef"
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+corp_secret = "my_corp_secret_value"
 
 [agent]
 enabled = true
@@ -915,7 +909,7 @@ type = "wecom"
 token = ""
 encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
 corp_id = "ww1234567890abcdef"
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+corp_secret = "my_corp_secret_value"
 
 [agent]
 enabled = true
@@ -927,7 +921,7 @@ mode = "agent"
     }
 
     #[test]
-    fn test_wecom_invalid_webhook_url_fails() {
+    fn test_wecom_missing_corp_secret_fails() {
         let toml = r#"
 [general]
 [channels.wecom_bot]
@@ -937,7 +931,7 @@ type = "wecom"
 token = "valid_token"
 encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
 corp_id = "ww1234567890abcdef"
-webhook_url = "http://insecure-url.com"
+corp_secret = ""
 
 [agent]
 enabled = true
@@ -945,6 +939,6 @@ mode = "agent"
 "#;
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
-        assert!(errors.iter().any(|e| e.path.contains("wecom.webhook_url")));
+        assert!(errors.iter().any(|e| e.path.contains("wecom.corp_secret")));
     }
 }

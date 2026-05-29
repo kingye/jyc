@@ -4,8 +4,8 @@
 //! Unlike WeChat's WebSocket or Feishu's WebSocket, WeCom uses HTTP callbacks:
 //! WeCom sends POST requests to the shared axum HTTP server at `/webhook/{channel_name}`.
 //!
-//! One channel = one Bot = one fixed thread.
-//! Thread name is derived from the channel configuration name.
+//! Thread name is derived from the `chat_id` field in the WeCom message metadata,
+//! following the pattern `{channel_name}_{sanitized_chat_id}` — one thread per chat group.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use jyc_types::{
 };
 use jyc_utils::helpers::sanitize_for_filesystem;
 
-use crate::wecom::server::{ChannelWebhookConfig, WecomWebhookServer};
+use crate::wecom::server::{ChannelWebhookConfig, ParsedWecomMessage, WecomWebhookServer};
 use jyc_types::WecomConfig;
 
 /// WeCom channel matcher — stateless pattern matching.
@@ -29,7 +29,7 @@ use jyc_types::WecomConfig;
 /// - `sender`: match sender by exact address (shared with email/feishu/wechat)
 ///
 /// All present rules use AND logic. Empty rules match all messages.
-/// One bot = one fixed thread: thread name is the channel name.
+/// Thread name is derived from `metadata["chat_id"]`: `{channel_name}_{sanitized_chat_id}`.
 pub struct WecomMatcher;
 
 impl ChannelMatcher for WecomMatcher {
@@ -43,14 +43,34 @@ impl ChannelMatcher for WecomMatcher {
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Extract the channel name from sender_address (format: "wecom:{channel_name}").
-        // This is the single source of truth for thread name derivation — the adapter
-        // delegates to this method so the saver and the router agree on the thread name.
-        message
-            .sender_address
-            .strip_prefix("wecom:")
-            .map(jyc_utils::helpers::sanitize_for_filesystem)
-            .unwrap_or_else(|| "wecom".to_string())
+        // Thread name is derived from chat_id + channel_name in metadata:
+        // {channel_name}_{sanitized_chat_id} (e.g. "my_bot_wrOgQhDgA...")
+        // This ensures one thread per channel+group pair.
+        if let Some(chat_id) = message
+            .metadata
+            .get("chat_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let channel_name = message
+                .metadata
+                .get("channel_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("wecom");
+            format!(
+                "{}_{}",
+                sanitize_for_filesystem(channel_name),
+                sanitize_for_filesystem(chat_id)
+            )
+        } else {
+            // Fallback: use the channel name from sender_address
+            message
+                .sender_address
+                .strip_prefix("wecom:")
+                .map(sanitize_for_filesystem)
+                .unwrap_or_else(|| "wecom".to_string())
+        }
     }
 
     fn match_message(
@@ -176,7 +196,7 @@ async fn register_handler(
         token: config.token.clone(),
         encoding_aes_key: config.encoding_aes_key.clone(),
         corp_id: config.corp_id.clone(),
-        on_message: Arc::new(move |decrypted_xml: String| {
+        on_message: Arc::new(move |parsed: ParsedWecomMessage| {
             let message = InboundMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 channel: "wecom".to_string(),
@@ -184,26 +204,41 @@ async fn register_handler(
                     "wecom_{}",
                     chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
                 ),
-                sender: "wecom_bot".to_string(),
-                sender_address: format!("wecom:{}", channel_name_clone_1),
+                sender: parsed.from_user.clone(),
+                sender_address: format!("wecom:{}", parsed.from_user),
                 recipients: vec![],
                 topic: "WeCom Message".to_string(),
                 content: jyc_types::MessageContent {
-                    text: Some(decrypted_xml),
+                    text: Some(parsed.content.clone()),
                     html: None,
                     markdown: None,
                 },
                 timestamp: chrono::Utc::now(),
                 thread_refs: None,
                 reply_to_id: None,
-                external_id: None,
+                external_id: Some(parsed.msg_id.clone()),
                 attachments: vec![],
                 metadata: {
                     let mut m = HashMap::new();
-                    let meta_channel = channel_name_clone_2.clone();
+                    m.insert(
+                        "chat_id".to_string(),
+                        serde_json::Value::String(parsed.chat_id.clone()),
+                    );
+                    m.insert(
+                        "msg_type".to_string(),
+                        serde_json::Value::String(parsed.msg_type.clone()),
+                    );
+                    m.insert(
+                        "from_user".to_string(),
+                        serde_json::Value::String(parsed.from_user.clone()),
+                    );
+                    m.insert(
+                        "msg_id".to_string(),
+                        serde_json::Value::String(parsed.msg_id.clone()),
+                    );
                     m.insert(
                         "channel_name".to_string(),
-                        serde_json::Value::String(meta_channel),
+                        serde_json::Value::String(channel_name_clone_1.clone()),
                     );
                     m
                 },
@@ -301,7 +336,11 @@ mod tests {
     use super::*;
     use jyc_types::{MessageContent, PatternRules, SenderRule};
 
-    fn make_wecom_message(sender: &str, text: &str) -> InboundMessage {
+    fn make_wecom_message(
+        sender: &str,
+        text: &str,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> InboundMessage {
         InboundMessage {
             id: "test-id".to_string(),
             channel: "wecom".to_string(),
@@ -320,7 +359,7 @@ mod tests {
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
-            metadata: HashMap::new(),
+            metadata,
             matched_pattern: None,
         }
     }
@@ -351,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_match_by_keywords() {
-        let msg = make_wecom_message("user1", "I need 帮助 with this");
+        let msg = make_wecom_message("user1", "I need 帮助 with this", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "help_pattern",
             Some(vec!["帮助".to_string(), "help".to_string()]),
@@ -365,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_match_keywords_case_insensitive() {
-        let msg = make_wecom_message("user1", "I need HELP");
+        let msg = make_wecom_message("user1", "I need HELP", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "help_pattern",
             Some(vec!["help".to_string()]),
@@ -377,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_no_match_wrong_keywords() {
-        let msg = make_wecom_message("user1", "Just chatting");
+        let msg = make_wecom_message("user1", "Just chatting", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "help_pattern",
             Some(vec!["帮助".to_string(), "help".to_string()]),
@@ -389,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_empty_rules_matches_all() {
-        let msg = make_wecom_message("user1", "Hello");
+        let msg = make_wecom_message("user1", "Hello", HashMap::new());
         let patterns = vec![make_wecom_pattern("catch_all", None, None)];
 
         assert!(wecom_match_message(&msg, &patterns).is_some());
@@ -397,12 +436,12 @@ mod tests {
 
     #[test]
     fn test_match_by_sender() {
-        let msg = make_wecom_message("wx_abc123", "Hello");
+        let msg = make_wecom_message("wecom:wx_abc123", "Hello", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "vip_user",
             None,
             Some(SenderRule {
-                exact: Some(vec!["wx_abc123".to_string()]),
+                exact: Some(vec!["wecom:wx_abc123".to_string()]),
                 ..Default::default()
             }),
         )];
@@ -412,12 +451,12 @@ mod tests {
 
     #[test]
     fn test_no_match_wrong_sender() {
-        let msg = make_wecom_message("other_user", "Hello");
+        let msg = make_wecom_message("wecom:other_user", "Hello", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "vip_user",
             None,
             Some(SenderRule {
-                exact: Some(vec!["wx_abc123".to_string()]),
+                exact: Some(vec!["wecom:wx_abc123".to_string()]),
                 ..Default::default()
             }),
         )];
@@ -427,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_disabled_pattern_ignored() {
-        let msg = make_wecom_message("user1", "帮助 please");
+        let msg = make_wecom_message("user1", "帮助 please", HashMap::new());
         let mut pattern = make_wecom_pattern("help_pattern", Some(vec!["帮助".to_string()]), None);
         pattern.enabled = false;
 
@@ -437,12 +476,12 @@ mod tests {
 
     #[test]
     fn test_keywords_and_sender_and() {
-        let msg = make_wecom_message("vip_user", "需要帮助");
+        let msg = make_wecom_message("wecom:vip_user", "需要帮助", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "vip_help",
             Some(vec!["帮助".to_string()]),
             Some(SenderRule {
-                exact: Some(vec!["vip_user".to_string()]),
+                exact: Some(vec!["wecom:vip_user".to_string()]),
                 ..Default::default()
             }),
         )];
@@ -452,12 +491,12 @@ mod tests {
 
     #[test]
     fn test_keywords_and_sender_no_match() {
-        let msg = make_wecom_message("other_user", "需要帮助");
+        let msg = make_wecom_message("wecom:other_user", "需要帮助", HashMap::new());
         let patterns = vec![make_wecom_pattern(
             "vip_help",
             Some(vec!["帮助".to_string()]),
             Some(SenderRule {
-                exact: Some(vec!["vip_user".to_string()]),
+                exact: Some(vec!["wecom:vip_user".to_string()]),
                 ..Default::default()
             }),
         )];
@@ -466,21 +505,60 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name() {
+    fn test_derive_thread_name_from_chat_id() {
         let matcher = WecomMatcher;
-        let mut msg = make_wecom_message("user1", "Hello");
-        msg.sender_address = "wecom:my_bot".to_string();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr9876543210".to_string()),
+        );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
+        );
+        let msg = make_wecom_message("user1", "Hello", metadata);
         let name = matcher.derive_thread_name(&msg, &[], None);
-        assert_eq!(name, "my_bot");
+        assert_eq!(name, "my_bot_wr9876543210");
+    }
+
+    #[test]
+    fn test_derive_thread_name_from_chat_id_without_channel_name() {
+        // If channel_name is missing from metadata, falls back to "wecom" prefix
+        let matcher = WecomMatcher;
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr9876543210".to_string()),
+        );
+        let msg = make_wecom_message("user1", "Hello", metadata);
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "wecom_wr9876543210");
     }
 
     #[test]
     fn test_derive_thread_name_fallback() {
         let matcher = WecomMatcher;
-        let msg = make_wecom_message("user1", "Hello");
-        // sender_address without "wecom:" prefix should fall back to "wecom"
+        // No chat_id in metadata — falls back to sender_address
+        let msg = make_wecom_message("wecom:my_bot", "Hello", HashMap::new());
         let name = matcher.derive_thread_name(&msg, &[], None);
-        assert_eq!(name, "wecom");
+        assert_eq!(name, "my_bot");
+    }
+
+    #[test]
+    fn test_derive_thread_name_empty_chat_id_fallback() {
+        let matcher = WecomMatcher;
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("".to_string()),
+        );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
+        );
+        let msg = make_wecom_message("wecom:fallback_bot", "Hello", metadata);
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "fallback_bot");
     }
 
     #[test]
@@ -492,18 +570,27 @@ mod tests {
             token: "test".to_string(),
             encoding_aes_key: "abc123abc123abc123abc123abc123abc123abc123abc123abc12".to_string(),
             corp_id: "test_corp".to_string(),
-            webhook_url: "https://example.com/webhook".to_string(),
+            corp_secret: "test_secret".to_string(),
             metadata: std::collections::HashMap::new(),
         };
         let server = Arc::new(WecomWebhookServer::new("127.0.0.1:1"));
         let adapter = WecomInboundAdapter::new(&config, "my_bot", server);
 
-        let mut msg = make_wecom_message("user1", "Hello");
-        msg.sender_address = "wecom:my_bot".to_string();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr12345".to_string()),
+        );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
+        );
+        let mut msg = make_wecom_message("wecom:user1", "Hello", metadata);
+        msg.sender_address = "wecom:user1".to_string();
 
         let adapter_name = adapter.derive_thread_name(&msg, &[], None);
         let matcher_name = WecomMatcher.derive_thread_name(&msg, &[], None);
         assert_eq!(adapter_name, matcher_name);
-        assert_eq!(adapter_name, "my_bot");
+        assert_eq!(adapter_name, "my_bot_wr12345");
     }
 }

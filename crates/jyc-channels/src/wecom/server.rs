@@ -33,6 +33,27 @@ use tokio_util::sync::CancellationToken;
 
 use crate::wecom::crypto;
 
+/// A parsed WeCom callback message from the decrypted XML.
+///
+/// Fields correspond to the inner XML body after AES decryption.
+/// Reference: https://developer.work.weixin.qq.com/document/path/90255
+#[derive(Debug, Clone)]
+pub struct ParsedWecomMessage {
+    /// Message content (text from `<Content>`).
+    pub content: String,
+    /// Sender's UserName (from `<FromUserName>`).
+    pub from_user: String,
+    /// Chat ID — the group chat room ID (from `<ChatId>`).
+    /// This is used for routing outbound messages to the correct group.
+    pub chat_id: String,
+    /// Message type (from `<MsgType>`, e.g. "text", "image").
+    pub msg_type: String,
+    /// Message ID (from `<MsgId>`).
+    pub msg_id: String,
+    /// Create time (from `<CreateTime>`).
+    pub create_time: String,
+}
+
 /// Per-channel configuration stored in the webhook server.
 #[derive(Clone)]
 pub struct ChannelWebhookConfig {
@@ -42,8 +63,8 @@ pub struct ChannelWebhookConfig {
     pub encoding_aes_key: String,
     /// Corp ID.
     pub corp_id: String,
-    /// Handler for incoming decrypted messages.
-    pub on_message: Arc<dyn Fn(String) -> Result<()> + Send + Sync>,
+    /// Handler for incoming decrypted parsed messages.
+    pub on_message: Arc<dyn Fn(ParsedWecomMessage) -> Result<()> + Send + Sync>,
 }
 
 /// The shared WeCom webhook server state.
@@ -250,8 +271,23 @@ async fn handle_post(
                 "WeCom callback: message decrypted successfully"
             );
 
-            // Call the channel's message handler
-            if let Err(e) = (config.on_message)(decrypted) {
+            // Parse the decrypted XML into structured fields
+            let parsed = match parse_decrypted_xml(&decrypted) {
+                Some(p) => p,
+                None => {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        "WeCom callback: failed to parse decrypted XML"
+                    );
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "failed to parse decrypted XML".to_string(),
+                    );
+                }
+            };
+
+            // Call the channel's message handler with the parsed message
+            if let Err(e) = (config.on_message)(parsed) {
                 tracing::error!(
                     channel = %channel_name,
                     error = %e,
@@ -296,6 +332,67 @@ fn extract_encrypt_from_xml(xml: &str) -> Option<String> {
     let end = xml[content_start..].find(end_marker)?;
 
     Some(xml[content_start..content_start + end].to_string())
+}
+
+/// Parse the decrypted XML message body into a `ParsedWecomMessage`.
+///
+/// The XML format (after AES decryption) is:
+/// ```xml
+/// <xml>
+///   <ToUserName><![CDATA[ww1234567890]]></ToUserName>
+///   <FromUserName><![CDATA[UserID]]></FromUserName>
+///   <CreateTime>1700000000</CreateTime>
+///   <MsgType><![CDATA[text]]></MsgType>
+///   <Content><![CDATA[Hello]]></Content>
+///   <MsgId>1234567890</MsgId>
+///   <ChatId><![CDATA[wr1234567890]]></ChatId>
+/// </xml>
+/// ```
+///
+/// Uses simple string extraction (same style as `extract_encrypt_from_xml`).
+pub fn parse_decrypted_xml(xml: &str) -> Option<ParsedWecomMessage> {
+    let content = extract_xml_field(xml, "Content").unwrap_or_default();
+    let from_user = extract_xml_field(xml, "FromUserName")?;
+    let chat_id = extract_xml_field(xml, "ChatId")?;
+    let msg_type = extract_xml_field(xml, "MsgType")?;
+    let msg_id = extract_xml_field(xml, "MsgId").unwrap_or_default();
+    let create_time = extract_xml_field(xml, "CreateTime").unwrap_or_default();
+
+    Some(ParsedWecomMessage {
+        content,
+        from_user,
+        chat_id,
+        msg_type,
+        msg_id,
+        create_time,
+    })
+}
+
+/// Extract the CDATA content of an XML field (e.g. `<FieldName><![CDATA[value]]></FieldName>`).
+///
+/// Also supports non-CDATA fields like `<CreateTime>1700000000</CreateTime>`.
+fn extract_xml_field(xml: &str, field: &str) -> Option<String> {
+    // Try CDATA format first: <Field><![CDATA[value]]></Field>
+    let cdata_start = format!("<{}><![CDATA[", field);
+    let cdata_end = format!("]]></{}>", field);
+    if let Some(start) = xml.find(&cdata_start) {
+        let value_start = start + cdata_start.len();
+        if let Some(end) = xml[value_start..].find(&cdata_end) {
+            return Some(xml[value_start..value_start + end].to_string());
+        }
+    }
+
+    // Try plain format: <Field>value</Field>
+    let plain_start = format!("<{}>", field);
+    let plain_end = format!("</{}>", field);
+    if let Some(start) = xml.find(&plain_start) {
+        let value_start = start + plain_start.len();
+        if let Some(end) = xml[value_start..].find(&plain_end) {
+            return Some(xml[value_start..value_start + end].to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -351,5 +448,99 @@ mod tests {
         let xml = r#"<xml><Encrypt><![CDATA[]]></Encrypt></xml>"#;
         let encrypt = extract_encrypt_from_xml(xml);
         assert_eq!(encrypt, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_parse_decrypted_xml_full() {
+        let xml = r#"<xml>
+            <ToUserName><![CDATA[ww123456]]></ToUserName>
+            <FromUserName><![CDATA[user001]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[text]]></MsgType>
+            <Content><![CDATA[Hello World]]></Content>
+            <MsgId>1234567890</MsgId>
+            <ChatId><![CDATA[wr9876543210]]></ChatId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse");
+        assert_eq!(parsed.content, "Hello World");
+        assert_eq!(parsed.from_user, "user001");
+        assert_eq!(parsed.chat_id, "wr9876543210");
+        assert_eq!(parsed.msg_type, "text");
+        assert_eq!(parsed.msg_id, "1234567890");
+        assert_eq!(parsed.create_time, "1700000000");
+    }
+
+    #[test]
+    fn test_parse_decrypted_xml_missing_chat_id() {
+        let xml = r#"<xml>
+            <FromUserName><![CDATA[user001]]></FromUserName>
+            <MsgType><![CDATA[text]]></MsgType>
+            <Content><![CDATA[Hello]]></Content>
+        </xml>"#;
+        assert!(parse_decrypted_xml(xml).is_none());
+    }
+
+    #[test]
+    fn test_parse_decrypted_xml_missing_from_user() {
+        let xml = r#"<xml>
+            <ChatId><![CDATA[wr123]]></ChatId>
+            <MsgType><![CDATA[text]]></MsgType>
+            <Content><![CDATA[Hello]]></Content>
+        </xml>"#;
+        assert!(parse_decrypted_xml(xml).is_none());
+    }
+
+    #[test]
+    fn test_extract_xml_field_cdata() {
+        let xml = r#"<xml><Content><![CDATA[hello]]></Content></xml>"#;
+        assert_eq!(extract_xml_field(xml, "Content"), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_extract_xml_field_plain() {
+        let xml = r#"<xml><CreateTime>1700000000</CreateTime></xml>"#;
+        assert_eq!(
+            extract_xml_field(xml, "CreateTime"),
+            Some("1700000000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_field_not_found() {
+        let xml = r#"<xml><Other>value</Other></xml>"#;
+        assert_eq!(extract_xml_field(xml, "Missing"), None);
+    }
+
+    #[test]
+    fn test_parse_decrypted_xml_empty_content() {
+        let xml = r#"<xml>
+            <FromUserName><![CDATA[user001]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[text]]></MsgType>
+            <Content><![CDATA[]]></Content>
+            <MsgId>1234567890</MsgId>
+            <ChatId><![CDATA[wr9876543210]]></ChatId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse with empty content");
+        assert_eq!(parsed.content, "");
+        assert_eq!(parsed.from_user, "user001");
+        assert_eq!(parsed.chat_id, "wr9876543210");
+    }
+
+    #[test]
+    fn test_parse_decrypted_xml_missing_content_optional() {
+        let xml = r#"<xml>
+            <FromUserName><![CDATA[user001]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[image]]></MsgType>
+            <MsgId>1234567890</MsgId>
+            <ChatId><![CDATA[wr9876543210]]></ChatId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse without Content");
+        assert_eq!(parsed.content, "");
+        assert_eq!(parsed.msg_type, "image");
     }
 }

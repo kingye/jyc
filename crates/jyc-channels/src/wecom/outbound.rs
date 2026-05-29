@@ -1,14 +1,16 @@
 //! WeCom (企业微信) outbound adapter implementation.
 //!
-//! This module handles sending messages via WeCom Bot webhook URLs.
-//! WeCom Bot supports text and markdown message types.
+//! This module handles sending messages via the WeCom External Contact API
+//! (`/cgi-bin/externalcontact/message/send`). Authentication uses
+//! `corpid` + `corpsecret` to obtain an access_token.
 //!
-//! Reference: https://developer.work.weixin.qq.com/document/path/91770
+//! Reference: https://developer.work.weixin.qq.com/document/path/92135
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use jyc_core::message_storage::MessageStorage;
 use jyc_types::{
@@ -18,16 +20,125 @@ use jyc_types::{
 
 use crate::wecom::crypto::generate_nonce;
 
-/// WeCom outbound adapter — sends messages via Bot webhook URL.
+/// The external contact message send API base URL.
+const EXTERNAL_CONTACT_API: &str =
+    "https://qyapi.weixin.qq.com/cgi-bin/externalcontact/message/send";
+
+/// The token refresh API base URL.
+const TOKEN_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
+
+/// The number of seconds before token expiry to proactively refresh.
+const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
+
+/// Thread-safe access token cache.
 ///
-/// WeCom Bot supports two message types:
+/// Stores the token and its expiry Instant. Refreshes automatically
+/// when the token is missing or will expire within 5 minutes.
+pub struct AccessTokenCache {
+    inner: Arc<std::sync::Mutex<Option<(String, Instant)>>>,
+    corp_id: String,
+    corp_secret: String,
+    client: reqwest::Client,
+}
+
+impl AccessTokenCache {
+    /// Create a new access token cache.
+    pub fn new(corp_id: String, corp_secret: String) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(None)),
+            corp_id,
+            corp_secret,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Get a valid access token, refreshing if necessary.
+    ///
+    /// If the cached token exists and will not expire within
+    /// `TOKEN_REFRESH_MARGIN_SECS` seconds, returns it directly.
+    /// Otherwise calls the WeCom gettoken API to obtain a new one.
+    pub async fn get_token(&self) -> Result<String> {
+        // Check if cached token is still valid
+        {
+            let cache = self.inner.lock().unwrap();
+            if let Some((token, expiry)) = cache.as_ref() {
+                let now = Instant::now();
+                let remaining = if *expiry > now {
+                    *expiry - now
+                } else {
+                    std::time::Duration::from_secs(0)
+                };
+                if remaining.as_secs() > TOKEN_REFRESH_MARGIN_SECS {
+                    return Ok(token.clone());
+                }
+            }
+        }
+
+        // Need to refresh: fetch new token from API
+        let url = format!(
+            "{}?corpid={}&corpsecret={}",
+            TOKEN_API, self.corp_id, self.corp_secret
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("failed to request WeCom access_token")?;
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .context("failed to parse WeCom access_token response")?;
+
+        let errcode = body["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!("WeCom gettoken API returned error {}: {}", errcode, errmsg);
+        }
+
+        let token = body["access_token"]
+            .as_str()
+            .context("missing access_token in gettoken response")?
+            .to_string();
+        let expires_in = body["expires_in"].as_i64().unwrap_or(7200) as u64;
+
+        let expiry = Instant::now()
+            .checked_add(std::time::Duration::from_secs(expires_in))
+            .context("token expiry overflow")?;
+
+        // Update cache
+        {
+            let mut cache = self.inner.lock().unwrap();
+            *cache = Some((token.clone(), expiry));
+        }
+
+        tracing::debug!(
+            expires_in_secs = expires_in,
+            "WeCom access_token obtained and cached"
+        );
+
+        Ok(token)
+    }
+
+    /// Get a clone of the inner mutex for testing/sharing.
+    #[cfg(test)]
+    fn inner_clone(&self) -> Arc<std::sync::Mutex<Option<(String, Instant)>>> {
+        self.inner.clone()
+    }
+}
+
+/// WeCom outbound adapter — sends messages via external contact API.
+///
+/// Uses `corp_id` + `corp_secret` to obtain an access_token for authentication,
+/// then sends messages to the WeCom External Contact message API.
+///
+/// Supports two message types:
 /// - `text`: plain text messages (default)
 /// - `markdown`: markdown formatted messages
-///
-/// Unlike WeChat, WeCom does not share a connection between inbound and outbound.
-/// Each outbound request is a standalone HTTP POST to the Bot webhook URL.
 pub struct WecomOutboundAdapter {
-    webhook_url: String,
+    access_token_cache: AccessTokenCache,
     storage: Arc<MessageStorage>,
     #[allow(dead_code)]
     attachment_config: Option<OutboundAttachmentConfig>,
@@ -40,13 +151,14 @@ pub struct WecomOutboundAdapter {
 impl WecomOutboundAdapter {
     /// Create a new WeCom outbound adapter with attachments and footer support.
     pub fn new_with_attachments(
-        webhook_url: String,
+        corp_id: String,
+        corp_secret: String,
         storage: Arc<MessageStorage>,
         attachment_config: Option<OutboundAttachmentConfig>,
         footer_enabled: bool,
     ) -> Self {
         Self {
-            webhook_url,
+            access_token_cache: AccessTokenCache::new(corp_id, corp_secret),
             storage,
             attachment_config,
             footer_enabled,
@@ -54,8 +166,22 @@ impl WecomOutboundAdapter {
         }
     }
 
-    /// Build the JSON payload for a WeCom Bot message.
-    fn build_payload(reply_text: &str, _original: &InboundMessage) -> serde_json::Value {
+    /// Get a valid access token from the cache.
+    async fn get_token(&self) -> Result<String> {
+        self.access_token_cache.get_token().await
+    }
+
+    /// Build the JSON payload for a WeCom external contact message.
+    ///
+    /// The payload includes `chat_id` and the message content (text or markdown).
+    fn build_payload(reply_text: &str, original: &InboundMessage) -> serde_json::Value {
+        // Get the chat_id from the original message metadata
+        let chat_id = original
+            .metadata
+            .get("chat_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
         // Detect if the content looks like markdown
         let is_markdown = reply_text.contains("```")
             || reply_text.contains("**")
@@ -66,6 +192,7 @@ impl WecomOutboundAdapter {
 
         if is_markdown {
             serde_json::json!({
+                "chat_id": chat_id,
                 "msgtype": "markdown",
                 "markdown": {
                     "content": reply_text
@@ -73,12 +200,24 @@ impl WecomOutboundAdapter {
             })
         } else {
             serde_json::json!({
+                "chat_id": chat_id,
                 "msgtype": "text",
                 "text": {
                     "content": reply_text
                 }
             })
         }
+    }
+
+    /// Build the JSON payload for an alert message (always markdown).
+    fn build_alert_payload(chat_id: &str, subject: &str, body: &str) -> serde_json::Value {
+        serde_json::json!({
+            "chat_id": chat_id,
+            "msgtype": "markdown",
+            "markdown": {
+                "content": format!("## {}\n\n{}", subject, body)
+            }
+        })
     }
 }
 
@@ -89,8 +228,10 @@ impl OutboundAdapter for WecomOutboundAdapter {
     }
 
     async fn connect(&self) -> Result<()> {
-        // WeCom uses stateless HTTP requests, no persistent connection needed
-        tracing::debug!("WeCom outbound: no connection needed (stateless HTTP)");
+        // WeCom uses stateless HTTP requests, no persistent connection needed.
+        // We verify connectivity by fetching an access token.
+        self.get_token().await?;
+        tracing::debug!("WeCom outbound: connected (access_token obtained)");
         Ok(())
     }
 
@@ -112,22 +253,43 @@ impl OutboundAdapter for WecomOutboundAdapter {
         message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        // Build the message payload
+        // Get the access token
+        let token = self.get_token().await?;
+
+        // Build the message payload with chat_id from the original message
         let payload = Self::build_payload(reply_text, original);
 
-        // Send via HTTP POST to the Bot webhook URL
+        // Send via HTTP POST to the external contact API
+        let url = format!("{}?access_token={}", EXTERNAL_CONTACT_API, token);
         let response = self
             .client
-            .post(&self.webhook_url)
+            .post(&url)
             .json(&payload)
             .send()
             .await
-            .with_context(|| "failed to send WeCom message to webhook URL".to_string())?;
+            .with_context(|| "failed to send WeCom external contact message".to_string())?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("WeCom webhook returned error {}: {}", status, body);
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+
+        if !status.is_success() {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!(
+                "WeCom external contact API returned error {}: {} (status: {})",
+                body["errcode"],
+                errmsg,
+                status
+            );
+        }
+
+        let errcode = body["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!(
+                "WeCom external contact API returned error {}: {}",
+                errcode,
+                errmsg
+            );
         }
 
         let message_id = format!("wecom_{}", generate_nonce());
@@ -144,26 +306,41 @@ impl OutboundAdapter for WecomOutboundAdapter {
         Ok(result)
     }
 
-    async fn send_alert(&self, _recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
-        let payload = serde_json::json!({
-            "msgtype": "markdown",
-            "markdown": {
-                "content": format!("## {}\n\n{}", subject, body)
-            }
-        });
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
+        // Get the access token
+        let token = self.get_token().await?;
 
+        // The recipient is in format "wecom:{chat_id}" — extract the chat_id
+        let chat_id = recipient.strip_prefix("wecom:").unwrap_or(recipient);
+
+        let payload = Self::build_alert_payload(chat_id, subject, body);
+
+        let url = format!("{}?access_token={}", EXTERNAL_CONTACT_API, token);
         let response = self
             .client
-            .post(&self.webhook_url)
+            .post(&url)
             .json(&payload)
             .send()
             .await
             .with_context(|| "failed to send WeCom alert")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("WeCom alert webhook returned error {}: {}", status, body);
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+
+        if !status.is_success() {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!(
+                "WeCom alert API returned error {}: {} (status: {})",
+                body["errcode"],
+                errmsg,
+                status,
+            );
+        }
+
+        let errcode = body["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
+            anyhow::bail!("WeCom alert API returned error {}: {}", errcode, errmsg);
         }
 
         let message_id = format!("wecom_{}", generate_nonce());
@@ -176,7 +353,12 @@ mod tests {
     use super::*;
     use jyc_types::MessageContent;
 
-    fn make_test_message(text: &str) -> InboundMessage {
+    fn make_test_message(text: &str, chat_id: &str) -> InboundMessage {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String(chat_id.to_string()),
+        );
         InboundMessage {
             id: "test-id".to_string(),
             channel: "wecom".to_string(),
@@ -195,46 +377,59 @@ mod tests {
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
-            metadata: std::collections::HashMap::new(),
+            metadata,
             matched_pattern: None,
         }
     }
 
     #[test]
     fn test_build_payload_text() {
-        let msg = make_test_message("Hello");
+        let msg = make_test_message("Hello", "wr12345");
         let payload = WecomOutboundAdapter::build_payload("Hello World", &msg);
+        assert_eq!(payload["chat_id"], "wr12345");
         assert_eq!(payload["msgtype"], "text");
         assert_eq!(payload["text"]["content"], "Hello World");
     }
 
     #[test]
     fn test_build_payload_markdown() {
-        let msg = make_test_message("Hello");
+        let msg = make_test_message("Hello", "wr12345");
         let payload = WecomOutboundAdapter::build_payload("## Title\n\n**bold** text", &msg);
+        assert_eq!(payload["chat_id"], "wr12345");
         assert_eq!(payload["msgtype"], "markdown");
         assert_eq!(payload["markdown"]["content"], "## Title\n\n**bold** text");
     }
 
     #[test]
     fn test_build_payload_markdown_with_code_block() {
-        let msg = make_test_message("Hello");
+        let msg = make_test_message("Hello", "wr12345");
         let payload = WecomOutboundAdapter::build_payload("```rust\nfn main() {}\n```", &msg);
+        assert_eq!(payload["chat_id"], "wr12345");
         assert_eq!(payload["msgtype"], "markdown");
     }
 
     #[test]
     fn test_build_payload_markdown_with_table() {
-        let msg = make_test_message("Hello");
+        let msg = make_test_message("Hello", "wr12345");
         let payload = WecomOutboundAdapter::build_payload("| A | B |\n|---|---|", &msg);
+        assert_eq!(payload["chat_id"], "wr12345");
         assert_eq!(payload["msgtype"], "markdown");
+    }
+
+    #[test]
+    fn test_build_payload_empty_chat_id() {
+        let msg = make_test_message("Hello", "");
+        let payload = WecomOutboundAdapter::build_payload("Hello World", &msg);
+        assert_eq!(payload["chat_id"], "");
+        assert_eq!(payload["msgtype"], "text");
     }
 
     #[test]
     fn test_clean_body() {
         let storage = Arc::new(MessageStorage::new(&std::env::temp_dir()));
         let adapter = WecomOutboundAdapter::new_with_attachments(
-            "https://example.com/webhook".to_string(),
+            "corp_id".to_string(),
+            "corp_secret".to_string(),
             storage,
             None,
             true,
@@ -247,11 +442,40 @@ mod tests {
     fn test_channel_type() {
         let storage = Arc::new(MessageStorage::new(&std::env::temp_dir()));
         let adapter = WecomOutboundAdapter::new_with_attachments(
-            "https://example.com/webhook".to_string(),
+            "corp_id".to_string(),
+            "corp_secret".to_string(),
             storage,
             None,
             true,
         );
         assert_eq!(adapter.channel_type(), "wecom");
+    }
+
+    #[test]
+    fn test_access_token_cache_creation() {
+        let cache = AccessTokenCache::new("corp_id".to_string(), "corp_secret".to_string());
+        let inner = cache.inner_clone();
+        let guard = inner.lock().unwrap();
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn test_build_alert_payload() {
+        let payload = WecomOutboundAdapter::build_alert_payload(
+            "wr12345",
+            "Alert Title",
+            "Alert body content",
+        );
+        assert_eq!(payload["chat_id"], "wr12345");
+        assert_eq!(payload["msgtype"], "markdown");
+        let content = payload["markdown"]["content"].as_str().unwrap();
+        assert!(content.contains("Alert Title"));
+        assert!(content.contains("Alert body content"));
+    }
+
+    #[test]
+    fn test_build_alert_payload_empty_chat_id() {
+        let payload = WecomOutboundAdapter::build_alert_payload("", "Subject", "Body");
+        assert_eq!(payload["chat_id"], "");
     }
 }

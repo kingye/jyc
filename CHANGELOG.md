@@ -4,6 +4,14 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **WeCom channel: migrated from Bot webhook to external contact API.** The
+  outbound adapter now uses `corp_id` + `corp_secret` for access_token-based
+  authentication via `GET /cgi-bin/gettoken`, then sends messages via
+  `POST /cgi-bin/externalcontact/message/send` with `chat_id` routing.
+  The `webhook_url` configuration field is replaced by `corp_secret`. (#228)
+
 ### Added
 
 - **WeCom (企业微信) Bot channel.** New channel type `wecom` supporting inbound

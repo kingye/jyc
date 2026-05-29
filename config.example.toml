@@ -529,15 +529,15 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # keywords = ["help", "support", "问题"]
 
 # # --- Channel: my_wecom_bot ---
-# # WeCom (企业微信) Bot channel.
+# # WeCom (企业微信) channel using the external contact API for outbound messaging.
 # # Receives messages via webhook callback (/webhook/{channel_name}) and
-# # sends replies via Bot webhook URL.
+# # sends replies via the WeCom External Contact API with access_token auth.
 # #
 # # Prerequisites:
-# # 1. Create a Bot in WeCom and configure the callback URL
+# # 1. Create an app in WeCom and configure the callback URL
 # #    (e.g., https://your-domain.com/webhook/my_wecom_bot)
 # # 2. Get the token, encoding_aes_key, and corp_id from WeCom callback settings
-# # 3. Get the Bot webhook URL from WeCom Bot settings
+# # 3. Get the corp_secret from WeCom app management
 # #
 # # Global HTTP server config (shared by all wecom channels):
 # [wecom]
@@ -550,7 +550,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # token = "your_wecom_token"
 # encoding_aes_key = "your_encoding_aes_key_43bytes"
 # corp_id = "ww1234567890abcdef"
-# webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx"
+# corp_secret = "${WECOM_CORP_SECRET}"
 #
 # # Define a catch-all pattern
 # [[channels.my_wecom_bot.patterns]]

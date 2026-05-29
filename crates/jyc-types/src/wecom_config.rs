@@ -27,7 +27,7 @@ fn default_bind_addr() -> String {
 /// WeCom (企业微信) channel-specific configuration.
 ///
 /// Contains credentials for receiving callback messages (token, encoding_aes_key, corp_id)
-/// and the Bot webhook URL for sending messages.
+/// and the corp_secret for access_token-based outbound messaging via the external contact API.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WecomConfig {
     /// Token for callback message verification (from WeCom Bot callback settings)
@@ -36,12 +36,11 @@ pub struct WecomConfig {
     /// Encoding AES Key (with "=" padding) for message decryption
     pub encoding_aes_key: String,
 
-    /// Corp ID / Enterprise ID for message decryption
+    /// Corp ID / Enterprise ID for message decryption and access_token acquisition
     pub corp_id: String,
 
-    /// Bot webhook URL for sending outgoing messages
-    /// (e.g., "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx")
-    pub webhook_url: String,
+    /// Corp secret for access_token acquisition (used for external contact message API)
+    pub corp_secret: String,
 
     /// Additional metadata
     #[serde(default)]
@@ -64,7 +63,7 @@ mod tests {
             token = "wecom_token_xxx"
             encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
             corp_id = "ww1234567890abcdef"
-            webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx-xxx"
+            corp_secret = "my_corp_secret_value"
         "#;
 
         let config: WecomConfig = toml::from_str(toml_str).unwrap();
@@ -74,10 +73,7 @@ mod tests {
             "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
         );
         assert_eq!(config.corp_id, "ww1234567890abcdef");
-        assert_eq!(
-            config.webhook_url,
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx-xxx"
-        );
+        assert_eq!(config.corp_secret, "my_corp_secret_value");
     }
 
     #[test]

@@ -2,6 +2,15 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **WeCom (企业微信) Bot channel.** New channel type `wecom` supporting inbound
+  messages via shared axum HTTP server and outbound messages via Bot webhook
+  URL. Includes AES-256-CBC message decryption, SHA1 signature verification,
+  and auto-detection of text/markdown message types. (#225, #226)
+
 ## [0.3.9] - 2026-05-28
 
 ### Fixed

@@ -527,3 +527,34 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # #
 # # [channels.my_wechat_bot.patterns.rules]
 # # keywords = ["help", "support", "问题"]
+
+# # --- Channel: my_wecom_bot ---
+# # WeCom (企业微信) Bot channel.
+# # Receives messages via webhook callback (/webhook/{channel_name}) and
+# # sends replies via Bot webhook URL.
+# #
+# # Prerequisites:
+# # 1. Create a Bot in WeCom and configure the callback URL
+# #    (e.g., https://your-domain.com/webhook/my_wecom_bot)
+# # 2. Get the token, encoding_aes_key, and corp_id from WeCom callback settings
+# # 3. Get the Bot webhook URL from WeCom Bot settings
+# #
+# # Global HTTP server config (shared by all wecom channels):
+# [wecom]
+# bind_addr = "127.0.0.1:10001"
+#
+# [channels.my_wecom_bot]
+# type = "wecom"
+#
+# [channels.my_wecom_bot.wecom]
+# token = "your_wecom_token"
+# encoding_aes_key = "your_encoding_aes_key_43bytes"
+# corp_id = "ww1234567890abcdef"
+# webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx"
+#
+# # Define a catch-all pattern
+# [[channels.my_wecom_bot.patterns]]
+# name = "wecom_bot"
+#
+# [channels.my_wecom_bot.patterns.rules]
+# # keywords = ["help", "问题"]

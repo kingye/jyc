@@ -21,7 +21,8 @@ use jyc_types::{
 use crate::wecom::crypto::generate_nonce;
 
 /// The external contact message send API base URL.
-const EXTERNAL_CONTACT_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/externalcontact/message/send";
+const EXTERNAL_CONTACT_API: &str =
+    "https://qyapi.weixin.qq.com/cgi-bin/externalcontact/message/send";
 
 /// The token refresh API base URL.
 const TOKEN_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
@@ -94,11 +95,7 @@ impl AccessTokenCache {
         let errcode = body["errcode"].as_i64().unwrap_or(-1);
         if errcode != 0 {
             let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
-            anyhow::bail!(
-                "WeCom gettoken API returned error {}: {}",
-                errcode,
-                errmsg
-            );
+            anyhow::bail!("WeCom gettoken API returned error {}: {}", errcode, errmsg);
         }
 
         let token = body["access_token"]
@@ -273,10 +270,7 @@ impl OutboundAdapter for WecomOutboundAdapter {
             .with_context(|| "failed to send WeCom external contact message".to_string())?;
 
         let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .unwrap_or(serde_json::Value::Null);
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
 
         if !status.is_success() {
             let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");
@@ -312,18 +306,15 @@ impl OutboundAdapter for WecomOutboundAdapter {
         Ok(result)
     }
 
-    async fn send_alert(&self, _recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
+    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         // Get the access token
         let token = self.get_token().await?;
 
-        // For alerts, we still need a chat_id — use the _recipient as chat_id
+        // For alerts, we still need a chat_id — use the recipient as chat_id
         // recipient format: "wecom:{chat_id}"
-        let chat_id = _recipient
+        let chat_id = recipient
             .strip_prefix("wecom:")
-            .or_else(|| {
-                // Also try direct chat_id
-                Some(_recipient)
-            })
+            .or(Some(recipient))
             .unwrap_or_default();
 
         let payload = Self::build_alert_payload(chat_id, subject, body);
@@ -340,7 +331,11 @@ impl OutboundAdapter for WecomOutboundAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let response_body = response.text().await.unwrap_or_default();
-            anyhow::bail!("WeCom alert API returned error {}: {}", status, response_body);
+            anyhow::bail!(
+                "WeCom alert API returned error {}: {}",
+                status,
+                response_body
+            );
         }
 
         let message_id = format!("wecom_{}", generate_nonce());
@@ -355,7 +350,10 @@ mod tests {
 
     fn make_test_message(text: &str, chat_id: &str) -> InboundMessage {
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("chat_id".to_string(), serde_json::Value::String(chat_id.to_string()));
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String(chat_id.to_string()),
+        );
         InboundMessage {
             id: "test-id".to_string(),
             channel: "wecom".to_string(),
@@ -458,7 +456,11 @@ mod tests {
 
     #[test]
     fn test_build_alert_payload() {
-        let payload = WecomOutboundAdapter::build_alert_payload("wr12345", "Alert Title", "Alert body content");
+        let payload = WecomOutboundAdapter::build_alert_payload(
+            "wr12345",
+            "Alert Title",
+            "Alert body content",
+        );
         assert_eq!(payload["chat_id"], "wr12345");
         assert_eq!(payload["msgtype"], "markdown");
         let content = payload["markdown"]["content"].as_str().unwrap();

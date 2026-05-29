@@ -325,7 +325,11 @@ mod tests {
     use super::*;
     use jyc_types::{MessageContent, PatternRules, SenderRule};
 
-    fn make_wecom_message(sender: &str, text: &str, metadata: HashMap<String, serde_json::Value>) -> InboundMessage {
+    fn make_wecom_message(
+        sender: &str,
+        text: &str,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> InboundMessage {
         InboundMessage {
             id: "test-id".to_string(),
             channel: "wecom".to_string(),
@@ -493,7 +497,10 @@ mod tests {
     fn test_derive_thread_name_from_chat_id() {
         let matcher = WecomMatcher;
         let mut metadata = HashMap::new();
-        metadata.insert("chat_id".to_string(), serde_json::Value::String("wr9876543210".to_string()));
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr9876543210".to_string()),
+        );
         let msg = make_wecom_message("user1", "Hello", metadata);
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "wecom_wr9876543210");
@@ -512,7 +519,10 @@ mod tests {
     fn test_derive_thread_name_empty_chat_id_fallback() {
         let matcher = WecomMatcher;
         let mut metadata = HashMap::new();
-        metadata.insert("chat_id".to_string(), serde_json::Value::String("".to_string()));
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("".to_string()),
+        );
         let msg = make_wecom_message("wecom:fallback_bot", "Hello", metadata);
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "fallback_bot");
@@ -534,7 +544,10 @@ mod tests {
         let adapter = WecomInboundAdapter::new(&config, "my_bot", server);
 
         let mut metadata = HashMap::new();
-        metadata.insert("chat_id".to_string(), serde_json::Value::String("wr12345".to_string()));
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr12345".to_string()),
+        );
         let mut msg = make_wecom_message("wecom:user1", "Hello", metadata);
         msg.sender_address = "wecom:user1".to_string();
 

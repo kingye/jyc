@@ -18,6 +18,9 @@ use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
 use jyc_channels::wechat::outbound::WechatOutboundAdapter;
+use jyc_channels::wecom::inbound::WecomInboundAdapter;
+use jyc_channels::wecom::outbound::WecomOutboundAdapter;
+use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -81,6 +84,54 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
+
+    // Initialize shared WeCom webhook server (if any wecom channel is configured)
+    let has_wecom = config_snapshot
+        .channels
+        .values()
+        .any(|c| c.channel_type == "wecom");
+    let wecom_server: Option<Arc<WecomWebhookServer>> = if has_wecom {
+        let bind_addr = config_snapshot
+            .wecom
+            .as_ref()
+            .map(|w| w.bind_addr.clone())
+            .unwrap_or_else(|| "127.0.0.1:10001".to_string());
+        let server = Arc::new(WecomWebhookServer::new(&bind_addr));
+        // Use a oneshot channel to detect server startup success/failure
+        let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+        let server_for_task = server.clone();
+        let cancel_wecom = cancel.clone();
+        tokio::spawn(async move {
+            let result = server_for_task.start(cancel_wecom).await;
+            if let Err(ref e) = result {
+                tracing::error!(error = %e, "WeCom webhook server failed to start");
+            }
+            let _ = startup_tx.send(result);
+        });
+        // Wait briefly to detect binding failures (port in use, etc.)
+        match tokio::time::timeout(std::time::Duration::from_secs(5), startup_rx).await {
+            Ok(Ok(Ok(()))) => {
+                tracing::info!(bind_addr = %bind_addr, "WeCom webhook server started");
+            }
+            Ok(Ok(Err(e))) => {
+                anyhow::bail!("WeCom webhook server failed to start: {}", e);
+            }
+            Ok(Err(_)) => {
+                // Channel closed without sending — server task panicked
+                anyhow::bail!("WeCom webhook server task panicked during startup");
+            }
+            Err(_) => {
+                // Timeout — server is still binding or serving, assume success
+                tracing::info!(
+                    bind_addr = %bind_addr,
+                    "WeCom webhook server startup pending (may be slow to bind)"
+                );
+            }
+        }
+        Some(server)
+    } else {
+        None
+    };
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -160,6 +211,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 // Store the sender_arc for later use in the inbound section
                 wechat_sender_arc = Some(adapter.sender_arc());
                 Arc::new(adapter)
+            }
+            "wecom" => {
+                let wecom_config = channel_config
+                    .wecom
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wecom config")
+                    })?
+                    .clone();
+                Arc::new(WecomOutboundAdapter::new_with_attachments(
+                    wecom_config.webhook_url,
+                    storage.clone(),
+                    outbound_attachment_config,
+                    footer_enabled,
+                ))
             }
             other => {
                 tracing::warn!(
@@ -620,6 +686,72 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         tracing::error!(
                             error = %e,
                             "WeChat inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "wecom" => {
+                let wecom_config = channel_config
+                    .wecom
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wecom config")
+                    })?
+                    .clone();
+
+                let wecom_server = wecom_server
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let channel_name_owned = channel_name.clone();
+
+                let task = tokio::spawn(async move {
+                    use jyc_types::InboundAdapter;
+                    use jyc_channels::wecom::inbound::WecomMatcher;
+
+                    let adapter = WecomInboundAdapter::new(
+                        &wecom_config,
+                        &channel_name_owned,
+                        wecom_server,
+                    );
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&WecomMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "WeCom inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "WeCom inbound adapter error"
                         );
                     }
 

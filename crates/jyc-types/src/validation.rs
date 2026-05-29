@@ -186,6 +186,46 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     message: "Feishu configuration is required for feishu channel type".into(),
                 });
             }
+        } else if channel.channel_type == "wecom" {
+            // Validate WeCom channel specifics
+            if let Some(ref wecom_config) = channel.wecom {
+                if wecom_config.token.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom.token"),
+                        message: "WeCom token is required".into(),
+                    });
+                }
+                if wecom_config.encoding_aes_key.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom.encoding_aes_key"),
+                        message: "WeCom encoding_aes_key is required (use ${ENV_VAR} syntax)"
+                            .into(),
+                    });
+                }
+                if wecom_config.corp_id.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom.corp_id"),
+                        message: "WeCom corp_id is required".into(),
+                    });
+                }
+                if wecom_config.webhook_url.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom.webhook_url"),
+                        message: "WeCom webhook_url is required (use ${ENV_VAR} syntax)".into(),
+                    });
+                }
+                if !wecom_config.webhook_url.starts_with("https://") {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom.webhook_url"),
+                        message: "WeCom webhook_url must start with https://".into(),
+                    });
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.wecom"),
+                    message: "WeCom configuration is required for wecom channel type".into(),
+                });
+            }
         }
 
         // Validate patterns
@@ -822,5 +862,89 @@ max_per_message = 5
         assert!(errors.iter().any(|e| e.path.contains("allowed_extensions")));
         assert!(errors.iter().any(|e| e.path.contains("max_file_size")));
         assert!(errors.iter().any(|e| e.path.contains("max_per_message")));
+    }
+
+    #[test]
+    fn test_wecom_valid_config_passes() {
+        let toml = r#"
+[general]
+max_concurrent_threads = 3
+
+[channels.wecom_bot]
+type = "wecom"
+
+[channels.wecom_bot.wecom]
+token = "wecom_token_xxx"
+encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+corp_id = "ww1234567890abcdef"
+webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_wecom_missing_config_fails() {
+        let toml = r#"
+[general]
+[channels.wecom_bot]
+type = "wecom"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| e.path.contains("wecom")));
+    }
+
+    #[test]
+    fn test_wecom_missing_token_fails() {
+        let toml = r#"
+[general]
+[channels.wecom_bot]
+type = "wecom"
+
+[channels.wecom_bot.wecom]
+token = ""
+encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+corp_id = "ww1234567890abcdef"
+webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| e.path.contains("wecom.token")));
+    }
+
+    #[test]
+    fn test_wecom_invalid_webhook_url_fails() {
+        let toml = r#"
+[general]
+[channels.wecom_bot]
+type = "wecom"
+
+[channels.wecom_bot.wecom]
+token = "valid_token"
+encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+corp_id = "ww1234567890abcdef"
+webhook_url = "http://insecure-url.com"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| e.path.contains("wecom.webhook_url")));
     }
 }

@@ -325,10 +325,7 @@ impl OutboundAdapter for WecomOutboundAdapter {
             .with_context(|| "failed to send WeCom alert")?;
 
         let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .unwrap_or(serde_json::Value::Null);
+        let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
 
         if !status.is_success() {
             let errmsg = body["errmsg"].as_str().unwrap_or("unknown error");

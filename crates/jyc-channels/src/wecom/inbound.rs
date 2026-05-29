@@ -43,15 +43,26 @@ impl ChannelMatcher for WecomMatcher {
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Thread name is derived from chat_id in metadata: wecom_{sanitized_chat_id}
-        // This ensures one thread per WeCom chat group.
+        // Thread name is derived from chat_id + channel_name in metadata:
+        // {channel_name}_{sanitized_chat_id} (e.g. "my_bot_wrOgQhDgA...")
+        // This ensures one thread per channel+group pair.
         if let Some(chat_id) = message
             .metadata
             .get("chat_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
-            format!("wecom_{}", sanitize_for_filesystem(chat_id))
+            let channel_name = message
+                .metadata
+                .get("channel_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("wecom");
+            format!(
+                "{}_{}",
+                sanitize_for_filesystem(channel_name),
+                sanitize_for_filesystem(chat_id)
+            )
         } else {
             // Fallback: use the channel name from sender_address
             message
@@ -501,6 +512,24 @@ mod tests {
             "chat_id".to_string(),
             serde_json::Value::String("wr9876543210".to_string()),
         );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
+        );
+        let msg = make_wecom_message("user1", "Hello", metadata);
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "my_bot_wr9876543210");
+    }
+
+    #[test]
+    fn test_derive_thread_name_from_chat_id_without_channel_name() {
+        // If channel_name is missing from metadata, falls back to "wecom" prefix
+        let matcher = WecomMatcher;
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "chat_id".to_string(),
+            serde_json::Value::String("wr9876543210".to_string()),
+        );
         let msg = make_wecom_message("user1", "Hello", metadata);
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "wecom_wr9876543210");
@@ -522,6 +551,10 @@ mod tests {
         metadata.insert(
             "chat_id".to_string(),
             serde_json::Value::String("".to_string()),
+        );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
         );
         let msg = make_wecom_message("wecom:fallback_bot", "Hello", metadata);
         let name = matcher.derive_thread_name(&msg, &[], None);
@@ -548,12 +581,16 @@ mod tests {
             "chat_id".to_string(),
             serde_json::Value::String("wr12345".to_string()),
         );
+        metadata.insert(
+            "channel_name".to_string(),
+            serde_json::Value::String("my_bot".to_string()),
+        );
         let mut msg = make_wecom_message("wecom:user1", "Hello", metadata);
         msg.sender_address = "wecom:user1".to_string();
 
         let adapter_name = adapter.derive_thread_name(&msg, &[], None);
         let matcher_name = WecomMatcher.derive_thread_name(&msg, &[], None);
         assert_eq!(adapter_name, matcher_name);
-        assert_eq!(adapter_name, "wecom_wr12345");
+        assert_eq!(adapter_name, "my_bot_wr12345");
     }
 }

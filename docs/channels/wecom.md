@@ -168,16 +168,18 @@ bold (`**`), headings (`##`), tables (`|`), task lists (`- [`), and images (`![`
 
 ## Thread Naming
 
-Threads are named using the `chat_id` field from the inbound message metadata:
+Threads are named using the `chat_id` field combined with the `channel_name` from the inbound message metadata:
 
 ```
-wecom_{sanitized_chat_id}
+{channel_name}_{sanitized_chat_id}
 ```
+
+For example, a channel named `my_bot` receiving a message from chat group `wrOgQhDgA...` will produce thread name `my_bot_wrOgQhDgA...`.
 
 This ensures:
-- One thread per WeCom chat group (consistent with the "一群一线程" design)
-- Consistency with Feishu's `feishu_{chat_id}` naming pattern
-- Proper isolation between different group conversations
+- One thread per channel+group pair (consistent with the "通道 + 群" design)
+- Consistency with Feishu's `{channel_name}_{chat_id}` naming pattern
+- Proper isolation between different channels and group conversations
 
 ## Testing
 

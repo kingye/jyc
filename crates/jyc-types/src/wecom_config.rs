@@ -69,9 +69,15 @@ mod tests {
 
         let config: WecomConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.token, "wecom_token_xxx");
-        assert_eq!(config.encoding_aes_key, "abc123abc123abc123abc123abc123abc123abc123abc123abc12");
+        assert_eq!(
+            config.encoding_aes_key,
+            "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+        );
         assert_eq!(config.corp_id, "ww1234567890abcdef");
-        assert_eq!(config.webhook_url, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx-xxx");
+        assert_eq!(
+            config.webhook_url,
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx-xxx-xxx"
+        );
     }
 
     #[test]

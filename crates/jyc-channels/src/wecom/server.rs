@@ -24,10 +24,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::Router;
 use axum::extract::{Path, Query};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -76,10 +76,7 @@ impl WecomWebhookServer {
         let channels = self.channels.clone();
 
         let app = Router::new()
-            .route(
-                "/webhook/{channel_name}",
-                get(handle_get).post(handle_post),
-            )
+            .route("/webhook/{channel_name}", get(handle_get).post(handle_post))
             .with_state(channels);
 
         let bind_addr: std::net::SocketAddr = self
@@ -97,7 +94,9 @@ impl WecomWebhookServer {
         );
 
         axum::serve(listener, app)
-            .with_graceful_shutdown(async move { cancel.cancelled().await; })
+            .with_graceful_shutdown(async move {
+                cancel.cancelled().await;
+            })
             .await
             .map_err(|e| anyhow::anyhow!("wecom webhook server error: {}", e))?;
 

@@ -198,7 +198,8 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 if wecom_config.encoding_aes_key.is_empty() {
                     errors.push(ValidationError {
                         path: format!("{prefix}.wecom.encoding_aes_key"),
-                        message: "WeCom encoding_aes_key is required (use ${ENV_VAR} syntax)".into(),
+                        message: "WeCom encoding_aes_key is required (use ${ENV_VAR} syntax)"
+                            .into(),
                     });
                 }
                 if wecom_config.corp_id.is_empty() {

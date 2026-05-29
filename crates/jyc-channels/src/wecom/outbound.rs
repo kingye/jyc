@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use jyc_core::message_storage::MessageStorage;
 use jyc_types::{
-    config::OutboundAttachmentConfig, InboundMessage, OutboundAdapter, OutboundAttachment,
-    SendResult,
+    InboundMessage, OutboundAdapter, OutboundAttachment, SendResult,
+    config::OutboundAttachmentConfig,
 };
 
 use crate::wecom::crypto::generate_nonce;
@@ -119,16 +119,12 @@ impl OutboundAdapter for WecomOutboundAdapter {
             .json(&payload)
             .send()
             .await
-            .with_context(|| format!("failed to send WeCom message to webhook URL"))?;
+            .with_context(|| "failed to send WeCom message to webhook URL".to_string())?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "WeCom webhook returned error {}: {}",
-                status,
-                body
-            );
+            anyhow::bail!("WeCom webhook returned error {}: {}", status, body);
         }
 
         let message_id = format!("wecom_{}", generate_nonce());

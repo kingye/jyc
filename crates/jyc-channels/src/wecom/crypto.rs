@@ -6,7 +6,7 @@
 //!
 //! Reference: https://developer.work.weixin.qq.com/document/path/90968
 
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
 use anyhow::{Context, Result};
 use sha1::{Digest, Sha1};
 
@@ -46,11 +46,9 @@ pub fn verify_signature(
 ///
 /// Returns the decrypted content string (the inner XML).
 pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
-    let raw_key = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        encoding_aes_key,
-    )
-    .context("failed to decode encoding_aes_key from base64")?;
+    let raw_key =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoding_aes_key)
+            .context("failed to decode encoding_aes_key from base64")?;
 
     if raw_key.len() != 43 {
         anyhow::bail!(
@@ -69,11 +67,8 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
     let mut iv = [0u8; 16];
     iv[..iv_partial.len()].copy_from_slice(iv_partial);
 
-    let ciphertext = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        encrypt,
-    )
-    .context("failed to decode encrypt from base64")?;
+    let ciphertext = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypt)
+        .context("failed to decode encrypt from base64")?;
 
     let mut buf = ciphertext;
     let decrypted = Aes256CbcDec::new(aes_key.into(), &iv.into())
@@ -86,8 +81,7 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
     }
 
     let content_len =
-        u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]])
-            as usize;
+        u32::from_be_bytes([decrypted[0], decrypted[1], decrypted[2], decrypted[3]]) as usize;
 
     if decrypted.len() < 4 + content_len {
         anyhow::bail!(
@@ -127,10 +121,18 @@ mod tests {
         let msg_signature = compute_signature(token, timestamp, nonce, encrypt);
 
         assert!(verify_signature(
-            token, timestamp, nonce, encrypt, &msg_signature
+            token,
+            timestamp,
+            nonce,
+            encrypt,
+            &msg_signature
         ));
         assert!(!verify_signature(
-            token, timestamp, nonce, encrypt, "invalid_signature"
+            token,
+            timestamp,
+            nonce,
+            encrypt,
+            "invalid_signature"
         ));
     }
 
@@ -160,10 +162,8 @@ mod tests {
     #[test]
     fn test_decrypt_short_key() {
         // Key that decodes to less than 43 bytes
-        let short_key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[0u8; 20],
-        );
+        let short_key =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 20]);
         let result = decrypt_msg(&short_key, "dGVzdA==");
         assert!(result.is_err());
     }
@@ -171,10 +171,8 @@ mod tests {
     #[test]
     fn test_decrypt_invalid_encrypt() {
         // Invalid base64 in encrypt field
-        let long_key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[0u8; 43],
-        );
+        let long_key =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 43]);
         let result = decrypt_msg(&long_key, "not-base64!!!");
         assert!(result.is_err());
     }

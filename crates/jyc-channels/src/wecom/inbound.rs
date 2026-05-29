@@ -49,7 +49,7 @@ impl ChannelMatcher for WecomMatcher {
         message
             .sender_address
             .strip_prefix("wecom:")
-            .map(|s| jyc_utils::helpers::sanitize_for_filesystem(s))
+            .map(jyc_utils::helpers::sanitize_for_filesystem)
             .unwrap_or_else(|| "wecom".to_string())
     }
 
@@ -85,14 +85,11 @@ pub fn wecom_match_message(
                 continue;
             }
 
-            let body_lower = message
-                .content
-                .text
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase();
+            let body_lower = message.content.text.as_deref().unwrap_or("").to_lowercase();
 
-            let keyword_match = keywords.iter().any(|k| body_lower.contains(&k.to_lowercase()));
+            let keyword_match = keywords
+                .iter()
+                .any(|k| body_lower.contains(&k.to_lowercase()));
             if !keyword_match {
                 matches = false;
             } else {
@@ -115,13 +112,13 @@ pub fn wecom_match_message(
             }
 
             // Check regex match
-            if let Some(ref regex_str) = sender.regex {
-                if let Ok(re) = regex::Regex::new(regex_str) {
-                    if !re.is_match(sender_addr) {
-                        matches = false;
-                    } else {
-                        match_details.insert("sender_regex".to_string(), regex_str.clone());
-                    }
+            if let Some(ref regex_str) = sender.regex
+                && let Ok(re) = regex::Regex::new(regex_str)
+            {
+                if !re.is_match(sender_addr) {
+                    matches = false;
+                } else {
+                    match_details.insert("sender_regex".to_string(), regex_str.clone());
                 }
             }
         }
@@ -153,11 +150,7 @@ pub struct WecomInboundAdapter {
 
 impl WecomInboundAdapter {
     /// Create a new WeCom inbound adapter.
-    pub fn new(
-        config: &WecomConfig,
-        channel_name: &str,
-        server: Arc<WecomWebhookServer>,
-    ) -> Self {
+    pub fn new(config: &WecomConfig, channel_name: &str, server: Arc<WecomWebhookServer>) -> Self {
         Self {
             channel_name: channel_name.to_string(),
             thread_name: sanitize_for_filesystem(channel_name),
@@ -189,7 +182,10 @@ fn register_handler(
             let message = InboundMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 channel: "wecom".to_string(),
-                channel_uid: format!("wecom_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+                channel_uid: format!(
+                    "wecom_{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
                 sender: "wecom_bot".to_string(),
                 sender_address: format!("wecom:{}", channel_name_clone_1),
                 recipients: vec![],
@@ -207,7 +203,10 @@ fn register_handler(
                 metadata: {
                     let mut m = HashMap::new();
                     let meta_channel = channel_name_clone_2.clone();
-                    m.insert("channel_name".to_string(), serde_json::Value::String(meta_channel));
+                    m.insert(
+                        "channel_name".to_string(),
+                        serde_json::Value::String(meta_channel),
+                    );
                     m
                 },
                 matched_pattern: None,
@@ -491,8 +490,8 @@ mod tests {
 
     #[test]
     fn test_adapter_derive_thread_name_matches_matcher() {
-        use std::sync::Arc;
         use crate::wecom::server::WecomWebhookServer;
+        use std::sync::Arc;
 
         let config = WecomConfig {
             token: "test".to_string(),

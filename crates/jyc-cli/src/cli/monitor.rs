@@ -97,14 +97,37 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .map(|w| w.bind_addr.clone())
             .unwrap_or_else(|| "127.0.0.1:10001".to_string());
         let server = Arc::new(WecomWebhookServer::new(&bind_addr));
-        // Start the server in background
+        // Use a oneshot channel to detect server startup success/failure
+        let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<()>>();
         let server_for_task = server.clone();
         let cancel_wecom = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = server_for_task.start(cancel_wecom).await {
-                tracing::error!(error = %e, "WeCom webhook server error");
+            let result = server_for_task.start(cancel_wecom).await;
+            if let Err(ref e) = result {
+                tracing::error!(error = %e, "WeCom webhook server failed to start");
             }
+            let _ = startup_tx.send(result);
         });
+        // Wait briefly to detect binding failures (port in use, etc.)
+        match tokio::time::timeout(std::time::Duration::from_secs(5), startup_rx).await {
+            Ok(Ok(Ok(()))) => {
+                tracing::info!(bind_addr = %bind_addr, "WeCom webhook server started");
+            }
+            Ok(Ok(Err(e))) => {
+                anyhow::bail!("WeCom webhook server failed to start: {}", e);
+            }
+            Ok(Err(_)) => {
+                // Channel closed without sending — server task panicked
+                anyhow::bail!("WeCom webhook server task panicked during startup");
+            }
+            Err(_) => {
+                // Timeout — server is still binding or serving, assume success
+                tracing::info!(
+                    bind_addr = %bind_addr,
+                    "WeCom webhook server startup pending (may be slow to bind)"
+                );
+            }
+        }
         Some(server)
     } else {
         None

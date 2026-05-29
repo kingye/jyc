@@ -33,6 +33,8 @@ pub struct WecomOutboundAdapter {
     attachment_config: Option<OutboundAttachmentConfig>,
     #[allow(dead_code)]
     footer_enabled: bool,
+    /// Shared HTTP client with connection pool.
+    client: reqwest::Client,
 }
 
 impl WecomOutboundAdapter {
@@ -48,6 +50,7 @@ impl WecomOutboundAdapter {
             storage,
             attachment_config,
             footer_enabled,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -113,8 +116,8 @@ impl OutboundAdapter for WecomOutboundAdapter {
         let payload = Self::build_payload(reply_text, original);
 
         // Send via HTTP POST to the Bot webhook URL
-        let client = reqwest::Client::new();
-        let response = client
+        let response = self
+            .client
             .post(&self.webhook_url)
             .json(&payload)
             .send()
@@ -149,8 +152,8 @@ impl OutboundAdapter for WecomOutboundAdapter {
             }
         });
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = self
+            .client
             .post(&self.webhook_url)
             .json(&payload)
             .send()

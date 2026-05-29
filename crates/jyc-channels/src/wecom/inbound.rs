@@ -160,7 +160,7 @@ impl WecomInboundAdapter {
     }
 }
 
-fn register_handler(
+async fn register_handler(
     config: &WecomConfig,
     channel_name: &str,
     thread_name: &str,
@@ -169,8 +169,6 @@ fn register_handler(
 ) -> Result<()> {
     let channel_name_clone_1 = channel_name.to_string();
     let channel_name_clone_2 = channel_name_clone_1.clone();
-    let channel_name_clone_3 = channel_name_clone_1.clone();
-    let thread_name_owned = thread_name.to_string();
     let on_message: Arc<dyn Fn(InboundMessage) -> Result<()> + Send + Sync> = Arc::from(on_message);
 
     // Build the per-channel webhook config
@@ -228,17 +226,13 @@ fn register_handler(
         }),
     };
 
-    let server_clone = server.clone();
-    let chan = channel_name_clone_3.clone();
-    let th = thread_name_owned.clone();
-    tokio::spawn(async move {
-        server_clone.register_channel(&chan, webhook_config).await;
-        tracing::info!(
-            channel = %chan,
-            thread = %th,
-            "WeCom inbound adapter registered webhook handler"
-        );
-    });
+    server.register_channel(channel_name, webhook_config).await;
+
+    tracing::info!(
+        channel = %channel_name,
+        thread = %thread_name,
+        "WeCom inbound adapter registered webhook handler"
+    );
 
     Ok(())
 }
@@ -282,7 +276,8 @@ impl InboundAdapter for WecomInboundAdapter {
             &self.thread_name,
             options.on_message,
             self.server.clone(),
-        )?;
+        )
+        .await?;
 
         tracing::info!(
             channel = %channel_name,

@@ -1,10 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::WecomGlobalConfig;
+
 use crate::channel::ChannelPattern;
 use crate::feishu_config::FeishuConfig;
 use crate::github_config::GithubConfig;
 use crate::wechat_config::WechatConfig;
+use crate::wecom_config::WecomConfig;
 
 /// MCP server configuration for agent dynamic tool loading.
 ///
@@ -65,6 +68,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub attachments: Option<UnifiedAttachmentConfig>,
 
+    /// WeCom global configuration (shared HTTP server settings)
+    #[serde(default)]
+    pub wecom: Option<WecomGlobalConfig>,
+
     /// Named MCP server configurations, referenced by templates.
     /// Each template in `templates.toml` can specify which MCPs it needs.
     #[serde(default)]
@@ -124,6 +131,9 @@ pub struct ChannelConfig {
 
     /// WeChat configuration (for wechat channels)
     pub wechat: Option<WechatConfig>,
+
+    /// WeCom configuration (for wecom channels)
+    pub wecom: Option<WecomConfig>,
 
     /// Monitoring settings (IDLE vs poll, interval, etc.)
     pub monitor: Option<MonitorConfig>,

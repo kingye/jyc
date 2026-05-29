@@ -221,7 +221,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
                 Arc::new(WecomOutboundAdapter::new_with_attachments(
-                    wecom_config.webhook_url,
+                    wecom_config.corp_id,
+                    wecom_config.corp_secret,
                     storage.clone(),
                     outbound_attachment_config,
                     footer_enabled,

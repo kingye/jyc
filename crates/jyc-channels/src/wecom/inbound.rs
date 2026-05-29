@@ -39,13 +39,18 @@ impl ChannelMatcher for WecomMatcher {
 
     fn derive_thread_name(
         &self,
-        _message: &InboundMessage,
+        message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // WeCom uses one bot = one fixed thread.
-        // The thread name is derived from the channel name by the inbound adapter.
-        "wecom".to_string()
+        // Extract the channel name from sender_address (format: "wecom:{channel_name}").
+        // This is the single source of truth for thread name derivation — the adapter
+        // delegates to this method so the saver and the router agree on the thread name.
+        message
+            .sender_address
+            .strip_prefix("wecom:")
+            .map(|s| jyc_utils::helpers::sanitize_for_filesystem(s))
+            .unwrap_or_else(|| "wecom".to_string())
     }
 
     fn match_message(
@@ -246,11 +251,15 @@ impl ChannelMatcher for WecomInboundAdapter {
 
     fn derive_thread_name(
         &self,
-        _message: &InboundMessage,
-        _patterns: &[ChannelPattern],
-        _pattern_match: Option<&PatternMatch>,
+        message: &InboundMessage,
+        patterns: &[ChannelPattern],
+        pattern_match: Option<&PatternMatch>,
     ) -> String {
-        self.thread_name.clone()
+        // Delegate to `WecomMatcher` so the saver and the router agree
+        // on the thread name. They MUST agree — when they don't, the
+        // attachment saver writes to a different directory than where
+        // the agent thread actually runs.
+        WecomMatcher.derive_thread_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -465,8 +474,42 @@ mod tests {
     #[test]
     fn test_derive_thread_name() {
         let matcher = WecomMatcher;
+        let mut msg = make_wecom_message("user1", "Hello");
+        msg.sender_address = "wecom:my_bot".to_string();
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "my_bot");
+    }
+
+    #[test]
+    fn test_derive_thread_name_fallback() {
+        let matcher = WecomMatcher;
         let msg = make_wecom_message("user1", "Hello");
+        // sender_address without "wecom:" prefix should fall back to "wecom"
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "wecom");
+    }
+
+    #[test]
+    fn test_adapter_derive_thread_name_matches_matcher() {
+        use std::sync::Arc;
+        use crate::wecom::server::WecomWebhookServer;
+
+        let config = WecomConfig {
+            token: "test".to_string(),
+            encoding_aes_key: "abc123abc123abc123abc123abc123abc123abc123abc123abc12".to_string(),
+            corp_id: "test_corp".to_string(),
+            webhook_url: "https://example.com/webhook".to_string(),
+            metadata: std::collections::HashMap::new(),
+        };
+        let server = Arc::new(WecomWebhookServer::new("127.0.0.1:1"));
+        let adapter = WecomInboundAdapter::new(&config, "my_bot", server);
+
+        let mut msg = make_wecom_message("user1", "Hello");
+        msg.sender_address = "wecom:my_bot".to_string();
+
+        let adapter_name = adapter.derive_thread_name(&msg, &[], None);
+        let matcher_name = WecomMatcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(adapter_name, matcher_name);
+        assert_eq!(adapter_name, "my_bot");
     }
 }

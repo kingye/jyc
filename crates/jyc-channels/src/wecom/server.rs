@@ -40,7 +40,7 @@ pub struct ChannelWebhookConfig {
     pub token: String,
     /// Encoding AES key for message decryption.
     pub encoding_aes_key: String,
-    /// Corporiation ID.
+    /// Corp ID.
     pub corp_id: String,
     /// Handler for incoming decrypted messages.
     pub on_message: Arc<dyn Fn(String) -> Result<()> + Send + Sync>,

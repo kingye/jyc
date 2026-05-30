@@ -336,6 +336,63 @@ impl InboundAdapter for WecomKfInboundAdapter {
     }
 }
 
+/// WeCom KF channel matcher — stateless pattern matching.
+///
+/// Delegates to `wecom_match_message` for the actual matching logic.
+/// The `channel_type` returns `"wecomkf"` so patterns can be configured
+/// with `channel = "wecomkf"` for KF-specific rules.
+pub struct WecomKfMatcher;
+
+impl ChannelMatcher for WecomKfMatcher {
+    fn channel_type(&self) -> &str {
+        "wecomkf"
+    }
+
+    fn derive_thread_name(
+        &self,
+        message: &InboundMessage,
+        _patterns: &[ChannelPattern],
+        _pattern_match: Option<&PatternMatch>,
+    ) -> String {
+        // Thread name: {channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}
+        let channel_name = message
+            .metadata
+            .get("channel_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("wecomkf");
+
+        let open_kfid = message
+            .metadata
+            .get("open_kfid")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown_kf");
+
+        let external_userid = message
+            .metadata
+            .get("external_userid")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown_user");
+
+        format!(
+            "{}_{}_{}",
+            sanitize_for_filesystem(channel_name),
+            sanitize_for_filesystem(open_kfid),
+            sanitize_for_filesystem(external_userid),
+        )
+    }
+
+    fn match_message(
+        &self,
+        message: &InboundMessage,
+        patterns: &[ChannelPattern],
+    ) -> Option<PatternMatch> {
+        wecom_match_message(message, patterns)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

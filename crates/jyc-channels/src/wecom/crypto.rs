@@ -148,12 +148,17 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
 
 /// Get a random nonce string (for generating callback response).
 pub fn generate_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{nanos}")
+    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("{nanos}_{counter}")
 }
 
 #[cfg(test)]

@@ -7,10 +7,12 @@
 //!
 //! Reference: https://developer.work.weixin.qq.com/document/path/94677
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::wecom::token_cache::AccessTokenCache;
 
@@ -19,6 +21,9 @@ const KF_SYNC_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/kf/sync_msg";
 
 /// The KF send message API base URL.
 const KF_SEND_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg";
+
+/// The external contact get API base URL.
+const EXTERNAL_CONTACT_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/externalcontact/get";
 
 /// Response from the WeCom KF `sync_msg` API.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -67,6 +72,36 @@ pub struct KfTextContent {
     pub content: String,
 }
 
+/// Response from the WeCom `externalcontact/get` API.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExternalContactResponse {
+    /// Error code (0 = success).
+    pub errcode: i64,
+    /// Error message.
+    pub errmsg: String,
+    /// External contact details.
+    #[serde(default)]
+    pub external_contact: Option<ExternalContact>,
+}
+
+/// External contact (customer) details.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExternalContact {
+    /// External user ID.
+    pub external_userid: String,
+    /// Display name.
+    pub name: String,
+    /// Avatar URL.
+    #[serde(default)]
+    pub avatar: Option<String>,
+    /// Gender (0: unknown, 1: male, 2: female).
+    #[serde(default)]
+    pub gender: Option<i32>,
+    /// Type (1: WeChat user, 2: enterprise WeCom user).
+    #[serde(default)]
+    pub r#type: Option<i32>,
+}
+
 /// WeCom KF API client.
 ///
 /// Provides methods to sync incoming messages and send replies
@@ -74,6 +109,8 @@ pub struct KfTextContent {
 pub struct KfApiClient {
     access_token_cache: Arc<AccessTokenCache>,
     client: reqwest::Client,
+    /// Cache for external contact names (external_userid → name).
+    name_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl KfApiClient {
@@ -82,7 +119,78 @@ impl KfApiClient {
         Self {
             access_token_cache,
             client: reqwest::Client::new(),
+            name_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Get the display name of an external contact (customer).
+    ///
+    /// Uses an in-memory cache to avoid repeated API calls.
+    /// Falls back to the external_userid itself if the API call fails.
+    pub async fn get_external_contact_name(&self, external_userid: &str) -> String {
+        // Check cache first
+        {
+            let cache = self.name_cache.read().await;
+            if let Some(name) = cache.get(external_userid) {
+                return name.clone();
+            }
+        }
+
+        // Fetch from API
+        let name = match self.fetch_external_contact(external_userid).await {
+            Ok(contact) => contact.name,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    external_userid = %external_userid,
+                    "Failed to fetch external contact name, falling back to userid"
+                );
+                external_userid.to_string()
+            }
+        };
+
+        // Store in cache
+        {
+            let mut cache = self.name_cache.write().await;
+            cache.insert(external_userid.to_string(), name.clone());
+        }
+
+        name
+    }
+
+    async fn fetch_external_contact(&self, external_userid: &str) -> Result<ExternalContact> {
+        let access_token = self.access_token_cache.get_token().await?;
+
+        let url = format!(
+            "{}?access_token={}&external_userid={}",
+            EXTERNAL_CONTACT_API, access_token, external_userid
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("failed to send externalcontact/get request")?;
+
+        let status = response.status();
+        let body: ExternalContactResponse = response
+            .json()
+            .await
+            .context("failed to parse externalcontact/get response")?;
+
+        if !status.is_success() || body.errcode != 0 {
+            anyhow::bail!(
+                "externalcontact/get API returned error {}: {} (status: {})",
+                body.errcode,
+                body.errmsg,
+                status,
+            );
+        }
+
+        body.external_contact.ok_or_else(|| {
+            anyhow::anyhow!("externalcontact/get response missing external_contact field")
+        })
     }
 
     /// Verify connectivity by fetching a fresh access token.

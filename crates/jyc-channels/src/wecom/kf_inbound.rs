@@ -69,7 +69,12 @@ impl WecomKfInboundAdapter {
 }
 
 /// Convert a synced KF message into an `InboundMessage`.
-fn kf_message_to_inbound(msg: &KfMessage, channel_name: &str, token: &str) -> InboundMessage {
+fn kf_message_to_inbound(
+    msg: &KfMessage,
+    channel_name: &str,
+    token: &str,
+    user_name: &str,
+) -> InboundMessage {
     let mut metadata = HashMap::new();
     metadata.insert(
         "open_kfid".to_string(),
@@ -78,6 +83,10 @@ fn kf_message_to_inbound(msg: &KfMessage, channel_name: &str, token: &str) -> In
     metadata.insert(
         "external_userid".to_string(),
         serde_json::Value::String(msg.external_userid.clone()),
+    );
+    metadata.insert(
+        "user_name".to_string(),
+        serde_json::Value::String(user_name.to_string()),
     );
     metadata.insert(
         "msgid".to_string(),
@@ -201,8 +210,18 @@ fn handle_kf_event(
 
                         dedup_store.mark_seen(&msg.msgid);
 
+                        // Fetch customer display name for readable thread names
+                        let user_name = kf_client
+                            .get_external_contact_name(&msg.external_userid)
+                            .await;
+                        tracing::debug!(
+                            external_userid = %msg.external_userid,
+                            user_name = %user_name,
+                            "WeCom KF inbound: resolved customer name"
+                        );
+
                         // Convert to InboundMessage
-                        let inbound = kf_message_to_inbound(msg, &channel_name, &token);
+                        let inbound = kf_message_to_inbound(msg, &channel_name, &token, &user_name);
 
                         // Call the on_message callback
                         if let Err(e) = (on_message)(inbound) {
@@ -252,12 +271,24 @@ fn handle_kf_event(
 
 /// Shared helper to derive a KF thread name from message metadata.
 ///
-/// Format: `{sanitized_external_userid_prefix}`
+/// Format: `{sanitized_user_name}`
 /// One thread per customer (regardless of which KF account they contact).
 ///
-/// WeCom's `external_userid` may contain a variable suffix (session-specific),
-/// so we use only the first 12 chars as the stable customer identifier.
+/// Uses the customer's display name from WeCom's externalcontact/get API.
+/// Falls back to external_userid prefix if name is not available.
 fn wecomkf_derive_thread_name(message: &InboundMessage, _default_channel: &str) -> String {
+    // Prefer user_name (display name from WeCom API)
+    let user_name = message
+        .metadata
+        .get("user_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    if let Some(name) = user_name {
+        return sanitize_for_filesystem(name);
+    }
+
+    // Fallback: use external_userid prefix
     let external_userid = message
         .metadata
         .get("external_userid")
@@ -265,8 +296,6 @@ fn wecomkf_derive_thread_name(message: &InboundMessage, _default_channel: &str) 
         .filter(|s| !s.is_empty())
         .unwrap_or("unknown_user");
 
-    // Use first 10 chars of external_userid as stable customer identifier.
-    // WeCom's external_userid has a stable prefix (~10 chars) + variable suffix.
     let stable_user_id = if external_userid.len() > 10 {
         &external_userid[..10]
     } else {
@@ -604,7 +633,7 @@ mod tests {
             }),
         };
 
-        let inbound = kf_message_to_inbound(&msg, "my_kf_bot", "token_xxx");
+        let inbound = kf_message_to_inbound(&msg, "my_kf_bot", "token_xxx", "张三");
         assert_eq!(inbound.channel, "wecomkf");
         assert_eq!(inbound.sender, "user123");
         assert_eq!(inbound.sender_address, "wecomkf:user123");
@@ -620,6 +649,10 @@ mod tests {
                 .get("external_userid")
                 .and_then(|v| v.as_str()),
             Some("user123")
+        );
+        assert_eq!(
+            inbound.metadata.get("user_name").and_then(|v| v.as_str()),
+            Some("张三")
         );
         assert_eq!(
             inbound.metadata.get("token").and_then(|v| v.as_str()),
@@ -638,7 +671,7 @@ mod tests {
             text: None,
         };
 
-        let inbound = kf_message_to_inbound(&msg, "my_kf_bot", "token_xxx");
+        let inbound = kf_message_to_inbound(&msg, "my_kf_bot", "token_xxx", "李四");
         assert_eq!(inbound.content.text, None);
         assert_eq!(
             inbound.metadata.get("msg_type").and_then(|v| v.as_str()),

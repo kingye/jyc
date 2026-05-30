@@ -281,6 +281,7 @@ async fn handle_post(
         Ok(decrypted) => {
             tracing::debug!(
                 channel = %channel_name,
+                decrypted_xml = %decrypted,
                 "WeCom callback: message decrypted successfully"
             );
 
@@ -290,6 +291,7 @@ async fn handle_post(
                 None => {
                     tracing::warn!(
                         channel = %channel_name,
+                        decrypted_xml = %decrypted,
                         "WeCom callback: failed to parse decrypted XML"
                     );
                     return (
@@ -379,9 +381,18 @@ fn extract_encrypt_from_xml(xml: &str) -> Option<String> {
 /// Uses simple string extraction (same style as `extract_encrypt_from_xml`).
 pub fn parse_decrypted_xml(xml: &str) -> Option<ParsedWecomMessage> {
     let content = extract_xml_field(xml, "Content").unwrap_or_default();
-    let from_user = extract_xml_field(xml, "FromUserName")?;
+    let from_user = extract_xml_field(xml, "FromUserName").unwrap_or_default();
     let chat_id = extract_xml_field(xml, "ChatId").unwrap_or_default();
-    let msg_type = extract_xml_field(xml, "MsgType")?;
+    let msg_type = match extract_xml_field(xml, "MsgType") {
+        Some(v) => v,
+        None => {
+            tracing::debug!(
+                xml = %xml,
+                "parse_decrypted_xml: missing required field MsgType"
+            );
+            return None;
+        }
+    };
     let msg_id = extract_xml_field(xml, "MsgId").unwrap_or_default();
     let create_time = extract_xml_field(xml, "CreateTime").unwrap_or_default();
     let token = extract_xml_field(xml, "Token").unwrap_or_default();
@@ -519,12 +530,16 @@ mod tests {
 
     #[test]
     fn test_parse_decrypted_xml_missing_from_user() {
+        // FromUserName is optional — KF events may not have it
         let xml = r#"<xml>
             <ChatId><![CDATA[wr123]]></ChatId>
             <MsgType><![CDATA[text]]></MsgType>
             <Content><![CDATA[Hello]]></Content>
         </xml>"#;
-        assert!(parse_decrypted_xml(xml).is_none());
+        let parsed = parse_decrypted_xml(xml).expect("should parse without FromUserName");
+        assert_eq!(parsed.from_user, "");
+        assert_eq!(parsed.chat_id, "wr123");
+        assert_eq!(parsed.msg_type, "text");
     }
 
     #[test]

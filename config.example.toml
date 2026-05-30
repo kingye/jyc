@@ -558,3 +558,46 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "问题"]
+
+# # --- Channel: my_wecomkf_bot ---
+# # WeCom KF (Customer Service) channel.
+# # Uses the WeCom Customer Service API (kf/sync_msg, kf/send_msg)
+# # for inbound message pulling and outbound message sending.
+# #
+# # Unlike the regular wecom channel (external contact API), the KF channel:
+# # - Receives kf_msg_or_event notifications via the shared webhook server
+# # - Pulls messages via kf/sync_msg API (cursor-based incremental sync)
+# # - Sends replies via kf/send_msg API
+# # - One thread per customer per KF account
+# #   ({channel_name}_{open_kfid}_{external_userid})
+# #
+# # Prerequisites:
+# # 1. Enable WeCom KF and configure callback URL
+# # 2. Get the token, encoding_aes_key, and corp_id from KF callback settings
+# # 3. Get the corp_secret from WeCom app management
+# # 4. Note the open_kfid(s) for the KF accounts
+# #
+# # Reuses the shared WeCom webhook server (configured in [wecom] above):
+# # [wecom]
+# # bind_addr = "127.0.0.1:10001"
+# #
+# # [channels.my_wecomkf_bot]
+# # type = "wecomkf"
+# #
+# # [channels.my_wecomkf_bot.wecom_kf]
+# # token = "your_kf_token"
+# # encoding_aes_key = "your_encoding_aes_key_43bytes"
+# # corp_id = "ww1234567890abcdef"
+# # corp_secret = "${WECOM_CORP_SECRET}"
+# # # Optional: filter by KF account IDs (empty = accept all)
+# # open_kf_ids = ["kf1234567890"]
+# # # Optional: cursor persistence file path (JSON)
+# # # If not set, cursors are memory-only (lost on restart)
+# # cursor_store_path = "./data/kf_cursors.json"
+# #
+# # # Define a catch-all pattern
+# # [[channels.my_wecomkf_bot.patterns]]
+# # name = "kf_bot"
+# #
+# # [channels.my_wecomkf_bot.patterns.rules]
+# # # keywords = ["help", "support", "问题"]

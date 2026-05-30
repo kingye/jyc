@@ -97,13 +97,21 @@ impl ChatLogStore {
 
         let mut formatted = String::new();
 
+        // Extract user_name from metadata (e.g., WeCom KF provides display names)
+        let user_name = message
+            .metadata
+            .get("user_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+
         // Metadata comment — sender_address is the canonical ID, sender_name is the display name
-        let sender_name_str =
-            if message.sender != message.sender_address && !message.sender.is_empty() {
-                format!(" | sender_name:{}", message.sender)
-            } else {
-                String::new()
-            };
+        let sender_name_str = if let Some(name) = user_name {
+            format!(" | sender_name:{}", name)
+        } else if message.sender != message.sender_address && !message.sender.is_empty() {
+            format!(" | sender_name:{}", message.sender)
+        } else {
+            String::new()
+        };
         formatted.push_str(&format!(
             "<!-- {} | type:received | {} | sender:{}{} | channel:{}{} -->\n",
             message.timestamp.to_rfc3339(),
@@ -115,8 +123,13 @@ impl ChatLogStore {
         ));
 
         // Content header — use display name for readability
-        let from_display = if !message.sender.is_empty() && message.sender != message.sender_address
-        {
+        let from_display = if let Some(name) = user_name {
+            if !message.sender_address.is_empty() {
+                format!("{} ({})", name, message.sender_address)
+            } else {
+                name.to_string()
+            }
+        } else if !message.sender.is_empty() && message.sender != message.sender_address {
             format!("{} ({})", message.sender, message.sender_address)
         } else {
             message.sender_address.clone()

@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_max_message_age_seconds() -> u64 {
+    300
+}
+
 /// WeCom KF (Customer Service) channel-specific configuration.
 ///
 /// Unlike the regular `WecomConfig`, the KF channel uses the
@@ -36,6 +40,11 @@ pub struct WecomKfConfig {
     /// Optional file path for cursor persistence (JSON file).
     #[serde(default)]
     pub cursor_store_path: Option<String>,
+
+    /// Maximum age (in seconds) of messages to process. Messages older than
+    /// this are skipped. Default: 300 (5 minutes). Set to 0 to disable.
+    #[serde(default = "default_max_message_age_seconds")]
+    pub max_message_age_seconds: u64,
 
     /// Additional metadata.
     #[serde(default)]

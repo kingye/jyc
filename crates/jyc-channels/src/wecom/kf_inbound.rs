@@ -141,15 +141,51 @@ fn kf_message_to_inbound(
     }
 }
 
+/// Filter messages from a `sync_msg` response.
+///
+/// - Removes messages with empty `external_userid` (system/event messages).
+/// - On first sync (empty cursor), only the latest valid message is kept.
+/// - Messages older than `max_age_seconds` are skipped (unless `send_time` is 0).
+fn filter_sync_messages<'a>(
+    msg_list: &'a [KfMessage],
+    cursor: &str,
+    max_age_seconds: u64,
+) -> Vec<&'a KfMessage> {
+    let valid_msgs: Vec<_> = msg_list
+        .iter()
+        .filter(|m| !m.external_userid.is_empty())
+        .collect();
+
+    let msgs_to_process = if cursor.is_empty() && valid_msgs.len() > 1 {
+        vec![*valid_msgs.last().unwrap()]
+    } else {
+        valid_msgs
+    };
+
+    if max_age_seconds == 0 {
+        return msgs_to_process;
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let max_age = max_age_seconds as i64;
+
+    msgs_to_process
+        .into_iter()
+        .filter(|msg| msg.send_time == 0 || (now - msg.send_time) <= max_age)
+        .collect()
+}
+
 /// Handle a KF event notification from the webhook.
 ///
 /// This is called when the shared webhook server receives a `kf_msg_or_event`
 /// event. It pulls messages from the KF API, deduplicates them, and routes them.
+#[allow(clippy::too_many_arguments)]
 fn handle_kf_event(
     parsed: ParsedWecomMessage,
     kf_client: Arc<KfApiClient>,
     cursor_store: Arc<KfCursorStore>,
     dedup_store: Arc<KfDedupStore>,
+    config: WecomKfConfig,
     channel_name: String,
     on_message: Arc<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
     cancel: CancellationToken,
@@ -180,24 +216,29 @@ fn handle_kf_event(
                 .await
             {
                 Ok(response) => {
-                    for msg in &response.msg_list {
+                    let msgs_to_process = filter_sync_messages(
+                        &response.msg_list,
+                        &current_cursor,
+                        config.max_message_age_seconds,
+                    );
+
+                    if current_cursor.is_empty() && response.msg_list.len() > 1 {
+                        tracing::info!(
+                            total = response.msg_list.len(),
+                            kept = msgs_to_process.len(),
+                            "WeCom KF first sync: filtered chat history"
+                        );
+                    }
+
+                    for msg in msgs_to_process {
                         tracing::debug!(
                             msgid = %msg.msgid,
                             msgtype = %msg.msgtype,
                             external_userid = %msg.external_userid,
                             open_kfid = %msg.open_kfid,
+                            send_time = msg.send_time,
                             "WeCom KF inbound: received message from sync_msg"
                         );
-
-                        // Skip messages without external_userid (system messages, etc.)
-                        if msg.external_userid.is_empty() {
-                            tracing::debug!(
-                                msgid = %msg.msgid,
-                                msgtype = %msg.msgtype,
-                                "WeCom KF inbound: skipping message with empty external_userid"
-                            );
-                            continue;
-                        }
 
                         // Dedup check
                         if dedup_store.is_duplicate(&msg.msgid) {
@@ -355,6 +396,7 @@ impl InboundAdapter for WecomKfInboundAdapter {
                 let kf_client = self.kf_client.clone();
                 let cursor_store = self.cursor_store.clone();
                 let dedup_store = self.dedup_store.clone();
+                let config = self.config.clone();
                 let channel_name = channel_name.clone();
                 let on_message: Arc<dyn Fn(InboundMessage) -> Result<()> + Send + Sync> =
                     Arc::from(options.on_message);
@@ -375,6 +417,7 @@ impl InboundAdapter for WecomKfInboundAdapter {
                         kf_client.clone(),
                         cursor_store.clone(),
                         dedup_store.clone(),
+                        config.clone(),
                         channel_name.clone(),
                         on_message.clone(),
                         cancel_for_handler.clone(),
@@ -446,6 +489,7 @@ mod tests {
             corp_secret: "secret".to_string(),
             open_kf_ids: vec![],
             cursor_store_path: None,
+            max_message_age_seconds: 300,
             metadata: HashMap::new(),
         };
         let server = Arc::new(WecomWebhookServer::new("127.0.0.1:1"));
@@ -552,6 +596,7 @@ mod tests {
             corp_secret: "secret".to_string(),
             open_kf_ids: vec![],
             cursor_store_path: None,
+            max_message_age_seconds: 300,
             metadata: HashMap::new(),
         };
         let server = Arc::new(WecomWebhookServer::new("127.0.0.1:1"));
@@ -610,6 +655,7 @@ mod tests {
             corp_secret: "secret".to_string(),
             open_kf_ids: vec![],
             cursor_store_path: None,
+            max_message_age_seconds: 300,
             metadata: HashMap::new(),
         };
         let server = Arc::new(WecomWebhookServer::new("127.0.0.1:1"));
@@ -690,5 +736,185 @@ mod tests {
             inbound.metadata.get("msg_type").and_then(|v| v.as_str()),
             Some("image")
         );
+    }
+
+    // -- filter_sync_messages tests --
+
+    fn make_kf_msg(msgid: &str, external_userid: &str, send_time: i64) -> KfMessage {
+        KfMessage {
+            msgid: msgid.to_string(),
+            open_kfid: "kf001".to_string(),
+            external_userid: external_userid.to_string(),
+            send_time,
+            msgtype: "text".to_string(),
+            text: Some(KfTextContent {
+                content: format!("content_{}", msgid),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_filter_first_sync_latest_only() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_001", "user1", now - 1000),
+            make_kf_msg("msg_002", "user2", now - 500),
+            make_kf_msg("msg_003", "user3", now - 100),
+        ];
+
+        // Empty cursor = first sync → only latest message
+        let filtered = filter_sync_messages(&msgs, "", 0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].msgid, "msg_003");
+    }
+
+    #[test]
+    fn test_filter_incremental_all_messages() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_001", "user1", now - 1000),
+            make_kf_msg("msg_002", "user2", now - 500),
+            make_kf_msg("msg_003", "user3", now - 100),
+        ];
+
+        // Non-empty cursor = incremental sync → all messages
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 0);
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_time_filter_skips_old() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_old", "user1", now - 600), // 10 min old
+            make_kf_msg("msg_new", "user2", now - 60),  // 1 min old
+        ];
+
+        // max_age = 300 (5 min) → skip msg_old
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 300);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].msgid, "msg_new");
+    }
+
+    #[test]
+    fn test_filter_time_filter_keeps_new() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_1", "user1", now - 60),
+            make_kf_msg("msg_2", "user2", now - 120),
+            make_kf_msg("msg_3", "user3", now - 180),
+        ];
+
+        // All within 5 min window
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 300);
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_zero_send_time_bypasses_age_check() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_old", "user1", 0), // send_time = 0
+            make_kf_msg("msg_new", "user2", now - 60),
+        ];
+
+        // msg_old has send_time = 0 → age check bypassed
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 300);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_empty_external_userid_skipped() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            KfMessage {
+                msgid: "event_001".to_string(),
+                open_kfid: "kf001".to_string(),
+                external_userid: "".to_string(),
+                send_time: now - 60,
+                msgtype: "event".to_string(),
+                text: None,
+            },
+            make_kf_msg("msg_001", "user1", now - 60),
+        ];
+
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 300);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].msgid, "msg_001");
+    }
+
+    #[test]
+    fn test_filter_first_sync_with_time_filter() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_001", "user1", now - 600), // 10 min old
+            make_kf_msg("msg_002", "user2", now - 400), // ~6.7 min old
+            make_kf_msg("msg_003", "user3", now - 60),  // 1 min old
+        ];
+
+        // First sync + 5 min window → only msg_003 qualifies as "latest"
+        let filtered = filter_sync_messages(&msgs, "", 300);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].msgid, "msg_003");
+    }
+
+    #[test]
+    fn test_filter_disabled_age_check() {
+        let now = chrono::Utc::now().timestamp();
+        let msgs = vec![
+            make_kf_msg("msg_old", "user1", now - 10000), // very old
+            make_kf_msg("msg_new", "user2", now - 60),
+        ];
+
+        // max_age = 0 → disable age filtering
+        let filtered = filter_sync_messages(&msgs, "cursor_abc", 0);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_config_default_max_message_age() {
+        let config: WecomKfConfig = toml::from_str(
+            r#"
+            token = "test"
+            encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+            corp_id = "ww12345"
+            corp_secret = "secret"
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.max_message_age_seconds, 300);
+    }
+
+    #[test]
+    fn test_config_custom_max_message_age() {
+        let config: WecomKfConfig = toml::from_str(
+            r#"
+            token = "test"
+            encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+            corp_id = "ww12345"
+            corp_secret = "secret"
+            max_message_age_seconds = 600
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.max_message_age_seconds, 600);
+    }
+
+    #[test]
+    fn test_config_disable_max_message_age() {
+        let config: WecomKfConfig = toml::from_str(
+            r#"
+            token = "test"
+            encoding_aes_key = "abc123abc123abc123abc123abc123abc123abc123abc123abc12"
+            corp_id = "ww12345"
+            corp_secret = "secret"
+            max_message_age_seconds = 0
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.max_message_age_seconds, 0);
     }
 }

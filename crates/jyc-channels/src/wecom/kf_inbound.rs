@@ -172,6 +172,24 @@ fn handle_kf_event(
             {
                 Ok(response) => {
                     for msg in &response.msg_list {
+                        tracing::debug!(
+                            msgid = %msg.msgid,
+                            msgtype = %msg.msgtype,
+                            external_userid = %msg.external_userid,
+                            open_kfid = %msg.open_kfid,
+                            "WeCom KF inbound: received message from sync_msg"
+                        );
+
+                        // Skip messages without external_userid (system messages, etc.)
+                        if msg.external_userid.is_empty() {
+                            tracing::debug!(
+                                msgid = %msg.msgid,
+                                msgtype = %msg.msgtype,
+                                "WeCom KF inbound: skipping message with empty external_userid"
+                            );
+                            continue;
+                        }
+
                         // Dedup check
                         if dedup_store.is_duplicate(&msg.msgid) {
                             tracing::debug!(

@@ -234,23 +234,12 @@ fn handle_kf_event(
 
 /// Shared helper to derive a KF thread name from message metadata.
 ///
-/// Format: `{channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}`
-/// One thread per customer per KF account.
-fn wecomkf_derive_thread_name(message: &InboundMessage, default_channel: &str) -> String {
-    let channel_name = message
-        .metadata
-        .get("channel_name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(default_channel);
-
-    let open_kfid = message
-        .metadata
-        .get("open_kfid")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("unknown_kf");
-
+/// Format: `{sanitized_external_userid_prefix}`
+/// One thread per customer (regardless of which KF account they contact).
+///
+/// WeCom's `external_userid` may contain a variable suffix (session-specific),
+/// so we use only the first 12 chars as the stable customer identifier.
+fn wecomkf_derive_thread_name(message: &InboundMessage, _default_channel: &str) -> String {
     let external_userid = message
         .metadata
         .get("external_userid")
@@ -258,12 +247,15 @@ fn wecomkf_derive_thread_name(message: &InboundMessage, default_channel: &str) -
         .filter(|s| !s.is_empty())
         .unwrap_or("unknown_user");
 
-    format!(
-        "{}_{}_{}",
-        sanitize_for_filesystem(channel_name),
-        sanitize_for_filesystem(open_kfid),
-        sanitize_for_filesystem(external_userid),
-    )
+    // Use first 10 chars of external_userid as stable customer identifier.
+    // WeCom's external_userid has a stable prefix (~10 chars) + variable suffix.
+    let stable_user_id = if external_userid.len() > 10 {
+        &external_userid[..10]
+    } else {
+        external_userid
+    };
+
+    sanitize_for_filesystem(stable_user_id)
 }
 
 impl ChannelMatcher for WecomKfInboundAdapter {
@@ -451,7 +443,44 @@ mod tests {
         };
 
         let name = adapter.derive_thread_name(&message, &[], None);
-        assert_eq!(name, "my_kf_bot_kf001_user123");
+        // external_userid "user123" is < 12 chars, so full value is used
+        assert_eq!(name, "user123");
+    }
+
+    #[test]
+    fn test_derive_thread_name_stable_prefix() {
+        // WeCom external_userid has stable prefix + variable suffix
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "external_userid".to_string(),
+            serde_json::Value::String("wmE8OcHAAA358dWFTX0hH4C_bjM15KSQ".to_string()),
+        );
+
+        let message = InboundMessage {
+            id: "test".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "test_uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "wecomkf:user".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: Some("msg_001".to_string()),
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let name = wecomkf_derive_thread_name(&message, "my_kf_bot");
+        // First 10 chars of "wmE8OcHAAA358dWFTX0hH4C_bjM15KSQ"
+        assert_eq!(name, "wmE8OcHAAA");
     }
 
     #[test]
@@ -507,8 +536,9 @@ mod tests {
         };
 
         let name = adapter.derive_thread_name(&message, &[], None);
-        // Falls back to channel_name + unknown_kf + unknown_user
-        assert!(name.contains("my_kf_bot"));
+        // Falls back to "unknown_user" when external_userid is missing,
+        // truncated to first 10 chars
+        assert_eq!(name, "unknown_us");
     }
 
     #[test]

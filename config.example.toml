@@ -594,6 +594,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # # Optional: cursor persistence file path (JSON)
 # # # If not set, cursors are memory-only (lost on restart)
 # # cursor_store_path = "./data/kf_cursors.json"
+# # # Maximum age (seconds) of messages to process. Older messages are skipped.
+# # # On first sync (empty cursor), only the latest message is processed regardless.
+# # # Default: 300 (5 minutes). Set to 0 to disable age filtering.
+# # # max_message_age_seconds = 300
 # #
 # # # Define a catch-all pattern
 # # [[channels.my_wecomkf_bot.patterns]]

@@ -48,7 +48,7 @@ impl WecomKfOutboundAdapter {
     }
 
     /// Build the send message payload for a reply.
-    fn build_payload(reply_text: &str, original: &InboundMessage) -> (String, String, String) {
+    fn build_payload(_reply_text: &str, original: &InboundMessage) -> (String, String, String) {
         let open_kfid = original
             .metadata
             .get("open_kfid")
@@ -63,17 +63,11 @@ impl WecomKfOutboundAdapter {
             .unwrap_or_default()
             .to_string();
 
-        // Detect if the content looks like markdown
-        let is_markdown = reply_text.contains("```")
-            || reply_text.contains("**")
-            || reply_text.contains("##")
-            || reply_text.contains("|")
-            || reply_text.contains("- [")
-            || reply_text.contains("![");
+        // WeCom KF send_msg API supports: text, image, voice, video, file, news, msgmenu, miniprogram.
+        // Markdown is NOT supported. Always send as text.
+        let msgtype = "text".to_string();
 
-        let msgtype = if is_markdown { "markdown" } else { "text" };
-
-        (open_kfid, touser, msgtype.to_string())
+        (open_kfid, touser, msgtype)
     }
 }
 
@@ -84,10 +78,11 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
     }
 
     async fn connect(&self) -> Result<()> {
-        // KF uses stateless HTTP requests. Verify connectivity by
-        // attempting to get an access token (the KfApiClient shares
-        // the AccessTokenCache which handles this).
-        tracing::debug!("WeCom KF outbound: connected (token cache ready)");
+        // Verify connectivity by fetching an access token.
+        // The KfApiClient delegates to AccessTokenCache which handles
+        // the actual API call and caching.
+        self.kf_client.verify_connectivity().await?;
+        tracing::debug!("WeCom KF outbound: connected (access_token obtained)");
         Ok(())
     }
 
@@ -227,7 +222,8 @@ mod tests {
             WecomKfOutboundAdapter::build_payload("## Title\n\n**bold** text", &msg);
         assert_eq!(open_kfid, "kf001");
         assert_eq!(touser, "user123");
-        assert_eq!(msgtype, "markdown");
+        // KF send_msg API does not support "markdown" — always falls back to "text"
+        assert_eq!(msgtype, "text");
     }
 
     #[test]
@@ -235,7 +231,8 @@ mod tests {
         let msg = make_kf_message("kf001", "user123", "Hello");
         let (_, _, msgtype) =
             WecomKfOutboundAdapter::build_payload("```rust\nfn main() {}\n```", &msg);
-        assert_eq!(msgtype, "markdown");
+        // KF send_msg API does not support "markdown" — always falls back to "text"
+        assert_eq!(msgtype, "text");
     }
 
     #[test]

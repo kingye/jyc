@@ -12,25 +12,26 @@ use std::sync::Mutex;
 /// Maximum number of seen message IDs to keep in memory.
 const MAX_ENTRIES: usize = 10_000;
 
+type DedupState = (HashSet<String>, VecDeque<String>);
+
 /// In-memory deduplication store for KF message IDs.
 ///
 /// Tracks seen `msgid` values in a `HashSet` with a FIFO eviction policy
-/// when the number of entries exceeds `MAX_ENTRIES`.
+/// when the number of entries exceeds `MAX_ENTRIES`. Both the set and the
+/// insertion-order queue are held under a single `Mutex` for atomicity.
 ///
 /// Memory-only: persistent dedup is not needed since the cursor store
 /// prevents most re-syncs. The dedup store catches any overlap within
 /// a single batch or across edge cases.
 pub struct KfDedupStore {
-    seen: Mutex<HashSet<String>>,
-    order: Mutex<VecDeque<String>>,
+    state: Mutex<DedupState>,
 }
 
 impl KfDedupStore {
     /// Create a new empty dedup store.
     pub fn new() -> Self {
         Self {
-            seen: Mutex::new(HashSet::new()),
-            order: Mutex::new(VecDeque::new()),
+            state: Mutex::new((HashSet::new(), VecDeque::new())),
         }
     }
 
@@ -38,9 +39,9 @@ impl KfDedupStore {
     ///
     /// Returns `true` if the message ID is a duplicate (already seen).
     pub fn is_duplicate(&self, msgid: &str) -> bool {
-        self.seen
+        self.state
             .lock()
-            .map(|guard| guard.contains(msgid))
+            .map(|guard| guard.0.contains(msgid))
             .unwrap_or(false)
     }
 
@@ -48,21 +49,17 @@ impl KfDedupStore {
     ///
     /// If the store has reached `MAX_ENTRIES`, the oldest entry is evicted.
     pub fn mark_seen(&self, msgid: &str) {
-        if let Ok(mut guard) = self.seen.lock() {
-            if guard.len() >= MAX_ENTRIES {
-                // Evict oldest entry
-                if let Ok(mut order_guard) = self.order.lock()
-                    && let Some(oldest) = order_guard.pop_front()
-                {
-                    guard.remove(&oldest);
-                }
+        if let Ok(mut guard) = self.state.lock() {
+            let (ref mut seen, ref mut order) = *guard;
+
+            if seen.len() >= MAX_ENTRIES
+                && let Some(oldest) = order.pop_front()
+            {
+                seen.remove(&oldest);
             }
 
-            if guard.insert(msgid.to_string()) {
-                // Newly inserted — track order for eviction
-                if let Ok(mut order_guard) = self.order.lock() {
-                    order_guard.push_back(msgid.to_string());
-                }
+            if seen.insert(msgid.to_string()) {
+                order.push_back(msgid.to_string());
             }
         }
     }
@@ -70,7 +67,7 @@ impl KfDedupStore {
     /// Get the current number of entries (for testing).
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.seen.lock().map(|g| g.len()).unwrap_or(0)
+        self.state.lock().map(|g| g.0.len()).unwrap_or(0)
     }
 }
 

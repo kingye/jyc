@@ -143,19 +143,29 @@ fn handle_kf_event(
     dedup_store: Arc<KfDedupStore>,
     channel_name: String,
     on_message: Arc<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
+    cancel: CancellationToken,
 ) -> Result<()> {
     let token = parsed.token.clone();
     let open_kfid = parsed.open_kfid.clone();
-
-    // Get the current cursor for this open_kfid
-    let cursor = cursor_store.get_cursor(&open_kfid).unwrap_or_default();
     let limit = 100;
 
-    // Spawn an async task for the actual API call
+    // Spawn an async task for the actual API call.
+    // Cursor is read inside the spawned task to avoid a race condition:
+    // if two notifications for the same open_kfid arrive rapidly,
+    // each task reads the latest cursor independently.
     tokio::spawn(async move {
-        // Sync messages from the KF API
-        let mut current_cursor = cursor;
+        // Get the current cursor for this open_kfid
+        let mut current_cursor = cursor_store.get_cursor(&open_kfid).unwrap_or_default();
         loop {
+            // Check for cancellation before each sync request
+            if cancel.is_cancelled() {
+                tracing::debug!(
+                    open_kfid = %open_kfid,
+                    "WeCom KF inbound: sync task cancelled"
+                );
+                break;
+            }
+
             match kf_client
                 .sync_messages(&token, &current_cursor, &open_kfid, limit)
                 .await
@@ -207,6 +217,15 @@ fn handle_kf_event(
                     break;
                 }
             }
+        }
+
+        // Flush cursors to disk after sync completes
+        if let Err(e) = cursor_store.flush_to_disk().await {
+            tracing::warn!(
+                open_kfid = %open_kfid,
+                error = %e,
+                "WeCom KF inbound: failed to flush cursors"
+            );
         }
     });
 
@@ -272,11 +291,7 @@ impl ChannelMatcher for WecomKfInboundAdapter {
 
 #[async_trait]
 impl InboundAdapter for WecomKfInboundAdapter {
-    async fn start(
-        &self,
-        options: InboundAdapterOptions,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
         let channel_name = self.channel_name.clone();
 
         // Build the webhook config with KF event handler
@@ -291,6 +306,7 @@ impl InboundAdapter for WecomKfInboundAdapter {
                 let channel_name = channel_name.clone();
                 let on_message: Arc<dyn Fn(InboundMessage) -> Result<()> + Send + Sync> =
                     Arc::from(options.on_message);
+                let cancel_for_handler = cancel.clone();
 
                 Arc::new(move |parsed: ParsedWecomMessage| {
                     // Only process event type messages (kf_msg_or_event notifications)
@@ -309,6 +325,7 @@ impl InboundAdapter for WecomKfInboundAdapter {
                         dedup_store.clone(),
                         channel_name.clone(),
                         on_message.clone(),
+                        cancel_for_handler.clone(),
                     )
                 })
             },

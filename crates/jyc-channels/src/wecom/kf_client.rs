@@ -85,6 +85,15 @@ impl KfApiClient {
         }
     }
 
+    /// Verify connectivity by fetching a fresh access token.
+    ///
+    /// Used by the outbound adapter's `connect()` method to validate
+    /// that the corp_id and corp_secret are valid at startup.
+    pub async fn verify_connectivity(&self) -> Result<()> {
+        self.access_token_cache.get_token().await?;
+        Ok(())
+    }
+
     /// Sync messages from a KF account using cursor-based pagination.
     ///
     /// - `token`: The token from the KF event notification
@@ -139,7 +148,7 @@ impl KfApiClient {
     ///
     /// - `open_kfid`: The KF account ID
     /// - `touser`: The external user ID (customer)
-    /// - `msgtype`: Message type (e.g. "text", "markdown")
+    /// - `msgtype`: Message type: "text" (markdown is NOT supported by the KF API)
     /// - `content`: Message content
     pub async fn send_message(
         &self,
@@ -152,14 +161,17 @@ impl KfApiClient {
 
         let url = format!("{}?access_token={}", KF_SEND_API, access_token);
 
-        let payload = serde_json::json!({
+        // Build payload with dynamic content key matching msgtype.
+        // KF API expects the content key to match the msgtype value:
+        //   msgtype="text"  → "text": {"content": "..."}
+        //   msgtype="image" → "image": {"media_id": "..."}
+        let content_obj = serde_json::json!({ "content": content });
+        let mut payload = serde_json::json!({
             "touser": touser,
             "open_kfid": open_kfid,
             "msgtype": msgtype,
-            "text": {
-                "content": content
-            }
         });
+        payload[msgtype] = content_obj;
 
         #[derive(Deserialize)]
         struct SendResponse {
@@ -217,14 +229,14 @@ impl KfApiClient {
         msgtype: &str,
         content: &str,
     ) -> serde_json::Value {
-        serde_json::json!({
+        let content_obj = serde_json::json!({ "content": content });
+        let mut payload = serde_json::json!({
             "touser": touser,
             "open_kfid": open_kfid,
             "msgtype": msgtype,
-            "text": {
-                "content": content
-            }
-        })
+        });
+        payload[msgtype] = content_obj;
+        payload
     }
 }
 
@@ -262,7 +274,7 @@ mod tests {
         let payload =
             KfApiClient::build_send_payload("kf001", "user123", "markdown", "## Title\n\nbody");
         assert_eq!(payload["msgtype"], "markdown");
-        assert_eq!(payload["text"]["content"], "## Title\n\nbody");
+        assert_eq!(payload["markdown"]["content"], "## Title\n\nbody");
     }
 
     #[test]

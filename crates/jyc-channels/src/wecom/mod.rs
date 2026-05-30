@@ -15,6 +15,7 @@ pub mod inbound;
 pub mod kf_client;
 pub mod kf_cursor;
 pub mod kf_dedup;
+pub mod kf_inbound;
 pub mod outbound;
 pub mod server;
 pub mod token_cache;

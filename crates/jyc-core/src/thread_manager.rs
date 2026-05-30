@@ -22,6 +22,7 @@ use crate::message_storage::{MessageStorage, StoreResult};
 use crate::metrics::MetricsHandle;
 use crate::pending_delivery::watch_pending_deliveries;
 use crate::template_utils::copy_template_files;
+use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
 use jyc_types::{ThreadInfo, ThreadStatus};
@@ -957,6 +958,16 @@ async fn process_message(
         "Message stored"
     );
 
+    // ── 1.1. WRITE THREAD.JSON (if channel provides metadata) ─────────
+    // Channels like wecomkf embed customer info in message metadata.
+    // Persist it once per thread so subsequent messages can read cached data.
+    if item.message.channel == "wecomkf" {
+        let thread_json_path = store_result.thread_path.join(".jyc").join("thread.json");
+        if !thread_json_path.exists() {
+            write_wecomkf_thread_json(&item.message, &store_result.thread_path, thread_name).await;
+        }
+    }
+
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
     // Save attachments AFTER thread name resolution (not before).
     // This ensures attachments go to the correct thread directory when
@@ -1484,5 +1495,196 @@ mod template_init_tests {
             .await
             .unwrap();
         assert_eq!(body, "HLP");
+    }
+}
+
+#[cfg(test)]
+mod thread_json_tests {
+    use super::*;
+    use jyc_types::{InboundMessage, MessageContent};
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_write_wecomkf_thread_json_creates_file() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().join("test-thread");
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "external_userid".to_string(),
+            serde_json::Value::String("wm123".to_string()),
+        );
+        metadata.insert(
+            "user_name".to_string(),
+            serde_json::Value::String("张三".to_string()),
+        );
+        metadata.insert(
+            "open_kfid".to_string(),
+            serde_json::Value::String("kf001".to_string()),
+        );
+
+        let message = InboundMessage {
+            id: "test-1".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "uid".to_string(),
+            sender: "wm123".to_string(),
+            sender_address: "wecomkf:wm123".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+
+        let thread_json = ThreadJson::read(&thread_path).await.unwrap().unwrap();
+        assert_eq!(thread_json.channel_type, "wecomkf");
+        assert_eq!(thread_json.version, 1);
+
+        let data = thread_json.data_as::<serde_json::Value>().unwrap().unwrap();
+        assert_eq!(
+            data.get("external_userid").and_then(|v| v.as_str()),
+            Some("wm123")
+        );
+        assert_eq!(data.get("user_name").and_then(|v| v.as_str()), Some("张三"));
+        assert_eq!(
+            data.get("open_kfid").and_then(|v| v.as_str()),
+            Some("kf001")
+        );
+        assert!(data.get("first_message_at").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_write_wecomkf_thread_json_skips_without_external_userid() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().join("test-thread");
+
+        let message = InboundMessage {
+            id: "test-1".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "wecomkf:user".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+
+        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+
+        // No external_userid in metadata → file should not be created
+        assert!(!thread_path.join(".jyc/thread.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_wecomkf_thread_json_fallback_user_name() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().join("test-thread");
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "external_userid".to_string(),
+            serde_json::Value::String("wm456".to_string()),
+        );
+        // No user_name in metadata → should fallback to external_userid
+
+        let message = InboundMessage {
+            id: "test-1".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "uid".to_string(),
+            sender: "wm456".to_string(),
+            sender_address: "wecomkf:wm456".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+
+        let thread_json = ThreadJson::read(&thread_path).await.unwrap().unwrap();
+        let data = thread_json.data_as::<serde_json::Value>().unwrap().unwrap();
+        assert_eq!(
+            data.get("user_name").and_then(|v| v.as_str()),
+            Some("wm456")
+        );
+    }
+}
+
+/// Write `thread.json` for a WeCom KF thread from message metadata.
+///
+/// Extracts `external_userid`, `user_name`, and `open_kfid` from the
+/// message metadata and persists them in `.jyc/thread.json`.
+async fn write_wecomkf_thread_json(
+    message: &InboundMessage,
+    thread_path: &Path,
+    thread_name: &str,
+) {
+    if let Some(external_userid) = message
+        .metadata
+        .get("external_userid")
+        .and_then(|v| v.as_str())
+    {
+        let user_name = message
+            .metadata
+            .get("user_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(external_userid);
+        let open_kfid = message
+            .metadata
+            .get("open_kfid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let thread_json = ThreadJson {
+            channel_type: "wecomkf".to_string(),
+            version: 1,
+            data: Some(serde_json::json!({
+                "external_userid": external_userid,
+                "user_name": user_name,
+                "open_kfid": open_kfid,
+                "first_message_at": chrono::Utc::now().to_rfc3339(),
+            })),
+        };
+        if let Err(e) = thread_json.write(thread_path).await {
+            tracing::warn!(
+                error = %e,
+                thread = %thread_name,
+                "Failed to write thread.json"
+            );
+        } else {
+            tracing::info!(thread = %thread_name, "Wrote thread.json");
+        }
     }
 }

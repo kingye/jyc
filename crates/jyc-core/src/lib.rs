@@ -15,5 +15,6 @@ pub mod static_agent;
 pub mod template_utils;
 pub mod thread_event;
 pub mod thread_event_bus;
+pub mod thread_json;
 pub mod thread_manager;
 pub mod thread_path;

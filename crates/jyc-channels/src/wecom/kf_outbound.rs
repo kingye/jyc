@@ -48,20 +48,41 @@ impl WecomKfOutboundAdapter {
     }
 
     /// Build the send message payload for a reply.
-    fn build_payload(_reply_text: &str, original: &InboundMessage) -> (String, String, String) {
-        let open_kfid = original
+    fn build_payload(
+        _reply_text: &str,
+        original: &InboundMessage,
+        thread_path: &Path,
+    ) -> (String, String, String) {
+        let mut open_kfid = original
             .metadata
             .get("open_kfid")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
 
-        let touser = original
+        let mut touser = original
             .metadata
             .get("external_userid")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+
+        // Fallback to thread.json if metadata is incomplete
+        if (open_kfid.is_empty() || touser.is_empty())
+            && let Ok(Some(thread_json)) = jyc_core::thread_json::ThreadJson::read_sync(thread_path)
+            && let Some(data) = thread_json.data
+        {
+            if open_kfid.is_empty()
+                && let Some(v) = data.get("open_kfid").and_then(|v| v.as_str())
+            {
+                open_kfid = v.to_string();
+            }
+            if touser.is_empty()
+                && let Some(v) = data.get("external_userid").and_then(|v| v.as_str())
+            {
+                touser = v.to_string();
+            }
+        }
 
         // WeCom KF send_msg API supports: text, image, voice, video, file, news, msgmenu, miniprogram.
         // Markdown is NOT supported. Always send as text.
@@ -104,7 +125,7 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
         message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        let (open_kfid, touser, msgtype) = Self::build_payload(reply_text, original);
+        let (open_kfid, touser, msgtype) = Self::build_payload(reply_text, original, thread_path);
 
         if open_kfid.is_empty() {
             anyhow::bail!("WeCom KF outbound: missing open_kfid in message metadata");
@@ -245,9 +266,10 @@ mod tests {
 
     #[test]
     fn test_build_payload_text() {
+        let tmp = tempfile::tempdir().unwrap();
         let msg = make_kf_message("kf001", "user123", "Hello");
         let (open_kfid, touser, msgtype) =
-            WecomKfOutboundAdapter::build_payload("Hello World", &msg);
+            WecomKfOutboundAdapter::build_payload("Hello World", &msg, tmp.path());
         assert_eq!(open_kfid, "kf001");
         assert_eq!(touser, "user123");
         assert_eq!(msgtype, "text");
@@ -255,9 +277,10 @@ mod tests {
 
     #[test]
     fn test_build_payload_markdown() {
+        let tmp = tempfile::tempdir().unwrap();
         let msg = make_kf_message("kf001", "user123", "Hello");
         let (open_kfid, touser, msgtype) =
-            WecomKfOutboundAdapter::build_payload("## Title\n\n**bold** text", &msg);
+            WecomKfOutboundAdapter::build_payload("## Title\n\n**bold** text", &msg, tmp.path());
         assert_eq!(open_kfid, "kf001");
         assert_eq!(touser, "user123");
         // KF send_msg API does not support "markdown" — always falls back to "text"
@@ -266,15 +289,17 @@ mod tests {
 
     #[test]
     fn test_build_payload_markdown_with_code_block() {
+        let tmp = tempfile::tempdir().unwrap();
         let msg = make_kf_message("kf001", "user123", "Hello");
         let (_, _, msgtype) =
-            WecomKfOutboundAdapter::build_payload("```rust\nfn main() {}\n```", &msg);
+            WecomKfOutboundAdapter::build_payload("```rust\nfn main() {}\n```", &msg, tmp.path());
         // KF send_msg API does not support "markdown" — always falls back to "text"
         assert_eq!(msgtype, "text");
     }
 
     #[test]
     fn test_build_payload_missing_fields() {
+        let tmp = tempfile::tempdir().unwrap();
         let msg = InboundMessage {
             id: "test-id".to_string(),
             channel: "wecomkf".to_string(),
@@ -296,9 +321,108 @@ mod tests {
             metadata: HashMap::new(),
             matched_pattern: None,
         };
-        let (open_kfid, touser, msgtype) = WecomKfOutboundAdapter::build_payload("Hello", &msg);
+        let (open_kfid, touser, msgtype) =
+            WecomKfOutboundAdapter::build_payload("Hello", &msg, tmp.path());
         assert_eq!(open_kfid, "");
         assert_eq!(touser, "");
+        assert_eq!(msgtype, "text");
+    }
+
+    #[test]
+    fn test_build_payload_fallback_to_thread_json() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write thread.json with wecomkf data
+        let thread_json = jyc_core::thread_json::ThreadJson {
+            channel_type: "wecomkf".to_string(),
+            version: 1,
+            data: Some(serde_json::json!({
+                "external_userid": "wm789",
+                "user_name": "李四",
+                "open_kfid": "kf002",
+            })),
+        };
+        thread_json.write_sync(tmp.path()).unwrap();
+
+        // Create message WITHOUT metadata
+        let msg = InboundMessage {
+            id: "test-id".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "test-uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "wecomkf:user".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+
+        let (open_kfid, touser, msgtype) =
+            WecomKfOutboundAdapter::build_payload("Hello", &msg, tmp.path());
+        // Should fallback to thread.json
+        assert_eq!(open_kfid, "kf002");
+        assert_eq!(touser, "wm789");
+        assert_eq!(msgtype, "text");
+    }
+
+    #[test]
+    fn test_build_payload_partial_fallback_to_thread_json() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write thread.json with only external_userid (no open_kfid)
+        let thread_json = jyc_core::thread_json::ThreadJson {
+            channel_type: "wecomkf".to_string(),
+            version: 1,
+            data: Some(serde_json::json!({
+                "external_userid": "wm999",
+            })),
+        };
+        thread_json.write_sync(tmp.path()).unwrap();
+
+        // Create message with open_kfid in metadata but no external_userid
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "open_kfid".to_string(),
+            serde_json::Value::String("kf003".to_string()),
+        );
+
+        let msg = InboundMessage {
+            id: "test-id".to_string(),
+            channel: "wecomkf".to_string(),
+            channel_uid: "test-uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "wecomkf:user".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: MessageContent {
+                text: Some("Hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let (open_kfid, touser, msgtype) =
+            WecomKfOutboundAdapter::build_payload("Hello", &msg, tmp.path());
+        // open_kfid from metadata, touser from thread.json
+        assert_eq!(open_kfid, "kf003");
+        assert_eq!(touser, "wm999");
         assert_eq!(msgtype, "text");
     }
 

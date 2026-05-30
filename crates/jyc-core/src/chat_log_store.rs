@@ -98,14 +98,26 @@ impl ChatLogStore {
         let mut formatted = String::new();
 
         // Extract user_name from metadata (e.g., WeCom KF provides display names)
-        let user_name = message
+        let mut user_name = message
             .metadata
             .get("user_name")
             .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        // Fallback: read from thread.json if metadata lacks user_name
+        if user_name.is_none()
+            && message.channel == "wecomkf"
+            && let Ok(Some(thread_json)) =
+                crate::thread_json::ThreadJson::read_sync(&self.thread_path)
+            && let Some(data) = thread_json.data
+            && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
+        {
+            user_name = Some(name.to_string());
+        }
 
         // Metadata comment — sender_address is the canonical ID, sender_name is the display name
-        let sender_name_str = if let Some(name) = user_name {
+        let sender_name_str = if let Some(ref name) = user_name {
             format!(" | sender_name:{}", name)
         } else if message.sender != message.sender_address && !message.sender.is_empty() {
             format!(" | sender_name:{}", message.sender)
@@ -123,11 +135,11 @@ impl ChatLogStore {
         ));
 
         // Content header — use display name for readability
-        let from_display = if let Some(name) = user_name {
+        let from_display = if let Some(ref name) = user_name {
             if !message.sender_address.is_empty() {
                 format!("{} ({})", name, message.sender_address)
             } else {
-                name.to_string()
+                name.clone()
             }
         } else if !message.sender.is_empty() && message.sender != message.sender_address {
             format!("{} ({})", message.sender, message.sender_address)
@@ -345,5 +357,37 @@ mod tests {
 
         assert_eq!(received_count, 2);
         assert_eq!(reply_count, 2);
+    }
+
+    #[test]
+    fn test_append_message_with_thread_json_fallback() {
+        let temp_dir = tempdir().unwrap();
+        let mut store = ChatLogStore::new(temp_dir.path());
+
+        // Write thread.json with user_name
+        let thread_json = crate::thread_json::ThreadJson {
+            channel_type: "wecomkf".to_string(),
+            version: 1,
+            data: Some(serde_json::json!({
+                "external_userid": "wm123",
+                "user_name": "张三",
+            })),
+        };
+        thread_json.write_sync(temp_dir.path()).unwrap();
+
+        // Create message WITHOUT user_name in metadata
+        let mut message = create_test_message();
+        message.channel = "wecomkf".to_string();
+        message.sender_address = "wecomkf:wm123".to_string();
+        message.metadata = HashMap::new();
+
+        let result = store.append_message(&message, true);
+        assert!(result.is_ok());
+
+        let file_path = store.get_today_file_path();
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        // Should use user_name from thread.json
+        assert!(content.contains("sender_name:张三"));
+        assert!(content.contains("**FROM:** 张三 (wecomkf:wm123)"));
     }
 }

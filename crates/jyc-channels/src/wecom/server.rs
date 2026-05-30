@@ -2,7 +2,7 @@
 //!
 //! All WeCom channels share a single axum HTTP server that listens on
 //! the global `[wecom].bind_addr`. Each channel registers a handler for
-//! `/webhook/{channel_name}`.
+//! `/webhook/:channel_name`.
 //!
 //! ## WeCom Callback Protocol
 //!
@@ -110,7 +110,7 @@ impl WecomWebhookServer {
         let channels = self.channels.clone();
 
         let app = Router::new()
-            .route("/webhook/{channel_name}", get(handle_get).post(handle_post))
+            .route("/webhook/:channel_name", get(handle_get).post(handle_post))
             .with_state(channels);
 
         let bind_addr: std::net::SocketAddr = self
@@ -657,5 +657,58 @@ mod tests {
         // New fields should be empty for regular messages
         assert_eq!(parsed.token, "");
         assert_eq!(parsed.open_kfid, "");
+    }
+
+    /// Regression test: ensure the webhook route actually matches registered channels.
+    ///
+    /// If the route syntax is wrong (e.g. `{channel_name}` instead of `:channel_name`),
+    /// axum returns 404 with an empty body for *all* requests, making it impossible
+    /// to distinguish "channel not found" (404 with body) from "route not matched"
+    /// (404 without body). This test catches that.
+    #[tokio::test]
+    async fn test_webhook_route_matches_registered_channel() {
+        use tower::ServiceExt;
+
+        let server = WecomWebhookServer::new("127.0.0.1:0");
+
+        let config = ChannelWebhookConfig {
+            token: "test_token".to_string(),
+            encoding_aes_key: "abc123abc123abc123abc123abc123abc123abc123abc123abc12".to_string(),
+            corp_id: "ww12345".to_string(),
+            on_message: Arc::new(|_| Ok(())),
+        };
+
+        server.register_channel("test_channel", config).await;
+
+        let channels = server.channels.clone();
+        let app = Router::new()
+            .route("/webhook/:channel_name", get(handle_get).post(handle_post))
+            .with_state(channels);
+
+        // GET to a registered channel — must NOT be 404 (empty body).
+        // With a bad signature it will be 403, with missing echostr 400,
+        // but a 404 here means the route itself is not matching.
+        let request = axum::http::Request::builder()
+            .uri("/webhook/test_channel?msg_signature=bad&timestamp=1&nonce=1&echostr=test")
+            .method("GET")
+            .body(String::new())
+            .unwrap();
+
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_ne!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "Route should match registered channel. Got 404 which means route syntax is wrong."
+        );
+
+        // GET to an unregistered channel — should be 404 with body.
+        let request2 = axum::http::Request::builder()
+            .uri("/webhook/unregistered?msg_signature=bad&timestamp=1&nonce=1&echostr=test")
+            .method("GET")
+            .body(String::new())
+            .unwrap();
+
+        let response2 = app.oneshot(request2).await.unwrap();
+        assert_eq!(response2.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }

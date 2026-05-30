@@ -8,6 +8,7 @@ use crate::feishu_config::FeishuConfig;
 use crate::github_config::GithubConfig;
 use crate::wechat_config::WechatConfig;
 use crate::wecom_config::WecomConfig;
+use crate::wecom_kf_config::WecomKfConfig;
 
 /// MCP server configuration for agent dynamic tool loading.
 ///
@@ -134,6 +135,10 @@ pub struct ChannelConfig {
 
     /// WeCom configuration (for wecom channels)
     pub wecom: Option<WecomConfig>,
+
+    /// WeCom KF (Customer Service) configuration (for wecomkf channels)
+    #[serde(default)]
+    pub wecom_kf: Option<WecomKfConfig>,
 
     /// Monitoring settings (IDLE vs poll, interval, etc.)
     pub monitor: Option<MonitorConfig>,

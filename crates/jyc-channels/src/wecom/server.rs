@@ -37,6 +37,12 @@ use crate::wecom::crypto;
 ///
 /// Fields correspond to the inner XML body after AES decryption.
 /// Reference: https://developer.work.weixin.qq.com/document/path/90255
+///
+/// This struct is also used for WeCom KF (Customer Service) event notifications.
+/// KF events have:
+/// - `msg_type == "event"`
+/// - empty `content`/`chat_id`/`msg_id`
+/// - `token` and `open_kfid` populated from `<Token>` and `<OpenKfId>` fields
 #[derive(Debug, Clone)]
 pub struct ParsedWecomMessage {
     /// Message content (text from `<Content>`).
@@ -45,13 +51,20 @@ pub struct ParsedWecomMessage {
     pub from_user: String,
     /// Chat ID — the group chat room ID (from `<ChatId>`).
     /// This is used for routing outbound messages to the correct group.
+    /// Optional — KF events may not have this field.
     pub chat_id: String,
-    /// Message type (from `<MsgType>`, e.g. "text", "image").
+    /// Message type (from `<MsgType>`, e.g. "text", "image", "event").
     pub msg_type: String,
     /// Message ID (from `<MsgId>`).
     pub msg_id: String,
     /// Create time (from `<CreateTime>`).
     pub create_time: String,
+    /// Token — used in KF event notifications (from `<Token>`).
+    /// Empty for regular WeCom messages.
+    pub token: String,
+    /// Open KF ID — the KF account ID (from `<OpenKfId>`).
+    /// Empty for regular WeCom messages.
+    pub open_kfid: String,
 }
 
 /// Per-channel configuration stored in the webhook server.
@@ -349,14 +362,30 @@ fn extract_encrypt_from_xml(xml: &str) -> Option<String> {
 /// </xml>
 /// ```
 ///
+/// For KF event notifications, the XML may include `<Token>` and `<OpenKfId>`
+/// instead of `<Content>`, `<ChatId>`, and `<MsgId>`:
+/// ```xml
+/// <xml>
+///   <ToUserName><![CDATA[ww1234567890]]></ToUserName>
+///   <FromUserName><![CDATA[KF_EVENT]]></FromUserName>
+///   <CreateTime>1700000000</CreateTime>
+///   <MsgType><![CDATA[event]]></MsgType>
+///   <Event><![CDATA[kf_msg_or_event]]></Event>
+///   <Token><![CDATA[xxxxxx]]></Token>
+///   <OpenKfId><![CDATA[kf1234567]]></OpenKfId>
+/// </xml>
+/// ```
+///
 /// Uses simple string extraction (same style as `extract_encrypt_from_xml`).
 pub fn parse_decrypted_xml(xml: &str) -> Option<ParsedWecomMessage> {
     let content = extract_xml_field(xml, "Content").unwrap_or_default();
     let from_user = extract_xml_field(xml, "FromUserName")?;
-    let chat_id = extract_xml_field(xml, "ChatId")?;
+    let chat_id = extract_xml_field(xml, "ChatId").unwrap_or_default();
     let msg_type = extract_xml_field(xml, "MsgType")?;
     let msg_id = extract_xml_field(xml, "MsgId").unwrap_or_default();
     let create_time = extract_xml_field(xml, "CreateTime").unwrap_or_default();
+    let token = extract_xml_field(xml, "Token").unwrap_or_default();
+    let open_kfid = extract_xml_field(xml, "OpenKfId").unwrap_or_default();
 
     Some(ParsedWecomMessage {
         content,
@@ -365,6 +394,8 @@ pub fn parse_decrypted_xml(xml: &str) -> Option<ParsedWecomMessage> {
         msg_type,
         msg_id,
         create_time,
+        token,
+        open_kfid,
     })
 }
 
@@ -478,7 +509,12 @@ mod tests {
             <MsgType><![CDATA[text]]></MsgType>
             <Content><![CDATA[Hello]]></Content>
         </xml>"#;
-        assert!(parse_decrypted_xml(xml).is_none());
+        // ChatId is now optional — parsing should succeed with empty chat_id
+        let parsed = parse_decrypted_xml(xml).expect("should parse without ChatId");
+        assert_eq!(parsed.from_user, "user001");
+        assert_eq!(parsed.chat_id, "");
+        assert_eq!(parsed.msg_type, "text");
+        assert_eq!(parsed.content, "Hello");
     }
 
     #[test]
@@ -542,5 +578,84 @@ mod tests {
         let parsed = parse_decrypted_xml(xml).expect("should parse without Content");
         assert_eq!(parsed.content, "");
         assert_eq!(parsed.msg_type, "image");
+    }
+
+    #[test]
+    fn test_parse_kf_event_xml() {
+        let xml = r#"<xml>
+            <ToUserName><![CDATA[ww123456]]></ToUserName>
+            <FromUserName><![CDATA[KF_EVENT]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[event]]></MsgType>
+            <Event><![CDATA[kf_msg_or_event]]></Event>
+            <Token><![CDATA[xxxxxx]]></Token>
+            <OpenKfId><![CDATA[kf1234567]]></OpenKfId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse KF event");
+        assert_eq!(parsed.msg_type, "event");
+        assert_eq!(parsed.content, "");
+        assert_eq!(parsed.chat_id, "");
+        assert_eq!(parsed.msg_id, "");
+        assert_eq!(parsed.token, "xxxxxx");
+        assert_eq!(parsed.open_kfid, "kf1234567");
+        assert_eq!(parsed.from_user, "KF_EVENT");
+    }
+
+    #[test]
+    fn test_parse_kf_event_missing_token() {
+        let xml = r#"<xml>
+            <ToUserName><![CDATA[ww123456]]></ToUserName>
+            <FromUserName><![CDATA[KF_EVENT]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[event]]></MsgType>
+            <Event><![CDATA[kf_msg_or_event]]></Event>
+            <OpenKfId><![CDATA[kf1234567]]></OpenKfId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse KF event without Token");
+        assert_eq!(parsed.msg_type, "event");
+        assert_eq!(parsed.token, "");
+        assert_eq!(parsed.open_kfid, "kf1234567");
+    }
+
+    #[test]
+    fn test_parse_kf_event_missing_open_kfid() {
+        let xml = r#"<xml>
+            <ToUserName><![CDATA[ww123456]]></ToUserName>
+            <FromUserName><![CDATA[KF_EVENT]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[event]]></MsgType>
+            <Event><![CDATA[kf_msg_or_event]]></Event>
+            <Token><![CDATA[xxxxxx]]></Token>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse KF event without OpenKfId");
+        assert_eq!(parsed.token, "xxxxxx");
+        assert_eq!(parsed.open_kfid, "");
+    }
+
+    #[test]
+    fn test_parse_regular_message_still_works() {
+        let xml = r#"<xml>
+            <ToUserName><![CDATA[ww123456]]></ToUserName>
+            <FromUserName><![CDATA[user001]]></FromUserName>
+            <CreateTime>1700000000</CreateTime>
+            <MsgType><![CDATA[text]]></MsgType>
+            <Content><![CDATA[Hello World]]></Content>
+            <MsgId>1234567890</MsgId>
+            <ChatId><![CDATA[wr9876543210]]></ChatId>
+        </xml>"#;
+
+        let parsed = parse_decrypted_xml(xml).expect("should parse regular message");
+        assert_eq!(parsed.content, "Hello World");
+        assert_eq!(parsed.from_user, "user001");
+        assert_eq!(parsed.chat_id, "wr9876543210");
+        assert_eq!(parsed.msg_type, "text");
+        assert_eq!(parsed.msg_id, "1234567890");
+        assert_eq!(parsed.create_time, "1700000000");
+        // New fields should be empty for regular messages
+        assert_eq!(parsed.token, "");
+        assert_eq!(parsed.open_kfid, "");
     }
 }

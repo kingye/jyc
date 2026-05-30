@@ -19,8 +19,15 @@ use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
 use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_channels::wecom::inbound::WecomInboundAdapter;
+use jyc_channels::wecom::kf_client::KfApiClient;
+use jyc_channels::wecom::kf_cursor::KfCursorStore;
+use jyc_channels::wecom::kf_dedup::KfDedupStore;
+use jyc_channels::wecom::kf_inbound::WecomKfInboundAdapter;
+use jyc_channels::wecom::kf_inbound::WecomKfMatcher;
+use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
 use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
+use jyc_channels::wecom::token_cache::AccessTokenCache;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -85,11 +92,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
 
-    // Initialize shared WeCom webhook server (if any wecom channel is configured)
+    // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)
     let has_wecom = config_snapshot
         .channels
         .values()
-        .any(|c| c.channel_type == "wecom");
+        .any(|c| c.channel_type == "wecom" || c.channel_type == "wecomkf");
     let wecom_server: Option<Arc<WecomWebhookServer>> = if has_wecom {
         let bind_addr = config_snapshot
             .wecom
@@ -159,6 +166,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let mut wechat_sender_arc: Option<
             std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
         > = None;
+        // For wecomkf, we share the KfApiClient between inbound and outbound
+        let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
                 let outbound_config = channel_config.outbound.as_ref().ok_or_else(|| {
@@ -223,6 +232,29 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 Arc::new(WecomOutboundAdapter::new_with_attachments(
                     wecom_config.corp_id,
                     wecom_config.corp_secret,
+                    storage.clone(),
+                    outbound_attachment_config,
+                    footer_enabled,
+                ))
+            }
+            "wecomkf" => {
+                let wecomkf_config = channel_config
+                    .wecom_kf
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config")
+                    })?
+                    .clone();
+
+                let access_token_cache = Arc::new(AccessTokenCache::new(
+                    wecomkf_config.corp_id.clone(),
+                    wecomkf_config.corp_secret.clone(),
+                ));
+                let kf_client = Arc::new(KfApiClient::new(access_token_cache));
+                wecomkf_kf_client = Some(kf_client.clone());
+
+                Arc::new(WecomKfOutboundAdapter::new(
+                    kf_client,
                     storage.clone(),
                     outbound_attachment_config,
                     footer_enabled,
@@ -753,6 +785,86 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         tracing::error!(
                             error = %e,
                             "WeCom inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "wecomkf" => {
+                let wecomkf_config = channel_config
+                    .wecom_kf
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config")
+                    })?
+                    .clone();
+
+                let wecom_server = wecom_server
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let channel_name_owned = channel_name.clone();
+
+                let kf_client = wecomkf_kf_client.clone().ok_or_else(|| {
+                    anyhow::anyhow!("KfApiClient not initialized for wecomkf channel")
+                })?;
+
+                let cursor_store = Arc::new(KfCursorStore::new(
+                    wecomkf_config
+                        .cursor_store_path
+                        .as_ref()
+                        .map(std::path::PathBuf::from),
+                ));
+                let dedup_store = Arc::new(KfDedupStore::new());
+
+                let task = tokio::spawn(async move {
+                    use jyc_types::InboundAdapter;
+
+                    let adapter = WecomKfInboundAdapter::new(
+                        &wecomkf_config,
+                        &channel_name_owned,
+                        wecom_server,
+                        kf_client,
+                        cursor_store,
+                        dedup_store,
+                    );
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&WecomKfMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "WeCom KF inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "WeCom KF inbound adapter error"
                         );
                     }
 

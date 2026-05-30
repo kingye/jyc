@@ -14,6 +14,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **WeCom KF (Customer Service) channel.** New channel type `wecomkf` supporting
+  inbound messages via `kf_msg_or_event` event notifications and `kf/sync_msg`
+  API pull, outbound messages via `kf/send_msg` API. Includes cursor-based
+  incremental sync with optional file persistence, in-memory message dedup
+  (10K-entry FIFO cap), and shared token/wehbook infrastructure with the
+  existing wecom channel. One thread per customer per KF account.
+  (#229, #230)
+
 - **WeCom (企业微信) Bot channel.** New channel type `wecom` supporting inbound
   messages via shared axum HTTP server and outbound messages via Bot webhook
   URL. Includes AES-256-CBC message decryption, SHA1 signature verification,

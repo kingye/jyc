@@ -194,7 +194,7 @@ impl OutboundAdapter for WecomOutboundAdapter {
 
         // Store the reply
         self.storage
-            .store_reply(thread_path, message_dir, reply_text)
+            .store_reply(thread_path, reply_text, message_dir)
             .await
             .context("failed to store WeCom reply")?;
 

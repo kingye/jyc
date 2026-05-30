@@ -12,6 +12,7 @@
 
 pub mod crypto;
 pub mod inbound;
+pub mod kf_client;
 pub mod outbound;
 pub mod server;
 pub mod token_cache;

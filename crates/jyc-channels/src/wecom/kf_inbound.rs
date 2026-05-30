@@ -74,11 +74,7 @@ fn sanitize_user_id(user_id: &str) -> String {
 }
 
 /// Convert a synced KF message into an `InboundMessage`.
-fn kf_message_to_inbound(
-    msg: &KfMessage,
-    channel_name: &str,
-    token: &str,
-) -> InboundMessage {
+fn kf_message_to_inbound(msg: &KfMessage, channel_name: &str, token: &str) -> InboundMessage {
     let mut metadata = HashMap::new();
     metadata.insert(
         "open_kfid".to_string(),
@@ -275,7 +271,11 @@ impl ChannelMatcher for WecomKfInboundAdapter {
 
 #[async_trait]
 impl InboundAdapter for WecomKfInboundAdapter {
-    async fn start(&self, options: InboundAdapterOptions, _cancel: CancellationToken) -> Result<()> {
+    async fn start(
+        &self,
+        options: InboundAdapterOptions,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
         let channel_name = self.channel_name.clone();
 
         // Build the webhook config with KF event handler
@@ -574,10 +574,7 @@ mod tests {
         assert_eq!(inbound.channel, "wecomkf");
         assert_eq!(inbound.sender, "user123");
         assert_eq!(inbound.sender_address, "wecomkf:user123");
-        assert_eq!(
-            inbound.content.text.as_deref(),
-            Some("Hello, support!")
-        );
+        assert_eq!(inbound.content.text.as_deref(), Some("Hello, support!"));
         assert_eq!(inbound.external_id, Some("msg_001".to_string()));
         assert_eq!(
             inbound.metadata.get("open_kfid").and_then(|v| v.as_str()),
@@ -609,6 +606,9 @@ mod tests {
 
         let inbound = kf_message_to_inbound(&msg, "my_kf_bot", "token_xxx");
         assert_eq!(inbound.content.text, None);
-        assert_eq!(inbound.metadata.get("msg_type").and_then(|v| v.as_str()), Some("image"));
+        assert_eq!(
+            inbound.metadata.get("msg_type").and_then(|v| v.as_str()),
+            Some("image")
+        );
     }
 }

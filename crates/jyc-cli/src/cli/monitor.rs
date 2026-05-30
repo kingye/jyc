@@ -818,7 +818,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     wecomkf_config
                         .cursor_store_path
                         .as_ref()
-                        .map(|p| std::path::PathBuf::from(p)),
+                        .map(std::path::PathBuf::from),
                 ));
                 let dedup_store = Arc::new(KfDedupStore::new());
 

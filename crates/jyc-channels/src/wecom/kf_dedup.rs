@@ -51,10 +51,10 @@ impl KfDedupStore {
         if let Ok(mut guard) = self.seen.lock() {
             if guard.len() >= MAX_ENTRIES {
                 // Evict oldest entry
-                if let Ok(mut order_guard) = self.order.lock() {
-                    if let Some(oldest) = order_guard.pop_front() {
-                        guard.remove(&oldest);
-                    }
+                if let Ok(mut order_guard) = self.order.lock()
+                    && let Some(oldest) = order_guard.pop_front()
+                {
+                    guard.remove(&oldest);
                 }
             }
 

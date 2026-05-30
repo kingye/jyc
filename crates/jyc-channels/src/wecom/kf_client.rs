@@ -195,7 +195,12 @@ impl KfApiClient {
 
     /// Build the sync request payload (for unit testing).
     #[cfg(test)]
-    pub fn build_sync_request(token: &str, cursor: &str, open_kfid: &str, limit: u32) -> serde_json::Value {
+    pub fn build_sync_request(
+        token: &str,
+        cursor: &str,
+        open_kfid: &str,
+        limit: u32,
+    ) -> serde_json::Value {
         serde_json::json!({
             "token": token,
             "cursor": cursor,
@@ -206,7 +211,12 @@ impl KfApiClient {
 
     /// Build the send message payload (for unit testing).
     #[cfg(test)]
-    pub fn build_send_payload(open_kfid: &str, touser: &str, msgtype: &str, content: &str) -> serde_json::Value {
+    pub fn build_send_payload(
+        open_kfid: &str,
+        touser: &str,
+        msgtype: &str,
+        content: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "touser": touser,
             "open_kfid": open_kfid,
@@ -240,8 +250,7 @@ mod tests {
 
     #[test]
     fn test_build_send_payload() {
-        let payload =
-            KfApiClient::build_send_payload("kf001", "user123", "text", "Hello, world!");
+        let payload = KfApiClient::build_send_payload("kf001", "user123", "text", "Hello, world!");
         assert_eq!(payload["touser"], "user123");
         assert_eq!(payload["open_kfid"], "kf001");
         assert_eq!(payload["msgtype"], "text");

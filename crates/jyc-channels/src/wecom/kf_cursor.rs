@@ -141,10 +141,7 @@ mod tests {
         assert!(store.get_cursor("kf001").is_none());
 
         store.set_cursor("kf001", "cursor_abc");
-        assert_eq!(
-            store.get_cursor("kf001"),
-            Some("cursor_abc".to_string())
-        );
+        assert_eq!(store.get_cursor("kf001"), Some("cursor_abc".to_string()));
     }
 
     #[test]
@@ -154,14 +151,8 @@ mod tests {
         store.set_cursor("kf001", "cursor_001");
         store.set_cursor("kf002", "cursor_002");
 
-        assert_eq!(
-            store.get_cursor("kf001"),
-            Some("cursor_001".to_string())
-        );
-        assert_eq!(
-            store.get_cursor("kf002"),
-            Some("cursor_002".to_string())
-        );
+        assert_eq!(store.get_cursor("kf001"), Some("cursor_001".to_string()));
+        assert_eq!(store.get_cursor("kf002"), Some("cursor_002".to_string()));
     }
 
     #[test]
@@ -169,16 +160,10 @@ mod tests {
         let store = KfCursorStore::new(None);
 
         store.set_cursor("kf001", "cursor_old");
-        assert_eq!(
-            store.get_cursor("kf001"),
-            Some("cursor_old".to_string())
-        );
+        assert_eq!(store.get_cursor("kf001"), Some("cursor_old".to_string()));
 
         store.set_cursor("kf001", "cursor_new");
-        assert_eq!(
-            store.get_cursor("kf001"),
-            Some("cursor_new".to_string())
-        );
+        assert_eq!(store.get_cursor("kf001"), Some("cursor_new".to_string()));
     }
 
     #[test]
@@ -197,10 +182,7 @@ mod tests {
         {
             let store = KfCursorStore::new(Some(path.clone()));
             assert_eq!(store.cursors_count(), 1);
-            assert_eq!(
-                store.get_cursor("kf001"),
-                Some("cursor_abc".to_string())
-            );
+            assert_eq!(store.get_cursor("kf001"), Some("cursor_abc".to_string()));
         }
     }
 
@@ -226,10 +208,7 @@ mod tests {
     fn test_persist_path_none() {
         let store = KfCursorStore::new(None);
         store.set_cursor("kf001", "cursor_abc");
-        assert_eq!(
-            store.get_cursor("kf001"),
-            Some("cursor_abc".to_string())
-        );
+        assert_eq!(store.get_cursor("kf001"), Some("cursor_abc".to_string()));
     }
 
     #[test]

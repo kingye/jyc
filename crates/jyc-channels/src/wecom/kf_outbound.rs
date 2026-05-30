@@ -71,11 +71,7 @@ impl WecomKfOutboundAdapter {
             || reply_text.contains("- [")
             || reply_text.contains("![");
 
-        let msgtype = if is_markdown {
-            "markdown"
-        } else {
-            "text"
-        };
+        let msgtype = if is_markdown { "markdown" } else { "text" };
 
         (open_kfid, touser, msgtype.to_string())
     }
@@ -127,10 +123,7 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
             .send_message(&open_kfid, &touser, &msgtype, reply_text)
             .await
             .with_context(|| {
-                format!(
-                    "failed to send KF message to {} via {}",
-                    touser, open_kfid
-                )
+                format!("failed to send KF message to {} via {}", touser, open_kfid)
             })?;
 
         let message_id = format!("wecomkf_{}", crate::wecom::crypto::generate_nonce());
@@ -170,12 +163,7 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
         self.kf_client
             .send_message(open_kfid, touser, "markdown", &content)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to send KF alert to {} via {}",
-                    touser, open_kfid
-                )
-            })?;
+            .with_context(|| format!("failed to send KF alert to {} via {}", touser, open_kfid))?;
 
         let message_id = format!("wecomkf_{}", crate::wecom::crypto::generate_nonce());
         Ok(SendResult { message_id })
@@ -189,11 +177,7 @@ mod tests {
 
     use jyc_types::MessageContent;
 
-    fn make_kf_message(
-        open_kfid: &str,
-        external_userid: &str,
-        text: &str,
-    ) -> InboundMessage {
+    fn make_kf_message(open_kfid: &str, external_userid: &str, text: &str) -> InboundMessage {
         let mut metadata = HashMap::new();
         metadata.insert(
             "open_kfid".to_string(),
@@ -229,7 +213,8 @@ mod tests {
     #[test]
     fn test_build_payload_text() {
         let msg = make_kf_message("kf001", "user123", "Hello");
-        let (open_kfid, touser, msgtype) = WecomKfOutboundAdapter::build_payload("Hello World", &msg);
+        let (open_kfid, touser, msgtype) =
+            WecomKfOutboundAdapter::build_payload("Hello World", &msg);
         assert_eq!(open_kfid, "kf001");
         assert_eq!(touser, "user123");
         assert_eq!(msgtype, "text");
@@ -276,8 +261,7 @@ mod tests {
             metadata: HashMap::new(),
             matched_pattern: None,
         };
-        let (open_kfid, touser, msgtype) =
-            WecomKfOutboundAdapter::build_payload("Hello", &msg);
+        let (open_kfid, touser, msgtype) = WecomKfOutboundAdapter::build_payload("Hello", &msg);
         assert_eq!(open_kfid, "");
         assert_eq!(touser, "");
         assert_eq!(msgtype, "text");

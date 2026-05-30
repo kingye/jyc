@@ -113,13 +113,49 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
             anyhow::bail!("WeCom KF outbound: missing external_userid in message metadata");
         }
 
-        // Send via KF send_msg API
-        self.kf_client
-            .send_message(&open_kfid, &touser, &msgtype, reply_text)
-            .await
-            .with_context(|| {
-                format!("failed to send KF message to {} via {}", touser, open_kfid)
-            })?;
+        // Send via KF send_msg API with retry on rate limit (95001)
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self
+                .kf_client
+                .send_message(&open_kfid, &touser, &msgtype, reply_text)
+                .await
+            {
+                Ok(_) => {
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    let err_msg = format!("{e:?}");
+                    if err_msg.contains("95001") && attempt < 3 {
+                        tracing::warn!(
+                            attempt,
+                            max_attempts = 3,
+                            delay_sec = 5,
+                            "KF send_msg rate limited (95001), retrying..."
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        last_error = Some(e);
+                    } else {
+                        return Err(e).with_context(|| {
+                            format!(
+                                "failed to send KF message to {} via {} (attempt {})",
+                                touser, open_kfid, attempt
+                            )
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            return Err(e).with_context(|| {
+                format!(
+                    "failed to send KF message to {} via {} after 3 attempts",
+                    touser, open_kfid
+                )
+            });
+        }
 
         let message_id = format!("wecomkf_{}", crate::wecom::crypto::generate_nonce());
         let result = SendResult {

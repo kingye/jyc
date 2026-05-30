@@ -155,8 +155,10 @@ impl OutboundAdapter for WecomKfOutboundAdapter {
 
         let content = format!("## {}\n\n{}", subject, body);
 
+        // Note: KF send_msg API does not support "markdown". The "## " subject
+        // prefix formatting is sent as plain text, which is acceptable.
         self.kf_client
-            .send_message(open_kfid, touser, "markdown", &content)
+            .send_message(open_kfid, touser, "text", &content)
             .await
             .with_context(|| format!("failed to send KF alert to {} via {}", touser, open_kfid))?;
 

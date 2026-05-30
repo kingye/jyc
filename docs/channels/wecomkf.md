@@ -230,18 +230,19 @@ POST /cgi-bin/kf/send_msg?access_token={token}
 }
 ```
 
-The adapter auto-detects markdown content (same logic as regular WeCom channel).
+The adapter always sends as `"text"` since the KF `send_msg` API does
+not support the `"markdown"` type.
 
 ### Alert Format
 
 Alerts use the recipient format `wecomkf:{open_kfid}:{external_userid}` and
-are sent as markdown with the subject as a level-2 heading:
+are sent as text with the subject prefixed by `## `:
 
 ```json
 {
   "touser": "user123",
   "open_kfid": "kf1234567",
-  "msgtype": "markdown",
+  "msgtype": "text",
   "text": {
     "content": "## Alert Title\n\nAlert body content"
   }

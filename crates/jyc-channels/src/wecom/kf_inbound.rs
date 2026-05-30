@@ -210,10 +210,23 @@ fn handle_kf_event(
 
                         dedup_store.mark_seen(&msg.msgid);
 
-                        // Fetch customer display name for readable thread names
+                        // Fetch customer display name for readable thread names.
+                        // Falls back to external_userid prefix (10 chars) if API fails or
+                        // lacks permission (48002 api forbidden).
                         let user_name = kf_client
                             .get_external_contact_name(&msg.external_userid)
                             .await;
+                        let user_name = if user_name == msg.external_userid {
+                            // API returned the userid itself (failure or no permission).
+                            // Use a short prefix for stable, readable thread names.
+                            if msg.external_userid.len() > 10 {
+                                msg.external_userid[..10].to_string()
+                            } else {
+                                msg.external_userid.clone()
+                            }
+                        } else {
+                            user_name
+                        };
                         tracing::debug!(
                             external_userid = %msg.external_userid,
                             user_name = %user_name,

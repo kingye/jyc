@@ -68,11 +68,6 @@ impl WecomKfInboundAdapter {
     }
 }
 
-/// Sanitize a WeCom user ID for use in thread names.
-fn sanitize_user_id(user_id: &str) -> String {
-    sanitize_for_filesystem(user_id)
-}
-
 /// Convert a synced KF message into an `InboundMessage`.
 fn kf_message_to_inbound(msg: &KfMessage, channel_name: &str, token: &str) -> InboundMessage {
     let mut metadata = HashMap::new();
@@ -218,6 +213,40 @@ fn handle_kf_event(
     Ok(())
 }
 
+/// Shared helper to derive a KF thread name from message metadata.
+///
+/// Format: `{channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}`
+/// One thread per customer per KF account.
+fn wecomkf_derive_thread_name(message: &InboundMessage, default_channel: &str) -> String {
+    let channel_name = message
+        .metadata
+        .get("channel_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_channel);
+
+    let open_kfid = message
+        .metadata
+        .get("open_kfid")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown_kf");
+
+    let external_userid = message
+        .metadata
+        .get("external_userid")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown_user");
+
+    format!(
+        "{}_{}_{}",
+        sanitize_for_filesystem(channel_name),
+        sanitize_for_filesystem(open_kfid),
+        sanitize_for_filesystem(external_userid),
+    )
+}
+
 impl ChannelMatcher for WecomKfInboundAdapter {
     fn channel_type(&self) -> &str {
         "wecomkf"
@@ -229,35 +258,7 @@ impl ChannelMatcher for WecomKfInboundAdapter {
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Thread name: {channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}
-        // One thread per customer per KF account.
-        let channel_name = message
-            .metadata
-            .get("channel_name")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&self.channel_name);
-
-        let open_kfid = message
-            .metadata
-            .get("open_kfid")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown_kf");
-
-        let external_userid = message
-            .metadata
-            .get("external_userid")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown_user");
-
-        format!(
-            "{}_{}_{}",
-            sanitize_for_filesystem(channel_name),
-            sanitize_user_id(open_kfid),
-            sanitize_user_id(external_userid),
-        )
+        wecomkf_derive_thread_name(message, &self.channel_name)
     }
 
     fn match_message(
@@ -274,7 +275,7 @@ impl InboundAdapter for WecomKfInboundAdapter {
     async fn start(
         &self,
         options: InboundAdapterOptions,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<()> {
         let channel_name = self.channel_name.clone();
 
@@ -324,14 +325,9 @@ impl InboundAdapter for WecomKfInboundAdapter {
 
         // KF inbound does not need to run a separate task — the webhook
         // server handles incoming requests. We wait on cancellation.
-        // However, since InboundAdapter::start() requires returning only
-        // when the adapter stops, we wait here.
         // The actual message processing happens in the webhook callbacks.
+        cancel.cancelled().await;
 
-        // Wait indefinitely (cancellation handled by the caller)
-        futures_util::future::pending::<()>().await;
-
-        #[allow(unreachable_code)]
         Ok(())
     }
 }
@@ -354,34 +350,7 @@ impl ChannelMatcher for WecomKfMatcher {
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Thread name: {channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}
-        let channel_name = message
-            .metadata
-            .get("channel_name")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("wecomkf");
-
-        let open_kfid = message
-            .metadata
-            .get("open_kfid")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown_kf");
-
-        let external_userid = message
-            .metadata
-            .get("external_userid")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown_user");
-
-        format!(
-            "{}_{}_{}",
-            sanitize_for_filesystem(channel_name),
-            sanitize_for_filesystem(open_kfid),
-            sanitize_for_filesystem(external_userid),
-        )
+        wecomkf_derive_thread_name(message, "wecomkf")
     }
 
     fn match_message(

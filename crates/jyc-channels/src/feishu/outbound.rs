@@ -219,7 +219,7 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         })
     }
 
-    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
+    async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         // Ensure client is initialized
         self.client
             .initialize()

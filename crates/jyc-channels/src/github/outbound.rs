@@ -148,13 +148,13 @@ impl OutboundAdapter for GithubOutboundAdapter {
         })
     }
 
-    async fn send_alert(
+    async fn send_message(
         &self,
         _recipient: &str,
         _subject: &str,
         _body: &str,
     ) -> Result<SendResult> {
-        tracing::debug!("GitHub send_alert: not implemented");
+        tracing::debug!("GitHub send_message: not implemented");
         Ok(SendResult {
             message_id: "github-alert-noop".to_string(),
         })

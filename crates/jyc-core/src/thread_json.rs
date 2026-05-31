@@ -103,7 +103,6 @@ impl ThreadJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct TestChannelData {

@@ -221,7 +221,7 @@ impl OutboundAdapter for WechatOutboundAdapter {
         Ok(SendResult { message_id })
     }
 
-    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
+    async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         // The OpenILink Bridge requires `to` on every send. For alerts
         // (proactive, no inbound message to reply to) we use the
         // configured `recipient` directly. The recipient is whatever

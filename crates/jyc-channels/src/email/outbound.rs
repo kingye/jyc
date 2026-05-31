@@ -210,8 +210,8 @@ impl OutboundAdapter for EmailOutboundAdapter {
         Ok(send_result)
     }
 
-    /// Send a fresh alert email (not a reply, no formatting/threading/storage).
-    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
+    /// Send a fresh message email (not a reply, no formatting/threading/storage).
+    async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
         let message_id = smtp
             .send_mail(&self.from_address, recipient, subject, body)

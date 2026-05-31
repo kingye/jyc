@@ -128,7 +128,7 @@ mod tests {
             })
         }
 
-        async fn send_alert(
+        async fn send_message(
             &self,
             _recipient: &str,
             _subject: &str,

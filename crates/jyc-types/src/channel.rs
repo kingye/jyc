@@ -217,8 +217,8 @@ pub trait OutboundAdapter: Send + Sync {
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
 
-    /// Send a fresh (non-reply) alert/notification.
-    async fn send_alert(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
+    /// Send a fresh (non-reply) message to an arbitrary recipient.
+    async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
 }
 
 // --- Pattern Types ---

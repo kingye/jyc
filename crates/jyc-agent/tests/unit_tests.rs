@@ -692,7 +692,15 @@ mod skills {
 
     /// Helper: create a JycAgentService with a specific workdir.
     fn make_service(workdir: PathBuf) -> JycAgentService {
-        JycAgentService::new(AgentConfig::default(), workdir, vec![], vec![], None, None)
+        JycAgentService::new(
+            AgentConfig::default(),
+            workdir,
+            vec![],
+            None,
+            vec![],
+            None,
+            None,
+        )
     }
 
     #[test]

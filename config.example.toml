@@ -477,6 +477,31 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # "X-API-Key" = "abc123"
 # # "X-Organization" = "my-org"
 #
+# # --- Channel-Level MCP Example ---
+# # Channel-level MCPs are loaded for all threads in the channel.
+# # Pattern-level mcps overrides channel-level.
+# #
+# [channels.my_wecomkf]
+# type = "wecomkf"
+# #
+# # Channel-level MCP: all threads in this channel share these tools
+# # [[channels.my_wecomkf.mcps]]
+# # name = "kf_helper"
+# # type = "local"
+# # command = ["kf-helper", "mcp"]
+# #
+# # [[channels.my_wecomkf.patterns]]
+# # name = "kf_bot"
+# # enabled = true
+# # # Pattern-level MCP overrides channel-level for this pattern
+# # # [[channels.my_wecomkf.patterns.mcps]]
+# # # name = "special_tool"
+# # # type = "local"
+# # # command = ["special", "mcp"]
+# #
+# # [channels.my_wecomkf.patterns.rules]
+# # keywords = ["help", "support", "问题"]
+
 # # Pattern: No MCP tools at all (empty mcps list)
 # # [[channels.my_repo.patterns]]
 # # name = "simple-reply"

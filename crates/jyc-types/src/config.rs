@@ -160,6 +160,14 @@ pub struct ChannelConfig {
 
     /// Footer display configuration (omit for default: footer enabled)
     pub footer: Option<FooterConfig>,
+
+    /// Channel-level MCP server configurations.
+    ///
+    /// When set, these MCPs are loaded for all threads in this channel.
+    /// Pattern-level `mcps` takes priority over this. When both are unset,
+    /// falls back to global `[[mcps]]`.
+    #[serde(default)]
+    pub mcps: Option<Vec<McpServerConfig>>,
 }
 
 /// IMAP server configuration.

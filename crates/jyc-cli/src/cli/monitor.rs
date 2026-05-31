@@ -385,6 +385,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     agent_cfg,
                     workdir.to_path_buf(),
                     config_snapshot.mcps.clone(),
+                    channel_config.mcps.clone(),
                     channel_patterns,
                     inbound_attachment_config.clone(),
                     vision_client,

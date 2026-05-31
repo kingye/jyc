@@ -112,6 +112,8 @@ pub struct JycAgentService {
     /// `inject_inbound_images`, model/small_model overrides, mcps,
     /// disabled_builtin_tools) by `InboundMessage.matched_pattern`.
     patterns: Vec<ChannelPattern>,
+    /// Channel-level MCP configs (fallback when pattern-level is unset).
+    channel_mcp_configs: Option<Vec<McpServerConfig>>,
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
@@ -127,6 +129,7 @@ impl JycAgentService {
         config: AgentConfig,
         workdir: PathBuf,
         mcp_configs: Vec<McpServerConfig>,
+        channel_mcp_configs: Option<Vec<McpServerConfig>>,
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
@@ -136,6 +139,7 @@ impl JycAgentService {
             event_buses: Mutex::new(HashMap::new()),
             workdir,
             mcp_configs,
+            channel_mcp_configs,
             patterns,
             global_inbound_attachments,
             vision_client,
@@ -533,12 +537,13 @@ impl JycAgentService {
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
-        // Resolve MCP configs: per-pattern first, global fallback
+        // Resolve MCP configs: pattern → channel → global
         let mcp_configs: &[McpServerConfig] = matched_pattern_name
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.mcps.as_ref())
             .map(|mcps| mcps.as_slice())
-            .unwrap_or_else(|| self.mcp_configs.as_slice());
+            .or(self.channel_mcp_configs.as_deref())
+            .unwrap_or(self.mcp_configs.as_slice());
 
         // Load external MCP tools from resolved configs
         if !mcp_configs.is_empty() {
@@ -868,6 +873,7 @@ mod tests {
             },
             PathBuf::from("/tmp/test-workdir"),
             vec![],
+            None,
             patterns,
             None,
             None,

@@ -249,6 +249,23 @@ are sent as text with the subject prefixed by `## `:
 }
 ```
 
+### Proactive Messaging (`send_message`)
+
+The `send_message` method (renamed from `send_alert`) sends proactive messages
+to any WeCom KF customer. It is used by the `jyc_send_message` MCP tool for
+out-of-thread notifications.
+
+**Recipient format**: `wecomkf:{open_kfid}:{external_userid}`
+
+Example:
+```
+wecomkf:kf001:wmE8OcHAAA...
+```
+
+The adapter parses this format, extracts `open_kfid` and `external_userid`,
+and sends via the `kf/send_msg` API. Subject is optional for WeCom KF (ignored
+since KF messages have no subject line).
+
 ## Thread Naming
 
 Threads are named using the `open_kfid` and `external_userid` fields from
@@ -266,6 +283,38 @@ This ensures:
 - One thread per customer per KF account
 - Clean isolation between different customers
 - Consistent naming with the rest of the JYC channel ecosystem
+
+## Thread Persistence (`thread.json`)
+
+WeCom KF threads persist customer metadata in `.jyc/thread.json` within each
+thread directory:
+
+```json
+{
+  "channel_type": "wecomkf",
+  "version": 1,
+  "data": {
+    "external_userid": "wmE8OcHAAA...",
+    "user_name": "Alice",
+    "open_kfid": "kf001",
+    "first_message_at": "2026-05-31T12:34:56Z"
+  }
+}
+```
+
+**Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `external_userid` | WeCom external user ID (unique per customer) |
+| `user_name` | Display name fetched from `externalcontact/get` API (may be empty if 48002 permission error) |
+| `open_kfid` | KF account ID that received the message |
+| `first_message_at` | ISO 8601 timestamp of the first message in this thread |
+
+**Usage:**
+- Written on first message to a new thread
+- Read by `chat_log_store.rs` for `user_name` fallback when building chat history
+- Enables human-readable thread names even when `externalcontact/get` fails (48002)
 
 ## Cursor and Dedup
 

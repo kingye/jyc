@@ -119,12 +119,15 @@ pub struct JycAgentService {
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
     /// Vision fallback client for text-only models to analyze images.
     vision_client: Option<Arc<VisionClient>>,
+    /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
+    outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
 }
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
     /// MCP configs, current channel's patterns, global inbound-attachment config,
     /// and optional vision fallback client.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AgentConfig,
         workdir: PathBuf,
@@ -133,6 +136,7 @@ impl JycAgentService {
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
+        outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     ) -> Self {
         Self {
             config,
@@ -143,6 +147,7 @@ impl JycAgentService {
             patterns,
             global_inbound_attachments,
             vision_client,
+            outbound,
         }
     }
 
@@ -779,6 +784,7 @@ impl AgentService for JycAgentService {
             max_iterations: Some(self.config.max_iterations),
             additional_read_roots,
             pattern_inject_images: pattern_inject,
+            outbound: self.outbound.clone(),
         })
         .await?;
 
@@ -875,6 +881,7 @@ mod tests {
             vec![],
             None,
             patterns,
+            None,
             None,
             None,
         )

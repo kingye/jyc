@@ -11,9 +11,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
+use jyc_types::channel::OutboundAdapter;
 
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
@@ -39,6 +40,11 @@ pub struct ToolContext<'a> {
     /// behavior between auto-injection and tool-driven image analysis.
     /// Default: `false` (opt-in for safety).
     pub pattern_inject_images: bool,
+    /// Optional outbound adapter for proactive messaging tools (e.g.
+    /// `jyc_send_message`). Injected by `JycAgentService` when building
+    /// the tool registry. `None` when the agent runs in contexts without
+    /// a pre-warmed outbound adapter.
+    pub outbound: Option<Arc<dyn OutboundAdapter>>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -49,6 +55,7 @@ impl<'a> ToolContext<'a> {
             additional_read_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
+            outbound: None,
         }
     }
 
@@ -59,6 +66,7 @@ impl<'a> ToolContext<'a> {
             additional_read_roots,
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
+            outbound: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

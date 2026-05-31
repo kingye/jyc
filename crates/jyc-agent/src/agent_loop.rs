@@ -7,6 +7,7 @@ use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing;
@@ -57,6 +58,10 @@ pub struct AgentLoopConfig<'a> {
     /// tool should not use vision-fallback mode even if a `VisionClient`
     /// is configured (consistent with `build_user_blocks` behavior).
     pub pattern_inject_images: bool,
+    /// Optional outbound adapter for proactive messaging tools (e.g.
+    /// `jyc_send_message`). Passed through to `ToolContext` so tools
+    /// can send messages directly without signal-file indirection.
+    pub outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
 }
 
 /// Run the agent loop to completion.
@@ -78,6 +83,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         max_iterations,
         additional_read_roots,
         pattern_inject_images,
+        outbound,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -183,6 +189,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_start = Instant::now();
             let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
             ctx.pattern_inject_images = pattern_inject_images;
+            ctx.outbound = outbound.clone();
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
@@ -332,6 +339,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
         ctx.pattern_inject_images = pattern_inject_images;
+        ctx.outbound = outbound.clone();
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {

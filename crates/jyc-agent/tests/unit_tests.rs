@@ -617,9 +617,12 @@ mod tools {
 }
 
 mod mcp_bridge {
-    use jyc_agent::tools::mcp_bridge::ReplyMessageTool;
+    use jyc_agent::tools::mcp_bridge::{ReplyMessageTool, SendMessageTool};
     use jyc_agent::tools::{Tool, ToolContext};
+    use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
     use serde_json::json;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     #[tokio::test]
     async fn reply_tool_rejects_empty_message() {
@@ -655,6 +658,138 @@ mod mcp_bridge {
             std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
             "Hello user!"
         );
+    }
+
+    /// Mock outbound adapter that records send_message calls.
+    struct MockOutbound {
+        calls: Arc<Mutex<Vec<(String, String, String)>>>,
+    }
+
+    impl MockOutbound {
+        fn new() -> (Self, Arc<Mutex<Vec<(String, String, String)>>>) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            (Self { calls: calls.clone() }, calls)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OutboundAdapter for MockOutbound {
+        fn channel_type(&self) -> &str {
+            "mock"
+        }
+
+        async fn connect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn clean_body(&self, body: &str) -> String {
+            body.to_string()
+        }
+
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            _reply_text: &str,
+            _thread_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[OutboundAttachment]>,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult {
+                message_id: "mock-reply".to_string(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            recipient: &str,
+            subject: &str,
+            body: &str,
+        ) -> anyhow::Result<SendResult> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((recipient.to_string(), subject.to_string(), body.to_string()));
+            Ok(SendResult {
+                message_id: "mock-msg".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_empty_recipient() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let ctx = ToolContext::new(tmp.path());
+        let result = tool
+            .execute(json!({"recipient": "", "message": "hi"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Recipient cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_empty_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let ctx = ToolContext::new(tmp.path());
+        let result = tool
+            .execute(json!({"recipient": "user@example.com", "message": ""}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Message cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn send_message_requires_outbound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let ctx = ToolContext::new(tmp.path());
+        let result = tool
+            .execute(
+                json!({"recipient": "user@example.com", "message": "hello"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("No outbound adapter available"));
+    }
+
+    #[tokio::test]
+    async fn send_message_sends_via_outbound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+
+        let result = tool
+            .execute(
+                json!({
+                    "recipient": "wecomkf:kf001:user123",
+                    "subject": "Alert",
+                    "message": "System is down"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("wecomkf:kf001:user123"));
+        assert!(result.content.contains("mock-msg"));
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "wecomkf:kf001:user123");
+        assert_eq!(recorded[0].1, "Alert");
+        assert_eq!(recorded[0].2, "System is down");
     }
 }
 
@@ -698,6 +833,7 @@ mod skills {
             vec![],
             None,
             vec![],
+            None,
             None,
             None,
         )

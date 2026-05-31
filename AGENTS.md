@@ -101,6 +101,12 @@ and uses OpenCode to generate AI replies.
 
 每项使用 `-` 列表，格式：`- {简短描述} (#{issue/PR 编号})`
 
+## Agent Behavior Rules
+
+### Reply vs. SendMessage
+- Agent must use `reply_message` for in-thread responses; `jyc_send_message` only for out-of-thread proactive messages.
+- Agent must not use `jyc_send_message` to spam users; limit to alerts and notifications.
+
 ## References
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history

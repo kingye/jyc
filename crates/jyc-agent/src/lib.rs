@@ -106,6 +106,7 @@ mod integration_tests {
             max_iterations: None,
             additional_read_roots: Vec::new(),
             pattern_inject_images: false,
+            outbound: None,
         })
         .await
         .unwrap();

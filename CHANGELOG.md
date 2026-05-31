@@ -14,6 +14,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **MCP SendMessage Tool (`jyc_send_message`).** New MCP tool for sending
+  proactive out-of-thread messages via the pre-warmed outbound adapter.
+  Accepts `recipient`, `subject` (optional), and `message` parameters.
+  Recipient format is channel-specific (e.g. `wecomkf:{open_kfid}:{external_userid}`).
+  ToolContext carries an optional `outbound` adapter reference injected at
+  registry build time. (#242)
+
 - **Channel-level MCP configuration.** `ChannelConfig` now supports `mcps`
   field, allowing MCP servers to be configured per-channel. Resolution
   priority: pattern-level → channel-level → global. (#241)
@@ -30,6 +37,13 @@ All notable changes to JYC will be documented in this file.
   messages via shared axum HTTP server and outbound messages via Bot webhook
   URL. Includes AES-256-CBC message decryption, SHA1 signature verification,
   and auto-detection of text/markdown message types. (#225, #226)
+
+### Changed
+
+- **`OutboundAdapter::send_alert` renamed to `send_message`.** All channel
+  implementations (email, feishu, github, wechat, wecom, wecomkf, test mock)
+  updated. The method sends proactive messages to arbitrary recipients;
+  the old name implied alert-only usage which was overly restrictive. (#242)
 
 ## [0.3.9] - 2026-05-28
 

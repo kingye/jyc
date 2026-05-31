@@ -170,19 +170,20 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 6. **Thread Event System** — Per-thread isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
-9. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
-10. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
-11. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
-12. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
-13. **State Manager** — Track processed UIDs per channel, handle migrations
-14. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
-15. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
-16. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
-17. **MetricsCollector** — Lightweight stats accumulation for monitoring thread/channel activity
-18. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
-19. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
-20. **Template System** — Initialize new threads with predefined files from `templates/` directory
-21. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
+9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-thread messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-thread replies
+10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
+11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
+12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
+13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
+14. **State Manager** — Track processed UIDs per channel, handle migrations
+15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
+16. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
+17. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
+18. **MetricsCollector** — Lightweight stats accumulation for monitoring thread/channel activity
+19. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
+20. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
+21. **Template System** — Initialize new threads with predefined files from `templates/` directory
+22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
 
 ### Design Principles: Component Responsibilities
 
@@ -2077,6 +2078,27 @@ MCP Server (rmcp, stdio transport, cwd = thread dir):
   (Monitor process reads .jyc/reply.md and sends via pre-warmed outbound adapter.
    This eliminates cold-start timeouts for Feishu API calls.)
 ```
+
+### MCP Tool: `jyc_send_message`
+
+Sends a proactive out-of-thread message to any recipient. Unlike `reply_message` which replies within the current thread context, this tool is for alerts, notifications, and other proactive messaging.
+
+```
+MCP Server (rmcp, stdio transport):
+  Tool schema: recipient (string), subject (string, optional), message (string)
+
+  1. Validate recipient format (channel-specific, e.g. "wecomkf:kf001:wmE8OcHAAA...")
+  2. Parse recipient to extract channel routing info
+  3. Call OutboundAdapter::send_message() on the pre-warmed outbound adapter
+  4. Return success message with delivery confirmation
+```
+
+**ToolContext outbound injection**: `ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` field. When the agent loop builds the tool registry, it injects the current thread's outbound adapter into `ToolContext`. The `jyc_send_message` tool uses this adapter directly for immediate delivery — no signal file indirection needed.
+
+**Usage constraints** (enforced by AGENTS.md rules):
+- Must NOT be used for in-thread replies (use `reply_message` instead)
+- Must NOT be used to spam users (limit to alerts and notifications)
+- Recipient format is channel-specific; the tool validates format before attempting delivery
 
 ### Historical Message Quoting (Thread Trail)
 

@@ -127,8 +127,106 @@ impl Tool for ReplyMessageTool {
     }
 }
 
+/// Send message tool — sends a proactive out-of-thread message via the
+/// pre-warmed outbound adapter.
+///
+/// This is the in-process equivalent of the `jyc_send_message` MCP tool.
+/// Unlike `ReplyMessageTool` which replies within the current thread, this
+/// tool sends messages to arbitrary recipients for alerts and notifications.
+pub struct SendMessageTool;
+
+#[async_trait]
+impl Tool for SendMessageTool {
+    fn name(&self) -> &str {
+        "jyc_send_message"
+    }
+
+    fn description(&self) -> &str {
+        "Send a proactive message to an arbitrary recipient. \
+         Use ONLY for alerts and notifications — NEVER for in-thread replies. \
+         The recipient format is channel-specific (e.g. \"wecomkf:kf001:user123\")."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "recipient": {
+                    "type": "string",
+                    "description": "Channel-specific recipient identifier"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Message subject (optional, channel-dependent)"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message body to send"
+                }
+            },
+            "required": ["recipient", "message"]
+        })
+    }
+
+    async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+        let recipient = input
+            .get("recipient")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'recipient' parameter"))?;
+
+        let subject = input.get("subject").and_then(|s| s.as_str()).unwrap_or("");
+
+        let message = input
+            .get("message")
+            .and_then(|m| m.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
+
+        if recipient.trim().is_empty() {
+            return Ok(ToolOutput::error("Recipient cannot be empty"));
+        }
+
+        if message.trim().is_empty() {
+            return Ok(ToolOutput::error("Message cannot be empty"));
+        }
+
+        let outbound = match ctx.outbound.as_ref() {
+            Some(o) => o,
+            None => {
+                return Ok(ToolOutput::error(
+                    "No outbound adapter available for proactive messaging",
+                ));
+            }
+        };
+
+        match outbound.send_message(recipient, subject, message).await {
+            Ok(result) => {
+                tracing::info!(
+                    recipient = %recipient,
+                    message_id = %result.message_id,
+                    "Proactive message sent"
+                );
+                Ok(ToolOutput::success(format!(
+                    "Message sent to '{}' (message_id: {})",
+                    recipient, result.message_id
+                )))
+            }
+            Err(e) => {
+                tracing::error!(
+                    recipient = %recipient,
+                    error = %e,
+                    "Failed to send proactive message"
+                );
+                Ok(ToolOutput::error(format!(
+                    "Failed to send message to '{}': {}",
+                    recipient, e
+                )))
+            }
+        }
+    }
+}
+
 /// Register MCP bridge tools into a tool registry.
 pub fn register_mcp_tools(registry: &mut crate::tools::registry::ToolRegistry) {
     registry.register(Box::new(ReplyMessageTool));
-    // TODO: Add VisionTool and QuestionTool bridges when needed
+    registry.register(Box::new(SendMessageTool));
 }

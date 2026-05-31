@@ -14,6 +14,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Channel-level MCP configuration.** `ChannelConfig` now supports `mcps`
+  field, allowing MCP servers to be configured per-channel. Resolution
+  priority: pattern-level → channel-level → global. (#241)
+
 - **WeCom KF (Customer Service) channel.** New channel type `wecomkf` supporting
   inbound messages via `kf_msg_or_event` event notifications and `kf/sync_msg`
   API pull, outbound messages via `kf/send_msg` API. Includes cursor-based

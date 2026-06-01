@@ -502,6 +502,32 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # [channels.my_wecomkf.patterns.rules]
 # # keywords = ["help", "support", "问题"]
 
+# # --- Tool Exclusion Examples ---
+# # Disable specific tools or entire MCP servers at channel or pattern level.
+# #
+# # [channels.my_wecomkf]
+# # type = "wecomkf"
+# #
+# # # Channel-level: disable proactive messaging for all patterns in this channel
+# # disabled_tools = ["jyc_send_message"]
+# #
+# # # Channel-level: disable entire MCP servers
+# # disabled_mcp_servers = ["invoice"]
+# #
+# # [[channels.my_wecomkf.patterns]]
+# # name = "safe_mode"
+# # enabled = true
+# #
+# # # Pattern-level: additional tools disabled (merged with channel-level)
+# # disabled_tools = ["bash", "write"]
+# # disabled_mcp_servers = ["invoice"]
+# #
+# # # Backward-compatible alias (merged with disabled_tools)
+# # disabled_builtin_tools = ["bash"]
+# #
+# # [channels.my_wecomkf.patterns.rules]
+# # keywords = ["help"]
+
 # # Pattern: No MCP tools at all (empty mcps list)
 # # [[channels.my_repo.patterns]]
 # # name = "simple-reply"

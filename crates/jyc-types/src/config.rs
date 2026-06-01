@@ -168,6 +168,21 @@ pub struct ChannelConfig {
     /// falls back to global `[[mcps]]`.
     #[serde(default)]
     pub mcps: Option<Vec<McpServerConfig>>,
+
+    /// Channel-level tools to disable for all patterns in this channel.
+    ///
+    /// Tool names match `Tool::name()` (e.g. `"bash"`, `"jyc_send_message"`,
+    /// `"invoice/process"`). Merged with pattern-level `disabled_tools`.
+    #[serde(default)]
+    pub disabled_tools: Option<Vec<String>>,
+
+    /// Channel-level MCP servers to disable for all patterns in this channel.
+    ///
+    /// Server names match `McpServerConfig.name`. Merged with pattern-level
+    /// `disabled_mcp_servers`. Servers listed here are skipped during tool
+    /// loading even if they appear in global `[[mcps]]` or channel `mcps`.
+    #[serde(default)]
+    pub disabled_mcp_servers: Option<Vec<String>>,
 }
 
 /// IMAP server configuration.

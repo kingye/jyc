@@ -668,7 +668,12 @@ mod mcp_bridge {
     impl MockOutbound {
         fn new() -> (Self, Arc<Mutex<Vec<(String, String, String)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            (Self { calls: calls.clone() }, calls)
+            (
+                Self {
+                    calls: calls.clone(),
+                },
+                calls,
+            )
         }
     }
 
@@ -709,10 +714,11 @@ mod mcp_bridge {
             subject: &str,
             body: &str,
         ) -> anyhow::Result<SendResult> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((recipient.to_string(), subject.to_string(), body.to_string()));
+            self.calls.lock().unwrap().push((
+                recipient.to_string(),
+                subject.to_string(),
+                body.to_string(),
+            ));
             Ok(SendResult {
                 message_id: "mock-msg".to_string(),
             })
@@ -738,7 +744,10 @@ mod mcp_bridge {
         let tool = SendMessageTool;
         let ctx = ToolContext::new(tmp.path());
         let result = tool
-            .execute(json!({"recipient": "user@example.com", "message": ""}), &ctx)
+            .execute(
+                json!({"recipient": "user@example.com", "message": ""}),
+                &ctx,
+            )
             .await
             .unwrap();
         assert!(result.is_error);
@@ -833,6 +842,8 @@ mod skills {
             vec![],
             None,
             vec![],
+            None,
+            None,
             None,
             None,
             None,

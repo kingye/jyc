@@ -390,6 +390,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     inbound_attachment_config.clone(),
                     vision_client,
                     Some(outbound.clone()),
+                    channel_config.disabled_tools.clone(),
+                    channel_config.disabled_mcp_servers.clone(),
                 ))
             }
             "static" => {

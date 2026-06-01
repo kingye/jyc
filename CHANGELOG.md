@@ -21,6 +21,14 @@ All notable changes to JYC will be documented in this file.
   ToolContext carries an optional `outbound` adapter reference injected at
   registry build time. (#242)
 
+- **Flexible tool exclusion at channel and pattern level.** New config fields
+  `disabled_tools` and `disabled_mcp_servers` on both `ChannelConfig` and
+  `ChannelPattern`. `disabled_tools` removes any tool by registration name
+  (built-in, bridge, or external MCP). `disabled_mcp_servers` skips entire
+  MCP servers by name during tool loading. Both fields support叠加
+  (channel-level + pattern-level merged). `disabled_builtin_tools` is retained
+  as a backward-compatible alias merged into `disabled_tools`. (#243)
+
 - **Channel-level MCP configuration.** `ChannelConfig` now supports `mcps`
   field, allowing MCP servers to be configured per-channel. Resolution
   priority: pattern-level → channel-level → global. (#241)

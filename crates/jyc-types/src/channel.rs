@@ -307,16 +307,37 @@ pub struct ChannelPattern {
     /// Set to `Some([])` (empty list) to disable all MCP tools for this pattern.
     #[serde(default)]
     pub mcps: Option<Vec<McpServerConfig>>,
-    /// Built-in tools to disable for this pattern.
+    /// Tools to disable for this pattern.
     ///
-    /// Tool names match `Tool::name()`: `"bash"`, `"write"`, `"edit"`,
-    /// `"grep"`, `"glob"`, `"read"`, `"webfetch"`, `"read_image"`.
+    /// Tool names match `Tool::name()` (e.g. `"bash"`, `"write"`,
+    /// `"jyc_send_message"`, `"invoice/process"`).
     ///
     /// When set to `Some(list)`, those tools are removed from the registry
-    /// before the agent loop starts. When `None` (default), all built-in
-    /// tools remain enabled.
+    /// before the agent loop starts. When `None` (default), all tools remain
+    /// enabled.
+    ///
+    /// Merged with `disabled_builtin_tools` (backward-compatible alias) and
+    /// channel-level `disabled_tools`.
+    #[serde(default)]
+    pub disabled_tools: Option<Vec<String>>,
+
+    /// Built-in tools to disable for this pattern.
+    ///
+    /// **Deprecated**: use `disabled_tools` instead. This field is kept for
+    /// backward compatibility and behaves as an alias — its entries are
+    /// merged with `disabled_tools`.
     #[serde(default)]
     pub disabled_builtin_tools: Option<Vec<String>>,
+
+    /// MCP servers to disable for this pattern.
+    ///
+    /// Server names match `McpServerConfig.name`. Servers listed here are
+    /// skipped during tool loading even if they appear in global `[[mcps]]`,
+    /// channel `mcps`, or pattern `mcps`.
+    ///
+    /// Merged with channel-level `disabled_mcp_servers`.
+    #[serde(default)]
+    pub disabled_mcp_servers: Option<Vec<String>>,
 }
 
 impl Default for ChannelPattern {
@@ -337,7 +358,9 @@ impl Default for ChannelPattern {
             model: None,
             small_model: None,
             mcps: None,
+            disabled_tools: None,
             disabled_builtin_tools: None,
+            disabled_mcp_servers: None,
         }
     }
 }

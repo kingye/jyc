@@ -222,6 +222,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             }
         }
 
+        // Validate channel-level disabled_tools / disabled_mcp_servers
+        if let Some(ref tools) = channel.disabled_tools {
+            for (i, name) in tools.iter().enumerate() {
+                if name.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.disabled_tools[{i}]"),
+                        message: "tool name must not be empty".into(),
+                    });
+                }
+            }
+        }
+        if let Some(ref servers) = channel.disabled_mcp_servers {
+            for (i, name) in servers.iter().enumerate() {
+                if name.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.disabled_mcp_servers[{i}]"),
+                        message: "MCP server name must not be empty".into(),
+                    });
+                }
+            }
+        }
+
         // Validate patterns
         if let Some(ref patterns) = channel.patterns {
             for (i, pattern) in patterns.iter().enumerate() {
@@ -335,6 +357,28 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
     // Validate attachment config if present
     if let Some(ref att) = pattern.attachments {
         validate_inbound_attachment_config(&format!("{prefix}.attachments"), att, errors);
+    }
+
+    // Validate per-pattern disabled_tools / disabled_mcp_servers
+    if let Some(ref tools) = pattern.disabled_tools {
+        for (i, name) in tools.iter().enumerate() {
+            if name.is_empty() {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.disabled_tools[{i}]"),
+                    message: "tool name must not be empty".into(),
+                });
+            }
+        }
+    }
+    if let Some(ref servers) = pattern.disabled_mcp_servers {
+        for (i, name) in servers.iter().enumerate() {
+            if name.is_empty() {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.disabled_mcp_servers[{i}]"),
+                    message: "MCP server name must not be empty".into(),
+                });
+            }
+        }
     }
 
     // Validate per-pattern MCP configs if present
@@ -940,5 +984,142 @@ mode = "agent"
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
         assert!(errors.iter().any(|e| e.path.contains("wecom.corp_secret")));
+    }
+
+    #[test]
+    fn test_disabled_tools_empty_entry_fails() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+disabled_tools = ["bash", ""]
+
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| {
+            e.path.contains("disabled_tools") && e.message.contains("must not be empty")
+        }));
+    }
+
+    #[test]
+    fn test_disabled_mcp_servers_empty_entry_fails() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+disabled_mcp_servers = ["invoice", ""]
+
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| {
+            e.path.contains("disabled_mcp_servers") && e.message.contains("must not be empty")
+        }));
+    }
+
+    #[test]
+    fn test_disabled_tools_valid_passes() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+disabled_tools = ["bash", "jyc_send_message"]
+disabled_mcp_servers = ["invoice"]
+
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "p1"
+disabled_tools = ["write"]
+disabled_mcp_servers = ["other"]
+
+[channels.work.patterns.rules]
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors.iter().all(|e| {
+                !e.path.contains("disabled_tools") && !e.path.contains("disabled_mcp_servers")
+            }),
+            "expected no disabled_tools/mcp_servers errors, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_pattern_disabled_tools_empty_entry_fails() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "p1"
+disabled_tools = ["bash", ""]
+
+[channels.work.patterns.rules]
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| {
+            e.path.contains("patterns[0].disabled_tools") && e.message.contains("must not be empty")
+        }));
     }
 }

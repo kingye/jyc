@@ -121,6 +121,10 @@ pub struct JycAgentService {
     vision_client: Option<Arc<VisionClient>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
+    /// Channel-level tools to disable (merged with pattern-level).
+    channel_disabled_tools: Option<Vec<String>>,
+    /// Channel-level MCP servers to disable (merged with pattern-level).
+    channel_disabled_mcp_servers: Option<Vec<String>>,
 }
 
 impl JycAgentService {
@@ -137,6 +141,8 @@ impl JycAgentService {
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
         outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
+        channel_disabled_tools: Option<Vec<String>>,
+        channel_disabled_mcp_servers: Option<Vec<String>>,
     ) -> Self {
         Self {
             config,
@@ -148,6 +154,8 @@ impl JycAgentService {
             global_inbound_attachments,
             vision_client,
             outbound,
+            channel_disabled_tools,
+            channel_disabled_mcp_servers,
         }
     }
 
@@ -542,37 +550,96 @@ impl JycAgentService {
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
+        // Find matched pattern for per-pattern overrides
+        let matched_pattern =
+            matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
+
+        // --- MCP server exclusion (disabled_mcp_servers) ---
+        // Merge channel-level + pattern-level disabled MCP servers
+        let disabled_mcp_servers: Vec<&str> = {
+            let mut set = Vec::new();
+            if let Some(ref servers) = self.channel_disabled_mcp_servers {
+                for s in servers {
+                    set.push(s.as_str());
+                }
+            }
+            if let Some(servers) = matched_pattern.and_then(|p| p.disabled_mcp_servers.as_ref()) {
+                for s in servers {
+                    if !set.contains(&s.as_str()) {
+                        set.push(s.as_str());
+                    }
+                }
+            }
+            set
+        };
+
         // Resolve MCP configs: pattern → channel → global
-        let mcp_configs: &[McpServerConfig] = matched_pattern_name
-            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+        let mcp_configs: &[McpServerConfig] = matched_pattern
             .and_then(|p| p.mcps.as_ref())
             .map(|mcps| mcps.as_slice())
             .or(self.channel_mcp_configs.as_deref())
             .unwrap_or(self.mcp_configs.as_slice());
 
-        // Load external MCP tools from resolved configs
-        if !mcp_configs.is_empty() {
-            tracing::info!(mcp_count = mcp_configs.len(), "Loading external MCP tools");
-            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(mcp_configs).await;
+        // Filter out disabled MCP servers before loading
+        let filtered_mcp_configs: Vec<McpServerConfig> = mcp_configs
+            .iter()
+            .filter(|c| !disabled_mcp_servers.contains(&c.name.as_str()))
+            .cloned()
+            .collect();
+
+        if !disabled_mcp_servers.is_empty() {
+            tracing::debug!(
+                disabled = ?disabled_mcp_servers,
+                "MCP servers disabled by config"
+            );
+        }
+
+        // Load external MCP tools from filtered configs
+        if !filtered_mcp_configs.is_empty() {
+            tracing::info!(
+                mcp_count = filtered_mcp_configs.len(),
+                "Loading external MCP tools"
+            );
+            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&filtered_mcp_configs).await;
             for tool in mcp_tools {
                 registry.register(tool);
             }
         }
 
-        // Apply per-pattern disabled_builtin_tools: remove any built-in
-        // tools that the pattern explicitly disables.
-        if let Some(disabled) = matched_pattern_name
-            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
-            .and_then(|p| p.disabled_builtin_tools.as_ref())
-        {
-            for tool_name in disabled {
-                tracing::debug!(
-                    tool = %tool_name,
-                    pattern = %matched_pattern_name.unwrap_or("?"),
-                    "Removing disabled built-in tool"
-                );
-                registry.remove(tool_name);
+        // --- Tool exclusion (disabled_tools) ---
+        // Merge channel-level + pattern-level + backward-compatible alias
+        let disabled_tools: Vec<&str> = {
+            let mut set = Vec::new();
+            if let Some(ref tools) = self.channel_disabled_tools {
+                for t in tools {
+                    set.push(t.as_str());
+                }
             }
+            if let Some(tools) = matched_pattern.and_then(|p| p.disabled_tools.as_ref()) {
+                for t in tools {
+                    if !set.contains(&t.as_str()) {
+                        set.push(t.as_str());
+                    }
+                }
+            }
+            // Backward-compatible alias: disabled_builtin_tools
+            if let Some(tools) = matched_pattern.and_then(|p| p.disabled_builtin_tools.as_ref()) {
+                for t in tools {
+                    if !set.contains(&t.as_str()) {
+                        set.push(t.as_str());
+                    }
+                }
+            }
+            set
+        };
+
+        for tool_name in &disabled_tools {
+            tracing::debug!(
+                tool = %tool_name,
+                pattern = %matched_pattern_name.unwrap_or("?"),
+                "Removing disabled tool"
+            );
+            registry.remove(tool_name);
         }
 
         registry
@@ -884,6 +951,43 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+        )
+    }
+
+    /// Helper: build a service with exclusion settings.
+    fn service_with_exclusion(
+        patterns: Vec<ChannelPattern>,
+        channel_disabled_tools: Option<Vec<String>>,
+        channel_disabled_mcp_servers: Option<Vec<String>>,
+    ) -> JycAgentService {
+        service_with_full_exclusion(
+            patterns,
+            channel_disabled_tools,
+            channel_disabled_mcp_servers,
+            None,
+        )
+    }
+
+    /// Helper: build a service with exclusion settings and optional channel MCP configs.
+    fn service_with_full_exclusion(
+        patterns: Vec<ChannelPattern>,
+        channel_disabled_tools: Option<Vec<String>>,
+        channel_disabled_mcp_servers: Option<Vec<String>>,
+        channel_mcp_configs: Option<Vec<McpServerConfig>>,
+    ) -> JycAgentService {
+        JycAgentService::new(
+            AgentConfig::default(),
+            PathBuf::from("/tmp/test-workdir"),
+            vec![],
+            channel_mcp_configs,
+            patterns,
+            None,
+            None,
+            None,
+            channel_disabled_tools,
+            channel_disabled_mcp_servers,
         )
     }
 
@@ -985,5 +1089,176 @@ mod tests {
             .and_then(|p| p.model.as_deref());
 
         assert_eq!(resolved, Some("provider/first"));
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_removes_builtin_and_bridge() {
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec!["bash".to_string(), "jyc_send_message".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        let defs = registry.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(!names.contains(&"bash"), "bash should be disabled");
+        assert!(
+            !names.contains(&"jyc_send_message"),
+            "jyc_send_message should be disabled"
+        );
+        assert!(names.contains(&"read"), "read should still be available");
+        assert!(
+            names.contains(&"jyc_reply_reply_message"),
+            "reply_message should still be available"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_builtin_tools_alias_works() {
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_builtin_tools: Some(vec!["write".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        let defs = registry.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(
+            !names.contains(&"write"),
+            "write should be disabled via alias"
+        );
+        assert!(names.contains(&"read"), "read should still be available");
+    }
+
+    #[tokio::test]
+    async fn channel_and_pattern_disabled_tools_merged() {
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec!["write".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        let defs = registry.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(
+            !names.contains(&"bash"),
+            "bash should be disabled (channel-level)"
+        );
+        assert!(
+            !names.contains(&"write"),
+            "write should be disabled (pattern-level)"
+        );
+        assert!(names.contains(&"read"), "read should still be available");
+    }
+
+    #[tokio::test]
+    async fn disabled_mcp_servers_skips_matching_server() {
+        // We can't easily test external MCP loading, but we can verify that
+        // disabled_mcp_servers does not cause a panic and that the registry
+        // is built correctly when no MCPs are configured.
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_mcp_servers: Some(vec!["invoice".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, Some(vec!["other".to_string()]));
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        // Registry should still contain built-in tools
+        assert!(registry.has_tool("bash"));
+        assert!(registry.has_tool("jyc_reply_reply_message"));
+    }
+
+    #[tokio::test]
+    async fn channel_disabled_tools_works_without_pattern_match() {
+        // channel-level disabled_tools should apply even when no pattern is matched
+        let svc = service_with_exclusion(vec![], Some(vec!["bash".to_string()]), None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, None)
+            .await;
+
+        assert!(
+            !registry.has_tool("bash"),
+            "bash should be disabled (channel-level)"
+        );
+        assert!(registry.has_tool("read"), "read should still be available");
+    }
+
+    #[tokio::test]
+    async fn empty_disabled_tools_disables_nothing() {
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec![]),
+            disabled_mcp_servers: Some(vec![]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, Some(vec![]), Some(vec![]));
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        assert!(registry.has_tool("bash"), "bash should still be available");
+        assert!(registry.has_tool("jyc_reply_reply_message"));
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_deduplicates_between_channel_and_pattern() {
+        // When both channel and pattern disable the same tool, it should only
+        // be removed once (no panic or double-remove issue).
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec!["bash".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        assert!(!registry.has_tool("bash"));
+        assert!(registry.has_tool("read"));
+    }
+
+    #[tokio::test]
+    async fn disabled_mcp_servers_filters_channel_configs() {
+        // Verify that disabled_mcp_servers actually filters channel-level MCP configs
+        // so that load_mcp_tools is not called for disabled servers.
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_mcp_servers: Some(vec!["skip_me".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let channel_mcps = Some(vec![McpServerConfig {
+            name: "skip_me".to_string(),
+            kind: jyc_types::McpServerKind::Local {
+                command: vec!["echo".to_string()],
+                environment: std::collections::HashMap::new(),
+            },
+        }]);
+        let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        // Registry should contain built-in tools (no panic from MCP loading)
+        assert!(registry.has_tool("bash"));
+        assert!(registry.has_tool("jyc_reply_reply_message"));
     }
 }

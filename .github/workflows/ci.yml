@@ -51,7 +51,7 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          threshold=55
+          threshold=60
           pct=$(awk '/^TOTAL/ {gsub(/%/,"",$10); printf "%.0f", $10}' coverage.txt)
           echo "Line coverage: ${pct}%"
           if [ -z "${pct}" ]; then

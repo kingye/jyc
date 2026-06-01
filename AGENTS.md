@@ -43,7 +43,7 @@ and uses OpenCode to generate AI replies.
 
 1. **格式化检查**
    ```bash
-   cargo fmt && cargo fmt --check
+   cargo fmt --check
    ```
 2. **Clippy 静态检查**
    ```bash

@@ -39,11 +39,11 @@ and uses OpenCode to generate AI replies.
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
-提交 PR 前必须在本地通过以下四步检查：
+提交 PR 前必须在本地通过以下五步检查：
 
 1. **格式化检查**
    ```bash
-   cargo fmt && cargo fmt --check
+   cargo fmt --check
    ```
 2. **Clippy 静态检查**
    ```bash
@@ -55,6 +55,8 @@ and uses OpenCode to generate AI replies.
    ```
    默认并行执行，确保所有测试稳定通过。
 4. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
+5. **禁止本地运行覆盖率** — `cargo llvm-cov`、`cargo-tarpaulin` 等覆盖率工具禁止在本地运行。
+   覆盖率检查速度太慢，CI（`.github/workflows/ci.yml`）会在 PR 提交后自动运行并检查阈值。
 
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 格式：

@@ -29,6 +29,12 @@ All notable changes to JYC will be documented in this file.
   (channel-level + pattern-level merged). `disabled_builtin_tools` is retained
   as a backward-compatible alias merged into `disabled_tools`. (#243)
 
+- **Gitee channel support.** New channel type `gitee` for multi-agent workflows
+  on Gitee issues and Pull Requests. Includes REST API v5 client, polling
+  inbound adapter, comment-posting outbound adapter, and planner/developer/
+  reviewer templates. Supports label-based routing, self-loop prevention,
+  and close detection. CI status polling via Gitee Go build status API.
+
 - **Channel-level MCP configuration.** `ChannelConfig` now supports `mcps`
   field, allowing MCP servers to be configured per-channel. Resolution
   priority: pattern-level → channel-level → global. (#241)

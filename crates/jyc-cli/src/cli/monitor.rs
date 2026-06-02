@@ -14,6 +14,8 @@ use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
+use jyc_channels::gitee::inbound::GiteeMatcher;
+use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
@@ -194,6 +196,20 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_attachment_config,
                     footer_enabled,
                 ))
+            }
+            "gitee" => {
+                let gitee_config = channel_config
+                    .gitee
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing gitee config")
+                    })?
+                    .clone();
+                Arc::new(GiteeOutboundAdapter::with_footer_enabled(
+                    gitee_config,
+                    storage.clone(),
+                    footer_enabled,
+                )?)
             }
             "github" => {
                 let github_config = channel_config
@@ -588,6 +604,63 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     }
 
                     // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "gitee" => {
+                let gitee_config = channel_config
+                    .gitee
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing gitee config")
+                    })?
+                    .clone();
+
+                let patterns_for_callback = patterns.clone();
+                let patterns_for_adapter = patterns.clone();
+                let router_for_callback = router.clone();
+                let workdir_owned = workdir.to_path_buf();
+
+                let task = tokio::spawn(async move {
+                    use jyc_channels::gitee::inbound::GiteeInboundAdapter;
+                    use jyc_types::InboundAdapter;
+
+                    let adapter = GiteeInboundAdapter::new(&gitee_config, channel_name_owned.clone(), &workdir_owned)
+                        .with_patterns(patterns_for_adapter);
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&GiteeMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "Gitee inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(error = %e, "Gitee inbound adapter error");
+                    }
+
                     tm.shutdown().await;
                 }.instrument(channel_span));
 

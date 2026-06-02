@@ -25,5 +25,14 @@ skills = ["coding-principles", "pr-review"]
 [templates.github-high-level-planner]
 skills = ["coding-principles", "dev-workflow"]
 
+[templates.gitee-planner]
+skills = ["coding-principles", "dev-workflow"]
+
+[templates.gitee-developer]
+skills = ["coding-principles", "incremental-dev", "dev-workflow"]
+
+[templates.gitee-reviewer]
+skills = ["coding-principles", "pr-review"]
+
 [templates.frontend-designer]
 skills = ["ui-ux-frontend"]

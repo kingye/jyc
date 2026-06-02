@@ -321,6 +321,59 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # #
 # # Example — see the GitHub channel patterns section below for a complete example.
 
+# --- Channel: Gitee Repository ---
+# Enables multi-agent workflow on Gitee issues and Pull Requests.
+# Uses Gitee API v5 for polling and comment posting.
+
+# [channels.my_gitee]
+# type = "gitee"
+#
+# [channels.my_gitee.gitee]
+# owner = "myuser"
+# repo = "myproject"
+# token = "${GITEE_TOKEN}"              # Personal Access Token
+# poll_interval_secs = 60
+# # api_url = "https://gitee.com/api/v5"  # Default. For Gitee Enterprise, use custom URL
+#
+# # Disable footer for Gitee channel
+# [channels.my_gitee.footer]
+# enabled = false
+#
+# # Pattern: Issues → Planner
+# [[channels.my_gitee.patterns]]
+# name = "planner"
+# enabled = true
+# role = "Planner"
+# template = "gitee-planner"
+# thread_prefix = "issue"
+#
+# [channels.my_gitee.patterns.rules]
+# github_type = ["issue"]
+#
+# # Pattern: Pull Requests with 'ready-for-dev' label → Developer
+# [[channels.my_gitee.patterns]]
+# name = "developer"
+# enabled = true
+# role = "Developer"
+# template = "gitee-developer"
+# thread_prefix = "pr"
+#
+# [channels.my_gitee.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-dev"]
+#
+# # Pattern: Pull Requests with 'ready-for-review' label → Reviewer
+# [[channels.my_gitee.patterns]]
+# name = "reviewer"
+# enabled = true
+# role = "Reviewer"
+# template = "gitee-reviewer"
+# thread_prefix = "review-pr"
+#
+# [channels.my_gitee.patterns.rules]
+# github_type = ["pull_request"]
+# labels = ["ready-for-review"]
+
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.
 # See GITHUB_CHANNEL.md for full architecture and workflow.

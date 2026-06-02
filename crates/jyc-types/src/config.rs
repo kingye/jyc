@@ -5,6 +5,7 @@ use crate::WecomGlobalConfig;
 
 use crate::channel::ChannelPattern;
 use crate::feishu_config::FeishuConfig;
+use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
 use crate::wechat_config::WechatConfig;
 use crate::wecom_config::WecomConfig;
@@ -126,6 +127,9 @@ pub struct ChannelConfig {
 
     /// Feishu configuration (for feishu channels)
     pub feishu: Option<FeishuConfig>,
+
+    /// Gitee configuration (for gitee channels)
+    pub gitee: Option<GiteeConfig>,
 
     /// GitHub configuration (for github channels)
     pub github: Option<GithubConfig>,

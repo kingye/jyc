@@ -19,11 +19,12 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
     workspace.join("repos").join(group_key)
 }
 
-/// Compute the repo group key from a `repo_group` config value and GitHub number.
+/// Compute the repo group key from a `repo_group` config value and issue/PR number.
 ///
-/// Returns `"{repo_group}-{github_number}"`.
-pub fn compute_repo_group_key(repo_group: &str, github_number: u64) -> String {
-    format!("{}-{}", repo_group, github_number)
+/// Returns `"{repo_group}-{number}"`.
+/// Works for GitHub (u64), Gitee issues (string like "IJROW7"), and Gitee PRs (u64).
+pub fn compute_repo_group_key(repo_group: &str, number: &str) -> String {
+    format!("{}-{}", repo_group, number)
 }
 
 #[cfg(test)]
@@ -87,8 +88,9 @@ mod tests {
 
     #[test]
     fn test_compute_repo_group_key() {
-        assert_eq!(compute_repo_group_key("pr", 42), "pr-42");
-        assert_eq!(compute_repo_group_key("repo", 1), "repo-1");
+        assert_eq!(compute_repo_group_key("pr", "42"), "pr-42");
+        assert_eq!(compute_repo_group_key("repo", "1"), "repo-1");
+        assert_eq!(compute_repo_group_key("pr", "IJROW7"), "pr-IJROW7");
     }
 
     #[tokio::test]
@@ -97,7 +99,7 @@ mod tests {
         let workspace = tmp.path().join("github").join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        let group_key = compute_repo_group_key("pr", 42);
+        let group_key = compute_repo_group_key("pr", "42");
         let shared_repo_dir = resolve_shared_repo_dir(&workspace, &group_key);
         let thread_path = workspace.join("pr-42");
 

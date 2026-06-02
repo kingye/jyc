@@ -79,6 +79,13 @@ impl OutboundAdapter for GiteeOutboundAdapter {
             anyhow::bail!("gitee_number not found in message metadata");
         }
 
+        let gitee_type = original
+            .metadata
+            .get("gitee_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("issue");
+        let is_pr = gitee_type == "pull_request";
+
         let role = original
             .metadata
             .get("role")
@@ -120,7 +127,7 @@ impl OutboundAdapter for GiteeOutboundAdapter {
 
         let comment_id = self
             .client
-            .create_comment(number, &comment_body)
+            .create_comment(number, &comment_body, is_pr)
             .await
             .with_context(|| format!("Failed to post comment on #{}", number))?;
 

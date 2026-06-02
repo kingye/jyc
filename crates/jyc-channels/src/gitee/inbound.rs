@@ -479,20 +479,12 @@ impl GiteeInboundAdapter {
         let poll_start = last_poll.clone();
         let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
-        // 1. Fetch ALL open issues and PRs
+        // 1. Fetch ALL open issues
+        tracing::debug!(channel = %self.channel_name, "Fetching open issues");
         let issues = client.list_all_open_issues().await?;
-
-        // Gitee /issues endpoint does not include `pull_request` field.
-        // Fetch open PRs separately to distinguish PRs from issues.
-        let open_prs = client.list_open_pulls().await.unwrap_or_default();
-        let pr_numbers: HashSet<String> = open_prs.iter().map(|pr| pr.number.clone()).collect();
+        tracing::debug!(channel = %self.channel_name, issue_count = issues.len(), "Fetched open issues");
 
         for issue in &issues {
-            let gitee_type = if pr_numbers.contains(&issue.number) {
-                "pull_request"
-            } else {
-                "issue"
-            };
             let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
             let assignees: Vec<String> = issue
                 .assignee
@@ -504,7 +496,7 @@ impl GiteeInboundAdapter {
                 issue.number.clone(),
                 (
                     issue.title.clone(),
-                    gitee_type.to_string(),
+                    "issue".to_string(),
                     labels.clone(),
                     assignees.clone(),
                 ),
@@ -517,16 +509,24 @@ impl GiteeInboundAdapter {
             self.track_seen_issue(&seen_key, seen_issues).await;
 
             if is_new {
+                tracing::info!(
+                    channel = %self.channel_name,
+                    issue_number = %issue.number,
+                    issue_title = %issue.title,
+                    labels = ?labels,
+                    "New issue detected, routing"
+                );
                 if !triggered_in_cycle.insert(issue.number.clone()) {
+                    tracing::debug!(issue_number = %issue.number, "Issue already triggered in this cycle, skipping");
                     continue;
                 }
 
-                let event_uid = format!("{}-{}-opened", gitee_type, issue.number);
+                let event_uid = format!("issue-{}-opened", issue.number);
                 let message = self.build_trigger_message(
                     "issues",
                     &issue.number,
                     &issue.title,
-                    gitee_type,
+                    "issue",
                     "opened",
                     &issue.user.login,
                     &labels,
@@ -536,15 +536,85 @@ impl GiteeInboundAdapter {
 
                 if let Err(e) = (options.on_message)(message) {
                     tracing::error!(error = %e, number = %issue.number, "Failed to route issue event");
+                } else {
+                    tracing::info!(issue_number = %issue.number, "Issue event routed successfully");
                 }
+            } else {
+                tracing::debug!(issue_number = %issue.number, seen_key = %seen_key, "Issue already seen, skipping");
+            }
+        }
+
+        // 2. Fetch open PRs separately — Gitee uses separate number spaces for issues and PRs
+        tracing::debug!(channel = %self.channel_name, "Fetching open PRs");
+        let open_prs = client.list_open_pulls().await.unwrap_or_default();
+        tracing::debug!(channel = %self.channel_name, pr_count = open_prs.len(), "Fetched open PRs");
+
+        for pr in &open_prs {
+            let pr_number = pr.number.to_string();
+            let labels: Vec<String> = pr.labels.iter().map(|l| l.name.clone()).collect();
+            let assignees: Vec<String> = pr.assignees.iter().map(|a| a.login.clone()).collect();
+
+            issue_cache.insert(
+                pr_number.clone(),
+                (
+                    pr.title.clone(),
+                    "pull_request".to_string(),
+                    labels.clone(),
+                    assignees.clone(),
+                ),
+            );
+
+            let mut labels_sorted: Vec<String> = labels.clone();
+            labels_sorted.sort();
+            let seen_key = format!("{}:{}", pr_number, labels_sorted.join(","));
+            let is_new = !seen_issues.contains(&seen_key);
+            self.track_seen_issue(&seen_key, seen_issues).await;
+
+            if is_new {
+                tracing::info!(
+                    channel = %self.channel_name,
+                    pr_number = %pr_number,
+                    pr_title = %pr.title,
+                    labels = ?labels,
+                    "New PR detected, routing"
+                );
+                if !triggered_in_cycle.insert(pr_number.clone()) {
+                    tracing::debug!(pr_number = %pr_number, "PR already triggered in this cycle, skipping");
+                    continue;
+                }
+
+                let event_uid = format!("pull_request-{}-opened", pr_number);
+                let message = self.build_trigger_message(
+                    "pull_request",
+                    &pr_number,
+                    &pr.title,
+                    "pull_request",
+                    "opened",
+                    &pr.user.login,
+                    &labels,
+                    &assignees,
+                    &event_uid,
+                );
+
+                if let Err(e) = (options.on_message)(message) {
+                    tracing::error!(error = %e, number = %pr_number, "Failed to route PR event");
+                } else {
+                    tracing::info!(pr_number = %pr_number, "PR event routed successfully");
+                }
+            } else {
+                tracing::debug!(pr_number = %pr_number, seen_key = %seen_key, "PR already seen, skipping");
             }
         }
 
         let current_open_numbers: HashSet<String> =
             issues.iter().map(|i| i.number.clone()).collect();
+        let current_open_pr_numbers: HashSet<String> =
+            open_prs.iter().map(|pr| pr.number.to_string()).collect();
 
-        // 2. Fetch and process comments
+        // 3. Fetch and process issue comments
+        tracing::debug!(channel = %self.channel_name, since = %poll_start, "Fetching issue comments");
         let comments = client.list_comments_since(&poll_start).await?;
+        tracing::debug!(channel = %self.channel_name, comment_count = comments.len(), "Fetched issue comments");
 
         for comment in &comments {
             let comment_key = format!("{}:{}", comment.id, comment.updated_at);
@@ -619,10 +689,108 @@ impl GiteeInboundAdapter {
             self.track_comment(&comment_key, processed_comments).await;
         }
 
-        // 3. Detect closed issues/PRs
+        // 4. Fetch and process PR comments (Gitee separates PR comments from issue comments)
+        tracing::debug!(channel = %self.channel_name, pr_count = open_prs.len(), "Fetching PR comments");
+        for pr in &open_prs {
+            tracing::debug!(pr_number = %pr.number, "Fetching comments for PR");
+            match client.list_pr_comments(pr.number).await {
+                Ok(pr_comments) => {
+                    tracing::debug!(pr_number = %pr.number, comment_count = pr_comments.len(), "Fetched PR comments");
+                    for comment in &pr_comments {
+                        let comment_key = format!("pr-{}:{}", comment.id, comment.updated_at);
+
+                        let id_only = format!("pr-{}", comment.id);
+                        if processed_comments.contains(&comment_key)
+                            || processed_comments.contains(&id_only)
+                        {
+                            continue;
+                        }
+
+                        let body_trimmed = comment.body.trim();
+                        let comment_role = extract_comment_role(body_trimmed);
+                        // Gitee PR comments have target=null; use the known PR number from the loop
+                        let pr_number = pr.number.to_string();
+
+                        if !current_open_pr_numbers.contains(&pr_number) {
+                            tracing::debug!(pr_number = %pr_number, "PR no longer open, skipping comment");
+                            self.track_comment(&comment_key, processed_comments).await;
+                            continue;
+                        }
+
+                        let (title, gitee_type, labels, assignees) =
+                            issue_cache.get(&pr_number).cloned().unwrap_or_else(|| {
+                                (
+                                    format!("#{}", pr_number),
+                                    "pull_request".to_string(),
+                                    vec![],
+                                    vec![],
+                                )
+                            });
+
+                        let event_uid = format!("pr-comment-{}", comment.id);
+                        let mut message = self.build_trigger_message(
+                            "issue_comment",
+                            &pr_number,
+                            &title,
+                            &gitee_type,
+                            "mentioned",
+                            &comment.user.login,
+                            &labels,
+                            &assignees,
+                            &event_uid,
+                        );
+
+                        message.metadata.insert(
+                            "comment_body".to_string(),
+                            serde_json::Value::String(comment.body.clone()),
+                        );
+
+                        let comment_section = format!(
+                            "\n\n---\nTriggering comment by {}:\n\n{}",
+                            comment.user.login, comment.body
+                        );
+                        match &mut message.content.text {
+                            Some(text) => text.push_str(&comment_section),
+                            None => message.content.text = Some(comment_section),
+                        }
+
+                        if let Some(ref role) = comment_role {
+                            message.metadata.insert(
+                                "comment_role".to_string(),
+                                serde_json::Value::String(role.clone()),
+                            );
+                        }
+
+                        if !triggered_in_cycle.insert(pr_number.clone()) {
+                            self.track_comment(&comment_key, processed_comments).await;
+                            continue;
+                        }
+
+                        if let Err(e) = (options.on_message)(message) {
+                            tracing::error!(
+                                error = %e,
+                                number = %pr_number,
+                                "Failed to route PR comment event"
+                            );
+                        }
+
+                        self.track_comment(&comment_key, processed_comments).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, pr_number = %pr.number, "Failed to fetch PR comments");
+                }
+            }
+        }
+
+        // 5. Detect closed issues/PRs
         let cached_numbers: Vec<String> = issue_cache.keys().cloned().collect();
+        let all_open_numbers: HashSet<String> = current_open_numbers
+            .union(&current_open_pr_numbers)
+            .cloned()
+            .collect();
         for cached_number in cached_numbers {
-            if !current_open_numbers.contains(&cached_number) {
+            if !all_open_numbers.contains(&cached_number) {
                 if let Some((_title, gitee_type, _labels, _assignees)) =
                     issue_cache.get(&cached_number)
                 {

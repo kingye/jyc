@@ -95,8 +95,9 @@ impl GiteeComment {
 /// Gitee pull request (from /pulls endpoint).
 #[derive(Debug, Deserialize)]
 pub struct GiteePullRequest {
-    /// PR number — Gitee uses string identifiers (e.g. "IJROW7"), not integers.
-    pub number: String,
+    /// PR number — Gitee returns this as an integer (e.g. `1`), unlike issue numbers
+    /// which are strings (e.g. "IJROW7").
+    pub number: u64,
     pub title: String,
     pub state: String,
     pub user: GiteeUser,
@@ -111,6 +112,7 @@ pub struct GiteePullRequest {
 pub struct GiteePullRequestHead {
     pub sha: String,
     pub label: String,
+    #[serde(rename = "ref")]
     pub ref_field: String,
 }
 
@@ -349,11 +351,20 @@ impl GiteeClient {
     }
 
     /// Create a comment on an issue or PR.
-    pub async fn create_comment(&self, number: &str, body: &str) -> Result<u64> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/comments",
-            self.api_url, self.owner, self.repo, number
-        );
+    /// Gitee uses separate endpoints: `/issues/{number}/comments` for issues,
+    /// `/pulls/{number}/comments` for PRs.
+    pub async fn create_comment(&self, number: &str, body: &str, is_pr: bool) -> Result<u64> {
+        let url = if is_pr {
+            format!(
+                "{}/repos/{}/{}/pulls/{}/comments",
+                self.api_url, self.owner, self.repo, number
+            )
+        } else {
+            format!(
+                "{}/repos/{}/{}/issues/{}/comments",
+                self.api_url, self.owner, self.repo, number
+            )
+        };
 
         let resp = self
             .client
@@ -411,5 +422,34 @@ impl GiteeClient {
             .context("Failed to parse PR detail response")?;
 
         Ok(pr.head.sha)
+    }
+
+    /// List comments on a specific PR.
+    pub async fn list_pr_comments(&self, pr_number: u64) -> Result<Vec<GiteeComment>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments?per_page=100",
+            self.api_url, self.owner, self.repo, pr_number
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch PR comments")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "GET PR comments failed: {} — {}",
+                status,
+                truncate_str(&body, 200)
+            );
+        }
+
+        resp.json::<Vec<GiteeComment>>()
+            .await
+            .context("Failed to parse PR comments response")
     }
 }

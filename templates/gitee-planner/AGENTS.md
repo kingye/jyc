@@ -156,7 +156,14 @@ Use your codebase analysis to write concrete steps, not vague descriptions.
 ```bash
 cd repo
 git checkout main && git pull
-git checkout -b feat/issue-<number>
+
+# Create a meaningful branch name based on your understanding of the issue.
+# Follow the project convention: feat/issue-{N}-<short-description>
+# Example: feat/issue-220-add-imap-idle
+# The description should be concise (2-5 words), lowercase, kebab-case.
+# Do NOT simply convert the issue title — summarize the actual work.
+git checkout -b feat/issue-<number>-<short-description>
+
 # Verify branch
 if [ "$(git branch --show-current)" = "main" ]; then
   echo "FATAL: Branch creation failed, still on main."
@@ -164,7 +171,7 @@ if [ "$(git branch --show-current)" = "main" ]; then
 fi
 # Create an empty commit to allow PR creation, then push
 git commit --allow-empty -m "chore: initialize PR for issue #<number>"
-git push -u origin feat/issue-<number>
+git push -u origin feat/issue-<number>-<short-description>
 
 # Read issue assignee and labels to copy to PR
 ASSIGNEE=$(curl -s "https://gitee.com/api/v5/repos/{owner}/{repo}/issues/{number}?access_token=${GITEE_TOKEN}" | jq -r '.assignee.login // empty')
@@ -177,7 +184,7 @@ curl -s -X POST "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls?access_toke
   -d "$(cat <<EOF
 {
   "title": "feat: <description>",
-  "head": "feat/issue-<number>",
+  "head": "feat/issue-<number>-<short-description>",
   "base": "main",
   "body": "## Spec\\n\\n<one-paragraph summary of what this PR achieves>\\n\\nFixes #<issue_number>\\n\\n## Implementation Plan\\n\\n### Step 1: <short title>\\n**What:** <what to do — reference specific files, structs, functions>\\n**Why:** <why this step is needed>\\n**Verify:** <how to verify — e.g. cargo check, cargo test <test_name>, run a command, check output>\\n\\n### Step 2: <short title>\\n**What:** <...>\\n**Why:** <...>\\n**Verify:** <...>\\n\\n### Step 3: <short title>\\n...\\n(as many steps as needed)\\n\\n## Design Decisions\\n- <any constraints, trade-offs, or conventions discussed>\\n"
 }

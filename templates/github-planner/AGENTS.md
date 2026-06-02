@@ -156,7 +156,14 @@ Use your codebase analysis to write concrete steps, not vague descriptions.
 ```bash
 cd repo
 git checkout main && git pull
-git checkout -b feat/issue-<number>
+
+# Create a meaningful branch name based on your understanding of the issue.
+# Follow the project convention: feat/issue-{N}-<short-description>
+# Example: feat/issue-220-add-imap-idle
+# The description should be concise (2-5 words), lowercase, kebab-case.
+# Do NOT simply convert the issue title — summarize the actual work.
+git checkout -b feat/issue-<number>-<short-description>
+
 # Verify branch
 if [ "$(git branch --show-current)" = "main" ]; then
   echo "FATAL: Branch creation failed, still on main."
@@ -164,7 +171,7 @@ if [ "$(git branch --show-current)" = "main" ]; then
 fi
 # Create an empty commit to allow PR creation, then push
 git commit --allow-empty -m "chore: initialize PR for issue #<number>"
-git push -u origin feat/issue-<number>
+git push -u origin feat/issue-<number>-<short-description>
 
 # Read issue assignees and labels to copy to PR
 ASSIGNEES=$(gh issue view <number> --json assignees --jq '[.assignees[].login] | join(",")')

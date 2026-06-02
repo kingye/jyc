@@ -8,7 +8,7 @@ use super::client::GiteeClient;
 use jyc_types::GiteeConfig;
 
 /// Type alias for issue cache: number → (title, type, labels, assignees)
-type IssueCache = HashMap<u64, (String, String, Vec<String>, Vec<String>)>;
+type IssueCache = HashMap<String, (String, String, Vec<String>, Vec<String>)>;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
     MessageContent, PatternMatch, PatternRules,
@@ -36,8 +36,8 @@ impl ChannelMatcher for GiteeMatcher {
         let number = message
             .metadata
             .get("gitee_number")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
 
         if let Some(pm) = pattern_match
             && let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
@@ -275,7 +275,7 @@ impl GiteeInboundAdapter {
     fn build_trigger_message(
         &self,
         event_type: &str,
-        number: u64,
+        number: &str,
         title: &str,
         gitee_type: &str,
         action: &str,
@@ -423,7 +423,7 @@ impl InboundAdapter for GiteeInboundAdapter {
         let mut processed_comments: HashSet<String> = self.load_processed_comments().await;
         let mut processed_events: HashSet<String> = HashSet::new();
         let mut seen_issues: HashSet<String> = self.load_seen_issues().await;
-        let mut issue_cache: HashMap<u64, (String, String, Vec<String>, Vec<String>)> =
+        let mut issue_cache: HashMap<String, (String, String, Vec<String>, Vec<String>)> =
             HashMap::new();
 
         let mut last_poll = if is_fresh_start {
@@ -479,20 +479,29 @@ impl GiteeInboundAdapter {
         let poll_start = last_poll.clone();
         let mut triggered_in_cycle: HashSet<String> = HashSet::new();
 
-        // 1. Fetch ALL open issues/PRs
+        // 1. Fetch ALL open issues and PRs
         let issues = client.list_all_open_issues().await?;
 
+        // Gitee /issues endpoint does not include `pull_request` field.
+        // Fetch open PRs separately to distinguish PRs from issues.
+        let open_prs = client.list_open_pulls().await.unwrap_or_default();
+        let pr_numbers: HashSet<String> = open_prs.iter().map(|pr| pr.number.clone()).collect();
+
         for issue in &issues {
-            let gitee_type = if issue.is_pull_request() {
+            let gitee_type = if pr_numbers.contains(&issue.number) {
                 "pull_request"
             } else {
                 "issue"
             };
             let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
-            let assignees: Vec<String> = issue.assignees.iter().map(|a| a.login.clone()).collect();
+            let assignees: Vec<String> = issue
+                .assignee
+                .as_ref()
+                .map(|a| vec![a.login.clone()])
+                .unwrap_or_default();
 
             issue_cache.insert(
-                issue.number,
+                issue.number.clone(),
                 (
                     issue.title.clone(),
                     gitee_type.to_string(),
@@ -508,14 +517,14 @@ impl GiteeInboundAdapter {
             self.track_seen_issue(&seen_key, seen_issues).await;
 
             if is_new {
-                if !triggered_in_cycle.insert(issue.number.to_string()) {
+                if !triggered_in_cycle.insert(issue.number.clone()) {
                     continue;
                 }
 
                 let event_uid = format!("{}-{}-opened", gitee_type, issue.number);
                 let message = self.build_trigger_message(
                     "issues",
-                    issue.number,
+                    &issue.number,
                     &issue.title,
                     gitee_type,
                     "opened",
@@ -526,12 +535,13 @@ impl GiteeInboundAdapter {
                 );
 
                 if let Err(e) = (options.on_message)(message) {
-                    tracing::error!(error = %e, number = issue.number, "Failed to route issue event");
+                    tracing::error!(error = %e, number = %issue.number, "Failed to route issue event");
                 }
             }
         }
 
-        let current_open_numbers: HashSet<u64> = issues.iter().map(|i| i.number).collect();
+        let current_open_numbers: HashSet<String> =
+            issues.iter().map(|i| i.number.clone()).collect();
 
         // 2. Fetch and process comments
         let comments = client.list_comments_since(&poll_start).await?;
@@ -546,7 +556,7 @@ impl GiteeInboundAdapter {
 
             let body_trimmed = comment.body.trim();
             let comment_role = extract_comment_role(body_trimmed);
-            let issue_number = comment.issue_number().unwrap_or(0);
+            let issue_number = comment.issue_number().unwrap_or_default();
 
             if !current_open_numbers.contains(&issue_number) {
                 self.track_comment(&comment_key, processed_comments).await;
@@ -566,7 +576,7 @@ impl GiteeInboundAdapter {
             let event_uid = format!("comment-{}", comment.id);
             let mut message = self.build_trigger_message(
                 "issue_comment",
-                issue_number,
+                &issue_number,
                 &title,
                 &gitee_type,
                 "mentioned",
@@ -597,20 +607,20 @@ impl GiteeInboundAdapter {
                 );
             }
 
-            if !triggered_in_cycle.insert(issue_number.to_string()) {
+            if !triggered_in_cycle.insert(issue_number.clone()) {
                 self.track_comment(&comment_key, processed_comments).await;
                 continue;
             }
 
             if let Err(e) = (options.on_message)(message) {
-                tracing::error!(error = %e, number = issue_number, "Failed to route comment event");
+                tracing::error!(error = %e, number = %issue_number, "Failed to route comment event");
             }
 
             self.track_comment(&comment_key, processed_comments).await;
         }
 
         // 3. Detect closed issues/PRs
-        let cached_numbers: Vec<u64> = issue_cache.keys().cloned().collect();
+        let cached_numbers: Vec<String> = issue_cache.keys().cloned().collect();
         for cached_number in cached_numbers {
             if !current_open_numbers.contains(&cached_number) {
                 if let Some((_title, gitee_type, _labels, _assignees)) =
@@ -622,7 +632,7 @@ impl GiteeInboundAdapter {
                         tracing::info!(
                             channel = %self.channel_name,
                             event = "closed",
-                            number = cached_number,
+                            number = %cached_number,
                             gitee_type = gitee_type,
                             "Gitee close event detected"
                         );

@@ -34,30 +34,28 @@ pub struct GiteeLabel {
 /// Gitee issue or pull request (from /issues endpoint).
 #[derive(Debug, Deserialize)]
 pub struct GiteeIssue {
-    pub number: u64,
+    /// Issue/PR number — Gitee uses string identifiers (e.g. "IJROW7"), not integers.
+    pub number: String,
     pub title: String,
     pub state: String,
     pub user: GiteeUser,
     pub labels: Vec<GiteeLabel>,
-    pub assignees: Vec<GiteeUser>,
-    /// Present only for pull requests
-    pub pull_request: Option<GiteePullRequestRef>,
+    /// Single assignee (Gitee uses `assignee`, not `assignees` array).
+    pub assignee: Option<GiteeUser>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-impl GiteeIssue {
-    /// Returns true if this is a pull request (not an issue).
-    pub fn is_pull_request(&self) -> bool {
-        self.pull_request.is_some()
-    }
+/// Gitee comment target (issue or PR reference).
+#[derive(Debug, Deserialize)]
+pub struct GiteeCommentTarget {
+    pub issue: Option<GiteeCommentTargetIssue>,
+    pub pull_request: Option<GiteeCommentTargetIssue>,
 }
 
-/// Minimal pull_request reference in issue response.
 #[derive(Debug, Deserialize)]
-pub struct GiteePullRequestRef {
-    pub url: Option<String>,
-    pub html_url: Option<String>,
+pub struct GiteeCommentTargetIssue {
+    pub number: String,
 }
 
 /// Gitee comment (on issue or PR).
@@ -68,24 +66,37 @@ pub struct GiteeComment {
     pub body: String,
     pub created_at: String,
     pub updated_at: String,
-    pub issue_url: Option<String>,
+    pub target: Option<GiteeCommentTarget>,
 }
 
 impl GiteeComment {
-    /// Extract the issue/PR number from the issue_url.
-    /// issue_url looks like: https://gitee.com/api/v5/repos/{owner}/{repo}/issues/{number}
-    pub fn issue_number(&self) -> Option<u64> {
-        self.issue_url
+    /// Extract the issue/PR number from the target field.
+    /// Gitee API v5 returns issue_url as null; the number is in target.issue.number.
+    pub fn issue_number(&self) -> Option<String> {
+        self.target
             .as_ref()
-            .and_then(|url| url.rsplit('/').next())
-            .and_then(|s| s.parse().ok())
+            .and_then(|t| t.issue.as_ref().map(|i| i.number.clone()))
+            .or_else(|| {
+                self.target
+                    .as_ref()
+                    .and_then(|t| t.pull_request.as_ref().map(|pr| pr.number.clone()))
+            })
+    }
+
+    /// Returns true if this comment is on a pull request (not an issue).
+    pub fn is_pull_request_comment(&self) -> bool {
+        self.target
+            .as_ref()
+            .map(|t| t.pull_request.is_some())
+            .unwrap_or(false)
     }
 }
 
 /// Gitee pull request (from /pulls endpoint).
 #[derive(Debug, Deserialize)]
 pub struct GiteePullRequest {
-    pub number: u64,
+    /// PR number — Gitee uses string identifiers (e.g. "IJROW7"), not integers.
+    pub number: String,
     pub title: String,
     pub state: String,
     pub user: GiteeUser,
@@ -338,7 +349,7 @@ impl GiteeClient {
     }
 
     /// Create a comment on an issue or PR.
-    pub async fn create_comment(&self, number: u64, body: &str) -> Result<u64> {
+    pub async fn create_comment(&self, number: &str, body: &str) -> Result<u64> {
         let url = format!(
             "{}/repos/{}/{}/issues/{}/comments",
             self.api_url, self.owner, self.repo, number
@@ -371,7 +382,7 @@ impl GiteeClient {
     }
 
     /// Get PR head SHA for CI status polling.
-    pub async fn get_pr_head_sha(&self, pr_number: u64) -> Result<String> {
+    pub async fn get_pr_head_sha(&self, pr_number: &str) -> Result<String> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{}",
             self.api_url, self.owner, self.repo, pr_number

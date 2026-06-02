@@ -72,8 +72,12 @@ impl OutboundAdapter for GiteeOutboundAdapter {
         let number = original
             .metadata
             .get("gitee_number")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if number.is_empty() {
+            anyhow::bail!("gitee_number not found in message metadata");
+        }
 
         let role = original
             .metadata

@@ -9,7 +9,7 @@ fn default_heartbeat_interval() -> u64 {
 }
 
 fn default_reconnect_delay() -> u64 {
-    30
+    5
 }
 
 fn default_max_reconnect() -> u32 {

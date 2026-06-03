@@ -7,6 +7,7 @@ pub mod github_config;
 pub mod inspect;
 pub mod validation;
 pub mod wechat_config;
+pub mod wecom_bot_config;
 pub mod wecom_config;
 pub mod wecom_kf_config;
 
@@ -18,5 +19,6 @@ pub use gitee_config::*;
 pub use github_config::*;
 pub use inspect::*;
 pub use wechat_config::*;
+pub use wecom_bot_config::*;
 pub use wecom_config::*;
 pub use wecom_kf_config::*;

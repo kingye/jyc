@@ -709,3 +709,32 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # #
 # # [channels.my_wecomkf_bot.patterns.rules]
 # # # keywords = ["help", "support", "问题"]
+
+# --- Channel: WeCom Smart Robot (wecom_bot) ---
+#
+# Uses WebSocket long connection (wss://openws.work.weixin.qq.com).
+# No token or encoding_aes_key required (unlike wecom HTTP callback).
+#
+# [channels.my_wecom_bot]
+# type = "wecom_bot"
+#
+# [channels.my_wecom_bot.wecom_bot]
+# bot_id = "your_bot_id"
+# secret = "${WECOM_BOT_SECRET}"
+# # Optional: WebSocket URL (default: wss://openws.work.weixin.qq.com)
+# # ws_url = "wss://openws.work.weixin.qq.com"
+# # Optional: heartbeat interval in seconds (default: 30)
+# # heartbeat_interval_secs = 30
+# # Optional: reconnect delay in seconds (default: 5)
+# # reconnect_delay_secs = 5
+# # Optional: max reconnect attempts (default: 10)
+# # max_reconnect_attempts = 10
+# # Optional: auto reconnect (default: true)
+# # auto_reconnect = true
+#
+# [[channels.my_wecom_bot.patterns]]
+# name = "bot_all"
+# enabled = true
+#
+# [channels.my_wecom_bot.patterns.rules]
+# # keywords = ["help", "bot"]

@@ -30,6 +30,8 @@ use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
 use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_channels::wecom::token_cache::AccessTokenCache;
+use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
+use jyc_channels::wecom_bot::outbound::WecomBotOutboundAdapter;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -168,6 +170,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let mut wechat_sender_arc: Option<
             std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
         > = None;
+        // For wecom_bot, we share the WebSocket sender between inbound and outbound
+        let mut wecom_bot_sender_arc: Option<
+            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+        > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
@@ -235,6 +241,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 );
                 // Store the sender_arc for later use in the inbound section
                 wechat_sender_arc = Some(adapter.sender_arc());
+                Arc::new(adapter)
+            }
+            "wecom_bot" => {
+                let adapter = WecomBotOutboundAdapter::new_with_attachments(
+                    storage.clone(),
+                    outbound_attachment_config,
+                    footer_enabled,
+                );
+                wecom_bot_sender_arc = Some(adapter.sender_arc());
                 Arc::new(adapter)
             }
             "wecom" => {
@@ -758,19 +773,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             let router = router_for_callback.clone();
                             let patterns = patterns_for_callback.clone();
 
-                            // NOTE on attachments: the WeChat parser
-                            // populates `message.attachments` (with
-                            // inline `Vec<u8>` content) inside
-                            // `WechatWebSocket::handle_incoming`. We do
-                            // NOT save them to disk here — the canonical
-                            // post-route saver in
-                            // `thread_manager::process_message`
-                            // (`save_attachments_to_dir`) does that
-                            // AFTER thread name resolution, ensuring
-                            // attachments land in the same directory
-                            // the agent thread actually runs in. A
-                            // pre-route save here would just produce a
-                            // duplicate copy under a sibling directory.
                             tokio::spawn(async move {
                                 router.route(&WechatMatcher, message, &patterns).await;
                             });
@@ -800,6 +802,67 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     }
 
                     // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            "wecom_bot" => {
+                let wecom_bot_config = channel_config
+                    .wecom_bot
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("channel '{channel_name}': missing wecom_bot config")
+                    })?
+                    .clone();
+
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let wecom_bot_sender_arc_clone = wecom_bot_sender_arc.clone().unwrap();
+
+                let task = tokio::spawn(async move {
+                    use jyc_types::InboundAdapter;
+
+                    let adapter = WecomBotInboundAdapter::with_shared_sender(
+                        &wecom_bot_config,
+                        channel_name_owned.clone(),
+                        wecom_bot_sender_arc_clone,
+                    );
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&WecomBotMatcher, message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "WeCom Bot inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "WeCom Bot inbound adapter error"
+                        );
+                    }
+
                     tm.shutdown().await;
                 }.instrument(channel_span));
 

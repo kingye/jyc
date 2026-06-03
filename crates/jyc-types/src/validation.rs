@@ -220,6 +220,48 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     message: "WeCom configuration is required for wecom channel type".into(),
                 });
             }
+        } else if channel.channel_type == "wecom_bot" {
+            // Validate WeCom Smart Robot channel specifics
+            if let Some(ref bot_config) = channel.wecom_bot {
+                if bot_config.bot_id.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom_bot.bot_id"),
+                        message: "WeCom bot_id is required".into(),
+                    });
+                }
+                if bot_config.secret.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom_bot.secret"),
+                        message: "WeCom bot secret is required (use ${ENV_VAR} syntax)".into(),
+                    });
+                }
+                if !bot_config.ws_url.starts_with("wss://")
+                    && !bot_config.ws_url.starts_with("ws://")
+                {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom_bot.ws_url"),
+                        message: "WeCom bot ws_url must start with wss:// or ws://".into(),
+                    });
+                }
+                if bot_config.heartbeat_interval_secs < 10 {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom_bot.heartbeat_interval_secs"),
+                        message: "must be at least 10".into(),
+                    });
+                }
+                if bot_config.reconnect_delay_secs == 0 {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.wecom_bot.reconnect_delay_secs"),
+                        message: "must be greater than 0".into(),
+                    });
+                }
+            } else {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.wecom_bot"),
+                    message: "WeCom bot configuration is required for wecom_bot channel type"
+                        .into(),
+                });
+            }
         }
 
         // Validate channel-level disabled_tools / disabled_mcp_servers

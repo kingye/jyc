@@ -195,10 +195,7 @@ impl WecomBotWsClient {
             .context("Failed to send subscribe command")?;
 
         // Wait for subscribe response before starting heartbeat (matches SDK behavior)
-        let auth_ok = match tokio::time::timeout(
-            Duration::from_secs(10),
-            read.next()
-        ).await {
+        let auth_ok = match tokio::time::timeout(Duration::from_secs(10), read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
                 tracing::debug!(text = %text, "Received WebSocket text frame");
                 self.handle_auth_response(&text).await?
@@ -210,23 +207,36 @@ impl WecomBotWsClient {
             }
             Ok(Some(Ok(Message::Close(frame)))) => {
                 tracing::warn!(frame = ?frame, "WebSocket closed by server during auth");
-                return Err(anyhow::anyhow!("WeCom Bot WebSocket closed during authentication"));
+                return Err(anyhow::anyhow!(
+                    "WeCom Bot WebSocket closed during authentication"
+                ));
             }
-            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) | Ok(Some(Ok(Message::Frame(_)))) => {
+            Ok(Some(Ok(Message::Ping(_))))
+            | Ok(Some(Ok(Message::Pong(_))))
+            | Ok(Some(Ok(Message::Frame(_)))) => {
                 tracing::trace!("Ignoring WebSocket control frame during auth");
-                return Err(anyhow::anyhow!("WeCom Bot WebSocket received unexpected control frame during authentication"));
+                return Err(anyhow::anyhow!(
+                    "WeCom Bot WebSocket received unexpected control frame during authentication"
+                ));
             }
             Ok(Some(Err(e))) => {
                 tracing::warn!(error = %e, "WebSocket error during auth");
-                return Err(anyhow::anyhow!("WeCom Bot WebSocket error during authentication: {}", e));
+                return Err(anyhow::anyhow!(
+                    "WeCom Bot WebSocket error during authentication: {}",
+                    e
+                ));
             }
             Ok(None) => {
                 tracing::warn!("WebSocket stream ended during auth");
-                return Err(anyhow::anyhow!("WeCom Bot WebSocket stream ended during authentication"));
+                return Err(anyhow::anyhow!(
+                    "WeCom Bot WebSocket stream ended during authentication"
+                ));
             }
             Err(_) => {
                 tracing::warn!("WebSocket auth timeout");
-                return Err(anyhow::anyhow!("WeCom Bot WebSocket authentication timeout"));
+                return Err(anyhow::anyhow!(
+                    "WeCom Bot WebSocket authentication timeout"
+                ));
             }
         };
 
@@ -433,10 +443,7 @@ impl WecomBotWsClient {
         }
 
         // Extract cmd from nested format
-        let cmd = raw
-            .get("cmd")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let cmd = raw.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
 
         let body = raw.get("body").cloned().unwrap_or(serde_json::Value::Null);
 

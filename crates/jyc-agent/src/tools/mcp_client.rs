@@ -163,6 +163,10 @@ impl Tool for McpToolWrapper {
         &self.tool_name
     }
 
+    fn source(&self) -> Option<&str> {
+        Some(&self.server_name)
+    }
+
     fn description(&self) -> &str {
         &self.description
     }

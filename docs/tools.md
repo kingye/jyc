@@ -272,7 +272,7 @@ disabled_mcp_servers = []
 
 | Field | Scope | Description |
 |-------|-------|-------------|
-| `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. |
+| `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
 | `disabled_mcp_servers` | Channel / Pattern | List of MCP server names to skip during tool loading. |
 | `disabled_builtin_tools` | Pattern only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 
@@ -302,6 +302,15 @@ disabled_tools = ["bash"]
 name = "readonly"
 disabled_tools = ["write", "edit"]
 ```
+
+**Disable a specific MCP tool by server:**
+```toml
+[[channels.email.patterns]]
+name = "selective"
+disabled_tools = ["jin_public_mcp/product_list"]
+```
+
+> **Note:** The `server_name/tool_name` format filters MCP tools **before** they are registered. Built-in and bridge tools should always use plain names (e.g. `"bash"`, not `"builtin/bash"`).
 
 **Disable all MCP tools for a pattern:**
 ```toml

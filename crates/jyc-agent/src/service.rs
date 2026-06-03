@@ -594,18 +594,6 @@ impl JycAgentService {
             );
         }
 
-        // Load external MCP tools from filtered configs
-        if !filtered_mcp_configs.is_empty() {
-            tracing::info!(
-                mcp_count = filtered_mcp_configs.len(),
-                "Loading external MCP tools"
-            );
-            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&filtered_mcp_configs).await;
-            for tool in mcp_tools {
-                registry.register(tool);
-            }
-        }
-
         // --- Tool exclusion (disabled_tools) ---
         // Merge channel-level + pattern-level + backward-compatible alias
         let disabled_tools: Vec<&str> = {
@@ -633,7 +621,44 @@ impl JycAgentService {
             set
         };
 
-        for tool_name in &disabled_tools {
+        // Separate server/tool format (e.g. "jin_public_mcp/product_list") from plain names.
+        // Server/tool entries are applied before MCP tools are registered, allowing
+        // precise filtering when multiple MCP servers expose the same tool name.
+        let (disabled_server_tools, disabled_plain_tools): (Vec<&str>, Vec<&str>) =
+            disabled_tools.into_iter().partition(|t| t.contains('/'));
+
+        // Load external MCP tools from filtered configs
+        if !filtered_mcp_configs.is_empty() {
+            tracing::info!(
+                mcp_count = filtered_mcp_configs.len(),
+                "Loading external MCP tools"
+            );
+            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&filtered_mcp_configs).await;
+            for tool in mcp_tools {
+                // Skip tools matching disabled_server_tools (server/tool format)
+                let source = tool.source();
+                let name = tool.name();
+                let should_skip = disabled_server_tools.iter().any(|dt| {
+                    if let Some((server, tool_name)) = dt.split_once('/') {
+                        source == Some(server) && name == tool_name
+                    } else {
+                        false
+                    }
+                });
+                if should_skip {
+                    tracing::debug!(
+                        tool = %name,
+                        source = ?source,
+                        "Skipping disabled MCP tool (server/tool format)"
+                    );
+                    continue;
+                }
+                registry.register(tool);
+            }
+        }
+
+        // Apply plain-name exclusions (built-in, bridge, and MCP tools)
+        for tool_name in &disabled_plain_tools {
             tracing::debug!(
                 tool = %tool_name,
                 pattern = %matched_pattern_name.unwrap_or("?"),
@@ -1260,5 +1285,56 @@ mod tests {
         // Registry should contain built-in tools (no panic from MCP loading)
         assert!(registry.has_tool("bash"));
         assert!(registry.has_tool("jyc_reply_reply_message"));
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_server_prefix_does_not_affect_builtin() {
+        // server/tool format entries should be partitioned away from plain names,
+        // so built-in tools are not affected by server-prefix entries that happen
+        // to share the same tool name.
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec!["some_server/bash".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        // bash is a built-in tool with no source(), so "some_server/bash" won't match it
+        assert!(
+            registry.has_tool("bash"),
+            "built-in bash should NOT be disabled by server/tool prefix"
+        );
+        assert!(registry.has_tool("read"), "read should still be available");
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_mixed_plain_and_server_prefix() {
+        // Verify that plain names and server/tool names coexist correctly:
+        // - plain names disable built-in/bridge tools via registry.remove()
+        // - server/tool names are reserved for MCP tool pre-registration filtering
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            disabled_tools: Some(vec![
+                "bash".to_string(),
+                "some_server/product_list".to_string(),
+            ]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        assert!(
+            !registry.has_tool("bash"),
+            "plain 'bash' should disable built-in bash"
+        );
+        assert!(registry.has_tool("read"), "read should still be available");
+        // "some_server/product_list" won't affect anything here because no MCP
+        // server is configured in this test, but the partition logic ensures
+        // it does not leak into plain-name removal.
     }
 }

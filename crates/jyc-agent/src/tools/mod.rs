@@ -134,6 +134,12 @@ pub trait Tool: Send + Sync {
     /// Tool name (used in LLM tool_use).
     fn name(&self) -> &str;
 
+    /// Optional source identifier (e.g. MCP server name).
+    /// Returns `None` for built-in and bridge tools.
+    fn source(&self) -> Option<&str> {
+        None
+    }
+
     /// Tool description (shown to LLM).
     fn description(&self) -> &str;
 

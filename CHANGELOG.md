@@ -29,6 +29,12 @@ All notable changes to JYC will be documented in this file.
   (channel-level + pattern-level merged). `disabled_builtin_tools` is retained
   as a backward-compatible alias merged into `disabled_tools`. (#243)
 
+- **Per-MCP-tool exclusion by server.** `disabled_tools` now supports
+  `server_name/tool_name` format (e.g. `jin_public_mcp/product_list`) to
+  precisely target tools from specific MCP servers before registration.
+  Built-in and bridge tools continue to use plain names. This enables
+  fine-grained control when multiple MCP servers expose the same tool name. (#244)
+
 - **Gitee channel support.** New channel type `gitee` for multi-agent workflows
   on Gitee issues and Pull Requests. Includes REST API v5 client, polling
   inbound adapter, comment-posting outbound adapter, and planner/developer/

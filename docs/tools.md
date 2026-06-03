@@ -236,6 +236,19 @@ args = ["-y", "@my-org/mcp-server"]
 env = { API_KEY = "${MY_API_KEY}" }
 ```
 
+**Tool Whitelist:**
+Use `enabled_tools` to load only specific tools from a server, ignoring all others:
+
+```toml
+[[mcps]]
+name = "jin_public_mcp"
+command = "npx"
+args = ["-y", "@jin/mcp-server"]
+enabled_tools = ["product_list", "search", "checkout"]  # Only these 3 tools are loaded
+```
+
+> **Tip:** `enabled_tools` is much more convenient than listing 20+ tools in `disabled_tools` when you only need a few from a large MCP server.
+
 **Scope Control:**
 - **Global:** All `[[mcps]]` entries in `config.toml` are loaded by default
 - **Channel-level:** `ChannelConfig.mcps` restricts to specific MCP servers for that channel

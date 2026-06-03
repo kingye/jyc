@@ -1276,6 +1276,7 @@ mod tests {
                 command: vec!["echo".to_string()],
                 environment: std::collections::HashMap::new(),
             },
+            enabled_tools: None,
         }]);
         let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
         let registry = svc
@@ -1336,5 +1337,32 @@ mod tests {
         // "some_server/product_list" won't affect anything here because no MCP
         // server is configured in this test, but the partition logic ensures
         // it does not leak into plain-name removal.
+    }
+
+    #[tokio::test]
+    async fn enabled_tools_on_mcp_server_config_does_not_panic() {
+        // Verify that McpServerConfig with enabled_tools is accepted and
+        // does not cause panic during registry build (actual filtering is
+        // tested at the mcp_client level; here we verify integration).
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            ..ChannelPattern::default()
+        }];
+        let channel_mcps = Some(vec![McpServerConfig {
+            name: "test_mcp".to_string(),
+            kind: jyc_types::McpServerKind::Local {
+                command: vec!["echo".to_string()],
+                environment: std::collections::HashMap::new(),
+            },
+            enabled_tools: Some(vec!["allowed_tool".to_string()]),
+        }]);
+        let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
+        let registry = svc
+            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
+            .await;
+
+        // Built-in tools should still be present
+        assert!(registry.has_tool("bash"), "bash should still be available");
+        assert!(registry.has_tool("read"), "read should still be available");
     }
 }

@@ -124,7 +124,29 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
         .await
         .map_err(|e| anyhow::anyhow!("failed to list MCP tools: {}", e))?;
 
-    let tools: Vec<Box<dyn Tool>> = rmcp_tools
+    // Apply enabled_tools whitelist if configured
+    let filtered_rmcp_tools: Vec<rmcp::model::Tool> = if let Some(ref whitelist) = cfg.enabled_tools
+    {
+        let before = rmcp_tools.len();
+        let filtered: Vec<_> = rmcp_tools
+            .into_iter()
+            .filter(|t| whitelist.iter().any(|w| w == t.name.as_ref()))
+            .collect();
+        let after = filtered.len();
+        if after < before {
+            tracing::info!(
+                mcp_name = %cfg.name,
+                before = before,
+                after = after,
+                "Filtered MCP tools by enabled_tools whitelist"
+            );
+        }
+        filtered
+    } else {
+        rmcp_tools
+    };
+
+    let tools: Vec<Box<dyn Tool>> = filtered_rmcp_tools
         .into_iter()
         .map(|t| {
             let wrapper = McpToolWrapper {

@@ -35,6 +35,12 @@ All notable changes to JYC will be documented in this file.
   Built-in and bridge tools continue to use plain names. This enables
   fine-grained control when multiple MCP servers expose the same tool name. (#244)
 
+- **MCP server tool whitelist.** `McpServerConfig` now supports `enabled_tools`
+  field. When set, only tools whose names appear in the list are loaded from
+  that MCP server; all others are silently ignored. This is a more ergonomic
+  alternative to listing many tools in `disabled_tools` when only a subset is
+  needed. (#244)
+
 - **Gitee channel support.** New channel type `gitee` for multi-agent workflows
   on Gitee issues and Pull Requests. Includes REST API v5 client, polling
   inbound adapter, comment-posting outbound adapter, and planner/developer/

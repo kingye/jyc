@@ -24,6 +24,14 @@ pub struct McpServerConfig {
 
     #[serde(flatten)]
     pub kind: McpServerKind,
+
+    /// Optional whitelist of tools to load from this MCP server.
+    ///
+    /// When set, only tools whose names appear in this list are registered.
+    /// All other tools from this server are silently ignored. When `None`
+    /// (default), all discovered tools are loaded.
+    #[serde(default)]
+    pub enabled_tools: Option<Vec<String>>,
 }
 
 /// Kind of MCP server — either `local` (subprocess) or `remote` (HTTP).

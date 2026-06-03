@@ -56,3 +56,111 @@ pub async fn read_mode_override(thread_path: &Path) -> Option<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn read_input_tokens_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"total_input_tokens": 1000, "max_input_tokens": 2000}"#,
+        )
+        .await
+        .unwrap();
+        let (current, max) = read_input_tokens(tmp.path()).await;
+        assert_eq!(current, Some(1000));
+        assert_eq!(max, Some(2000));
+    }
+
+    #[tokio::test]
+    async fn read_input_tokens_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (current, max) = read_input_tokens(tmp.path()).await;
+        assert_eq!(current, None);
+        assert_eq!(max, None);
+    }
+
+    #[tokio::test]
+    async fn read_input_tokens_zero_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"total_input_tokens": 0, "max_input_tokens": 0}"#,
+        )
+        .await
+        .unwrap();
+        let (current, max) = read_input_tokens(tmp.path()).await;
+        assert_eq!(current, None);
+        assert_eq!(max, None);
+    }
+
+    #[tokio::test]
+    async fn read_input_tokens_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("agent-session.json"), "not json")
+            .await
+            .unwrap();
+        let (current, max) = read_input_tokens(tmp.path()).await;
+        assert_eq!(current, None);
+        assert_eq!(max, None);
+    }
+
+    #[tokio::test]
+    async fn read_model_override_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("model-override"), "anthropic/claude-3.5\n")
+            .await
+            .unwrap();
+        let result = read_model_override(tmp.path()).await;
+        assert_eq!(result, Some("anthropic/claude-3.5".to_string()));
+    }
+
+    #[tokio::test]
+    async fn read_model_override_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("model-override"), "  \n")
+            .await
+            .unwrap();
+        let result = read_model_override(tmp.path()).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn read_model_override_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = read_model_override(tmp.path()).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn read_mode_override_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("mode-override"), "static\n")
+            .await
+            .unwrap();
+        let result = read_mode_override(tmp.path()).await;
+        assert_eq!(result, Some("static".to_string()));
+    }
+
+    #[tokio::test]
+    async fn read_mode_override_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = read_mode_override(tmp.path()).await;
+        assert_eq!(result, None);
+    }
+}

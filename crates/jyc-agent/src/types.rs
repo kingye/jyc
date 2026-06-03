@@ -268,3 +268,222 @@ impl Default for AgentConfig {
 fn default_max_iterations() -> usize {
     500
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn role_serde_roundtrip() {
+        let role = Role::User;
+        let json = serde_json::to_string(&role).unwrap();
+        assert_eq!(json, "\"user\"");
+        let deserialized: Role = serde_json::from_str(&json).unwrap();
+        assert_eq!(role, deserialized);
+    }
+
+    #[test]
+    fn image_source_base64() {
+        let img = ImageSource::Base64 {
+            media_type: "image/png".to_string(),
+            data: "abc123".to_string(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("base64"));
+        assert!(json.contains("abc123"));
+    }
+
+    #[test]
+    fn image_source_url() {
+        let img = ImageSource::Url {
+            url: "https://example.com/img.png".to_string(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("url"));
+    }
+
+    #[test]
+    fn content_block_text() {
+        let block = ContentBlock::Text {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("text"));
+    }
+
+    #[test]
+    fn content_block_tool_use() {
+        let block = ContentBlock::ToolUse {
+            id: "tu1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("tool_use"));
+    }
+
+    #[test]
+    fn content_block_tool_result() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tu1".to_string(),
+            content: "output".to_string(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("tool_result"));
+    }
+
+    #[test]
+    fn message_user() {
+        let msg = Message::user("hello");
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.text(), "hello");
+    }
+
+    #[test]
+    fn message_user_with_blocks() {
+        let msg = Message::user_with_blocks(vec![
+            ContentBlock::Text {
+                text: "hi".to_string(),
+            },
+            ContentBlock::Text {
+                text: " there".to_string(),
+            },
+        ]);
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.text(), "hi there");
+    }
+
+    #[test]
+    fn message_assistant() {
+        let msg = Message::assistant("reply");
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.text(), "reply");
+    }
+
+    #[test]
+    fn message_tool_result() {
+        let msg = Message::tool_result("tu1", "output", false);
+        assert_eq!(msg.role, Role::Tool);
+        assert_eq!(msg.text(), "");
+    }
+
+    #[test]
+    fn message_text_skips_non_text_blocks() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "a".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "x".to_string(),
+                    name: "y".to_string(),
+                    input: Value::Null,
+                },
+                ContentBlock::Text {
+                    text: "b".to_string(),
+                },
+            ],
+        };
+        assert_eq!(msg.text(), "ab");
+    }
+
+    #[test]
+    fn message_tool_uses() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "a".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "x".to_string(),
+                    name: "y".to_string(),
+                    input: Value::Null,
+                },
+                ContentBlock::Text {
+                    text: "b".to_string(),
+                },
+            ],
+        };
+        let uses = msg.tool_uses();
+        assert_eq!(uses.len(), 1);
+    }
+
+    #[test]
+    fn tool_definition_serde() {
+        let def = ToolDefinition {
+            name: "bash".to_string(),
+            description: "run shell".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("bash"));
+    }
+
+    #[test]
+    fn provider_config_default() {
+        let config = ProviderConfig {
+            provider_type: "test".to_string(),
+            base_url: None,
+            api_key_env: None,
+            context_window: None,
+            supports_images: None,
+            params: None,
+            models: std::collections::HashMap::new(),
+        };
+        assert_eq!(config.provider_type, "test");
+    }
+
+    #[test]
+    fn model_config_default() {
+        let config = ModelConfig {
+            context_window: Some(4096),
+            supports_images: Some(true),
+            params: None,
+        };
+        assert_eq!(config.context_window, Some(4096));
+    }
+
+    #[test]
+    fn vision_config_serde() {
+        let config = VisionConfig {
+            enabled: true,
+            provider: "openai".to_string(),
+            model: "gpt-4-vision".to_string(),
+            prompt: Some("describe".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("gpt-4-vision"));
+    }
+
+    #[test]
+    fn agent_config_default() {
+        let config = AgentConfig::default();
+        assert_eq!(config.max_iterations, 500);
+        assert!(config.model.is_none());
+    }
+
+    #[test]
+    fn stream_event_variants() {
+        let events = [
+            StreamEvent::TextDelta("hi".to_string()),
+            StreamEvent::ReasoningDelta("think".to_string()),
+            StreamEvent::ToolUseStart {
+                id: "x".to_string(),
+                name: "y".to_string(),
+            },
+            StreamEvent::ToolInputDelta("{}".to_string()),
+            StreamEvent::ToolUseEnd,
+            StreamEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+            },
+            StreamEvent::Done,
+            StreamEvent::Error("oops".to_string()),
+        ];
+        assert_eq!(events.len(), 8);
+    }
+}

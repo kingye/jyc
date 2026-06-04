@@ -136,7 +136,13 @@ impl WecomBotWsClient {
                         delay_secs = delay,
                         "Reconnecting to WeCom Bot WebSocket"
                     );
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                        _ = cancel.cancelled() => {
+                            tracing::info!("WeCom Bot cancelled during reconnect delay");
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }
@@ -159,7 +165,11 @@ impl WecomBotWsClient {
         cancel: &CancellationToken,
     ) -> Result<()> {
         self.state = ConnectionState::Connecting;
-        tracing::info!(url = %self.config.ws_url, "Connecting to WeCom Bot WebSocket");
+        tracing::info!(
+            url = %self.config.ws_url,
+            auth_timeout_secs = self.config.auth_timeout_secs,
+            "Connecting to WeCom Bot WebSocket"
+        );
 
         let (ws_stream, _) = connect_async(&self.config.ws_url).await.with_context(|| {
             format!(
@@ -195,6 +205,11 @@ impl WecomBotWsClient {
             .context("Failed to send subscribe command")?;
 
         // Wait for subscribe response before starting heartbeat (matches SDK behavior)
+        tracing::debug!(
+            timeout_secs = self.config.auth_timeout_secs,
+            "Waiting for WeCom Bot subscribe response"
+        );
+        let auth_start = std::time::Instant::now();
         let auth_ok = match tokio::time::timeout(
             Duration::from_secs(self.config.auth_timeout_secs),
             read.next(),
@@ -238,9 +253,16 @@ impl WecomBotWsClient {
                 ));
             }
             Err(_) => {
-                tracing::warn!("WebSocket auth timeout");
+                let elapsed = auth_start.elapsed();
+                tracing::warn!(
+                    elapsed_ms = elapsed.as_millis(),
+                    configured_timeout_secs = self.config.auth_timeout_secs,
+                    "WebSocket auth timeout"
+                );
                 return Err(anyhow::anyhow!(
-                    "WeCom Bot WebSocket authentication timeout"
+                    "WeCom Bot WebSocket authentication timeout after {:?} (configured timeout: {}s)",
+                    elapsed,
+                    self.config.auth_timeout_secs
                 ));
             }
         };
@@ -352,10 +374,11 @@ impl WecomBotWsClient {
             }
         }
 
-        // Cleanup
+        // Cleanup: drop senders so writer task exits its select! loop naturally,
+        // then wait for it to finish so the Close frame actually transmits on the wire.
         drop(heartbeat_tx);
         drop(outbound_tx);
-        writer_handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(5), writer_handle).await;
         self.outbound_sender = None;
 
         self.state = ConnectionState::Disconnected;

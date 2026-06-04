@@ -58,6 +58,28 @@ pub struct MonitorArgs {
     pub reset: bool,
 }
 
+/// Wait for a shutdown signal (Ctrl+C on all platforms, plus SIGTERM on Unix).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to create SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl+C, shutting down...");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, shutting down...");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("Received Ctrl+C, shutting down...");
+    }
+}
+
 pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // 1. Load and validate config
     let config_path = workdir.join(&args.config);
@@ -75,12 +97,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     }
     let config = Arc::new(ArcSwap::from_pointee(config));
 
-    // 2. Setup cancellation (Ctrl+C)
+    // 2. Setup cancellation (Ctrl+C and SIGTERM)
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Received Ctrl+C, shutting down...");
+        shutdown_signal().await;
         cancel_clone.cancel();
     });
 

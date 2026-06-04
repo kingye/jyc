@@ -27,6 +27,7 @@
 
 pub mod client;
 pub mod inbound;
+pub mod media;
 pub mod outbound;
 pub mod types;
 

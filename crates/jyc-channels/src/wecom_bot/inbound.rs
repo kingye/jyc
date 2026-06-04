@@ -165,7 +165,9 @@ pub struct WecomBotInboundAdapter {
     #[allow(dead_code)]
     workspace_root: std::path::PathBuf,
     /// Shared sender Arc for outbound adapter
-    sender_arc: Option<std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>>,
+    sender_arc: Option<
+        std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    >,
 }
 
 impl WecomBotInboundAdapter {
@@ -478,7 +480,9 @@ fn handle_bot_event(
     }
 
     // Call on_thread_close if this is a thread close event (none currently)
-    if let Some(ref callback) = options.on_thread_close && event.event == "chat_disbanded" {
+    if let Some(ref callback) = options.on_thread_close
+        && event.event == "chat_disbanded"
+    {
         // Not documented in WeCom Bot events, but handle defensively
         let thread_name = format!("bot-{}", sanitize_for_filesystem(&event.chatid));
         callback(thread_name)?;

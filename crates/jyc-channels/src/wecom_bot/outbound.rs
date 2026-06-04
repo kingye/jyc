@@ -84,7 +84,12 @@ impl WecomBotOutboundAdapter {
     ///
     /// NOTE: aibot_respond_msg only supports msgtype="stream" (and "template_card").
     /// Text/markdown must be sent as a stream with finish=true.
-    async fn send_text_reply(&self, req_id: &str, content: &str, _use_markdown: bool) -> Result<()> {
+    async fn send_text_reply(
+        &self,
+        req_id: &str,
+        content: &str,
+        _use_markdown: bool,
+    ) -> Result<()> {
         let stream_id = uuid::Uuid::new_v4().to_string();
         let json = serde_json::json!({
             "cmd": "aibot_respond_msg",

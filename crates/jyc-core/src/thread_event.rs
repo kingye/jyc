@@ -149,3 +149,109 @@ impl ThreadEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_time() -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    #[test]
+    fn processing_started_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::ProcessingStarted {
+            thread_name: "t1".to_string(),
+            message_id: "m1".to_string(),
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn processing_progress_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::ProcessingProgress {
+            thread_name: "t1".to_string(),
+            elapsed_secs: 10,
+            activity: "working".to_string(),
+            progress: Some("50%".to_string()),
+            parts_count: 2,
+            output_length: 100,
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn processing_completed_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::ProcessingCompleted {
+            thread_name: "t1".to_string(),
+            message_id: "m1".to_string(),
+            success: true,
+            duration_secs: 5,
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn tool_started_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::ToolStarted {
+            thread_name: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            input: Some("echo hi".to_string()),
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn tool_completed_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::ToolCompleted {
+            thread_name: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            success: true,
+            duration_secs: 1,
+            output: Some("hi".to_string()),
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn thinking_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::Thinking {
+            thread_name: "t1".to_string(),
+            text: "thinking...".to_string(),
+            full_length: 100,
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn session_status_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::SessionStatus {
+            thread_name: "t1".to_string(),
+            status_type: "retry".to_string(),
+            attempt: Some(1),
+            message: Some("retrying".to_string()),
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+}

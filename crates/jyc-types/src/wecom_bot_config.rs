@@ -16,6 +16,10 @@ fn default_max_reconnect() -> u32 {
     10
 }
 
+fn default_auth_timeout() -> u64 {
+    10
+}
+
 fn default_true() -> bool {
     true
 }
@@ -53,6 +57,11 @@ pub struct WecomBotConfig {
     #[serde(default = "default_max_reconnect")]
     pub max_reconnect_attempts: u32,
 
+    /// WebSocket authentication timeout in seconds (default: 10)
+    /// Time to wait for the subscribe response after sending aibot_subscribe.
+    #[serde(default = "default_auth_timeout")]
+    pub auth_timeout_secs: u64,
+
     /// Whether to auto-reconnect on disconnect (default: true)
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
@@ -67,6 +76,7 @@ impl Default for WecomBotConfig {
             heartbeat_interval_secs: default_heartbeat_interval(),
             reconnect_delay_secs: default_reconnect_delay(),
             max_reconnect_attempts: default_max_reconnect(),
+            auth_timeout_secs: default_auth_timeout(),
             auto_reconnect: true,
         }
     }
@@ -86,8 +96,9 @@ mod tests {
         let config = WecomBotConfig::default();
         assert_eq!(config.ws_url, "wss://openws.work.weixin.qq.com");
         assert_eq!(config.heartbeat_interval_secs, 30);
-        assert_eq!(config.reconnect_delay_secs, 5);
+        assert_eq!(config.reconnect_delay_secs, 30);
         assert_eq!(config.max_reconnect_attempts, 10);
+        assert_eq!(config.auth_timeout_secs, 10);
         assert!(config.auto_reconnect);
     }
 

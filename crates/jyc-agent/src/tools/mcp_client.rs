@@ -124,7 +124,11 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
         .await
         .map_err(|e| anyhow::anyhow!("failed to list MCP tools: {}", e))?;
 
-    let tools: Vec<Box<dyn Tool>> = rmcp_tools
+    // Apply enabled_tools whitelist if configured
+    let filtered_rmcp_tools =
+        filter_tools_by_whitelist(rmcp_tools, cfg.enabled_tools.as_ref(), &cfg.name);
+
+    let tools: Vec<Box<dyn Tool>> = filtered_rmcp_tools
         .into_iter()
         .map(|t| {
             let wrapper = McpToolWrapper {
@@ -139,6 +143,37 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
         .collect();
 
     Ok(tools)
+}
+
+/// Filter rmcp tools by an optional whitelist of tool names.
+///
+/// When `whitelist` is `Some`, only tools whose names appear in the list are retained.
+/// Returns the filtered vector and optionally logs how many were removed.
+fn filter_tools_by_whitelist(
+    tools: Vec<rmcp::model::Tool>,
+    whitelist: Option<&Vec<String>>,
+    server_name: &str,
+) -> Vec<rmcp::model::Tool> {
+    match whitelist {
+        Some(list) => {
+            let before = tools.len();
+            let filtered: Vec<_> = tools
+                .into_iter()
+                .filter(|t| list.iter().any(|w| w == t.name.as_ref()))
+                .collect();
+            let after = filtered.len();
+            if after < before {
+                tracing::info!(
+                    mcp_name = %server_name,
+                    before = before,
+                    after = after,
+                    "Filtered MCP tools by enabled_tools whitelist"
+                );
+            }
+            filtered
+        }
+        None => tools,
+    }
 }
 
 /// Wrapper that implements the jyc-agent `Tool` trait for a remote MCP tool.
@@ -161,6 +196,10 @@ struct McpToolWrapper {
 impl Tool for McpToolWrapper {
     fn name(&self) -> &str {
         &self.tool_name
+    }
+
+    fn source(&self) -> Option<&str> {
+        Some(&self.server_name)
     }
 
     fn description(&self) -> &str {
@@ -214,5 +253,60 @@ impl Tool for McpToolWrapper {
                 self.tool_name, e
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_tool(name: &str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(
+            name.to_string(),
+            format!("Description for {}", name),
+            serde_json::Map::new(),
+        )
+    }
+
+    #[test]
+    fn filter_tools_by_whitelist_with_none_returns_all() {
+        let tools = vec![
+            create_test_tool("tool_a"),
+            create_test_tool("tool_b"),
+            create_test_tool("tool_c"),
+        ];
+        let result = filter_tools_by_whitelist(tools, None, "test_server");
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn filter_tools_by_whitelist_filters_correctly() {
+        let tools = vec![
+            create_test_tool("tool_a"),
+            create_test_tool("tool_b"),
+            create_test_tool("tool_c"),
+        ];
+        let whitelist = vec!["tool_a".to_string(), "tool_c".to_string()];
+        let result = filter_tools_by_whitelist(tools, Some(&whitelist), "test_server");
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|t| t.name == "tool_a"));
+        assert!(result.iter().any(|t| t.name == "tool_c"));
+        assert!(!result.iter().any(|t| t.name == "tool_b"));
+    }
+
+    #[test]
+    fn filter_tools_by_whitelist_empty_list_returns_nothing() {
+        let tools = vec![create_test_tool("tool_a"), create_test_tool("tool_b")];
+        let whitelist = vec![];
+        let result = filter_tools_by_whitelist(tools, Some(&whitelist), "test_server");
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn filter_tools_by_whitelist_nonexistent_tools_returns_nothing() {
+        let tools = vec![create_test_tool("tool_a"), create_test_tool("tool_b")];
+        let whitelist = vec!["nonexistent".to_string()];
+        let result = filter_tools_by_whitelist(tools, Some(&whitelist), "test_server");
+        assert_eq!(result.len(), 0);
     }
 }

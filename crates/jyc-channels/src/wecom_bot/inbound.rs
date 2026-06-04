@@ -267,45 +267,116 @@ impl ChannelMatcher for WecomBotInboundAdapter {
 #[async_trait]
 impl jyc_types::InboundAdapter for WecomBotInboundAdapter {
     async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
-        let mut ws_client = WecomBotWsClient::new(self.config.clone());
+        let (raw_tx, mut raw_rx) = tokio::sync::mpsc::unbounded_channel::<ServerMessage>();
         let channel_name = self.channel_name.clone();
+        let config = self.config.clone();
         let shared_sender = self.sender_arc.clone();
+        let ws_cancel = cancel.child_token();
 
-        // Build callback that converts ServerMessage → InboundMessage → on_message
-        let on_ws_message = |msg: ServerMessage| -> Result<()> {
+        // Spawn WebSocket client task that forwards raw messages to the channel
+        let ws_handle = tokio::spawn(async move {
+            let mut ws_client = WecomBotWsClient::new(config);
+
+            let on_ws_message = move |msg: ServerMessage| -> Result<()> {
+                if raw_tx.send(msg).is_err() {
+                    // Receiver dropped; WebSocket will reconnect or exit
+                }
+                Ok(())
+            };
+
+            let on_connect = move |sender: tokio::sync::mpsc::UnboundedSender<String>| {
+                if let Some(ref shared) = shared_sender {
+                    let shared = shared.clone();
+                    tokio::spawn(async move {
+                        let mut guard = shared.lock().await;
+                        *guard = Some(sender);
+                        tracing::info!("WeCom Bot outbound sender updated");
+                    });
+                }
+            };
+
+            ws_client
+                .run(&on_ws_message, Some(&on_connect), &ws_cancel)
+                .await
+        });
+
+        // Process messages from the channel with async attachment downloading
+        let mut process_error = None;
+        while let Some(msg) = raw_rx.recv().await {
+            if cancel.is_cancelled() {
+                break;
+            }
+
             match msg {
                 ServerMessage::Message(bot_msg) => {
-                    let inbound = convert_bot_message_to_inbound(&bot_msg, &channel_name)?;
-                    tracing::info!(
-                        msgid = %bot_msg.msgid,
-                        chatid = %bot_msg.chatid,
-                        msgtype = %bot_msg.msgtype,
-                        "WeCom Bot message received"
-                    );
-                    (options.on_message)(inbound)?;
+                    let mut inbound = match convert_bot_message_to_inbound(&bot_msg, &channel_name)
+                    {
+                        Ok(i) => i,
+                        Err(e) => {
+                            tracing::warn!(
+                                msgid = %bot_msg.msgid,
+                                error = %e,
+                                "Failed to convert BotMessage to InboundMessage"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Download and decrypt attachments
+                    match super::media::process_bot_attachments(&bot_msg).await {
+                        Ok(attachments) => {
+                            if !attachments.is_empty() {
+                                inbound.attachments = attachments;
+                                tracing::info!(
+                                    msgid = %bot_msg.msgid,
+                                    count = inbound.attachments.len(),
+                                    "WeCom Bot attachments downloaded"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                msgid = %bot_msg.msgid,
+                                error = %e,
+                                "Failed to download WeCom Bot attachments"
+                            );
+                        }
+                    }
+
+                    if let Err(e) = (options.on_message)(inbound) {
+                        process_error = Some(e);
+                        break;
+                    }
                 }
                 ServerMessage::Event(event) => {
-                    handle_bot_event(&event, &channel_name, &options)?;
+                    if let Err(e) = handle_bot_event(&event, &channel_name, &options) {
+                        process_error = Some(e);
+                        break;
+                    }
                 }
             }
-            Ok(())
-        };
+        }
 
-        // Build on_connect callback to share sender with outbound adapter
-        let on_connect = move |sender: tokio::sync::mpsc::UnboundedSender<String>| {
-            if let Some(ref shared) = shared_sender {
-                let shared = shared.clone();
-                tokio::spawn(async move {
-                    let mut guard = shared.lock().await;
-                    *guard = Some(sender);
-                    tracing::info!("WeCom Bot outbound sender updated");
-                });
+        // Wait for WebSocket task to finish regardless of processing result
+        let ws_result = ws_handle.await;
+
+        if let Some(e) = process_error {
+            return Err(e);
+        }
+        match ws_result {
+            Ok(Ok(())) => {
+                tracing::info!("WeCom Bot WebSocket stopped cleanly");
+                Ok(())
             }
-        };
-
-        ws_client
-            .run(&on_ws_message, Some(&on_connect), &cancel)
-            .await
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "WeCom Bot WebSocket error");
+                Err(e)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "WeCom Bot WebSocket task panicked");
+                Err(anyhow::anyhow!("WebSocket task panicked: {e}"))
+            }
+        }
     }
 }
 

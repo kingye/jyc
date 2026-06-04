@@ -29,6 +29,13 @@ All notable changes to JYC will be documented in this file.
   (channel-level + pattern-level merged). `disabled_builtin_tools` is retained
   as a backward-compatible alias merged into `disabled_tools`. (#243)
 
+- **WeCom Bot image and file download support.** The `wecom_bot` inbound adapter
+  now downloads and decrypts image attachments (via `image`, `mixed`, and `file`
+  msgtypes) using the per-message `aeskey` delivered in WebSocket callbacks.
+  Downloads use AES-256-CBC decryption with PKCS#7 padding, MIME type detection
+  from magic bytes, and the existing attachment storage pipeline. No config
+  changes required. (#245)
+
 - **Per-MCP-tool exclusion by server.** `disabled_tools` now supports
   `server_name/tool_name` format (e.g. `jin_public_mcp/product_list`) to
   precisely target tools from specific MCP servers before registration.

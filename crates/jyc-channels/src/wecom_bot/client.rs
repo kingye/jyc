@@ -195,7 +195,12 @@ impl WecomBotWsClient {
             .context("Failed to send subscribe command")?;
 
         // Wait for subscribe response before starting heartbeat (matches SDK behavior)
-        let auth_ok = match tokio::time::timeout(Duration::from_secs(60), read.next()).await {
+        let auth_ok = match tokio::time::timeout(
+            Duration::from_secs(self.config.auth_timeout_secs),
+            read.next(),
+        )
+        .await
+        {
             Ok(Some(Ok(Message::Text(text)))) => {
                 tracing::debug!(text = %text, "Received WebSocket text frame");
                 self.handle_auth_response(&text).await?

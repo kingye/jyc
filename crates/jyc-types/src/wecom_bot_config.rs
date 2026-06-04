@@ -9,7 +9,7 @@ fn default_heartbeat_interval() -> u64 {
 }
 
 fn default_reconnect_delay() -> u64 {
-    5
+    30
 }
 
 fn default_max_reconnect() -> u32 {
@@ -86,7 +86,7 @@ mod tests {
         let config = WecomBotConfig::default();
         assert_eq!(config.ws_url, "wss://openws.work.weixin.qq.com");
         assert_eq!(config.heartbeat_interval_secs, 30);
-        assert_eq!(config.reconnect_delay_secs, 5);
+        assert_eq!(config.reconnect_delay_secs, 30);
         assert_eq!(config.max_reconnect_attempts, 10);
         assert!(config.auto_reconnect);
     }

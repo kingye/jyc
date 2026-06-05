@@ -1109,6 +1109,16 @@ async fn process_message(
         return Ok(());
     }
 
+    // ── 4.75. SEND PROCESSING INDICATOR ───────────────────────────────
+    // For channels that support streaming (e.g., wecom_bot), send a
+    // "thinking..." indicator before AI processing begins so the user
+    // knows the message is being handled.
+    let indicator_handle = outbound
+        .send_processing_indicator(message)
+        .await
+        .ok()
+        .flatten();
+
     // ── 5. DISPATCH TO AGENT ──────────────────────────────────────────
     // Build message with cleaned body for agent processing
     let message = {
@@ -1275,6 +1285,11 @@ async fn process_message(
         thread_manager.metrics.reply_by_fallback(thread_name);
     } else {
         tracing::warn!("No reply text from AI");
+        // Clear the processing indicator so it doesn't remain stuck
+        // in an intermediate state (e.g., "正在思考中..." forever).
+        if let Err(e) = outbound.clear_processing_indicator(indicator_handle).await {
+            tracing::warn!(error = %format!("{:#}", e), "Failed to clear processing indicator");
+        }
     }
 
     Ok(())

@@ -219,6 +219,29 @@ pub trait OutboundAdapter: Send + Sync {
 
     /// Send a fresh (non-reply) message to an arbitrary recipient.
     async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
+
+    /// Send a processing indicator to inform the user that AI is working.
+    ///
+    /// Channels that support streaming (e.g., WeCom Bot) can show a
+    /// "thinking..." message before the final reply arrives.
+    ///
+    /// Returns an optional handle that the channel can use to correlate
+    /// the final reply with the indicator.
+    async fn send_processing_indicator(
+        &self,
+        _original: &InboundMessage,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Clear a previously sent processing indicator.
+    ///
+    /// Called when AI processing fails or produces no reply, to ensure
+    /// the indicator does not remain stuck in an intermediate state.
+    /// The `handle` is the value returned by `send_processing_indicator`.
+    async fn clear_processing_indicator(&self, _handle: Option<String>) -> Result<()> {
+        Ok(())
+    }
 }
 
 // --- Pattern Types ---

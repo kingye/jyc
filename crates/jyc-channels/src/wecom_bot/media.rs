@@ -78,22 +78,14 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         }
         "mixed" => {
             if let Some(ref mixed) = bot_msg.mixed {
-                for (i, item) in mixed.items.iter().enumerate() {
-                    if item.item_type != "image" {
+                for (i, item) in mixed.msg_item.iter().enumerate() {
+                    if item.msgtype != "image" {
                         continue;
                     }
-                    let Some(url) = &item.url else {
+                    let Some(image) = &item.image else {
                         continue;
                     };
-                    let Some(aeskey) = &item.aeskey else {
-                        tracing::warn!(
-                            msgid = %bot_msg.msgid,
-                            index = i,
-                            "Mixed image item missing aeskey"
-                        );
-                        continue;
-                    };
-                    match download_and_decrypt(url, aeskey).await {
+                    match download_and_decrypt(&image.url, &image.aeskey).await {
                         Ok((bytes, mime)) => {
                             attachments.push(build_attachment(
                                 &format!("image_{}", i),
@@ -105,7 +97,7 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
                             tracing::warn!(
                                 msgid = %bot_msg.msgid,
                                 index = i,
-                                url = %url,
+                                url = %image.url,
                                 error = %e,
                                 "Failed to download WeCom Bot mixed image"
                             );

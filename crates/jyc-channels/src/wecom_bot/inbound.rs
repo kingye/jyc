@@ -475,16 +475,16 @@ fn extract_content(bot_msg: &super::types::BotMessage) -> Result<(String, Vec<Me
         "mixed" => {
             let mut text_parts = Vec::new();
             if let Some(ref mixed) = bot_msg.mixed {
-                for item in &mixed.items {
-                    match item.item_type.as_str() {
+                for item in &mixed.msg_item {
+                    match item.msgtype.as_str() {
                         "text" => {
-                            if let Some(ref content) = item.content {
-                                text_parts.push(content.clone());
+                            if let Some(ref text) = item.text {
+                                text_parts.push(text.content.clone());
                             }
                         }
                         "image" => {
-                            if let Some(ref url) = item.url {
-                                text_parts.push(format!("[Image: {}]", url));
+                            if let Some(ref image) = item.image {
+                                text_parts.push(format!("[Image: {}]", image.url));
                             }
                         }
                         other => text_parts.push(format!("[Mixed item: {}]", other)),

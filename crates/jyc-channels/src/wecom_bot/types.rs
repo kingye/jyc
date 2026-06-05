@@ -149,26 +149,25 @@ pub struct ImageContent {
 /// Mixed message content (text + image combination).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MixedContent {
-    /// Mixed content items
-    #[serde(default)]
-    pub items: Vec<MixedItem>,
+    /// Mixed content items (API field name is `msg_item`)
+    #[serde(rename = "msg_item", default)]
+    pub msg_item: Vec<MixedItem>,
 }
 
 /// Single item in a mixed message.
+///
+/// Each item mirrors the top-level `BotMessage` structure with a `msgtype`
+/// field and nested content objects (`text`, `image`, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MixedItem {
     /// Item type: "text" or "image"
-    #[serde(rename = "type")]
-    pub item_type: String,
-    /// Text content (if type is "text")
+    pub msgtype: String,
+    /// Text content (if msgtype is "text")
     #[serde(default)]
-    pub content: Option<String>,
-    /// Image URL (if type is "image")
+    pub text: Option<TextContent>,
+    /// Image content (if msgtype is "image")
     #[serde(default)]
-    pub url: Option<String>,
-    /// AES key for decrypting the image (if type is "image")
-    #[serde(default)]
-    pub aeskey: Option<String>,
+    pub image: Option<ImageContent>,
 }
 
 /// Voice message content.
@@ -364,9 +363,9 @@ mod tests {
                 "msgtime": 1704067200000,
                 "msgtype": "mixed",
                 "mixed": {
-                    "items": [
-                        {"type": "text", "content": "Check this out:"},
-                        {"type": "image", "url": "https://example.com/img.jpg", "aeskey": "key123"}
+                    "msg_item": [
+                        {"msgtype": "text", "text": {"content": "Check this out:"}},
+                        {"msgtype": "image", "image": {"url": "https://example.com/img.jpg", "aeskey": "key123"}}
                     ]
                 }
             }
@@ -375,12 +374,15 @@ mod tests {
         let body = raw.get("body").cloned().unwrap();
         let message: BotMessage = serde_json::from_value(body).unwrap();
         let mixed = message.mixed.unwrap();
-        assert_eq!(mixed.items.len(), 2);
-        assert_eq!(mixed.items[0].item_type, "text");
-        assert_eq!(mixed.items[0].content.as_ref().unwrap(), "Check this out:");
-        assert_eq!(mixed.items[1].item_type, "image");
+        assert_eq!(mixed.msg_item.len(), 2);
+        assert_eq!(mixed.msg_item[0].msgtype, "text");
         assert_eq!(
-            mixed.items[1].url.as_ref().unwrap(),
+            mixed.msg_item[0].text.as_ref().unwrap().content,
+            "Check this out:"
+        );
+        assert_eq!(mixed.msg_item[1].msgtype, "image");
+        assert_eq!(
+            mixed.msg_item[1].image.as_ref().unwrap().url,
             "https://example.com/img.jpg"
         );
     }

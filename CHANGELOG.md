@@ -34,7 +34,14 @@ All notable changes to JYC will be documented in this file.
   msgtypes) using the per-message `aeskey` delivered in WebSocket callbacks.
   Downloads use AES-256-CBC decryption with PKCS#7 padding, MIME type detection
   from magic bytes, and the existing attachment storage pipeline. No config
-  changes required. (#245)
+  changes required. (#245, #246)
+
+- **Fixed WeCom Bot `mixed` message parsing.** The `MixedContent` and
+  `MixedItem` structs now match the actual API format: `msg_item` array
+  (was `items`) with nested `text`/`image` content objects (was flat
+  `type`/`content`/`url`/`aeskey` fields). This fixes the bug where mixed
+  (text+image) messages were parsed as empty, causing "no message body"
+  and skipping AI processing. (#246)
 
 - **Per-MCP-tool exclusion by server.** `disabled_tools` now supports
   `server_name/tool_name` format (e.g. `jin_public_mcp/product_list`) to

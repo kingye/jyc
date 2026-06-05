@@ -119,6 +119,21 @@ impl WecomBotOutboundAdapter {
 
         self.send_internal(&json).await
     }
+
+    /// Update an existing processing indicator with new content.
+    ///
+    /// Unlike `send_reply`, this does NOT clear the `active_stream` state,
+    /// allowing subsequent updates to reuse the same `stream_id`.
+    pub async fn update_processing_indicator(
+        &self,
+        req_id: &str,
+        stream_id: &str,
+        content: &str,
+    ) -> Result<()> {
+        self.send_text_reply(req_id, content, stream_id, false)
+            .await
+            .context("Failed to update WeCom Bot processing indicator")
+    }
 }
 
 #[async_trait]
@@ -382,6 +397,41 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             req_id = %stream.req_id,
             stream_id = %stream.stream_id,
             "WeCom Bot processing indicator cleared"
+        );
+
+        Ok(())
+    }
+
+    /// Update an existing processing indicator with new content.
+    ///
+    /// Sends `finish=false` with the same `stream_id` so the message
+    /// is updated in-place rather than creating a new one.
+    async fn update_processing_indicator(
+        &self,
+        original: &InboundMessage,
+        handle: &str,
+        content: &str,
+    ) -> Result<()> {
+        let req_id = original
+            .metadata
+            .get("req_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if req_id.is_empty() {
+            tracing::warn!("Cannot update processing indicator: original message missing req_id");
+            return Ok(());
+        }
+
+        self.send_text_reply(req_id, content, handle, false)
+            .await
+            .context("Failed to update WeCom Bot processing indicator")?;
+
+        tracing::debug!(
+            req_id = %req_id,
+            stream_id = %handle,
+            content = %content,
+            "WeCom Bot processing indicator updated"
         );
 
         Ok(())

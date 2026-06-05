@@ -85,6 +85,7 @@ async fn test_close_command_deletes_thread_directory() {
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),
+        "email".to_string(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));
@@ -128,6 +129,7 @@ async fn test_close_command_nonexistent_thread_succeeds() {
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),
+        "email".to_string(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));
@@ -168,6 +170,7 @@ async fn test_close_command_invalid_thread_path() {
         PathBuf::from("/tmp/templates"),
         test_config_swap(),
         "test".to_string(),
+        "email".to_string(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));

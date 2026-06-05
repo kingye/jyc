@@ -471,6 +471,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             template_dir,
             config.clone(),
             channel_name.clone(),
+            channel_type.to_string(),
             workspace_dir.clone(),
             metrics_handle.clone(),
         ));

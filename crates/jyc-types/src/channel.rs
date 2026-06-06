@@ -234,6 +234,21 @@ pub trait OutboundAdapter: Send + Sync {
         Ok(None)
     }
 
+    /// Update a previously sent processing indicator with new content.
+    ///
+    /// Channels that support streaming can update the indicator text
+    /// in-place (e.g., showing a rotating spinner or changing activity).
+    ///
+    /// The `handle` is the value returned by `send_processing_indicator`.
+    async fn update_processing_indicator(
+        &self,
+        _original: &InboundMessage,
+        _handle: &str,
+        _content: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Clear a previously sent processing indicator.
     ///
     /// Called when AI processing fails or produces no reply, to ensure

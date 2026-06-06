@@ -69,6 +69,8 @@ pub struct ThreadManager {
 
     // Channel name this ThreadManager belongs to
     channel_name: String,
+    // Channel type (e.g., "email", "wecom_bot")
+    channel_type: String,
 
     // Workspace directory for this channel (<workdir>/<channel>/workspace/)
     workspace_dir: PathBuf,
@@ -99,6 +101,7 @@ impl ThreadManager {
         template_dir: PathBuf,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
+        channel_type: String,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -113,6 +116,7 @@ impl ThreadManager {
             template_dir,
             config,
             channel_name,
+            channel_type,
             workspace_dir,
             metrics,
         )
@@ -131,6 +135,7 @@ impl ThreadManager {
         template_dir: PathBuf,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
+        channel_type: String,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -146,6 +151,7 @@ impl ThreadManager {
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir,
             channel_name,
+            channel_type,
             workspace_dir,
             config,
             metrics,
@@ -269,6 +275,7 @@ impl ThreadManager {
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir: self.template_dir.clone(),
             channel_name: self.channel_name.clone(),
+            channel_type: self.channel_type.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
@@ -596,6 +603,11 @@ impl ThreadManager {
     /// Return the channel name this ThreadManager belongs to.
     pub fn channel_name(&self) -> &str {
         &self.channel_name
+    }
+
+    /// Return the channel type (e.g., "email", "wecom_bot").
+    pub fn channel_type(&self) -> &str {
+        &self.channel_type
     }
 
     /// Return the max concurrent threads (semaphore capacity).
@@ -1119,6 +1131,32 @@ async fn process_message(
         .ok()
         .flatten();
 
+    // ── 4.8. START PROGRESS UPDATER ───────────────────────────────────
+    // For wecom_bot, spawn a background task that updates the processing
+    // indicator with a rotating spinner every 3 seconds.
+    let progress_cancel = tokio_util::sync::CancellationToken::new();
+    let progress_handle = if thread_manager.channel_type() == "wecom_bot" {
+        if let Some(ref stream_id) = indicator_handle {
+            let progress_outbound = outbound.clone();
+            let progress_message = message.clone();
+            let progress_stream_id = stream_id.clone();
+            let progress_cancel_child = progress_cancel.clone();
+            Some(tokio::spawn(async move {
+                update_progress_indicator(
+                    progress_outbound,
+                    progress_message,
+                    progress_stream_id,
+                    progress_cancel_child,
+                )
+                .await;
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // ── 5. DISPATCH TO AGENT ──────────────────────────────────────────
     // Build message with cleaned body for agent processing
     let message = {
@@ -1185,6 +1223,12 @@ async fn process_message(
     // Stop the delivery watcher
     delivery_cancel.cancel();
     let _ = delivery_handle.await;
+
+    // Stop the progress updater
+    progress_cancel.cancel();
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
 
     // ── 5.5. GUARD: skip reply if thread directory no longer exists ──
     // If the thread was closed while AI was processing, the directory gets
@@ -1293,6 +1337,51 @@ async fn process_message(
     }
 
     Ok(())
+}
+
+/// Braille spinner frames for dynamic progress indicator.
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Background task that updates the WeCom Bot processing indicator
+/// with a rotating spinner and elapsed time every 3 seconds.
+///
+/// The indicator content cycles through spinner frames while maintaining
+/// a consistent activity message, giving the user a sense of progress.
+async fn update_progress_indicator(
+    outbound: Arc<dyn OutboundAdapter>,
+    message: InboundMessage,
+    stream_id: String,
+    cancel: CancellationToken,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+    let mut frame_idx = 0usize;
+    let mut elapsed_secs = 0u64;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let frame = SPINNER[frame_idx % SPINNER.len()];
+                let content = format!(
+                    "{} 正在处理中... (已用 {}s)",
+                    frame, elapsed_secs
+                );
+
+                if let Err(e) = outbound
+                    .update_processing_indicator(&message, &stream_id, &content)
+                    .await
+                {
+                    tracing::debug!(
+                        error = %format!("{:#}", e),
+                        "Failed to update progress indicator"
+                    );
+                }
+
+                frame_idx += 1;
+                elapsed_secs += 3;
+            }
+            _ = cancel.cancelled() => break,
+        }
+    }
 }
 
 /// Read attachment filenames from the reply-sent.flag signal file.

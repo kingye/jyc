@@ -1,11 +1,47 @@
-# Exclude from Docker build context
+# Rust build artifacts
 target/
-.jyc/
-.git/
-config.toml
-docker/.env
+crates/*/target/
 
-# Keep docker/README.md
+# Cargo lock backup
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed for build)
+docs/
 *.md
-!docker/README.md
-!docker/system.md.example
+
+# Test files
+*.test
+*.tmp
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Docker files (not needed inside image)
+docker/
+Dockerfile*
+.dockerignore
+
+# CI
+.github/
+
+# Scripts
+scripts/
+*.sh

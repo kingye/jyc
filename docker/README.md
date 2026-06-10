@@ -4,22 +4,55 @@ Run JYC as a containerized service.
 
 ## Architecture
 
-- **Multi-stage build**: `base` (shared tools) → `builder` (Rust compile) → `production`
+- **Multi-stage build**: `builder` (compile) → `slim` (minimal runtime) → `full` (dev tools) → `production`
 - **Single binary**: `jyc` (the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`).
 - **Host networking**: Container shares host network (`network_mode: host`), so services on `localhost` are accessible from inside the container.
 
-## Included Tools
+## Image Variants
+
+| Target | Size | Use Case |
+|--------|------|----------|
+| `slim` | ~150-250 MB | Production deployments, external compose files |
+| `full` / `production` | ~2 GB+ | Local development with AI agent tooling |
+
+### Slim Image
+
+Minimal runtime with only essential tools:
 
 | Tool | Purpose |
 |------|---------|
-| OpenCode | AI agent runtime |
-| git, gh CLI | Version control, GitHub PRs |
+| OpenCode | AI agent runtime (bind-mounted) |
 | ripgrep, jq | Code search, JSON processing |
 | curl | HTTP requests |
-| build-essential | C compiler for native deps |
 | python3 | Python scripting |
-| nodejs (LTS) | JavaScript/TypeScript runtime |
+
+### Full / Production Image
+
+Extends `slim` with development tools for the AI agent to rebuild and work with code:
+
+| Tool | Purpose |
+|------|---------|
+| git, gh CLI | Version control, GitHub PRs |
+| build-essential | C compiler for native deps |
+| Rust toolchain | cargo build/test for AI agent |
 | pandoc | Document conversion |
+| protobuf-compiler | Protocol buffer compilation |
+
+## Build
+
+**Slim image (for production / external use):**
+
+```bash
+docker build --target slim -t jyc:slim -f docker/Dockerfile .
+```
+
+**Full image (for local development):**
+
+```bash
+docker build --target production -t jyc:latest -f docker/Dockerfile .
+# or
+cd docker && docker compose up --build -d
+```
 
 ## Prerequisites
 
@@ -57,7 +90,8 @@ cp docker/.env.example docker/.env
 
 ### 2. Build and start
 
-**With Docker/Podman Compose:**
+**With Docker/Podman Compose (uses `production` target):**
+
 ```bash
 cd docker
 docker compose up --build -d
@@ -65,21 +99,20 @@ docker compose logs -f
 ```
 
 **With Podman (without Compose):**
-```bash
-# Build
-podman build -t jyc:latest -f docker/Dockerfile ..
 
-# Run
+```bash
+# Build slim image
+podman build --target slim -t jyc:slim -f docker/Dockerfile ..
+
+# Run slim image
 podman run -d --name jyc \
   --network=host \
   -v /path/to/jyc-data:/opt/jyc \
   -v /path/to/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   -v /path/to/.claude/skills:/root/.claude/skills:ro \
   -v /path/to/.agents/skills:/root/.agents/skills:ro \
-  -v /path/to/jyc-data/.netrc:/root/.netrc \
-  -v /path/to/jyc-data/gh_hosts.yml:/root/.config/gh/hosts.yml \
   --restart unless-stopped \
-  jyc:latest
+  jyc:slim
 ```
 
 ### 3. Check logs
@@ -105,8 +138,8 @@ docker compose restart jyc
 | OpenCode data | `/root/.local/share/opencode` | Sessions DB, logs, snapshots |
 | Claude skills | `/root/.claude/skills` | Skills (read-only) |
 | Agent skills | `/root/.agents/skills` | Agent skills (read-only) |
-| .netrc | `/root/.netrc` | Git credentials |
-| gh_hosts.yml | `/root/.config/gh/hosts.yml` | GitHub CLI auth |
+| .netrc | `/root/.netrc` | Git credentials (full image only) |
+| gh_hosts.yml | `/root/.config/gh/hosts.yml` | GitHub CLI auth (full image only) |
 
 ### Project Source Mounts
 
@@ -141,15 +174,9 @@ docker exec -it jyc ls /root/.agents/skills/
 
 ## OAuth2 Authentication
 
-Some MCP servers (e.g., Jira, Figma) require interactive browser-based OAuth2 login flows that don't work well inside containers by default. JYC includes [oauth2-forwarder](https://github.com/sam-mfb/oauth2-forwarder) to solve this.
+Some MCP servers (e.g., Jira, Figma) require interactive browser-based OAuth2 login flows. The `slim` image does not include `oauth2-forwarder`. If you need OAuth2 support inside containers, use the `full` image or install `oauth2-forwarder` on the host.
 
-### How It Works
-
-- `o2f-browser` (in container): Intercepts browser-open requests and proxies them to the host
-- `o2f-client` (in container): Runs inside the container, proxies browser requests
-- `o2f-server` (on host): Receives browser requests from the container and opens them in the host's browser
-
-### Setup
+### Host-Side OAuth2 Forwarder
 
 **1. Install oauth2-forwarder on your host:**
 
@@ -178,7 +205,7 @@ The container shares host networking (`network_mode: host`), so it can reach `o2
 
 ### Disabling OAuth2 Forwarder
 
-The forwarder is enabled by default. To disable it and use the system default browser:
+To disable it and use the system default browser:
 
 ```bash
 OAUTH2_FORWARDER_BROWSER=

@@ -49,6 +49,13 @@ All notable changes to JYC will be documented in this file.
   Built-in and bridge tools continue to use plain names. This enables
   fine-grained control when multiple MCP servers expose the same tool name. (#244)
 
+- **Slim Docker image variant.** New `slim` build target produces a minimal
+  runtime image (~150-250 MB) with only essential tools (curl, jq, ripgrep,
+  python3, libssl3). The `full` target extends `slim` with dev tools (git,
+  gh, Rust, build-essential, pandoc). Removed unused `libprotobuf-dev` and
+  dropped Node.js / oauth2-forwarder from the image. The `production` target
+  remains as a backward-compatible alias of `full`. (#247)
+
 - **MCP server tool whitelist.** `McpServerConfig` now supports `enabled_tools`
   field. When set, only tools whose names appear in the list are loaded from
   that MCP server; all others are silently ignored. This is a more ergonomic

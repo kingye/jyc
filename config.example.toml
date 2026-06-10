@@ -41,6 +41,13 @@ folder = "INBOX"
 # model = "anthropic/claude-opus-4-6"
 # small_model = "deepseek/deepseek-v4-flash"
 
+# Channel-level skills whitelist: when set, only these skills are loaded
+# for all threads in this channel. Pattern-level `skills` takes priority.
+# skills = ["internal-comms", "coding-principles"]
+
+# Channel-level skills to disable: merged with pattern-level `disabled_skills`.
+# disabled_skills = ["ui-ux-frontend"]
+
 [[channels.jiny283.patterns]]
 name = "xxx"
 enabled = true
@@ -61,6 +68,13 @@ enabled = true
 # attachments stay on disk and the agent must use the `read_image` built-in
 # tool to load them on demand.
 # inject_inbound_images = true
+
+# Per-pattern skills whitelist: overrides channel-level `skills`.
+# When both are unset, all discovered skills are loaded.
+# skills = ["invoice-processing"]
+
+# Per-pattern skills to disable: merged with channel-level `disabled_skills`.
+# disabled_skills = ["coding-principles"]
 
 [channels.jiny283.patterns.rules.sender]
 exact = ["kingye@petalmail.com"]

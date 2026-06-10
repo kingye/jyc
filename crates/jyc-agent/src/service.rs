@@ -125,6 +125,10 @@ pub struct JycAgentService {
     channel_disabled_tools: Option<Vec<String>>,
     /// Channel-level MCP servers to disable (merged with pattern-level).
     channel_disabled_mcp_servers: Option<Vec<String>>,
+    /// Channel-level skills whitelist.
+    channel_skills: Option<Vec<String>>,
+    /// Channel-level skills to disable (merged with pattern-level).
+    channel_disabled_skills: Option<Vec<String>>,
 }
 
 impl JycAgentService {
@@ -143,6 +147,8 @@ impl JycAgentService {
         outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
         channel_disabled_tools: Option<Vec<String>>,
         channel_disabled_mcp_servers: Option<Vec<String>>,
+        channel_skills: Option<Vec<String>>,
+        channel_disabled_skills: Option<Vec<String>>,
     ) -> Self {
         Self {
             config,
@@ -156,6 +162,8 @@ impl JycAgentService {
             outbound,
             channel_disabled_tools,
             channel_disabled_mcp_servers,
+            channel_skills,
+            channel_disabled_skills,
         }
     }
 
@@ -163,7 +171,16 @@ impl JycAgentService {
     ///
     /// Scans paths from lowest to highest priority (later paths override earlier ones
     /// when skills share the same name).
-    pub fn discover_skills(&self, thread_path: &Path) -> Vec<SkillMeta> {
+    ///
+    /// After discovery, applies optional include/exclude filters:
+    /// - `include`: if set, only skills whose names appear in this list are retained
+    /// - `exclude`: if set, skills whose names appear in this list are removed
+    pub fn discover_skills(
+        &self,
+        thread_path: &Path,
+        include: Option<&[String]>,
+        exclude: Option<&[String]>,
+    ) -> Vec<SkillMeta> {
         let mut skills: HashMap<String, SkillMeta> = HashMap::new();
 
         // Build scan paths from low to high priority
@@ -231,6 +248,20 @@ impl JycAgentService {
             }
         }
 
+        // Apply include filter: if set, only keep listed skills
+        if let Some(include_list) = include {
+            let include_set: std::collections::HashSet<&str> =
+                include_list.iter().map(|s| s.as_str()).collect();
+            skills.retain(|name, _| include_set.contains(name.as_str()));
+        }
+
+        // Apply exclude filter: remove listed skills
+        if let Some(exclude_list) = exclude {
+            let exclude_set: std::collections::HashSet<&str> =
+                exclude_list.iter().map(|s| s.as_str()).collect();
+            skills.retain(|name, _| !exclude_set.contains(name.as_str()));
+        }
+
         let mut result: Vec<SkillMeta> = skills.into_values().collect();
         // Sort by name for deterministic output
         result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -245,7 +276,7 @@ impl JycAgentService {
     }
 
     /// Build the system prompt for a thread.
-    fn build_system_prompt(&self, thread_path: &Path) -> String {
+    fn build_system_prompt(&self, thread_path: &Path, matched_pattern: Option<&str>) -> String {
         let mut prompt = String::new();
 
         // Security: directory boundaries
@@ -264,7 +295,7 @@ impl JycAgentService {
             prompt.push_str("\n\n");
         }
 
-        // Also check repo/AGENTS.md (common for GitHub threads)
+        // Load repo/AGENTS.md if present (for GitHub channel)
         let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
         if repo_agents_md.exists()
             && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
@@ -274,8 +305,33 @@ impl JycAgentService {
             prompt.push_str("\n\n");
         }
 
+        // Resolve skill filters: pattern > channel > none
+        let pattern =
+            matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
+
+        let include_list: Option<&[String]> = pattern
+            .and_then(|p| p.skills.as_deref())
+            .or(self.channel_skills.as_deref());
+
+        let mut exclude_list: Vec<String> = Vec::new();
+        if let Some(ref channel_excluded) = self.channel_disabled_skills {
+            exclude_list.extend(channel_excluded.iter().cloned());
+        }
+        if let Some(pattern_excluded) = pattern.and_then(|p| p.disabled_skills.as_ref()) {
+            for name in pattern_excluded {
+                if !exclude_list.contains(name) {
+                    exclude_list.push(name.clone());
+                }
+            }
+        }
+        let exclude_slice: Option<&[String]> = if exclude_list.is_empty() {
+            None
+        } else {
+            Some(&exclude_list)
+        };
+
         // Discover and inject skill metadata
-        let skills = self.discover_skills(thread_path);
+        let skills = self.discover_skills(thread_path, include_list, exclude_slice);
         if !skills.is_empty() {
             prompt.push_str(&format_skills_section(&skills));
         }
@@ -373,20 +429,39 @@ impl JycAgentService {
         message: &InboundMessage,
         thread_path: &Path,
     ) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        // 1. Attachment save directory (if outside thread_path)
         let pattern_cfg = message
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.attachments.as_ref());
         let cfg = pattern_cfg.or(self.global_inbound_attachments.as_ref());
-
         let resolved = jyc_core::attachment_storage::resolve_attachment_save_dir(thread_path, cfg);
-
-        if resolved.starts_with(thread_path) {
-            Vec::new()
-        } else {
-            vec![resolved]
+        if !resolved.starts_with(thread_path) {
+            roots.push(resolved);
         }
+
+        // 2. External skill directories (outside thread_path)
+        // These paths match the scan logic in discover_skills().
+        if let Ok(home) = std::env::var("HOME") {
+            let home_skills = [
+                PathBuf::from(&home).join(".config/opencode/skills"),
+                PathBuf::from(&home).join(".claude/skills"),
+            ];
+            for dir in &home_skills {
+                if dir.exists() && dir.is_dir() {
+                    roots.push(dir.clone());
+                }
+            }
+        }
+        let workdir_skills = self.workdir.join("skills");
+        if workdir_skills.exists() && workdir_skills.is_dir() {
+            roots.push(workdir_skills);
+        }
+
+        roots
     }
 
     /// Build the user-turn content blocks from an inbound message.
@@ -832,7 +907,8 @@ impl AgentService for JycAgentService {
 
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
-        let system_prompt = self.build_system_prompt(thread_path);
+        let system_prompt =
+            self.build_system_prompt(thread_path, message.matched_pattern.as_deref());
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry
@@ -978,6 +1054,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -1013,7 +1091,46 @@ mod tests {
             None,
             channel_disabled_tools,
             channel_disabled_mcp_servers,
+            None,
+            None,
         )
+    }
+
+    /// Helper: build a service with skill filter settings.
+    fn service_with_skills(
+        patterns: Vec<ChannelPattern>,
+        channel_skills: Option<Vec<String>>,
+        channel_disabled_skills: Option<Vec<String>>,
+    ) -> JycAgentService {
+        JycAgentService::new(
+            AgentConfig::default(),
+            PathBuf::from("/tmp/test-workdir"),
+            vec![],
+            None,
+            patterns,
+            None,
+            None,
+            None,
+            None,
+            None,
+            channel_skills,
+            channel_disabled_skills,
+        )
+    }
+
+    /// Helper: temporarily override HOME to prevent real skills from leaking into tests.
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".config/opencode/skills")).ok();
+        std::fs::create_dir_all(tmp.path().join(".claude/skills")).ok();
+        let old_home = std::env::var("HOME").ok();
+        // SAFETY: only used in tests; restored immediately after f()
+        unsafe { std::env::set_var("HOME", tmp.path().as_os_str()) };
+        f();
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]
@@ -1364,5 +1481,234 @@ mod tests {
         // Built-in tools should still be present
         assert!(registry.has_tool("bash"), "bash should still be available");
         assert!(registry.has_tool("read"), "read should still be available");
+    }
+
+    // ── Skill filtering tests ──────────────────────────────────────────
+
+    #[test]
+    fn discover_skills_include_filter_retains_only_matched() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            // Create three skills
+            for name in &["alpha", "beta", "gamma"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let svc = service_with_skills(vec![], None, None);
+            let skills = svc.discover_skills(
+                tmp.path(),
+                Some(&["alpha".to_string(), "gamma".to_string()]),
+                None,
+            );
+
+            assert_eq!(skills.len(), 2);
+            assert!(skills.iter().any(|s| s.name == "alpha"));
+            assert!(skills.iter().any(|s| s.name == "gamma"));
+            assert!(!skills.iter().any(|s| s.name == "beta"));
+        });
+    }
+
+    #[test]
+    fn discover_skills_exclude_filter_removes_matched() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta", "gamma"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let svc = service_with_skills(vec![], None, None);
+            let skills = svc.discover_skills(tmp.path(), None, Some(&["beta".to_string()]));
+
+            assert_eq!(skills.len(), 2);
+            assert!(skills.iter().any(|s| s.name == "alpha"));
+            assert!(skills.iter().any(|s| s.name == "gamma"));
+            assert!(!skills.iter().any(|s| s.name == "beta"));
+        });
+    }
+
+    #[test]
+    fn discover_skills_include_and_exclude_combined() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta", "gamma", "delta"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let svc = service_with_skills(vec![], None, None);
+            // Include alpha, beta, gamma; then exclude beta
+            let skills = svc.discover_skills(
+                tmp.path(),
+                Some(&["alpha".to_string(), "beta".to_string(), "gamma".to_string()]),
+                Some(&["beta".to_string()]),
+            );
+
+            assert_eq!(skills.len(), 2);
+            assert!(skills.iter().any(|s| s.name == "alpha"));
+            assert!(skills.iter().any(|s| s.name == "gamma"));
+            assert!(!skills.iter().any(|s| s.name == "beta"));
+            assert!(!skills.iter().any(|s| s.name == "delta"));
+        });
+    }
+
+    #[test]
+    fn channel_skills_applied_when_no_pattern_match() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let svc = service_with_skills(vec![], Some(vec!["alpha".to_string()]), None);
+            let skills = svc.discover_skills(tmp.path(), svc.channel_skills.as_deref(), None);
+
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "alpha");
+        });
+    }
+
+    #[test]
+    fn pattern_skills_override_channel_skills() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta", "gamma"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let patterns = vec![ChannelPattern {
+                name: "test-pattern".to_string(),
+                skills: Some(vec!["gamma".to_string()]),
+                ..ChannelPattern::default()
+            }];
+
+            let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]), None);
+
+            // Simulate pattern lookup as done in build_system_prompt
+            let pattern = svc.patterns.iter().find(|p| p.name == "test-pattern");
+            let include = pattern
+                .and_then(|p| p.skills.as_deref())
+                .or(svc.channel_skills.as_deref());
+
+            let skills = svc.discover_skills(tmp.path(), include, None);
+
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "gamma");
+        });
+    }
+
+    #[test]
+    fn channel_and_pattern_disabled_skills_merged() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta", "gamma"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let patterns = vec![ChannelPattern {
+                name: "test-pattern".to_string(),
+                disabled_skills: Some(vec!["beta".to_string()]),
+                ..ChannelPattern::default()
+            }];
+
+            let svc = service_with_skills(patterns, None, Some(vec!["alpha".to_string()]));
+
+            // Merge excludes as done in build_system_prompt
+            let mut exclude_list: Vec<String> = Vec::new();
+            if let Some(ref channel_excluded) = svc.channel_disabled_skills {
+                exclude_list.extend(channel_excluded.iter().cloned());
+            }
+            if let Some(pattern_excluded) = svc
+                .patterns
+                .iter()
+                .find(|p| p.name == "test-pattern")
+                .and_then(|p| p.disabled_skills.as_ref())
+            {
+                for name in pattern_excluded {
+                    if !exclude_list.contains(name) {
+                        exclude_list.push(name.clone());
+                    }
+                }
+            }
+            let exclude_slice: Option<&[String]> = if exclude_list.is_empty() {
+                None
+            } else {
+                Some(&exclude_list)
+            };
+
+            let skills = svc.discover_skills(tmp.path(), None, exclude_slice);
+
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].name, "gamma");
+        });
+    }
+
+    #[test]
+    fn no_filters_loads_all_skills() {
+        with_temp_home(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let skills_dir = tmp.path().join(".jyc").join("skills");
+
+            for name in &["alpha", "beta"] {
+                let dir = skills_dir.join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {name}\ndescription: {name} skill\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let svc = service_with_skills(vec![], None, None);
+            let skills = svc.discover_skills(tmp.path(), None, None);
+
+            assert_eq!(skills.len(), 2);
+        });
     }
 }

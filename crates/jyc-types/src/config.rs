@@ -200,6 +200,21 @@ pub struct ChannelConfig {
     /// loading even if they appear in global `[[mcps]]` or channel `mcps`.
     #[serde(default)]
     pub disabled_mcp_servers: Option<Vec<String>>,
+
+    /// Channel-level skills whitelist.
+    ///
+    /// When set, only skills whose names appear in this list are loaded
+    /// for all threads in this channel. Pattern-level `skills` takes priority.
+    /// When both are unset, all discovered skills are loaded.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+
+    /// Channel-level skills to disable for all patterns in this channel.
+    ///
+    /// Skill names match the `name` field in SKILL.md frontmatter.
+    /// Merged with pattern-level `disabled_skills`.
+    #[serde(default)]
+    pub disabled_skills: Option<Vec<String>>,
 }
 
 /// IMAP server configuration.

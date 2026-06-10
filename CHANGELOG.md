@@ -56,6 +56,14 @@ All notable changes to JYC will be documented in this file.
   dropped Node.js / oauth2-forwarder from the image. The `production` target
   remains as a backward-compatible alias of `full`. (#247)
 
+- **Per-channel and per-pattern skill filtering.** New config fields `skills`
+  and `disabled_skills` on both `ChannelConfig` and `ChannelPattern`. `skills`
+  acts as a whitelist: when set, only skills whose names appear in the list
+  are loaded. `disabled_skills` removes specific skills by name. Resolution
+  chain: pattern-level `skills` > channel-level `skills` > all discovered
+  skills. `disabled_skills` are merged across levels (channel + pattern).
+  Includes validation and unit tests. (#248)
+
 - **MCP server tool whitelist.** `McpServerConfig` now supports `enabled_tools`
   field. When set, only tools whose names appear in the list are loaded from
   that MCP server; all others are silently ignored. This is a more ergonomic

@@ -444,6 +444,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     Some(outbound.clone()),
                     channel_config.disabled_tools.clone(),
                     channel_config.disabled_mcp_servers.clone(),
+                    channel_config.skills.clone(),
+                    channel_config.disabled_skills.clone(),
                 ))
             }
             "static" => {

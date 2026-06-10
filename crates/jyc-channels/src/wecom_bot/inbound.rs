@@ -671,6 +671,8 @@ mod tests {
             disabled_tools: None,
             disabled_builtin_tools: None,
             disabled_mcp_servers: None,
+            skills: None,
+            disabled_skills: None,
         };
 
         let matcher = WecomBotMatcher;

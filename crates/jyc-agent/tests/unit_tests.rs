@@ -848,6 +848,8 @@ mod skills {
             None,
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -856,7 +858,7 @@ mod skills {
         let tmp = tempfile::tempdir().unwrap();
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -875,7 +877,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "test-skill");
             assert_eq!(skills[0].description, "A test skill");
@@ -891,7 +893,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -915,7 +917,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "good-skill");
         });
@@ -944,7 +946,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             // Should take the .jyc version (higher priority)
             assert_eq!(skills[0].description, "From JYC (overrides)");
@@ -974,7 +976,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path());
+            let skills = svc.discover_skills(tmp.path(), None, None);
             assert_eq!(skills.len(), 2);
             let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
             assert!(names.contains(&"skill-one"));

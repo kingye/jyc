@@ -376,6 +376,21 @@ pub struct ChannelPattern {
     /// Merged with channel-level `disabled_mcp_servers`.
     #[serde(default)]
     pub disabled_mcp_servers: Option<Vec<String>>,
+
+    /// Per-pattern skills whitelist.
+    ///
+    /// When set, only skills whose names appear in this list are loaded
+    /// for threads matching this pattern. Takes priority over channel-level
+    /// `skills`. When both are unset, all discovered skills are loaded.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+
+    /// Per-pattern skills to disable.
+    ///
+    /// Skill names match the `name` field in SKILL.md frontmatter.
+    /// Merged with channel-level `disabled_skills`.
+    #[serde(default)]
+    pub disabled_skills: Option<Vec<String>>,
 }
 
 impl Default for ChannelPattern {
@@ -399,6 +414,8 @@ impl Default for ChannelPattern {
             disabled_tools: None,
             disabled_builtin_tools: None,
             disabled_mcp_servers: None,
+            skills: None,
+            disabled_skills: None,
         }
     }
 }

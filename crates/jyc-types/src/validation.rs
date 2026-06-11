@@ -286,6 +286,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             }
         }
 
+        // Validate channel-level skills / disabled_skills
+        if let Some(ref skills) = channel.skills {
+            for (i, name) in skills.iter().enumerate() {
+                if name.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.skills[{i}]"),
+                        message: "skill name must not be empty".into(),
+                    });
+                }
+            }
+        }
+        if let Some(ref skills) = channel.disabled_skills {
+            for (i, name) in skills.iter().enumerate() {
+                if name.is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("{prefix}.disabled_skills[{i}]"),
+                        message: "skill name must not be empty".into(),
+                    });
+                }
+            }
+        }
+
         // Validate patterns
         if let Some(ref patterns) = channel.patterns {
             for (i, pattern) in patterns.iter().enumerate() {
@@ -418,6 +440,28 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
                 errors.push(ValidationError {
                     path: format!("{prefix}.disabled_mcp_servers[{i}]"),
                     message: "MCP server name must not be empty".into(),
+                });
+            }
+        }
+    }
+
+    // Validate per-pattern skills / disabled_skills
+    if let Some(ref skills) = pattern.skills {
+        for (i, name) in skills.iter().enumerate() {
+            if name.is_empty() {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.skills[{i}]"),
+                    message: "skill name must not be empty".into(),
+                });
+            }
+        }
+    }
+    if let Some(ref skills) = pattern.disabled_skills {
+        for (i, name) in skills.iter().enumerate() {
+            if name.is_empty() {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.disabled_skills[{i}]"),
+                    message: "skill name must not be empty".into(),
                 });
             }
         }

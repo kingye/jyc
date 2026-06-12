@@ -93,5 +93,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 RUN mkdir -p /root/.config/gh
 
+# Install fnm (Fast Node Manager) and Node 22
+RUN curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /root/.fnm
+ENV FNM_DIR="/root/.fnm"
+ENV PATH="/root/.fnm/aliases/default/bin:/root/.fnm:${PATH}"
+RUN fnm install 22 && fnm default 22
+
 # ── Stage 4: Production alias (backward compatible) ──────────────────
 FROM full AS production

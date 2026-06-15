@@ -95,12 +95,12 @@ RUN mkdir -p /root/.config/gh
 
 # Install fnm (Fast Node Manager) and Node 22
 RUN curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /root/.fnm && \
+    export PATH="/root/.fnm:$PATH" && \
     export FNM_DIR="/root/.fnm" && \
-    eval "$(/root/.fnm/fnm env --shell bash)" && \
+    eval "$(fnm env --shell bash)" && \
     fnm install 22 && \
     fnm default 22 && \
-    node_version=$(ls /root/.fnm/versions/node/ | head -1) && \
-    ln -sf "/root/.fnm/versions/node/$node_version" /root/.node-current
+    ln -sf "/root/.fnm/aliases/default" /root/.node-current
 ENV FNM_DIR="/root/.fnm"
 ENV PATH="/root/.node-current/bin:/root/.fnm:${PATH}"
 

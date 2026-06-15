@@ -578,7 +578,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let task = tokio::spawn(async move {
                     // Clone configs before moving into closures
                     let feishu_config_cloned = feishu_config.clone();
-                    let inbound_attachment_config_for_callback = inbound_attachment_config.clone();
 
                     let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
 
@@ -588,34 +587,13 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                     let thread_manager_clone = thread_manager.clone();
                     let options = jyc_types::InboundAdapterOptions {
-                        on_message: Box::new(move |mut message| {
+                        on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
                             let patterns = patterns_for_callback.clone();
-
-                            // Clone values for the async move closure
-
-                            let feishu_config_clone = feishu_config_cloned.clone();
-                            let channel_name_clone = channel_name_owned.clone();
-                            let attachment_config_clone = inbound_attachment_config_for_callback.clone();
-
                             tokio::spawn(async move {
-                                // 1. Create adapter and save attachments to thread directory
-
-
-                                // The adapter will calculate thread name internally
-
-                                let adapter = FeishuInboundAdapter::new(&feishu_config_clone, channel_name_clone);
-
-                                if let Err(e) = adapter.save_attachments_to_thread_directory(
-                                    &mut message,
-                                    &patterns,
-                                    attachment_config_clone.as_ref(),
-                                ).await {
-                                    tracing::warn!("Failed to save attachments: {}", e);
-                                }
-
-                                // 2. Route the message
-
+                                // Attachments are saved inside process_message()
+                                // after template initialization, so there's no
+                                // need for a pre-route save here.
                                 router.route(&FeishuMatcher, message, &patterns).await;
                             });
                             Ok(())

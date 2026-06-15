@@ -93,6 +93,24 @@ All notable changes to JYC will be documented in this file.
   URL. Includes AES-256-CBC message decryption, SHA1 signature verification,
   and auto-detection of text/markdown message types. (#225, #226)
 
+### Fixed
+
+- **Feishu channel: removed pre-route attachment save that prevented template
+  initialization.** The `on_message` callback was saving attachments before
+  message routing, which created the thread directory via `create_dir_all`
+  before the worker could run `initialize_thread_from_template`. The guard
+  condition `thread_path.exists()` returned true (directory existed from
+  attachment save), but no `.jyc/template` marker existed, so template files
+  (AGENTS.md, domain-knowledge.md) were silently skipped. Also eliminated
+  duplicate attachment saves (pre-route + post-route). (#250)
+
+- **`initialize_thread_from_template` guard changed from `thread_path.exists()`
+  to `.jyc/` directory existence.** The previous check was too broad: any
+  pre-existing directory (e.g., from attachment storage) was interpreted as
+  "thread already initialized". Now only the `.jyc/` metadata directory is
+  used as the initialization sentinel, making template init resilient to
+  out-of-band directory creation. (#250)
+
 ### Changed
 
 - **`OutboundAdapter::send_alert` renamed to `send_message`.** All channel

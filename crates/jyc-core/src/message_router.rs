@@ -102,7 +102,13 @@ impl MessageRouter {
         let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
 
         // Store template name in message metadata for thread initialization
-        if let Some(template) = matched_pattern.and_then(|p| p.template.clone()) {
+        let matched_template = matched_pattern.and_then(|p| p.template.clone());
+        tracing::debug!(
+            pattern = %matched_pattern_name,
+            template = ?matched_template,
+            "MessageRouter: resolved template from matched pattern"
+        );
+        if let Some(template) = matched_template {
             message
                 .metadata
                 .insert("template".to_string(), serde_json::Value::String(template));

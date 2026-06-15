@@ -29,6 +29,10 @@ docs/
 *.test
 *.tmp
 
+# Agent / local runtime data
+.opencode/
+.jyc/
+
 # Environment files
 .env
 .env.*

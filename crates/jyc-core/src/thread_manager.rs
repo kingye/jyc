@@ -198,6 +198,12 @@ impl ThreadManager {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        tracing::debug!(
+            thread = %thread_name,
+            ?template,
+            "ThreadManager::enqueue: extracted template from message metadata"
+        );
+
         let item = QueueItem {
             thread_name: thread_name.clone(),
             message,
@@ -1461,10 +1467,7 @@ async fn initialize_thread_from_template(
     let jyc_dir = thread_path.join(".jyc");
     let template_marker = jyc_dir.join("template");
 
-    if thread_path.exists() {
-        // Thread already exists. Verify the recorded template matches the
-        // one the current pattern requests; refuse if they differ to avoid
-        // silently running with the wrong AGENTS.md.
+    if jyc_dir.exists() {
         match tokio::fs::read_to_string(&template_marker).await {
             Ok(existing) => {
                 let existing = existing.trim();
@@ -1483,9 +1486,6 @@ async fn initialize_thread_from_template(
                 .into());
             }
             Err(_) => {
-                // No marker file. Either the thread was created before this
-                // mechanism existed or by a path that doesn't use templates.
-                // Don't overwrite — preserve existing behavior.
                 return Ok(());
             }
         }

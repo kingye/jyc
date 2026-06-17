@@ -108,6 +108,30 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Authentication:** App credentials with automatic token refresh
 - **Formats:** Markdown, text, HTML, and rich interactive messages
 
+### ✅ WeChat
+- **Status:** Implemented in v0.3.9
+- **Features:** Single-bot, single-thread messaging via OpenILink Bridge WebSocket
+- **Protocols:** WebSocket for inbound and outbound
+- **Attachments:** Images, files, voice, and video
+
+### ✅ WeCom (企业微信)
+- **Status:** Implemented in v0.3.10
+- **Features:** Bot webhook inbound, external-contact API outbound with `corp_id` + `corp_secret` authentication
+- **Protocols:** Shared axum HTTP server (inbound), REST API (outbound)
+- **Security:** AES-256-CBC decryption, SHA1 signature verification
+
+### ✅ WeCom KF (Customer Service)
+- **Status:** Implemented in v0.3.10
+- **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull
+- **Protocols:** Webhook events (inbound), REST API (outbound)
+- **Model:** One thread per customer per KF account
+
+### ✅ Gitee
+- **Status:** Implemented in v0.3.10
+- **Features:** Multi-agent workflow on Gitee issues and Pull Requests
+- **Protocols:** REST API v5 polling (inbound), REST API (outbound)
+- **Agents:** Planner, Developer, Reviewer templates
+
 ### 🔄 Future Channels (Planned)
 - **Slack:** WebHook and Socket Mode support
 - **Teams:** Microsoft Teams integration
@@ -181,6 +205,7 @@ JYC provides several MCP (Model Context Protocol) tools that the AI agent uses i
 | Tool | Description |
 |------|-------------|
 | `reply_message` | Send reply via the channel's outbound adapter. Reads routing info from `reply-context.json`, appends to chat log, writes signal file for delivery. |
+| `jyc_send_message` | Send proactive out-of-thread messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-thread replies. |
 | `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[[mcps]]` in `config.toml` (see `config.example.toml`). |
 | `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. |
 

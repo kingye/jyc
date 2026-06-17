@@ -4,13 +4,7 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
-
-- **WeCom channel: migrated from Bot webhook to external contact API.** The
-  outbound adapter now uses `corp_id` + `corp_secret` for access_token-based
-  authentication via `GET /cgi-bin/gettoken`, then sends messages via
-  `POST /cgi-bin/externalcontact/message/send` with `chat_id` routing.
-  The `webhook_url` configuration field is replaced by `corp_secret`. (#228)
+## [0.3.10] - 2026-06-17
 
 ### Added
 
@@ -35,13 +29,6 @@ All notable changes to JYC will be documented in this file.
   Downloads use AES-256-CBC decryption with PKCS#7 padding, MIME type detection
   from magic bytes, and the existing attachment storage pipeline. No config
   changes required. (#245, #246)
-
-- **Fixed WeCom Bot `mixed` message parsing.** The `MixedContent` and
-  `MixedItem` structs now match the actual API format: `msg_item` array
-  (was `items`) with nested `text`/`image` content objects (was flat
-  `type`/`content`/`url`/`aeskey` fields). This fixes the bug where mixed
-  (text+image) messages were parsed as empty, causing "no message body"
-  and skipping AI processing. (#246)
 
 - **Per-MCP-tool exclusion by server.** `disabled_tools` now supports
   `server_name/tool_name` format (e.g. `jin_public_mcp/product_list`) to
@@ -93,7 +80,27 @@ All notable changes to JYC will be documented in this file.
   URL. Includes AES-256-CBC message decryption, SHA1 signature verification,
   and auto-detection of text/markdown message types. (#225, #226)
 
+### Changed
+
+- **WeCom channel: migrated from Bot webhook to external contact API.** The
+  outbound adapter now uses `corp_id` + `corp_secret` for access_token-based
+  authentication via `GET /cgi-bin/gettoken`, then sends messages via
+  `POST /cgi-bin/externalcontact/message/send` with `chat_id` routing.
+  The `webhook_url` configuration field is replaced by `corp_secret`. (#228)
+
+- **`OutboundAdapter::send_alert` renamed to `send_message`.** All channel
+  implementations (email, feishu, github, wechat, wecom, wecomkf, test mock)
+  updated. The method sends proactive messages to arbitrary recipients;
+  the old name implied alert-only usage which was overly restrictive. (#242)
+
 ### Fixed
+
+- **Fixed WeCom Bot `mixed` message parsing.** The `MixedContent` and
+  `MixedItem` structs now match the actual API format: `msg_item` array
+  (was `items`) with nested `text`/`image` content objects (was flat
+  `type`/`content`/`url`/`aeskey` fields). This fixes the bug where mixed
+  (text+image) messages were parsed as empty, causing "no message body"
+  and skipping AI processing. (#246)
 
 - **Feishu channel: removed pre-route attachment save that prevented template
   initialization.** The `on_message` callback was saving attachments before
@@ -111,12 +118,12 @@ All notable changes to JYC will be documented in this file.
   used as the initialization sentinel, making template init resilient to
   out-of-band directory creation. (#250)
 
-### Changed
+### Deprecated
 
-- **`OutboundAdapter::send_alert` renamed to `send_message`.** All channel
-  implementations (email, feishu, github, wechat, wecom, wecomkf, test mock)
-  updated. The method sends proactive messages to arbitrary recipients;
-  the old name implied alert-only usage which was overly restrictive. (#242)
+- **`jyc_vision` MCP tool.** Models with `supports_images = true` now
+  load images natively via `read_image` and inbound auto-injection. The
+  MCP tool stays in tree for one release to support text-only models;
+  removal is planned in a subsequent release.
 
 ## [0.3.9] - 2026-05-28
 

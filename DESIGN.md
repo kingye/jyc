@@ -946,7 +946,7 @@ pub trait OutboundAdapter: Send + Sync {
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
 
-    async fn send_alert(
+    async fn send_message(
         &self,
         recipient: &str,
         subject: &str,

@@ -132,16 +132,9 @@ fnm install <version> && fnm use <version>
 
 **Lightweight verification only** — use `cargo check` (Rust) or `npm run lint` (Node/CDS) if needed. **NEVER run `cargo build`, `cargo build --release`, or `npm run build`** — full builds are the developer's responsibility.
 
-Check for:
-- **Correctness**: Does the code do what the spec says?
-- **Design**: Is the approach reasonable? Any simpler alternatives?
-- **Code quality**: Readability, naming, error handling
-- **Tests**: Are there tests? Do they cover the changes?
-- **Edge cases**: Missing error handling, boundary conditions
-- **Project conventions**: Does the code follow the project's own rules (from AGENTS.md etc.)?
-- **Commit structure**: Does each commit correspond to one step from the Implementation Plan? Are commit messages clear and descriptive? Flag commits that combine unrelated changes or skip steps.
-- **Initialize commits**: Ignore commits with message matching `^chore: initialize PR for issue #\d+$` — these are created by the Planner agent to enable PR creation on Gitee and contain no code changes. Do not flag them as unnecessary or request their removal.
-- **Coding principles**: Check against the `coding-principles` skill — flag overcomplication (P2) and unnecessary changes (P3)
+Follow the `pr-review` skill's review methodology and severity classification. **Especially note the "Trust but Verify" rule — you MUST check the code diff to verify each claim in the developer's completion comment, not trust the text alone.**
+
+**Initialize commits**: Ignore commits with message matching `^chore: initialize PR for issue #\d+$` — these are created by the Planner agent to enable PR creation on Gitee and contain no code changes. Do not flag them as unnecessary or request their removal.
 
 ### 5. Submit Review
 

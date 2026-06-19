@@ -788,6 +788,11 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
 
     let mut section = String::new();
     section.push_str("## Available Skills\n\n");
+    section.push_str(concat!(
+        "**IMPORTANT: Before processing any user request, you MUST read the relevant SKILL.md file(s) ",
+        "using the `read <skill-path>/SKILL.md` tool. The descriptions below are summaries only and ",
+        "do NOT contain the full instructions you need to follow.**\n\n",
+    ));
 
     for skill in skills {
         section.push_str(&format!(

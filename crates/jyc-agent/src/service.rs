@@ -285,26 +285,6 @@ impl JycAgentService {
             thread_path.display()
         ));
 
-        // Load AGENTS.md if present in the working directory
-        let agents_md = thread_path.join("AGENTS.md");
-        if agents_md.exists()
-            && let Ok(content) = std::fs::read_to_string(&agents_md)
-        {
-            prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
-            prompt.push_str(&content);
-            prompt.push_str("\n\n");
-        }
-
-        // Load repo/AGENTS.md if present (for GitHub channel)
-        let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
-        if repo_agents_md.exists()
-            && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
-        {
-            prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
-            prompt.push_str(&content);
-            prompt.push_str("\n\n");
-        }
-
         // Resolve skill filters: pattern > channel > none
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
@@ -330,7 +310,8 @@ impl JycAgentService {
             Some(&exclude_list)
         };
 
-        // Discover and inject skill metadata
+        // Discover and inject skill metadata (before AGENTS.md so instructions
+        // to read SKILL.md files are seen first)
         let skills = self.discover_skills(thread_path, include_list, exclude_slice);
         if !skills.is_empty() {
             prompt.push_str(&format_skills_section(&skills));
@@ -340,6 +321,26 @@ impl JycAgentService {
         let skill_names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         if let Err(e) = persist_skill_names(thread_path, &skill_names) {
             tracing::warn!(error = %e, "Failed to persist skill names to skills.json");
+        }
+
+        // Load AGENTS.md if present in the working directory
+        let agents_md = thread_path.join("AGENTS.md");
+        if agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&agents_md)
+        {
+            prompt.push_str("## Project Instructions (from AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
+        }
+
+        // Load repo/AGENTS.md if present (for GitHub channel)
+        let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
+        if repo_agents_md.exists()
+            && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
+        {
+            prompt.push_str("## Repository Instructions (from repo/AGENTS.md)\n\n");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
         }
 
         // Reply instructions
@@ -787,6 +788,11 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
 
     let mut section = String::new();
     section.push_str("## Available Skills\n\n");
+    section.push_str(concat!(
+        "**IMPORTANT: Before processing any user request, you MUST read the relevant SKILL.md file(s) ",
+        "using the `read <skill-path>/SKILL.md` tool. The descriptions below are summaries only and ",
+        "do NOT contain the full instructions you need to follow.**\n\n",
+    ));
 
     for skill in skills {
         section.push_str(&format!(

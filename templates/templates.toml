@@ -14,7 +14,7 @@ skills = [
 skills = ["coding-principles", "pr-review"]
 
 [templates.github-planner]
-skills = ["coding-principles", "dev-workflow"]
+skills = ["coding-principles", "dev-workflow", "plan-solution"]
 
 [templates.github-developer]
 skills = ["coding-principles", "incremental-dev", "dev-workflow"]

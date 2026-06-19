@@ -20,7 +20,7 @@ description: |
 **Do NOT trust the developer's completion summary in PR comments.** You MUST:
 1. Read the full code diff (every changed file, every changed line)
 2. Check each claim in the developer's comment — is it actually implemented in the code?
-3. If a claim is not verifiable from the diff, flag it as **High** severity
+3. If a claim is not verifiable from the diff, flag it as **Critical** severity
 4. Do NOT approve if the diff does not match the developer's stated work
 
 This rule is **BLOCKING** — violating it means approving changes you haven't verified, which defeats the purpose of review.

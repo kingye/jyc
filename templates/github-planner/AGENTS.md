@@ -145,7 +145,7 @@ and wait. Do NOT assume the user wants you to create a PR.**
 
 When the user gives explicit approval, create an empty PR with a **detailed, step-by-step implementation plan**.
 
-**The implementation plan is the most important part of your job.** Each step must be:
+**The implementation plan is the most important part of your job.** Follow the `plan-solution` skill's planning methodology (Understand → Create Plan → Present). Each step must be:
 - **Small and focused** — one logical change per step
 - **Ordered** — later steps can depend on earlier ones
 - **Testable** — each step describes how the developer can verify it works

@@ -5,9 +5,9 @@ description: |
   Use when: review PR, code review, check branch changes.
 ---
 
-## PR Review — STRICTLY READ-ONLY
+## PR Review — Strictly Read-Only Review Methodology
 
-CRITICAL: This skill is strictly read-only.
+### Constraints
 - Do NOT edit, create, or delete any files in the repository
 - Do NOT make commits or push changes
 - Do NOT run builds or tests
@@ -15,133 +15,49 @@ CRITICAL: This skill is strictly read-only.
 - Do NOT fix issues — only describe them and suggest fixes in comments
 - ONLY read, analyze, and post review comments
 
-IMPORTANT: All `gh` and `git` commands MUST be run from inside the repository directory.
-Use `cd repo && <command>` for every command.
+### Trust but Verify — BLOCKING Rule 🔴
 
-### Step 0: Ensure Repository
+**Do NOT trust the developer's completion summary in PR comments.** You MUST:
+1. Read the full code diff (every changed file, every changed line)
+2. Check each claim in the developer's comment — is it actually implemented in the code?
+3. If a claim is not verifiable from the diff, flag it as **Critical** severity
+4. Do NOT approve if the diff does not match the developer's stated work
 
-```bash
-# Clone repo if not present (use the repository from the trigger message)
-if [ ! -d repo ]; then gh repo clone <owner>/<repo> repo; fi
+This rule is **BLOCKING** — violating it means approving changes you haven't verified, which defeats the purpose of review.
 
-# Fetch latest
-cd repo && git fetch origin
-```
+### Review Checklist
 
-NOTE: `gh` CLI is pre-configured and authenticated. Do NOT run `gh auth login`,
-`gh auth refresh`, or any other auth commands. Just use `gh` directly.
+Evaluate every change against the following criteria:
 
-### Step 1: Understand Project Conventions
+1. **Correctness**: Does the code do what the spec/PR description says? Does it actually fix the issue?
+2. **Design**: Is the approach reasonable? Are there simpler, more maintainable alternatives?
+3. **Code quality**: Readability, naming, error handling, consistent style with the surrounding codebase
+4. **Tests**: Are there tests for the changes? Do they actually test the behavior? Are edge cases covered?
+5. **Edge cases**: Missing error handling, boundary conditions, null/empty inputs, concurrent access
+6. **Project conventions**: Does the code follow the project's own rules from AGENTS.md / CLAUDE.md / README.md?
+7. **Coding principles** (check against `coding-principles` skill):
+   - **Simplicity First (P2)**: Flag overcomplication — code beyond what was asked, unnecessary abstractions
+   - **Surgical Changes (P3)**: Flag unnecessary changes — "improvements" to unrelated code, style changes
+   - **Goal-Driven Execution (P4)**: Check goal traceability — every changed line should trace to user's request
+8. **Documentation**: CHANGELOG.md updated for user-facing changes; DESIGN.md updated for architecture changes (if applicable)
+9. **Commit structure**: Does each commit map to one step from the Implementation Plan? Are commit messages clear?
 
-Before reviewing, read the project's own documentation to understand its standards:
-
-```bash
-cd repo
-# Read coding conventions (check whichever exist)
-cat AGENTS.md 2>/dev/null || cat CLAUDE.md 2>/dev/null || true
-cat README.md 2>/dev/null | head -100 || true
-# Check for project-specific skills or instructions
-ls .opencode/skills/ 2>/dev/null || ls .claude/ 2>/dev/null || true
-```
-
-Use the conventions found in these files as the basis for your review.
-If no project-specific conventions are found, use general best practices.
-
-### Step 2: Fetch PR Information
-
-**With gh:**
-```bash
-cd repo && gh pr view <number> --json title,body,state,commits,files
-cd repo && gh pr diff <number>
-```
-
-**Without gh:**
-```bash
-cd repo && git log --oneline main..<branch>
-cd repo && git diff main..<branch> --stat
-cd repo && git diff main..<branch>
-```
-
-### Step 3: Review Against Project Standards
-
-**Project-specific conventions** (from AGENTS.md / CLAUDE.md / README.md):
-- Apply whatever coding conventions, error handling patterns, logging rules,
-  and documentation requirements the project defines
-- If the project has a DESIGN.md, check that changes align with the architecture
-
-**General code quality** (always apply):
-- New functionality should have tests
-- No secrets in code (API keys, passwords, tokens)
-- No path traversal vulnerabilities in user input handling
-- Consistent naming conventions
-- Dead code cleaned up
-
-**Coding principles** (check against `coding-principles` skill):
-- **Principle 2 (Simplicity First)**: Flag overcomplication — code beyond what was asked, unnecessary abstractions
-- **Principle 3 (Surgical Changes)**: Flag unnecessary changes — "improvements" to unrelated code, style changes
-- **Principle 4 (Goal-Driven Execution)**: Check goal traceability — every changed line should trace to user's request
-
-**Documentation:**
-- CHANGELOG.md updated for user-facing changes
-- DESIGN.md updated for architecture changes (if the project has one)
-
-### Step 4: Format Findings
+### Severity Classification
 
 Categorize each finding by severity:
-- **Critical**: security issues, data loss, crashes
-- **High**: design principle violations, missing error handling, broken functionality
-- **Medium**: missing tests, inconsistent naming, dead code
-- **Low**: documentation gaps, style suggestions
+- **Critical 🔴**: security issues, data loss, crashes, trust-but-verify violations
+- **High 🟠**: design principle violations, missing error handling, broken functionality
+- **Medium 🟡**: missing tests, inconsistent naming, dead code
+- **Low 🟢**: documentation gaps, style suggestions, minor improvements
 
-For each finding:
+For each finding, use this format:
 ```
 **[SEVERITY]** `file:line` — description
 Suggestion: how to fix
 ```
 
-End with overall verdict:
-- **Approve**: no critical or high issues
-- **Request Changes**: critical or high issues found
-- **Comment**: only medium/low issues, approve with suggestions
+### Overall Verdict
 
-### Step 5: Post Review
-
-**With gh (preferred) — run from inside repo/ directory:**
-
-```bash
-cd repo && gh pr review <number> --approve --body "$(cat <<'EOF'
-[Reviewer] ## PR Review
-
-<findings>
-
-**Verdict: Approve**
-EOF
-)"
-```
-
-Use `--request-changes` for critical/high issues:
-```bash
-cd repo && gh pr review <number> --request-changes --body "$(cat <<'EOF'
-[Reviewer] ## PR Review
-
-<findings>
-
-**Verdict: Request Changes**
-EOF
-)"
-```
-
-Use `--comment` for medium/low only:
-```bash
-cd repo && gh pr review <number> --comment --body "$(cat <<'EOF'
-[Reviewer] ## PR Review
-
-<findings>
-
-**Verdict: Comment — approve with suggestions**
-EOF
-)"
-```
-
-**Without gh:**
-Output the full review as text for the user to post manually.
+- **Approve**: no Critical or High issues
+- **Request Changes**: Critical or High issues found
+- **Comment (approve with suggestions)**: only Medium/Low issues

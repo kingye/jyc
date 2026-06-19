@@ -17,26 +17,9 @@ This applies to both implementation AND planning.
 - NEVER work directly on main
 - See `dev-workflow` skill for branching conventions
 
-### Detect Project Type and Conventions (do this ONCE at the start)
+### Detect Project Type and Conventions
 
-**Step 1: Read project documentation (if present)**
-
-Check for and read these files in the repository root (in order of priority):
-- `AGENTS.md` or `CLAUDE.md` — coding conventions, forbidden actions, toolchain
-- `README.md` — build/test/run commands, prerequisites
-- `.opencode/skills/` — skill files may define specific workflows and commands
-- `.claude/` — may contain project-specific instructions
-
-If these files specify build, test, or check commands, **use those** instead of
-the defaults in Step 2.
-
-**Step 2: Detect project type by config files (fallback)**
-
-| Priority | Type | Detection | Source files | Default commands |
-|----------|------|-----------|-------------|-----------------|
-| 1 | SAP CDS | `.cdsrc.json` exists, OR `package.json` has `@sap/cds` in dependencies | `.cds`, `.js`, `.ts`, `.csv`, `.properties` | Read `scripts` from `package.json` |
-| 2 | Rust | `Cargo.toml` exists | `.rs` | check: `cargo check` / test: `cargo test` / build: `cargo build --release` |
-| 3 | Node.js | `package.json` exists (no `@sap/cds`) | `.js`, `.ts` | check: `npm run lint` / test: `npm test` / build: `npm run build` |
+Project type detection follows the `dev-workflow` skill. That skill has already completed detection during initialization — use the `{check_command}`, `{test_command}`, and `{build_command}` variables directly.
 
 **Important:**
 - Check SAP CDS before Node.js (both have `package.json`)

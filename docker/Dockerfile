@@ -61,7 +61,7 @@ ENTRYPOINT ["jyc"]
 CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]
 
 # ── Stage 3: Full (slim + dev tools for AI agent development) ────────
-FROM ccr.ccs.tencentyun.com/jiny/jyc:slim AS full
+FROM --platform=linux/amd64 ccr.ccs.tencentyun.com/jiny/jyc:slim AS full
 
 # Install all dev tools in a single layer to minimize export time
 RUN apt-get update && apt-get install -y --no-install-recommends \

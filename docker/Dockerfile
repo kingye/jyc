@@ -61,7 +61,7 @@ ENTRYPOINT ["jyc"]
 CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]
 
 # ── Stage 3: Full (slim + dev tools for AI agent development) ────────
-FROM slim AS full
+FROM ccr.ccs.tencentyun.com/jiny/jyc:slim AS full
 
 # Install all dev tools in a single layer to minimize export time
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -86,6 +86,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PATH="/root/.node-current/bin:/root/.fnm:/root/.cargo/bin:${PATH}"
 ENV FNM_DIR="/root/.fnm"
-
-# ── Stage 4: Production alias (backward compatible) ──────────────────
-FROM full AS production

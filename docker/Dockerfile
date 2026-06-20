@@ -63,46 +63,29 @@ CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]
 # ── Stage 3: Full (slim + dev tools for AI agent development) ────────
 FROM slim AS full
 
-# Additional dev tools
+# Install all dev tools in a single layer to minimize export time
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    gh \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
-    pandoc \
-    inotify-tools \
-    xz-utils \
-    unzip \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust toolchain (needed by AI agent for cargo build/test)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install GitHub CLI
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+        git build-essential pkg-config libssl-dev \
+        protobuf-compiler pandoc inotify-tools xz-utils unzip procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /root/.config/gh \
+    && curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /root/.fnm \
+    && export PATH="/root/.fnm:$PATH" \
+    && export FNM_DIR="/root/.fnm" \
+    && eval "$(fnm env --shell bash)" \
+    && fnm install 22 && fnm default 22 \
+    && ln -sf "/root/.fnm/aliases/default" /root/.node-current
 
-RUN mkdir -p /root/.config/gh
-
-# Install fnm (Fast Node Manager) and Node 22
-RUN curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /root/.fnm && \
-    export PATH="/root/.fnm:$PATH" && \
-    export FNM_DIR="/root/.fnm" && \
-    eval "$(fnm env --shell bash)" && \
-    fnm install 22 && \
-    fnm default 22 && \
-    ln -sf "/root/.fnm/aliases/default" /root/.node-current
+ENV PATH="/root/.node-current/bin:/root/.fnm:/root/.cargo/bin:${PATH}"
 ENV FNM_DIR="/root/.fnm"
-ENV PATH="/root/.node-current/bin:/root/.fnm:${PATH}"
 
 # ── Stage 4: Production alias (backward compatible) ──────────────────
 FROM full AS production

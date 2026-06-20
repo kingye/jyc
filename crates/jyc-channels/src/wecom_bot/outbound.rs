@@ -1077,7 +1077,7 @@ mod tests {
 
         let md5_hex = format!("{:x}", md5::compute(content));
 
-        let responses = vec![
+        let responses = [
             serde_json::json!({
                 "headers": {"req_id": "ignored"},
                 "errcode": 0,

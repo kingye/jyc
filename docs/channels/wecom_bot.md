@@ -130,6 +130,41 @@ After a user has messaged the bot, the bot can proactively send messages using
 }
 ```
 
+### Sending Attachments in Replies
+
+When the AI reply includes attachments, each attachment is uploaded over the
+same WebSocket and sent as a separate message after the text reply:
+
+1. Text reply is sent as a streaming message (`msgtype: "stream"`, `finish: true`).
+2. Each attachment is uploaded via:
+   - `aibot_upload_media_init` → returns `upload_id`
+   - `aibot_upload_media_chunk` → base64-encoded chunks (≤ 512 KiB each)
+   - `aibot_upload_media_finish` → returns `media_id`
+3. The attachment is sent with `aibot_respond_msg` using the original `req_id`:
+
+```json
+{
+  "cmd": "aibot_respond_msg",
+  "headers": {"req_id": "req_xxx"},
+  "body": {
+    "msgtype": "file",
+    "file": {"media_id": "MEDIA_ID"}
+  }
+}
+```
+
+Supported mappings:
+
+| File extension | WeCom msgtype | Size limit |
+|----------------|---------------|------------|
+| png, jpg, jpeg, gif | `image` | 10 MB |
+| amr | `voice` | 2 MB |
+| mp4 | `video` | 10 MB |
+| pdf, doc, xlsx, ppt, csv, etc. | `file` | 20 MB |
+
+Configuration uses the generic `[attachments.outbound]` settings (same as Feishu
+and email): `enabled`, `allowed_extensions`, `max_file_size`, `max_per_message`.
+
 ## Thread Naming
 
 - **Single chat**: `bot-{userid}`
@@ -140,8 +175,10 @@ After a user has messaged the bot, the bot can proactively send messages using
 - **24-hour reply window**: messages older than 24h cannot be replied to
 - **Rate limits**: 30 messages/minute, 1000 messages/hour
 - **Proactive push**: user must message the bot first before proactive `aibot_send_msg` works
-- **Media decryption**: image/file/video URLs returned in messages require AES-256-CBC
-decryption using the per-URL `aeskey`. This is not yet implemented.
+- **Media upload**: outbound attachments (files, images, etc.) are uploaded over the
+  WebSocket and sent as separate messages.
+- **Media download**: image/file/video URLs returned in messages are downloaded and
+  decrypted using AES-256-CBC with the per-URL `aeskey`.
 
 ## Comparison with Other WeCom Channels
 
@@ -151,6 +188,7 @@ decryption using the per-URL `aeskey`. This is not yet implemented.
 | Encryption | AES-CBC required | Token-based | None |
 | Real-time | Yes (webhook) | Polling | Yes (WebSocket) |
 | Streaming | No | No | Yes |
+| Outbound attachments | No | No | Yes |
 | Config | token + aes_key | corp_id + secret | bot_id + secret |
 
 ## TODO: Per-Group Pattern Routing

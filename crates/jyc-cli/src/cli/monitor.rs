@@ -30,6 +30,7 @@ use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
 use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_channels::wecom::token_cache::AccessTokenCache;
+use jyc_channels::wecom_bot::client::WecomBotConnectionHandle;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 use jyc_channels::wecom_bot::outbound::WecomBotOutboundAdapter;
 use jyc_core::message_router::MessageRouter;
@@ -191,9 +192,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         let mut wechat_sender_arc: Option<
             std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
         > = None;
-        // For wecom_bot, we share the WebSocket sender between inbound and outbound
-        let mut wecom_bot_sender_arc: Option<
-            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
+        // For wecom_bot, we share the WebSocket connection handle between inbound and outbound
+        let mut wecom_bot_handle_arc: Option<
+            std::sync::Arc<tokio::sync::Mutex<Option<WecomBotConnectionHandle>>>,
         > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
@@ -270,7 +271,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_attachment_config,
                     footer_enabled,
                 );
-                wecom_bot_sender_arc = Some(adapter.sender_arc());
+                wecom_bot_handle_arc = Some(adapter.handle_arc());
                 Arc::new(adapter)
             }
             "wecom" => {
@@ -820,15 +821,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                 let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
-                let wecom_bot_sender_arc_clone = wecom_bot_sender_arc.clone().unwrap();
+                let wecom_bot_handle_arc_clone = wecom_bot_handle_arc.clone().unwrap();
 
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
 
-                    let adapter = WecomBotInboundAdapter::with_shared_sender(
+                    let adapter = WecomBotInboundAdapter::with_shared_handle(
                         &wecom_bot_config,
                         channel_name_owned.clone(),
-                        wecom_bot_sender_arc_clone,
+                        wecom_bot_handle_arc_clone,
                     );
 
                     let thread_manager_clone = thread_manager.clone();

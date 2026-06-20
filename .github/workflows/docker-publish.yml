@@ -105,4 +105,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=jyc-build
-          cache-to: type=gha,mode=max,scope=jyc-build
+          cache-to: type=gha,mode=min,scope=jyc-build

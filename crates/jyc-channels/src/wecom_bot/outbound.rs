@@ -78,9 +78,7 @@ impl WecomBotOutboundAdapter {
 
     /// Get the shared connection handle Arc so the monitor can set it after
     /// WebSocket creation.
-    pub fn handle_arc(
-        &self,
-    ) -> Arc<Mutex<Option<WecomBotConnectionHandle>>> {
+    pub fn handle_arc(&self) -> Arc<Mutex<Option<WecomBotConnectionHandle>>> {
         self.handle.clone()
     }
 
@@ -267,13 +265,16 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         if let Some(attachments) = attachments {
             let handle = {
                 let guard = self.handle.lock().await;
-                guard.clone().context("WeCom Bot outbound handle not set; cannot upload attachments")?
+                guard
+                    .clone()
+                    .context("WeCom Bot outbound handle not set; cannot upload attachments")?
             };
 
             for att in attachments {
                 let media_type = wecom_media_type(&att.content_type, &att.filename);
 
-                match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await {
+                match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
+                {
                     Ok(media_id) => {
                         let body = build_media_message_body(media_type, &media_id);
                         let json = serde_json::json!({
@@ -600,16 +601,19 @@ async fn upload_attachment(
     .context("Failed to serialize WeCom Bot upload init body")?;
 
     let init_resp = handle
-        .send_and_wait(CMD_AIBOT_UPLOAD_MEDIA_INIT, &init_req_id, init_body, timeout)
+        .send_and_wait(
+            CMD_AIBOT_UPLOAD_MEDIA_INIT,
+            &init_req_id,
+            init_body,
+            timeout,
+        )
         .await
         .context("Failed to initialize WeCom Bot media upload")?;
 
     let errcode = init_resp["errcode"].as_i64().unwrap_or(-1);
     if errcode != 0 {
         let errmsg = init_resp["errmsg"].as_str().unwrap_or("unknown");
-        anyhow::bail!(
-            "WeCom Bot upload init failed: errcode={errcode}, errmsg={errmsg}"
-        );
+        anyhow::bail!("WeCom Bot upload init failed: errcode={errcode}, errmsg={errmsg}");
     }
 
     let upload_id = init_resp["body"]["upload_id"]
@@ -622,15 +626,17 @@ async fn upload_attachment(
         let chunk_body = serde_json::to_value(UploadMediaChunkBody {
             upload_id: upload_id.to_string(),
             chunk_index: index,
-            base64_data: base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                chunk,
-            ),
+            base64_data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, chunk),
         })
         .context("Failed to serialize WeCom Bot upload chunk body")?;
 
         let chunk_resp = handle
-            .send_and_wait(CMD_AIBOT_UPLOAD_MEDIA_CHUNK, &chunk_req_id, chunk_body, timeout)
+            .send_and_wait(
+                CMD_AIBOT_UPLOAD_MEDIA_CHUNK,
+                &chunk_req_id,
+                chunk_body,
+                timeout,
+            )
             .await
             .with_context(|| format!("Failed to upload WeCom Bot chunk {index}"))?;
 
@@ -651,16 +657,19 @@ async fn upload_attachment(
     .context("Failed to serialize WeCom Bot upload finish body")?;
 
     let finish_resp = handle
-        .send_and_wait(CMD_AIBOT_UPLOAD_MEDIA_FINISH, &finish_req_id, finish_body, timeout)
+        .send_and_wait(
+            CMD_AIBOT_UPLOAD_MEDIA_FINISH,
+            &finish_req_id,
+            finish_body,
+            timeout,
+        )
         .await
         .context("Failed to finish WeCom Bot media upload")?;
 
     let errcode = finish_resp["errcode"].as_i64().unwrap_or(-1);
     if errcode != 0 {
         let errmsg = finish_resp["errmsg"].as_str().unwrap_or("unknown");
-        anyhow::bail!(
-            "WeCom Bot upload finish failed: errcode={errcode}, errmsg={errmsg}"
-        );
+        anyhow::bail!("WeCom Bot upload finish failed: errcode={errcode}, errmsg={errmsg}");
     }
 
     let media_id = finish_resp["body"]["media_id"]
@@ -1005,7 +1014,10 @@ mod tests {
             "file"
         );
         assert_eq!(wecom_media_type("text/csv", "data.csv"), "file");
-        assert_eq!(wecom_media_type("application/octet-stream", "data.bin"), "file");
+        assert_eq!(
+            wecom_media_type("application/octet-stream", "data.bin"),
+            "file"
+        );
     }
 
     #[test]
@@ -1027,7 +1039,10 @@ mod tests {
         responses: Vec<serde_json::Value>,
     ) -> Result<String> {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let pending = Arc::new(Mutex::new(HashMap::<String, oneshot::Sender<serde_json::Value>>::new()));
+        let pending = Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
         let handle = WecomBotConnectionHandle::new(tx, pending.clone());
 
         let upload_task = tokio::spawn(async move {
@@ -1045,9 +1060,7 @@ mod tests {
                 .expect("req_id present")
                 .to_string();
             let mut guard = pending.lock().await;
-            let sender = guard
-                .remove(&req_id)
-                .expect("pending response registered");
+            let sender = guard.remove(&req_id).expect("pending response registered");
             sender.send(resp).expect("receiver alive");
         }
 
@@ -1089,7 +1102,10 @@ mod tests {
         ];
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let pending = Arc::new(Mutex::new(HashMap::<String, oneshot::Sender<serde_json::Value>>::new()));
+        let pending = Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
         let handle = WecomBotConnectionHandle::new(tx, pending.clone());
 
         let upload_task = tokio::spawn(async move {
@@ -1169,7 +1185,13 @@ mod tests {
             "errmsg": "invalid credential"
         })];
 
-        let result = run_upload_with_responses(path, "report.pdf".to_string(), "application/pdf".to_string(), responses).await;
+        let result = run_upload_with_responses(
+            path,
+            "report.pdf".to_string(),
+            "application/pdf".to_string(),
+            responses,
+        )
+        .await;
         assert!(result.is_err());
         let msg = format!("{:#}", result.unwrap_err());
         assert!(msg.contains("init failed"), "error: {msg}");
@@ -1182,7 +1204,10 @@ mod tests {
         std::fs::write(&attachment_path, b"pdf content").unwrap();
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let pending = Arc::new(Mutex::new(HashMap::<String, oneshot::Sender<serde_json::Value>>::new()));
+        let pending = Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
         let handle = WecomBotConnectionHandle::new(tx, pending.clone());
 
         let storage = Arc::new(MessageStorage::new(dir.path()));
@@ -1228,7 +1253,13 @@ mod tests {
             let thread_path = dir.path().join("thread");
             tokio::fs::create_dir_all(&thread_path).await.unwrap();
             adapter
-                .send_reply(&message, "AI reply", &thread_path, "msg_001", Some(&attachments))
+                .send_reply(
+                    &message,
+                    "AI reply",
+                    &thread_path,
+                    "msg_001",
+                    Some(&attachments),
+                )
                 .await
         });
 

@@ -64,7 +64,9 @@ impl WecomBotConnectionHandle {
     /// Create a new connection handle.
     pub fn new(
         sender: mpsc::UnboundedSender<String>,
-        pending_responses: std::sync::Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+        pending_responses: std::sync::Arc<
+            Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+        >,
     ) -> Self {
         Self {
             sender,
@@ -124,8 +126,7 @@ pub struct WecomBotWsClient {
     /// Sender for outbound messages. Set after WebSocket connection is established.
     outbound_sender: Option<mpsc::UnboundedSender<String>>,
     /// Registry for routing server ack frames to awaiting requests.
-    pending_responses:
-        std::sync::Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    pending_responses: std::sync::Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl WecomBotWsClient {
@@ -351,10 +352,8 @@ impl WecomBotWsClient {
         self.outbound_sender = Some(outbound_tx.clone());
 
         // Create the shared connection handle used by the outbound adapter.
-        let handle = WecomBotConnectionHandle::new(
-            outbound_tx.clone(),
-            self.pending_responses.clone(),
-        );
+        let handle =
+            WecomBotConnectionHandle::new(outbound_tx.clone(), self.pending_responses.clone());
 
         // Notify caller that connection is ready (for shared sender setup)
         if let Some(callback) = on_connect {
@@ -746,7 +745,10 @@ mod tests {
             .unwrap();
         drop(guard);
 
-        let response = wait_task.await.expect("task completed").expect("wait succeeded");
+        let response = wait_task
+            .await
+            .expect("task completed")
+            .expect("wait succeeded");
         assert_eq!(response["body"]["upload_id"], "upload_abc");
     }
 

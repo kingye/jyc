@@ -165,7 +165,8 @@ pub struct WecomBotInboundAdapter {
     #[allow(dead_code)]
     workspace_root: std::path::PathBuf,
     /// Shared connection handle Arc for outbound adapter
-    handle_arc: Option<std::sync::Arc<tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>>>,
+    handle_arc:
+        Option<std::sync::Arc<tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>>>,
 }
 
 impl WecomBotInboundAdapter {

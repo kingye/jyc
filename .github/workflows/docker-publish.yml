@@ -46,7 +46,6 @@ jobs:
             latest=false
           tags: |
             type=raw,value=slim
-            type=sha,prefix=slim-main-,format=short
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6

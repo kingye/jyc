@@ -4,6 +4,8 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-06-21
+
 ### Added
 
 - **WeCom Bot outbound attachment upload.** The `wecom_bot` channel now

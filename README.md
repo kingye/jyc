@@ -126,6 +126,13 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Protocols:** Webhook events (inbound), REST API (outbound)
 - **Model:** One thread per customer per KF account
 
+### ✅ WeCom Smart Robot (wecom_bot)
+- **Status:** Implemented in v0.3.11
+- **Features:** Smart Robot messaging via persistent WebSocket, streaming replies, and outbound attachment upload
+- **Protocols:** WebSocket long connection for both inbound and outbound
+- **Authentication:** Bot ID + long-connection secret
+- **Attachments:** File, image, voice, and video upload via WebSocket media upload protocol
+
 ### ✅ Gitee
 - **Status:** Implemented in v0.3.10
 - **Features:** Multi-agent workflow on Gitee issues and Pull Requests

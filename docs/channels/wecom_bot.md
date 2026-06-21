@@ -14,6 +14,7 @@ to `wss://openws.work.weixin.qq.com` for real-time bidirectional messaging.
 - **WebSocket long connection** with auto-reconnect and heartbeat
 - **Streaming replies** supported (`msgtype: "stream"`)
 - **Proactive messages** can be sent after initial user interaction
+- **Outbound attachments** supported: file, image, voice, and video upload via WebSocket media protocol
 
 ## Configuration
 

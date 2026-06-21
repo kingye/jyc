@@ -1,5 +1,9 @@
 //! Job management tools for the agent — create, list, delete, and toggle
 //! scheduled jobs from within any thread.
+//!
+//! Jobs are stored per-thread in `<thread>/.jyc/jobs/<id>.json`. Each tool
+//! creates a scoped `JobStore` from the `ToolContext.working_dir` (which is
+//! the thread's directory) at execution time.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -7,20 +11,19 @@ use chrono::{DateTime, Utc};
 use jyc_core::job_store::JobStore;
 use jyc_types::JobConfig;
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 use super::super::{Tool, ToolContext, ToolOutput};
 
-/// List all scheduled jobs.
-pub struct JobListTool {
-    store: Arc<JobStore>,
+/// Default max jobs per thread for agent tools (matches config default).
+const DEFAULT_MAX_JOBS: usize = 10;
+
+/// Helper to create a per-thread JobStore from the working directory.
+async fn store_from_ctx(ctx: &ToolContext<'_>) -> Result<JobStore> {
+    JobStore::new(ctx.working_dir, DEFAULT_MAX_JOBS).await
 }
 
-impl JobListTool {
-    pub fn new(store: Arc<JobStore>) -> Self {
-        Self { store }
-    }
-}
+/// List all scheduled jobs in the current thread.
+pub struct JobListTool;
 
 #[async_trait]
 impl Tool for JobListTool {
@@ -29,9 +32,10 @@ impl Tool for JobListTool {
     }
 
     fn description(&self) -> &str {
-        "List all scheduled jobs. Returns a JSON array of job configurations \
-         including id, cron/at schedule, enabled status, prompt, and next fire time. \
-         Use this to see what jobs exist before creating or modifying them."
+        "List all scheduled jobs in this thread. Returns a JSON array of job \
+         configurations including id, cron/at schedule, enabled status, prompt, \
+         and next fire time. Use this to see what jobs exist before creating or \
+         modifying them."
     }
 
     fn input_schema(&self) -> Value {
@@ -42,8 +46,9 @@ impl Tool for JobListTool {
         })
     }
 
-    async fn execute(&self, _input: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let jobs = self.store.list().await?;
+    async fn execute(&self, _input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+        let store = store_from_ctx(ctx).await?;
+        let jobs = store.list().await?;
         let summary: Vec<Value> = jobs
             .iter()
             .map(|j| {
@@ -69,16 +74,8 @@ impl Tool for JobListTool {
     }
 }
 
-/// Create a new scheduled job.
-pub struct JobCreateTool {
-    store: Arc<JobStore>,
-}
-
-impl JobCreateTool {
-    pub fn new(store: Arc<JobStore>) -> Self {
-        Self { store }
-    }
-}
+/// Create a new scheduled job in the current thread.
+pub struct JobCreateTool;
 
 #[async_trait]
 impl Tool for JobCreateTool {
@@ -183,7 +180,8 @@ impl Tool for JobCreateTool {
             ));
         };
 
-        match self.store.create(&job).await {
+        let store = store_from_ctx(ctx).await?;
+        match store.create(&job).await {
             Ok(()) => {
                 let schedule_info = if let Some(ref cron) = job.cron {
                     format!("cron='{}'", cron)
@@ -202,16 +200,8 @@ impl Tool for JobCreateTool {
     }
 }
 
-/// Delete a scheduled job.
-pub struct JobDeleteTool {
-    store: Arc<JobStore>,
-}
-
-impl JobDeleteTool {
-    pub fn new(store: Arc<JobStore>) -> Self {
-        Self { store }
-    }
-}
+/// Delete a scheduled job by ID from the current thread.
+pub struct JobDeleteTool;
 
 #[async_trait]
 impl Tool for JobDeleteTool {
@@ -220,8 +210,8 @@ impl Tool for JobDeleteTool {
     }
 
     fn description(&self) -> &str {
-        "Delete a scheduled job by ID. The job will no longer fire. \
-         Returns success or an error if the job doesn't exist. \
+        "Delete a scheduled job by ID from this thread. The job will no longer \
+         fire. Returns success or an error if the job doesn't exist. \
          Use 'job_list' to find job IDs."
     }
 
@@ -238,13 +228,14 @@ impl Tool for JobDeleteTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
         let id = input
             .get("id")
             .and_then(|i| i.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter"))?;
 
-        match self.store.delete(id).await {
+        let store = store_from_ctx(ctx).await?;
+        match store.delete(id).await {
             Ok(true) => Ok(ToolOutput::success(format!("Job '{}' deleted", id))),
             Ok(false) => Ok(ToolOutput::error(format!("Job '{}' not found", id))),
             Err(e) => Ok(ToolOutput::error(format!("Failed to delete job: {e}"))),
@@ -253,15 +244,7 @@ impl Tool for JobDeleteTool {
 }
 
 /// Toggle (enable/disable) a scheduled job.
-pub struct JobToggleTool {
-    store: Arc<JobStore>,
-}
-
-impl JobToggleTool {
-    pub fn new(store: Arc<JobStore>) -> Self {
-        Self { store }
-    }
-}
+pub struct JobToggleTool;
 
 #[async_trait]
 impl Tool for JobToggleTool {
@@ -292,7 +275,7 @@ impl Tool for JobToggleTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
         let id = input
             .get("id")
             .and_then(|i| i.as_str())
@@ -303,7 +286,8 @@ impl Tool for JobToggleTool {
             .and_then(|e| e.as_bool())
             .ok_or_else(|| anyhow::anyhow!("Missing 'enabled' parameter (true/false)"))?;
 
-        let mut job = match self.store.get(id).await? {
+        let store = store_from_ctx(ctx).await?;
+        let mut job = match store.get(id).await? {
             Some(job) => job,
             None => {
                 return Ok(ToolOutput::error(format!("Job '{}' not found", id)));
@@ -313,7 +297,7 @@ impl Tool for JobToggleTool {
         job.enabled = enabled;
         job.updated_at = Utc::now();
 
-        self.store.update(&job).await?;
+        store.update(&job).await?;
 
         let status = if enabled { "enabled" } else { "disabled" };
         Ok(ToolOutput::success(format!(

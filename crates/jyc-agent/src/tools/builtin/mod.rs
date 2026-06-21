@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use super::registry::ToolRegistry;
 use crate::vision::VisionClient;
-use jyc_core::job_store::JobStore;
 
 /// Create a tool registry with all built-in tools.
 pub fn create_builtin_registry() -> ToolRegistry {
@@ -27,16 +26,12 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(glob_tool::GlobTool));
     registry.register(Box::new(grep::GrepTool));
     registry.register(Box::new(webfetch::WebfetchTool));
+    registry.register(Box::new(job_tools::JobListTool));
+    registry.register(Box::new(job_tools::JobCreateTool));
+    registry.register(Box::new(job_tools::JobDeleteTool));
+    registry.register(Box::new(job_tools::JobToggleTool));
 
     registry
-}
-
-/// Register job management tools in the registry.
-pub fn register_job_tools(registry: &mut ToolRegistry, store: Arc<JobStore>) {
-    registry.register(Box::new(job_tools::JobListTool::new(store.clone())));
-    registry.register(Box::new(job_tools::JobCreateTool::new(store.clone())));
-    registry.register(Box::new(job_tools::JobDeleteTool::new(store.clone())));
-    registry.register(Box::new(job_tools::JobToggleTool::new(store)));
 }
 
 /// Register the `read_image` built-in tool.

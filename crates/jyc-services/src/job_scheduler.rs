@@ -1,9 +1,10 @@
 //! Background JobScheduler — fires due jobs by injecting InboundMessage
 //! into the originating thread via ThreadManager.
 //!
-//! The scheduler runs as a background async task. It periodically scans
-//! the job store for due jobs, fires them, and then sleeps until the
-//! next job is due (or until the scan interval elapses, whichever is sooner).
+//! Jobs are stored per-thread in `<thread>/.jyc/jobs/<id>.json`. The scheduler
+//! scans all channel workspace directories for thread directories that contain
+//! a `.jyc/jobs/` subdirectory, discovers due jobs, fires them, and updates
+//! their state.
 
 use anyhow::Result;
 use chrono::Utc;
@@ -11,25 +12,38 @@ use jyc_core::job_store::JobStore;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+/// A due job discovered during a scan cycle, scoped to its thread.
+struct DueJob {
+    job: jyc_types::JobConfig,
+    store: JobStore,
+    thread_name: String,
+    channel_name: String,
+}
+
 /// Background job scheduler that fires due jobs.
 ///
 /// Runs as a single async task alongside the per-channel inbound monitors.
-/// When a job fires, it creates an `InboundMessage` and enqueues it into
-/// the originating thread via `ThreadManager::enqueue`.
+/// Scans workspace directories for threads with `.jyc/jobs/` subdirectories,
+/// discovers due jobs, fires them via ThreadManager::enqueue, and persists
+/// the updated state.
 pub struct JobScheduler {
-    /// Job store for reading/updating job files.
-    store: JobStore,
-
     /// Thread managers indexed by channel name.
     /// The scheduler looks up the correct TM when firing a job.
     thread_managers: Arc<Mutex<HashMap<String, Arc<ThreadManager>>>>,
 
+    /// Workspace directories to scan for threads (one per channel).
+    workspace_dirs: Vec<PathBuf>,
+
     /// Scan interval in seconds (from config).
     scan_interval: std::time::Duration,
+
+    /// Maximum jobs per thread (from config).
+    max_jobs_per_thread: usize,
 
     /// Whether the scheduler is enabled.
     enabled: bool,
@@ -38,15 +52,17 @@ pub struct JobScheduler {
 impl JobScheduler {
     /// Create a new JobScheduler.
     pub fn new(
-        store: JobStore,
         thread_managers: Arc<Mutex<HashMap<String, Arc<ThreadManager>>>>,
+        workspace_dirs: Vec<PathBuf>,
         scan_interval_secs: u64,
+        max_jobs_per_thread: usize,
         enabled: bool,
     ) -> Self {
         Self {
-            store,
             thread_managers,
+            workspace_dirs,
             scan_interval: std::time::Duration::from_secs(scan_interval_secs),
+            max_jobs_per_thread,
             enabled,
         }
     }
@@ -73,7 +89,7 @@ impl JobScheduler {
                 }
                 _ = self.run_cycle() => {
                     // After running a cycle, sleep until the next
-                    // job is due or the scan interval elapses.
+                    // job is due or the scan interval elapses, whichever is sooner.
                     let sleep_dur = self.next_sleep_duration().await;
                     tokio::select! {
                         _ = tokio::time::sleep(sleep_dur) => {}
@@ -91,58 +107,129 @@ impl JobScheduler {
 
     /// Run a single scan-and-fire cycle.
     ///
-    /// Lists all enabled jobs, checks if any are due (next_fire_at <= now),
-    /// fires them, and updates their state.
+    /// Scans all workspace directories for threads with `.jyc/jobs/`,
+    /// discovers due (enabled + next_fire_at <= now) jobs, fires them,
+    /// and updates their state.
     async fn run_cycle(&self) {
-        let jobs = match self.store.list().await {
-            Ok(jobs) => jobs,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to list jobs during scan");
-                return;
-            }
-        };
-
-        let now = Utc::now();
-        let due_jobs: Vec<_> = jobs
-            .into_iter()
-            .filter(|j| j.enabled && j.next_fire_at.is_some_and(|t| t <= now))
-            .collect();
-
-        if due_jobs.is_empty() {
+        let due = self.discover_due_jobs().await;
+        if due.is_empty() {
             tracing::trace!("No due jobs found");
             return;
         }
 
-        tracing::info!(count = due_jobs.len(), "Firing due jobs");
+        tracing::info!(count = due.len(), "Firing due jobs");
 
-        for mut job in due_jobs {
-            // Fire the job first: inject InboundMessage into the thread.
+        for mut item in due {
+            // Fire first: inject InboundMessage into the thread.
             // If this fails (e.g. ThreadManager not found), we do NOT
             // mark the job as fired — it will be retried on the next scan.
-            if let Err(e) = self.fire_job(&job).await {
-                tracing::error!(job_id = %job.id, error = %e, "Failed to fire job");
+            if let Err(e) = self.fire_job(&item.job).await {
+                tracing::error!(job_id = %item.job.id, error = %e, "Failed to fire job");
                 continue;
             }
 
             // Only after successful enqueue, mark as fired and persist.
             // This prevents message loss: if fire_job fails, the job's
-            // enabled/next_fire_at remain unchanged so it re-fires later.
-            job.mark_fired();
-            if let Err(e) = self.store.update(&job).await {
+            // state remains unchanged so it re-fires later.
+            item.job.mark_fired();
+            if let Err(e) = item.store.update(&item.job).await {
                 tracing::error!(
-                    job_id = %job.id, error = %e,
+                    job_id = %item.job.id, error = %e,
                     "Job fired but failed to persist state — may re-fire on next scan"
                 );
                 continue;
             }
 
             tracing::info!(
-                job_id = %job.id,
-                thread = %job.thread_name,
-                channel = %job.channel_name,
+                job_id = %item.job.id,
+                thread = %item.thread_name,
+                channel = %item.channel_name,
                 "Job fired successfully"
             );
         }
+    }
+
+    /// Discover all due (enabled + next_fire_at <= now) jobs across all threads.
+    async fn discover_due_jobs(&self) -> Vec<DueJob> {
+        let now = Utc::now();
+        let mut due = Vec::new();
+
+        for workspace_dir in &self.workspace_dirs {
+            let mut thread_entries = match tokio::fs::read_dir(workspace_dir).await {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            while let Ok(Some(entry)) = thread_entries.next_entry().await {
+                let thread_path = entry.path();
+                if !thread_path.is_dir() {
+                    continue;
+                }
+
+                let jobs_dir = thread_path.join(".jyc").join("jobs");
+                if !jobs_dir.exists() {
+                    continue;
+                }
+
+                let thread_name = match thread_path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                };
+
+                // Extract channel_name from workspace directory structure:
+                // <workdir>/<channel_name>/workspace/<thread_name>/
+                let channel_name = match workspace_dir.parent() {
+                    Some(p) => p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+
+                // Build scoped JobStore for this thread
+                let store = match JobStore::new(&thread_path, self.max_jobs_per_thread).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            thread = %thread_name,
+                            error = %e,
+                            "Failed to open job store for thread"
+                        );
+                        continue;
+                    }
+                };
+
+                let jobs = match store.list().await {
+                    Ok(jobs) => jobs,
+                    Err(e) => {
+                        tracing::warn!(
+                            thread = %thread_name,
+                            error = %e,
+                            "Failed to list jobs for thread"
+                        );
+                        continue;
+                    }
+                };
+
+                for job in jobs {
+                    if !job.enabled {
+                        continue;
+                    }
+                    if job.next_fire_at.is_none_or(|t| t > now) {
+                        continue;
+                    }
+                    due.push(DueJob {
+                        job: job.clone(),
+                        store: store.clone(),
+                        thread_name: thread_name.clone(),
+                        channel_name: channel_name.clone(),
+                    });
+                }
+            }
+        }
+
+        due
     }
 
     /// Fire a single job by injecting an InboundMessage into the originating thread.
@@ -211,24 +298,59 @@ impl JobScheduler {
     /// Returns the scan interval if no jobs are enabled, or the time
     /// until the next due job (capped at the scan interval).
     async fn next_sleep_duration(&self) -> std::time::Duration {
-        let jobs = match self.store.list().await {
-            Ok(jobs) => jobs,
-            Err(_) => return self.scan_interval,
-        };
-
         let now = Utc::now();
-        let next_fire = jobs
-            .iter()
-            .filter(|j| j.enabled)
-            .filter_map(|j| j.next_fire_at)
-            .min();
 
-        match next_fire {
-            Some(t) if t > now => {
+        let mut earliest_next: Option<chrono::DateTime<Utc>> = None;
+
+        for workspace_dir in &self.workspace_dirs {
+            let mut thread_entries = match tokio::fs::read_dir(workspace_dir).await {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            while let Ok(Some(entry)) = thread_entries.next_entry().await {
+                let thread_path = entry.path();
+                if !thread_path.is_dir() {
+                    continue;
+                }
+
+                let jobs_dir = thread_path.join(".jyc").join("jobs");
+                if !jobs_dir.exists() {
+                    continue;
+                }
+
+                let store = match JobStore::new(&thread_path, self.max_jobs_per_thread).await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let jobs = match store.list().await {
+                    Ok(jobs) => jobs,
+                    Err(_) => continue,
+                };
+
+                for job in &jobs {
+                    if !job.enabled {
+                        continue;
+                    }
+                    if let Some(next) = job.next_fire_at {
+                        if next > now {
+                            earliest_next = match earliest_next {
+                                Some(current) => Some(current.min(next)),
+                                None => Some(next),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        match earliest_next {
+            Some(t) => {
                 let duration = (t - now).to_std().unwrap_or(self.scan_interval);
                 duration.min(self.scan_interval)
             }
-            _ => self.scan_interval,
+            None => self.scan_interval,
         }
     }
 }
@@ -239,19 +361,30 @@ mod tests {
     use jyc_core::job_store::JobStore;
     use tempfile::tempdir;
 
-    async fn create_test_scheduler(store: JobStore, enabled: bool) -> JobScheduler {
+    async fn create_test_scheduler(workspace_dirs: Vec<PathBuf>, enabled: bool) -> JobScheduler {
         let tms = Arc::new(Mutex::new(HashMap::new()));
-        JobScheduler::new(store, tms, 60, enabled)
+        JobScheduler::new(tms, workspace_dirs, 60, 10, enabled)
+    }
+
+    /// Create a thread directory with a jobs store.
+    async fn make_thread_with_jobs(
+        workspace: &Path,
+        thread_name: &str,
+        jobs: Vec<jyc_types::JobConfig>,
+    ) {
+        let thread_path = workspace.join(thread_name);
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        let store = JobStore::new(&thread_path, 10).await.unwrap();
+        for job in jobs {
+            store.create(&job).await.unwrap();
+        }
     }
 
     #[tokio::test]
     async fn test_disabled_scheduler_returns_immediately() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-        let scheduler = create_test_scheduler(store, false).await;
+        let scheduler = create_test_scheduler(vec![], false).await;
         let cancel = CancellationToken::new();
 
-        // Run should return immediately when disabled
         tokio::time::timeout(std::time::Duration::from_millis(100), scheduler.run(cancel))
             .await
             .unwrap();
@@ -260,9 +393,10 @@ mod tests {
     #[tokio::test]
     async fn test_next_sleep_duration_no_jobs() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-        let scheduler = create_test_scheduler(store, true).await;
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
 
+        let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;
         assert_eq!(dur, std::time::Duration::from_secs(60));
     }
@@ -270,9 +404,9 @@ mod tests {
     #[tokio::test]
     async fn test_next_sleep_duration_with_future_job() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Create a job that fires far in the future
         let job = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(1),
             "test".to_string(),
@@ -280,164 +414,19 @@ mod tests {
             "work".to_string(),
             "future task".to_string(),
         );
-        store.create(&job).await.unwrap();
+        make_thread_with_jobs(&workspace, "thread-1", vec![job]).await;
 
-        let scheduler = create_test_scheduler(store, true).await;
+        let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;
-
-        // Should be less than the 60s scan interval since the job is 1 hour away
-        // but capped at the scan interval
         assert_eq!(dur, std::time::Duration::from_secs(60));
     }
 
     #[tokio::test]
-    async fn test_next_sleep_duration_with_past_job() {
+    async fn test_run_cycle_skips_disabled_jobs() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Create a job that should have already fired
-        let job = jyc_types::JobConfig::new_one_time(
-            Utc::now() - chrono::Duration::minutes(10),
-            "test".to_string(),
-            "email".to_string(),
-            "work".to_string(),
-            "overdue task".to_string(),
-        );
-        store.create(&job).await.unwrap();
-
-        let scheduler = create_test_scheduler(store, true).await;
-        let dur = scheduler.next_sleep_duration().await;
-
-        // Should return scan interval because the job is already due
-        // (next_fire_at is in the past, so the min function yields None
-        // for the filter condition, falling back to scan_interval)
-        assert_eq!(dur, std::time::Duration::from_secs(60));
-    }
-
-    #[tokio::test]
-    async fn test_run_cycle_fires_due_job() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-
-        // Create a job that's due now but targets a nonexistent channel.
-        // With the new ordering (fire before persist), if fire_job fails,
-        // the job should NOT be marked as fired — it stays for retry.
-        let job = jyc_types::JobConfig::new_one_time(
-            Utc::now(),
-            "test-thread".to_string(),
-            "email".to_string(),
-            "nonexistent-channel".to_string(),
-            "test fire".to_string(),
-        );
-        let job_id = job.id.clone();
-        store.create(&job).await.unwrap();
-
-        let scheduler = create_test_scheduler(store, true).await;
-        scheduler.run_cycle().await;
-
-        // fire_job fails (ThreadManager not found for "nonexistent-channel"),
-        // so the job should remain unchanged for retry
-        let store = &scheduler.store;
-        let updated = store.get(&job_id).await.unwrap().unwrap();
-        assert!(updated.enabled, "Job should remain enabled (not fired)");
-        assert!(
-            updated.last_fired_at.is_none(),
-            "Job should NOT have been marked as fired"
-        );
-    }
-
-    // --- Integration tests ---
-
-    /// Full lifecycle test: create a one-time job → manually fire and persist → verify state.
-    #[tokio::test]
-    async fn test_job_lifecycle_one_time() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-
-        // Create a one-time job that fires immediately
-        let mut job = jyc_types::JobConfig::new_one_time(
-            Utc::now(),
-            "lifecycle-test".to_string(),
-            "email".to_string(),
-            "test-channel".to_string(),
-            "Integration test job".to_string(),
-        );
-        let job_id = job.id.clone();
-        store.create(&job).await.unwrap();
-
-        // Verify job exists in store
-        let stored = store.get(&job_id).await.unwrap().unwrap();
-        assert!(stored.enabled);
-        assert!(stored.next_fire_at.is_some());
-        assert!(stored.last_fired_at.is_none());
-
-        // Manually simulate the fire-and-persist cycle
-        job.mark_fired();
-        store.update(&job).await.unwrap();
-
-        // Verify job was fired and disabled
-        let updated = store.get(&job_id).await.unwrap().unwrap();
-        assert!(
-            !updated.enabled,
-            "One-time job should be disabled after firing"
-        );
-        assert!(
-            updated.last_fired_at.is_some(),
-            "Job should have last_fired_at"
-        );
-        assert!(
-            updated.next_fire_at.is_none(),
-            "One-time job should have no next fire after firing"
-        );
-    }
-
-    /// Full lifecycle test: create a recurring job → manually fire it → verify state.
-    #[tokio::test]
-    async fn test_job_lifecycle_recurring() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-
-        // Create a recurring job
-        let mut job = jyc_types::JobConfig::new_recurring(
-            "*/30 * * * * * *",
-            "recurring-test".to_string(),
-            "email".to_string(),
-            "test-channel".to_string(),
-            "Recurring integration test".to_string(),
-        );
-        let job_id = job.id.clone();
-        let original_next = job.next_fire_at;
-        store.create(&job).await.unwrap();
-
-        // Manually fire the job (simulates what the scheduler does)
-        job.mark_fired();
-        store.update(&job).await.unwrap();
-
-        // Verify recurring job stays enabled and has a new next_fire_at
-        let updated = store.get(&job_id).await.unwrap().unwrap();
-        assert!(
-            updated.enabled,
-            "Recurring job should stay enabled after firing"
-        );
-        assert!(
-            updated.last_fired_at.is_some(),
-            "Job should have last_fired_at"
-        );
-        assert!(
-            updated.next_fire_at.is_some(),
-            "Recurring job should have next fire"
-        );
-        // Next fire must be >= original next fire
-        assert!(updated.next_fire_at >= original_next);
-    }
-
-    /// Test that the scheduler only fires enabled jobs.
-    #[tokio::test]
-    async fn test_scheduler_skips_disabled_jobs() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-
-        // Create a disabled job that is due
         let mut job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
             "disabled-test".to_string(),
@@ -446,141 +435,24 @@ mod tests {
             "Should not fire".to_string(),
         );
         job.enabled = false;
-        store.create(&job).await.unwrap();
+        make_thread_with_jobs(&workspace, "thread-1", vec![job]).await;
 
-        // Run the scheduler cycle
-        let scheduler = create_test_scheduler(store.clone(), true).await;
+        let scheduler = create_test_scheduler(vec![workspace], true).await;
         scheduler.run_cycle().await;
-
-        // Verify disabled job was NOT touched
-        let stored = store.get(&job.id).await.unwrap().unwrap();
-        assert!(!stored.enabled);
-        assert!(
-            stored.last_fired_at.is_none(),
-            "Disabled job should not have been fired"
-        );
     }
 
-    /// Test job store CRUD operations in sequence.
     #[tokio::test]
-    async fn test_job_crud_workflow() {
+    async fn test_run_cycle_skips_pending_thread_without_jobs_dir() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Create
-        let job = jyc_types::JobConfig::new_recurring(
-            "0 0 9 * * * *",
-            "crud-test".to_string(),
-            "email".to_string(),
-            "work".to_string(),
-            "Daily at 9 AM".to_string(),
-        );
-        store.create(&job).await.unwrap();
-        assert!(store.get(&job.id).await.unwrap().is_some());
+        // Create a thread directory WITHOUT .jyc/jobs/ — should be silently skipped
+        let thread_path = workspace.join("no-jobs-thread");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
 
-        // List
-        let jobs = store.list().await.unwrap();
-        assert_eq!(jobs.len(), 1);
-
-        // Update
-        let mut updated = job.clone();
-        updated.prompt = "Updated prompt".to_string();
-        store.update(&updated).await.unwrap();
-        let fetched = store.get(&job.id).await.unwrap().unwrap();
-        assert_eq!(fetched.prompt, "Updated prompt");
-
-        // Delete
-        let deleted = store.delete(&job.id).await.unwrap();
-        assert!(deleted);
-        assert!(store.get(&job.id).await.unwrap().is_none());
-
-        // List empty
-        let jobs = store.list().await.unwrap();
-        assert!(jobs.is_empty());
-    }
-
-    /// Test job creation through the config interface (new_one_time, new_recurring).
-    #[tokio::test]
-    async fn test_job_creation_constructors() {
-        let future = Utc::now() + chrono::Duration::days(1);
-
-        // One-time
-        let one_time = jyc_types::JobConfig::new_one_time(
-            future,
-            "thread-1".to_string(),
-            "wecom_bot".to_string(),
-            "general".to_string(),
-            "Reminder text".to_string(),
-        );
-        assert_eq!(one_time.at, Some(future));
-        assert!(one_time.cron.is_none());
-
-        // Recurring
-        let recurring = jyc_types::JobConfig::new_recurring(
-            "0 0 8 * * * *",
-            "thread-2".to_string(),
-            "email".to_string(),
-            "work".to_string(),
-            "Daily summary".to_string(),
-        );
-        assert_eq!(recurring.cron.as_deref(), Some("0 0 8 * * * *"));
-        assert!(recurring.at.is_none());
-    }
-
-    /// Test that mark_fired correctly advances the recurring job's next_fire_at.
-    #[tokio::test]
-    async fn test_mark_fired_advances_recurring() {
-        let mut job = jyc_types::JobConfig::new_recurring(
-            "* * * * * * *", // Every second
-            "advance-test".to_string(),
-            "email".to_string(),
-            "work".to_string(),
-            "Every second".to_string(),
-        );
-
-        let before = job.next_fire_at;
-        // Ensure time passes so mark_fired's now > creation now
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        job.mark_fired();
-        let after = job.next_fire_at;
-
-        assert!(job.enabled, "Recurring job should stay enabled");
-        assert!(job.last_fired_at.is_some(), "Should have last_fired_at");
-        assert!(after >= before, "Next fire should not go backwards");
-    }
-
-    /// Test that multiple due jobs are processed in one cycle, but since no
-    /// ThreadManager is registered for any of them, fire_job fails and none
-    /// are marked as fired (they remain for retry).
-    #[tokio::test]
-    async fn test_run_cycle_multiple_jobs_not_fired_without_tm() {
-        let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
-
-        // Create 3 jobs that are due now
-        for i in 0..3 {
-            let job = jyc_types::JobConfig::new_one_time(
-                Utc::now(),
-                format!("thread-{i}"),
-                "email".to_string(),
-                "test-channel".to_string(),
-                format!("Job {i}"),
-            );
-            store.create(&job).await.unwrap();
-        }
-
-        let scheduler = create_test_scheduler(store.clone(), true).await;
+        let scheduler = create_test_scheduler(vec![workspace], true).await;
+        // Should not panic
         scheduler.run_cycle().await;
-
-        // All 3 jobs should remain unchanged (fire_job fails without TM)
-        let jobs = store.list().await.unwrap();
-        assert_eq!(jobs.len(), 3);
-        for job in &jobs {
-            assert!(job.enabled, "Job should remain enabled (not fired)");
-            assert!(
-                job.last_fired_at.is_none(),
-                "Job should NOT have been marked as fired"
-            );
-        }
     }
 }

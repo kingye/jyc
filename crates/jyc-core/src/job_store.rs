@@ -1,8 +1,8 @@
 //! File-based store for scheduled jobs.
 //!
-//! Each job is stored as `<jobs_dir>/<id>.json`. The store provides
-//! CRUD operations and is used by both `JobScheduler` and the agent
-//! job management tools.
+//! Each job is stored as `<thread_path>/.jyc/jobs/<id>.json`. The store
+//! provides CRUD operations and is used by both the `JobScheduler` and
+//! the agent job management tools. Each thread has its own isolated store.
 
 use anyhow::{Context, Result};
 use jyc_types::JobConfig;
@@ -11,32 +11,41 @@ use tokio::fs;
 
 /// File-based job store with per-file JSON persistence.
 ///
-/// Jobs are stored as individual JSON files under the configured
-/// `jobs_dir`. This avoids SQLite dependency while providing
-/// atomic per-file operations.
+/// Jobs are stored as individual JSON files under the thread's
+/// `.jyc/jobs/` directory. This avoids SQLite dependency while
+/// providing atomic per-file operations.
 #[derive(Clone)]
 pub struct JobStore {
-    /// Directory containing job JSON files.
-    jobs_dir: PathBuf,
+    /// Thread directory path. Jobs are stored at `{.jyc/jobs/<id>.json`.
+    thread_path: PathBuf,
+    /// Maximum number of jobs allowed per thread.
+    max_jobs: usize,
 }
 
 impl JobStore {
-    /// Create a new JobStore rooted at `jobs_dir`.
+    /// Create a new JobStore for the given thread path.
     ///
-    /// The directory is created if it doesn't exist.
-    pub async fn new(jobs_dir: &Path) -> Result<Self> {
-        fs::create_dir_all(jobs_dir)
+    /// The jobs directory (`.jyc/jobs/`) is created if it doesn't exist.
+    pub async fn new(thread_path: &Path, max_jobs: usize) -> Result<Self> {
+        let jobs_dir = thread_path.join(".jyc").join("jobs");
+        fs::create_dir_all(&jobs_dir)
             .await
             .with_context(|| format!("failed to create jobs directory: {}", jobs_dir.display()))?;
 
         Ok(Self {
-            jobs_dir: jobs_dir.to_path_buf(),
+            thread_path: thread_path.to_path_buf(),
+            max_jobs,
         })
+    }
+
+    /// Return the path to the jobs directory.
+    pub fn jobs_dir(&self) -> PathBuf {
+        self.thread_path.join(".jyc").join("jobs")
     }
 
     /// Return the path to the job file for the given ID.
     fn job_path(&self, id: &str) -> PathBuf {
-        self.jobs_dir.join(format!("{id}.json"))
+        self.jobs_dir().join(format!("{id}.json"))
     }
 
     /// List all jobs in the store.
@@ -45,7 +54,8 @@ impl JobStore {
     /// Returns an empty Vec if the directory doesn't exist or has no files.
     pub async fn list(&self) -> Result<Vec<JobConfig>> {
         let mut jobs = Vec::new();
-        let mut entries = match fs::read_dir(&self.jobs_dir).await {
+        let jobs_dir = self.jobs_dir();
+        let mut entries = match fs::read_dir(&jobs_dir).await {
             Ok(entries) => entries,
             Err(_) => return Ok(Vec::new()),
         };
@@ -80,12 +90,23 @@ impl JobStore {
 
     /// Create a new job by writing its JSON file.
     ///
-    /// Returns an error if a job with the same ID already exists.
+    /// Returns an error if a job with the same ID already exists or if
+    /// the job count for this thread would exceed `max_jobs`.
     pub async fn create(&self, job: &JobConfig) -> Result<()> {
         let path = self.job_path(&job.id);
         if path.exists() {
             anyhow::bail!("job '{}' already exists", job.id);
         }
+
+        // Enforce per-thread job limit
+        let current = self.list().await?.len();
+        if current >= self.max_jobs {
+            anyhow::bail!(
+                "job limit per thread reached ({} max). Delete an existing job first.",
+                self.max_jobs
+            );
+        }
+
         self.write_job_file(&path, job).await
     }
 
@@ -174,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_get() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.create(&job).await.unwrap();
@@ -186,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_duplicate_fails() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.create(&job).await.unwrap();
@@ -197,7 +218,7 @@ mod tests {
     #[tokio::test]
     async fn test_update() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let mut job = sample_job("job-1");
         store.create(&job).await.unwrap();
 
@@ -211,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_nonexistent_fails() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let job = sample_job("nonexistent");
         let result = store.update(&job).await;
         assert!(result.is_err());
@@ -220,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
         store.create(&job).await.unwrap();
 
@@ -234,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent_returns_false() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let deleted = store.delete("nonexistent").await.unwrap();
         assert!(!deleted);
     }
@@ -242,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn test_list() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
 
         let job1 = sample_job("job-1");
         let job2 = sample_job("job-2");
@@ -256,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_empty() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let jobs = store.list().await.unwrap();
         assert!(jobs.is_empty());
     }
@@ -264,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_creates_new() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.upsert(&job).await.unwrap();
@@ -274,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_updates_existing() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path()).await.unwrap();
+        let store = JobStore::new(tmp.path(), 10).await.unwrap();
         let mut job = sample_job("job-1");
         store.upsert(&job).await.unwrap();
 
@@ -283,5 +304,26 @@ mod tests {
 
         let retrieved = store.get("job-1").await.unwrap().unwrap();
         assert_eq!(retrieved.prompt, "Upserted prompt");
+    }
+
+    #[tokio::test]
+    async fn test_max_jobs_limit() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path(), 2).await.unwrap();
+
+        let job1 = sample_job("job-1");
+        let job2 = sample_job("job-2");
+        let job3 = sample_job("job-3");
+
+        store.create(&job1).await.unwrap();
+        store.create(&job2).await.unwrap();
+
+        // Third job should be rejected
+        let result = store.create(&job3).await;
+        assert!(result.is_err(), "Should reject when limit reached");
+        assert!(
+            result.unwrap_err().to_string().contains("job limit"),
+            "Error should mention job limit"
+        );
     }
 }

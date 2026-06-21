@@ -87,6 +87,12 @@ pub struct AppConfig {
     /// Each template in `templates.toml` can specify which MCPs it needs.
     #[serde(default)]
     pub mcps: Vec<McpServerConfig>,
+
+    /// Scheduler configuration for channel-agnostic scheduled jobs.
+    /// When enabled, a background JobScheduler runs alongside the monitor
+    /// and fires due jobs by injecting InboundMessage into ThreadManager.
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 /// General application settings.
@@ -405,6 +411,43 @@ impl Default for InspectConfig {
 
 fn default_inspect_bind() -> String {
     "127.0.0.1:9876".to_string()
+}
+
+/// Scheduler configuration for channel-agnostic scheduled jobs.
+///
+/// Controls the background JobScheduler that fires due jobs by injecting
+/// InboundMessage into the originating thread via ThreadManager.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SchedulerConfig {
+    /// Whether the job scheduler is enabled (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Directory for job storage, relative to workdir (default: ".jyc/jobs").
+    #[serde(default = "default_jobs_dir")]
+    pub jobs_dir: String,
+
+    /// How often (in seconds) the scheduler scans for due jobs (default: 60).
+    #[serde(default = "default_60")]
+    pub scan_interval_secs: u64,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            jobs_dir: ".jyc/jobs".to_string(),
+            scan_interval_secs: 60,
+        }
+    }
+}
+
+fn default_jobs_dir() -> String {
+    ".jyc/jobs".to_string()
+}
+
+fn default_60() -> u64 {
+    60
 }
 
 // --- Default value functions ---

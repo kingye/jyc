@@ -18,7 +18,8 @@ pub struct JobConfig {
     /// Unique job identifier (UUID v4).
     pub id: String,
 
-    /// Cron expression for recurring jobs (e.g. "0 8 * * *" for daily at 8 AM).
+    /// Cron expression for recurring jobs (e.g. "0 0 8 * * * *" for daily at 8 AM).
+    /// Uses 7-field format: sec min hour dom mon dow year.
     /// Mutually exclusive with `at`. When both are set, `cron` takes precedence.
     pub cron: Option<String>,
 

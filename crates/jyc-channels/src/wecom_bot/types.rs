@@ -205,6 +205,7 @@ pub struct BotEvent {
     /// Chat ID
     pub chatid: String,
     /// Event type: enter_chat, template_card_event, feedback_event, disconnected_event
+    #[serde(deserialize_with = "deserialize_event_type")]
     pub event: String,
     /// Event data (type-specific)
     #[serde(default)]
@@ -212,6 +213,31 @@ pub struct BotEvent {
     /// Request ID (from headers, not body)
     #[serde(default)]
     pub req_id: String,
+}
+
+/// Deserialize WeCom Bot event type.
+///
+/// WeCom has been observed sending the event type in two shapes:
+/// - legacy: `"event": "enter_chat"`
+/// - nested: `"event": {"eventtype": "enter_chat"}`
+fn deserialize_event_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Object(mut map) => match map.remove("eventtype") {
+            Some(serde_json::Value::String(s)) => Ok(s),
+            _ => Err(D::Error::custom(
+                "event object missing string 'eventtype' field",
+            )),
+        },
+        _ => Err(D::Error::custom(
+            "event must be a string or an object with 'eventtype'",
+        )),
+    }
 }
 
 /// Payload for responding/sending messages.
@@ -355,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_event() {
+    fn test_parse_event_string_format() {
         let json = r#"{
             "cmd": "aibot_event_callback",
             "headers": {"req_id": "req_def"},
@@ -370,6 +396,40 @@ mod tests {
         let event: BotEvent = serde_json::from_value(body).unwrap();
         assert_eq!(event.event, "enter_chat");
         assert_eq!(event.chatid, "chat_456");
+    }
+
+    #[test]
+    fn test_parse_event_nested_format() {
+        let json = r#"{
+            "cmd": "aibot_event_callback",
+            "headers": {"req_id": "mmGv-d6fQ5qXxQl5ef0zDwAA"},
+            "body": {
+                "msgid": "7a27653055a1a0fe21c977069d20eb04",
+                "aibotid": "aibhJ39X1kuUvS-tbkxZbm8_PRVLllDYV6X",
+                "chatid": "chat_456",
+                "chattype": "single",
+                "from": {"userid": "MianMianRuoCun"},
+                "msgtype": "event",
+                "create_time": 1782058091,
+                "event": {"eventtype": "enter_chat"}
+            }
+        }"#;
+        let raw: serde_json::Value = serde_json::from_str(json).unwrap();
+        let body = raw.get("body").cloned().unwrap();
+        let event: BotEvent = serde_json::from_value(body).unwrap();
+        assert_eq!(event.event, "enter_chat");
+        assert_eq!(event.aibotid, "aibhJ39X1kuUvS-tbkxZbm8_PRVLllDYV6X");
+    }
+
+    #[test]
+    fn test_parse_event_invalid_format_fails() {
+        let body = serde_json::json!({
+            "aibotid": "bot_xxx",
+            "chatid": "chat_456",
+            "event": 123
+        });
+        let result: Result<BotEvent, _> = serde_json::from_value(body);
+        assert!(result.is_err());
     }
 
     #[test]

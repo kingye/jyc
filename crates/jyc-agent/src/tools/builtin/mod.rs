@@ -4,6 +4,7 @@ pub mod bash;
 pub mod edit;
 pub mod glob_tool;
 pub mod grep;
+pub mod job_tools;
 pub mod read;
 pub mod read_image;
 pub mod webfetch;
@@ -25,6 +26,10 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(glob_tool::GlobTool));
     registry.register(Box::new(grep::GrepTool));
     registry.register(Box::new(webfetch::WebfetchTool));
+    registry.register(Box::new(job_tools::JobListTool));
+    registry.register(Box::new(job_tools::JobCreateTool));
+    registry.register(Box::new(job_tools::JobDeleteTool));
+    registry.register(Box::new(job_tools::JobToggleTool));
 
     registry
 }

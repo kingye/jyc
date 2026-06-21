@@ -429,14 +429,18 @@ mod tool_registry {
         assert!(registry.has_tool("glob"));
         assert!(registry.has_tool("grep"));
         assert!(registry.has_tool("webfetch"));
-        assert_eq!(registry.len(), 7);
+        assert!(registry.has_tool("job_list"));
+        assert!(registry.has_tool("job_create"));
+        assert!(registry.has_tool("job_delete"));
+        assert!(registry.has_tool("job_toggle"));
+        assert_eq!(registry.len(), 11);
     }
 
     #[test]
     fn registry_produces_definitions() {
         let registry = create_builtin_registry();
         let definitions = registry.definitions();
-        assert_eq!(definitions.len(), 7);
+        assert_eq!(definitions.len(), 11);
 
         // Each definition should have name, description, and input_schema
         for def in &definitions {

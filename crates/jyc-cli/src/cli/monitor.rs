@@ -10,6 +10,9 @@ use jyc_agent::JycAgentService;
 use jyc_core::agent::AgentService;
 use jyc_core::static_agent::StaticAgentService;
 
+use jyc_services::job_scheduler::JobScheduler;
+use std::collections::HashMap;
+
 use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
@@ -1023,6 +1026,32 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     if tasks.is_empty() {
         anyhow::bail!("No channels configured");
+    }
+
+    // 4.5. Start JobScheduler (if scheduler is enabled in config)
+    let scheduler_config = config_snapshot.scheduler.clone();
+    if scheduler_config.enabled {
+        // Build thread manager map keyed by channel name
+        let tm_map: HashMap<String, Arc<ThreadManager>> = all_thread_managers
+            .iter()
+            .map(|tm| (tm.channel_name().to_string(), tm.clone()))
+            .collect();
+        let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
+
+        let scheduler = JobScheduler::new(
+            tm_map,
+            all_workspace_dirs.clone(),
+            scheduler_config.scan_interval_secs,
+            scheduler_config.max_jobs_per_thread,
+            true,
+        );
+
+        let scheduler_cancel = cancel.clone();
+        tasks.push(tokio::spawn(async move {
+            scheduler.run(scheduler_cancel).await;
+        }));
+
+        tracing::info!("Job scheduler started");
     }
 
     // 5. Start inspect server (if configured)

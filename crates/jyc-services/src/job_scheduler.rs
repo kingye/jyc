@@ -136,9 +136,12 @@ impl JobScheduler {
     /// Fire a single job by injecting an InboundMessage into the originating thread.
     async fn fire_job(&self, job: &jyc_types::JobConfig) -> Result<()> {
         let tms = self.thread_managers.lock().await;
-        let tm = tms
-            .get(&job.channel_name)
-            .ok_or_else(|| anyhow::anyhow!("thread manager not found for channel '{}'", job.channel_name))?;
+        let tm = tms.get(&job.channel_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "thread manager not found for channel '{}'",
+                job.channel_name
+            )
+        })?;
 
         let message = InboundMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -147,7 +150,10 @@ impl JobScheduler {
             sender: "scheduler".to_string(),
             sender_address: "scheduler@jyc".to_string(),
             recipients: vec![],
-            topic: format!("Scheduled job: {}", job.prompt.chars().take(80).collect::<String>()),
+            topic: format!(
+                "Scheduled job: {}",
+                job.prompt.chars().take(80).collect::<String>()
+            ),
             content: MessageContent {
                 text: Some(job.prompt.clone()),
                 html: None,
@@ -160,7 +166,10 @@ impl JobScheduler {
             attachments: vec![],
             metadata: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("job_id".to_string(), serde_json::Value::String(job.id.clone()));
+                m.insert(
+                    "job_id".to_string(),
+                    serde_json::Value::String(job.id.clone()),
+                );
                 m
             },
             matched_pattern: None,
@@ -218,10 +227,7 @@ mod tests {
     use jyc_core::job_store::JobStore;
     use tempfile::tempdir;
 
-    async fn create_test_scheduler(
-        store: JobStore,
-        enabled: bool,
-    ) -> JobScheduler {
+    async fn create_test_scheduler(store: JobStore, enabled: bool) -> JobScheduler {
         let tms = Arc::new(Mutex::new(HashMap::new()));
         JobScheduler::new(store, tms, 60, enabled)
     }
@@ -353,9 +359,18 @@ mod tests {
 
         // Verify job was fired and disabled
         let updated = store.get(&job_id).await.unwrap().unwrap();
-        assert!(!updated.enabled, "One-time job should be disabled after firing");
-        assert!(updated.last_fired_at.is_some(), "Job should have last_fired_at");
-        assert!(updated.next_fire_at.is_none(), "One-time job should have no next fire after firing");
+        assert!(
+            !updated.enabled,
+            "One-time job should be disabled after firing"
+        );
+        assert!(
+            updated.last_fired_at.is_some(),
+            "Job should have last_fired_at"
+        );
+        assert!(
+            updated.next_fire_at.is_none(),
+            "One-time job should have no next fire after firing"
+        );
     }
 
     /// Full lifecycle test: create a recurring job → manually fire it → verify state.
@@ -382,9 +397,18 @@ mod tests {
 
         // Verify recurring job stays enabled and has a new next_fire_at
         let updated = store.get(&job_id).await.unwrap().unwrap();
-        assert!(updated.enabled, "Recurring job should stay enabled after firing");
-        assert!(updated.last_fired_at.is_some(), "Job should have last_fired_at");
-        assert!(updated.next_fire_at.is_some(), "Recurring job should have next fire");
+        assert!(
+            updated.enabled,
+            "Recurring job should stay enabled after firing"
+        );
+        assert!(
+            updated.last_fired_at.is_some(),
+            "Job should have last_fired_at"
+        );
+        assert!(
+            updated.next_fire_at.is_some(),
+            "Recurring job should have next fire"
+        );
         // Next fire must be >= original next fire
         assert!(updated.next_fire_at >= original_next);
     }
@@ -413,7 +437,10 @@ mod tests {
         // Verify disabled job was NOT touched
         let stored = store.get(&job.id).await.unwrap().unwrap();
         assert!(!stored.enabled);
-        assert!(stored.last_fired_at.is_none(), "Disabled job should not have been fired");
+        assert!(
+            stored.last_fired_at.is_none(),
+            "Disabled job should not have been fired"
+        );
     }
 
     /// Test job store CRUD operations in sequence.
@@ -486,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_mark_fired_advances_recurring() {
         let mut job = jyc_types::JobConfig::new_recurring(
-            "* * * * * * *",  // Every second
+            "* * * * * * *", // Every second
             "advance-test".to_string(),
             "email".to_string(),
             "work".to_string(),

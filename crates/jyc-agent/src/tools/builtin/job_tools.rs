@@ -160,13 +160,7 @@ impl Tool for JobCreateTool {
                     cron_expr
                 )));
             }
-            JobConfig::new_recurring(
-                cron_expr,
-                thread_name,
-                channel,
-                channel_name,
-                prompt,
-            )
+            JobConfig::new_recurring(cron_expr, thread_name, channel, channel_name, prompt)
         } else if let Some(at_str) = at_str {
             let at = match DateTime::parse_from_rfc3339(at_str) {
                 Ok(dt) => dt.with_timezone(&Utc),
@@ -320,6 +314,9 @@ impl Tool for JobToggleTool {
         self.store.update(&job).await?;
 
         let status = if enabled { "enabled" } else { "disabled" };
-        Ok(ToolOutput::success(format!("Job '{}' is now {}", id, status)))
+        Ok(ToolOutput::success(format!(
+            "Job '{}' is now {}",
+            id, status
+        )))
     }
 }

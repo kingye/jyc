@@ -4,6 +4,7 @@ pub mod bash;
 pub mod edit;
 pub mod glob_tool;
 pub mod grep;
+pub mod job_tools;
 pub mod read;
 pub mod read_image;
 pub mod webfetch;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 
 use super::registry::ToolRegistry;
 use crate::vision::VisionClient;
+use jyc_core::job_store::JobStore;
 
 /// Create a tool registry with all built-in tools.
 pub fn create_builtin_registry() -> ToolRegistry {
@@ -27,6 +29,14 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(webfetch::WebfetchTool));
 
     registry
+}
+
+/// Register job management tools in the registry.
+pub fn register_job_tools(registry: &mut ToolRegistry, store: Arc<JobStore>) {
+    registry.register(Box::new(job_tools::JobListTool::new(store.clone())));
+    registry.register(Box::new(job_tools::JobCreateTool::new(store.clone())));
+    registry.register(Box::new(job_tools::JobDeleteTool::new(store.clone())));
+    registry.register(Box::new(job_tools::JobToggleTool::new(store)));
 }
 
 /// Register the `read_image` built-in tool.

@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
+use jyc_core::job_store::JobStore;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 
@@ -129,12 +130,14 @@ pub struct JycAgentService {
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
     channel_disabled_skills: Option<Vec<String>>,
+    /// Optional job store for job management tools.
+    job_store: Option<Arc<JobStore>>,
 }
 
 impl JycAgentService {
     /// Create a new agent service with the given configuration, workdir,
     /// MCP configs, current channel's patterns, global inbound-attachment config,
-    /// and optional vision fallback client.
+    /// optional vision fallback client, and optional job store.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AgentConfig,
@@ -149,6 +152,7 @@ impl JycAgentService {
         channel_disabled_mcp_servers: Option<Vec<String>>,
         channel_skills: Option<Vec<String>>,
         channel_disabled_skills: Option<Vec<String>>,
+        job_store: Option<Arc<JobStore>>,
     ) -> Self {
         Self {
             config,
@@ -164,6 +168,7 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
+            job_store,
         }
     }
 
@@ -626,6 +631,11 @@ impl JycAgentService {
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
+        // Register job management tools if job store is available
+        if let Some(ref store) = self.job_store {
+            crate::tools::builtin::register_job_tools(&mut registry, store.clone());
+        }
+
         // Find matched pattern for per-pattern overrides
         let matched_pattern =
             matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
@@ -1062,6 +1072,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -1099,6 +1110,7 @@ mod tests {
             channel_disabled_mcp_servers,
             None,
             None,
+            None,
         )
     }
 
@@ -1121,6 +1133,7 @@ mod tests {
             None,
             channel_skills,
             channel_disabled_skills,
+            None,
         )
     }
 

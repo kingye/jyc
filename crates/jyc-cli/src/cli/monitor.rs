@@ -447,6 +447,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     channel_config.disabled_mcp_servers.clone(),
                     channel_config.skills.clone(),
                     channel_config.disabled_skills.clone(),
+                    None, // job_store: wired in Step 6
                 ))
             }
             "static" => {

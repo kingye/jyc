@@ -3,6 +3,7 @@ name: Docker Build & Push
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -46,6 +47,7 @@ jobs:
             latest=false
           tags: |
             type=raw,value=slim
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6

@@ -13,31 +13,17 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /build
 
-# 1. Copy manifests only (for dependency caching)
+# Copy full source
 COPY Cargo.toml Cargo.lock ./
-COPY crates/jyc-types/Cargo.toml crates/jyc-types/Cargo.toml
-COPY crates/jyc-utils/Cargo.toml crates/jyc-utils/Cargo.toml
-COPY crates/jyc-core/Cargo.toml crates/jyc-core/Cargo.toml
-COPY crates/jyc-mcp/Cargo.toml crates/jyc-mcp/Cargo.toml
-COPY crates/jyc-agent/Cargo.toml crates/jyc-agent/Cargo.toml
-COPY crates/jyc-services/Cargo.toml crates/jyc-services/Cargo.toml
-COPY crates/jyc-channels/Cargo.toml crates/jyc-channels/Cargo.toml
-COPY crates/jyc-inspect/Cargo.toml crates/jyc-inspect/Cargo.toml
-COPY crates/jyc-cli/Cargo.toml crates/jyc-cli/Cargo.toml
-
-# 2. Create empty stubs for all crates to compile dependencies
-RUN for crate in jyc-types jyc-utils jyc-core jyc-mcp jyc-agent jyc-services jyc-channels jyc-inspect; do \
-      mkdir -p "crates/$crate/src" && echo '' > "crates/$crate/src/lib.rs"; \
-    done \
-    && mkdir -p crates/jyc-cli/src && echo 'fn main() {}' > crates/jyc-cli/src/main.rs \
-    && cargo build --release || true
-
-# 3. Remove stubs and fingerprints, copy real source, build
-RUN rm -rf crates/*/src target/release/deps/jyc* target/release/.fingerprint/jyc*
-
 COPY crates/ crates/
 COPY config.example.toml ./
-RUN cargo build --release -p jyc-cli
+
+# Build with cached cargo registry and target directory
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p jyc-cli \
+    && cp target/release/jyc /usr/local/bin/jyc
 
 # ── Stage 2: Slim runtime (minimal production image) ─────────────────
 FROM debian:bookworm-slim AS slim
@@ -55,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/jyc
 
-COPY --from=builder /build/target/release/jyc /usr/local/bin/jyc
+COPY --from=builder /usr/local/bin/jyc /usr/local/bin/jyc
 
 ENTRYPOINT ["jyc"]
 CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]

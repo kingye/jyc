@@ -99,9 +99,11 @@ impl WecomBotConnectionHandle {
         })
         .to_string();
 
-        self.sender
-            .send(frame)
-            .map_err(|e| anyhow::anyhow!("Failed to send WeCom Bot {cmd} command: {e}"))?;
+        if let Err(e) = self.sender.send(frame) {
+            let mut guard = self.pending_responses.lock().await;
+            guard.remove(req_id);
+            anyhow::bail!("Failed to send WeCom Bot {cmd} command: {e}");
+        }
 
         let response = tokio::time::timeout(timeout, rx)
             .await
@@ -771,5 +773,34 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_and_wait_cleans_up_on_send_failure() {
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let pending = std::sync::Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
+        let handle = WecomBotConnectionHandle::new(tx, pending.clone());
+
+        // Drop the receiver so the sender's send() fails.
+        drop(rx);
+
+        let result = handle
+            .send_and_wait(
+                "aibot_upload_media_init",
+                "req_cleanup",
+                serde_json::json!({"type": "file"}),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let guard = pending.lock().await;
+        assert!(
+            guard.is_empty(),
+            "pending_responses should be cleaned up when send fails"
+        );
     }
 }

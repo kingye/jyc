@@ -12,7 +12,7 @@ use jyc_core::job_store::JobStore;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -333,13 +333,11 @@ impl JobScheduler {
                     if !job.enabled {
                         continue;
                     }
-                    if let Some(next) = job.next_fire_at {
-                        if next > now {
-                            earliest_next = match earliest_next {
-                                Some(current) => Some(current.min(next)),
-                                None => Some(next),
-                            };
-                        }
+                    if let Some(next) = job.next_fire_at.filter(|t| *t > now) {
+                        earliest_next = match earliest_next {
+                            Some(current) => Some(current.min(next)),
+                            None => Some(next),
+                        };
                     }
                 }
             }
@@ -359,6 +357,7 @@ impl JobScheduler {
 mod tests {
     use super::*;
     use jyc_core::job_store::JobStore;
+    use std::path::Path;
     use tempfile::tempdir;
 
     async fn create_test_scheduler(workspace_dirs: Vec<PathBuf>, enabled: bool) -> JobScheduler {

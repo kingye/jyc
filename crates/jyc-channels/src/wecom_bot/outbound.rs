@@ -191,32 +191,17 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         let (input_tokens, max_tokens) =
             jyc_core::session_state::read_input_tokens(thread_path).await;
 
-        // 2. Build footer
-        let footer =
-            email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
-
-        // 3. Clean reply text
+        // 2. Clean reply text
         let clean_reply = email_parser::strip_trailing_separators(reply_text);
 
-        // 4. Combine with footer
-        let full_reply = if footer.is_empty() {
-            clean_reply
-        } else {
-            format!("{}\n\n{}", clean_reply, footer)
-        };
-
-        // 5. Get req_id from original message metadata
+        // 3. Get req_id from original message metadata
         let req_id = original
             .metadata
             .get("req_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if req_id.is_empty() {
-            tracing::warn!("Original message missing req_id, reply may not be correlated by WeCom");
-        }
-
-        // 6. Validate attachments if configuration is present
+        // 4. Validate attachments if configuration is present
         if let Some(attachments) = attachments
             && let Some(ref config) = self.attachment_config
         {
@@ -226,7 +211,46 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             tracing::debug!("Outbound attachments validated successfully for WeCom Bot");
         }
 
-        // 7. Check if there's an active stream for this req_id
+        // 5. Proactive message path: no original callback req_id.
+        //
+        // Scheduled jobs and other out-of-thread initiators create InboundMessages
+        // without a WeCom callback req_id. In that case we must use `aibot_send_msg`
+        // instead of `aibot_respond_msg`, because the latter requires a req_id to
+        // correlate with the original callback.
+        if req_id.is_empty() {
+            tracing::info!("Original message missing req_id, sending WeCom Bot proactive message");
+
+            let recipient = wecom_recipient_from_thread_path(thread_path)
+                .context("Failed to derive WeCom Bot recipient from thread path")?;
+
+            let result = self
+                .send_proactive_message(&recipient, &clean_reply, attachments)
+                .await
+                .context("Failed to send WeCom Bot proactive reply")?;
+
+            // Store the proactive reply to the chat log.
+            self.storage
+                .store_reply(thread_path, &clean_reply, message_dir)
+                .await
+                .context("Failed to store WeCom Bot proactive reply")?;
+
+            return Ok(result);
+        }
+
+        // 6. Reply path: echo the original callback req_id via aibot_respond_msg.
+
+        // Build footer
+        let footer =
+            email_parser::build_footer(model, mode, input_tokens, max_tokens, self.footer_enabled);
+
+        // Combine with footer
+        let full_reply = if footer.is_empty() {
+            clean_reply
+        } else {
+            format!("{}\n\n{}", clean_reply, footer)
+        };
+
+        // Check if there's an active stream for this req_id
         let active = self.active_stream.lock().await.take();
         let stream_id = if let Some(ref stream) = active
             && stream.req_id == req_id
@@ -246,7 +270,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             uuid::Uuid::new_v4().to_string()
         };
 
-        // 8. Send reply via WebSocket with finish=true
+        // Send reply via WebSocket with finish=true
         self.send_text_reply(req_id, &full_reply, &stream_id, true)
             .await
             .context("Failed to send WeCom Bot reply")?;
@@ -261,7 +285,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             "WeCom Bot reply sent"
         );
 
-        // 9. Upload and send attachments as separate media messages.
+        // Upload and send attachments as separate media messages.
         if let Some(attachments) = attachments {
             let handle = {
                 let guard = self.handle.lock().await;
@@ -309,7 +333,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             }
         }
 
-        // 10. Store reply to chat log
+        // Store reply to chat log
         self.storage
             .store_reply(thread_path, &full_reply, message_dir)
             .await
@@ -324,55 +348,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         _subject: &str,
         body: &str,
     ) -> Result<SendResult> {
-        // Proactive message: use aibot_send_msg with nested format
-        let use_markdown = body.contains("**")
-            || body.contains("*")
-            || body.contains("`")
-            || body.contains("#")
-            || body.contains("[")
-            || body.contains("- ");
-
-        let body_json = if use_markdown {
-            serde_json::json!({
-                "msgtype": "markdown",
-                "chatid": recipient,
-                "markdown": {"content": body}
-            })
-        } else {
-            serde_json::json!({
-                "msgtype": "text",
-                "chatid": recipient,
-                "text": {"content": body}
-            })
-        };
-
-        let json = serde_json::json!({
-            "cmd": "aibot_send_msg",
-            "headers": {"req_id": format!("aibot_send_msg_{}_{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-                uuid::Uuid::new_v4().to_string().replace('-', "")[..8].to_string()
-            )},
-            "body": body_json
-        })
-        .to_string();
-
-        self.send_internal(&json)
-            .await
-            .context("Failed to send WeCom Bot proactive message")?;
-
-        let message_id = uuid::Uuid::new_v4().to_string();
-
-        tracing::info!(
-            recipient = %recipient,
-            text_len = body.len(),
-            message_id = %message_id,
-            "WeCom Bot proactive message sent"
-        );
-
-        Ok(SendResult { message_id })
+        self.send_proactive_message(recipient, body, None).await
     }
 
     /// Send a processing indicator (`finish=false`) so the user sees
@@ -709,6 +685,151 @@ fn build_media_message_body(media_type: &str, media_id: &str) -> serde_json::Val
     }
 }
 
+// ─── Proactive Message Helpers ────────────────────────────────────
+
+/// Derive a WeCom Bot recipient (userid or chatid) from a thread path.
+///
+/// WeCom Bot thread names follow the `bot-{recipient}` convention produced by
+/// `WecomBotMatcher::derive_thread_name`. Scheduled jobs and other proactive
+/// initiators do not carry a callback `req_id`, so we infer the target user
+/// or chat from the thread directory name.
+fn wecom_recipient_from_thread_path(thread_path: &Path) -> Option<String> {
+    thread_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("bot-"))
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Build the body for an `aibot_send_msg` command.
+///
+/// Detects markdown syntax and chooses `msgtype: markdown` or `msgtype: text`.
+fn build_proactive_body(recipient: &str, body: &str) -> serde_json::Value {
+    let use_markdown = body.contains("**")
+        || body.contains("*")
+        || body.contains("`")
+        || body.contains("#")
+        || body.contains("[")
+        || body.contains("- ");
+
+    if use_markdown {
+        serde_json::json!({
+            "msgtype": "markdown",
+            "chatid": recipient,
+            "markdown": {"content": body}
+        })
+    } else {
+        serde_json::json!({
+            "msgtype": "text",
+            "chatid": recipient,
+            "text": {"content": body}
+        })
+    }
+}
+
+/// Generate a `req_id` for `aibot_send_msg` commands.
+fn generate_send_msg_req_id() -> String {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let random = uuid::Uuid::new_v4().to_string().replace('-', "");
+    format!(
+        "aibot_send_msg_{}_{}",
+        timestamp,
+        &random[..std::cmp::min(8, random.len())]
+    )
+}
+
+impl WecomBotOutboundAdapter {
+    /// Send a proactive (non-reply) message via `aibot_send_msg`.
+    ///
+    /// Supports text/markdown bodies and optional media attachments.
+    /// Used by both the `send_message` trait method and the proactive branch
+    /// of `send_reply` (e.g. scheduled jobs that have no original callback
+    /// `req_id`).
+    async fn send_proactive_message(
+        &self,
+        recipient: &str,
+        body: &str,
+        attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        let body_json = build_proactive_body(recipient, body);
+
+        let json = serde_json::json!({
+            "cmd": "aibot_send_msg",
+            "headers": {"req_id": generate_send_msg_req_id()},
+            "body": body_json
+        })
+        .to_string();
+
+        self.send_internal(&json)
+            .await
+            .context("Failed to send WeCom Bot proactive message")?;
+
+        // Upload and send attachments as separate media messages.
+        if let Some(attachments) = attachments {
+            let handle = {
+                let guard = self.handle.lock().await;
+                guard
+                    .clone()
+                    .context("WeCom Bot outbound handle not set; cannot upload attachments")?
+            };
+
+            for att in attachments {
+                let media_type = wecom_media_type(&att.content_type, &att.filename);
+
+                match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
+                {
+                    Ok(media_id) => {
+                        let mut media_body = build_media_message_body(media_type, &media_id);
+                        media_body["chatid"] = serde_json::Value::String(recipient.to_string());
+                        let media_json = serde_json::json!({
+                            "cmd": "aibot_send_msg",
+                            "headers": {"req_id": generate_send_msg_req_id()},
+                            "body": media_body,
+                        })
+                        .to_string();
+
+                        if let Err(e) = handle.sender.send(media_json) {
+                            tracing::warn!(
+                                filename = %att.filename,
+                                error = %e,
+                                "Failed to send WeCom Bot proactive attachment message"
+                            );
+                        } else {
+                            tracing::info!(
+                                filename = %att.filename,
+                                media_type = %media_type,
+                                "WeCom Bot proactive attachment message sent"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            filename = %att.filename,
+                            error = %e,
+                            "Failed to upload WeCom Bot proactive attachment"
+                        );
+                    }
+                }
+            }
+        }
+
+        let message_id = uuid::Uuid::new_v4().to_string();
+
+        tracing::info!(
+            recipient = %recipient,
+            text_len = body.len(),
+            message_id = %message_id,
+            "WeCom Bot proactive message sent"
+        );
+
+        Ok(SendResult { message_id })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,6 +1151,93 @@ mod tests {
         assert!(validate_wecom_media_size(&[0u8; VIDEO_MAX_SIZE + 1], "video").is_err());
     }
 
+    #[test]
+    fn test_wecom_recipient_from_thread_path() {
+        assert_eq!(
+            wecom_recipient_from_thread_path(Path::new("/workspace/bot-MianMianRuoCun")),
+            Some("MianMianRuoCun".to_string())
+        );
+        assert_eq!(
+            wecom_recipient_from_thread_path(Path::new("bot-chat_456")),
+            Some("chat_456".to_string())
+        );
+        assert_eq!(
+            wecom_recipient_from_thread_path(Path::new("/workspace/not-bot-prefix")),
+            None
+        );
+        assert_eq!(wecom_recipient_from_thread_path(Path::new("bot-")), None);
+    }
+
+    #[test]
+    fn test_build_proactive_body_text() {
+        let body = build_proactive_body("user_123", "Hello world");
+        assert_eq!(body["msgtype"], "text");
+        assert_eq!(body["chatid"], "user_123");
+        assert_eq!(body["text"]["content"], "Hello world");
+    }
+
+    #[test]
+    fn test_build_proactive_body_markdown() {
+        let body = build_proactive_body("chat_456", "**Bold** and `code`");
+        assert_eq!(body["msgtype"], "markdown");
+        assert_eq!(body["chatid"], "chat_456");
+        assert_eq!(body["markdown"]["content"], "**Bold** and `code`");
+    }
+
+    #[tokio::test]
+    async fn test_send_reply_without_req_id_uses_send_msg() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let thread_path = dir.path().join("bot-user_123");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let storage = Arc::new(MessageStorage::new(dir.path()));
+        let adapter = WecomBotOutboundAdapter::new_with_attachments(storage, None, false);
+        let handle = WecomBotConnectionHandle::new(tx, Arc::new(Mutex::new(HashMap::new())));
+        adapter.set_handle(handle).await;
+
+        let message = InboundMessage {
+            id: "test".to_string(),
+            channel: "wecom_bot".to_string(),
+            channel_uid: "job-job-1".to_string(),
+            sender: "scheduler".to_string(),
+            sender_address: "scheduler@jyc".to_string(),
+            recipients: vec![],
+            topic: String::new(),
+            content: jyc_types::MessageContent {
+                text: Some("scheduled prompt".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(), // no req_id
+            matched_pattern: None,
+        };
+
+        let result = adapter
+            .send_reply(&message, "Proactive reply", &thread_path, "msg_001", None)
+            .await
+            .expect("proactive reply should send");
+        assert!(!result.message_id.is_empty());
+
+        let frame_json = rx.recv().await.expect("frame should be sent");
+        let frame: serde_json::Value = serde_json::from_str(&frame_json).unwrap();
+        assert_eq!(frame["cmd"], "aibot_send_msg");
+        assert_eq!(frame["body"]["chatid"], "user_123");
+        assert_eq!(frame["body"]["msgtype"], "text");
+        assert_eq!(frame["body"]["text"]["content"], "Proactive reply");
+        assert!(
+            frame["headers"]["req_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("aibot_send_msg_")
+        );
+    }
+
     /// Helper: run `upload_attachment` against a mock handle that injects the
     /// given ack responses in order.
     async fn run_upload_with_responses(
@@ -1345,6 +1553,155 @@ mod tests {
         let att: serde_json::Value = serde_json::from_str(&att_json).unwrap();
         assert_eq!(att["cmd"], "aibot_respond_msg");
         assert_eq!(att["headers"]["req_id"], "req_123");
+        assert_eq!(att["body"]["msgtype"], "file");
+        assert_eq!(att["body"]["file"]["media_id"], "media_abc");
+
+        reply_task.await.unwrap().expect("send_reply succeeded");
+    }
+
+    #[tokio::test]
+    async fn test_send_reply_without_req_id_with_attachment() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let attachment_path = dir.path().join("report.pdf");
+        std::fs::write(&attachment_path, b"pdf content").unwrap();
+        let thread_path = dir.path().join("bot-user_123");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let pending = Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
+        let handle = WecomBotConnectionHandle::new(tx, pending.clone());
+
+        let storage = Arc::new(MessageStorage::new(dir.path()));
+        let adapter = WecomBotOutboundAdapter::new_with_attachments(storage, None, false);
+        adapter.set_handle(handle).await;
+
+        let message = InboundMessage {
+            id: "test".to_string(),
+            channel: "wecom_bot".to_string(),
+            channel_uid: "job-job-1".to_string(),
+            sender: "scheduler".to_string(),
+            sender_address: "scheduler@jyc".to_string(),
+            recipients: vec![],
+            topic: String::new(),
+            content: jyc_types::MessageContent {
+                text: Some("scheduled prompt".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(), // no req_id
+            matched_pattern: None,
+        };
+
+        let attachments = vec![OutboundAttachment {
+            filename: "report.pdf".to_string(),
+            path: attachment_path,
+            content_type: "application/pdf".to_string(),
+        }];
+
+        let reply_task = tokio::spawn(async move {
+            adapter
+                .send_reply(
+                    &message,
+                    "Proactive reply with attachment",
+                    &thread_path,
+                    "msg_001",
+                    Some(&attachments),
+                )
+                .await
+        });
+
+        // 1. Text proactive frame.
+        let text_json = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("text recv")
+            .expect("text channel open");
+        let text: serde_json::Value = serde_json::from_str(&text_json).unwrap();
+        assert_eq!(text["cmd"], "aibot_send_msg");
+        assert_eq!(text["body"]["chatid"], "user_123");
+        assert_eq!(text["body"]["msgtype"], "text");
+        assert_eq!(
+            text["body"]["text"]["content"],
+            "Proactive reply with attachment"
+        );
+
+        // 2. Upload init frame.
+        let init_json = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("init recv")
+            .expect("init channel open");
+        let init: serde_json::Value = serde_json::from_str(&init_json).unwrap();
+        assert_eq!(init["cmd"], "aibot_upload_media_init");
+        let init_req_id = init["headers"]["req_id"].as_str().unwrap().to_string();
+        {
+            let mut guard = pending.lock().await;
+            let sender = guard.remove(&init_req_id).unwrap();
+            sender
+                .send(serde_json::json!({
+                    "headers": {"req_id": init_req_id},
+                    "errcode": 0,
+                    "errmsg": "ok",
+                    "body": {"upload_id": "upload_123"}
+                }))
+                .unwrap();
+        }
+
+        // 3. Upload chunk frame.
+        let chunk_json = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("chunk recv")
+            .expect("chunk channel open");
+        let chunk: serde_json::Value = serde_json::from_str(&chunk_json).unwrap();
+        assert_eq!(chunk["cmd"], "aibot_upload_media_chunk");
+        let chunk_req_id = chunk["headers"]["req_id"].as_str().unwrap().to_string();
+        {
+            let mut guard = pending.lock().await;
+            let sender = guard.remove(&chunk_req_id).unwrap();
+            sender
+                .send(serde_json::json!({
+                    "headers": {"req_id": chunk_req_id},
+                    "errcode": 0,
+                    "errmsg": "ok"
+                }))
+                .unwrap();
+        }
+
+        // 4. Upload finish frame.
+        let finish_json = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("finish recv")
+            .expect("finish channel open");
+        let finish: serde_json::Value = serde_json::from_str(&finish_json).unwrap();
+        assert_eq!(finish["cmd"], "aibot_upload_media_finish");
+        let finish_req_id = finish["headers"]["req_id"].as_str().unwrap().to_string();
+        {
+            let mut guard = pending.lock().await;
+            let sender = guard.remove(&finish_req_id).unwrap();
+            sender
+                .send(serde_json::json!({
+                    "headers": {"req_id": finish_req_id},
+                    "errcode": 0,
+                    "errmsg": "ok",
+                    "body": {"type": "file", "media_id": "media_abc", "created_at": "1700000000"}
+                }))
+                .unwrap();
+        }
+
+        // 5. Proactive attachment message frame.
+        let att_json = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("attachment recv")
+            .expect("attachment channel open");
+        let att: serde_json::Value = serde_json::from_str(&att_json).unwrap();
+        assert_eq!(att["cmd"], "aibot_send_msg");
+        assert_eq!(att["body"]["chatid"], "user_123");
         assert_eq!(att["body"]["msgtype"], "file");
         assert_eq!(att["body"]["file"]["media_id"], "media_abc");
 

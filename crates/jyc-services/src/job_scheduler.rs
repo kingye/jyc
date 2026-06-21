@@ -269,6 +269,14 @@ impl JobScheduler {
                     "job_id".to_string(),
                     serde_json::Value::String(job.id.clone()),
                 );
+                m.insert(
+                    "source".to_string(),
+                    serde_json::Value::String("scheduler".to_string()),
+                );
+                m.insert(
+                    "thread_name".to_string(),
+                    serde_json::Value::String(job.thread_name.clone()),
+                );
                 m
             },
             matched_pattern: None,

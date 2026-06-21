@@ -3513,15 +3513,15 @@ User in thread: "Every day at 8 AM, send me the daily summary"
 
 ```toml
 [scheduler]
-enabled = true
-jobs_dir = ".jyc/jobs"      # Relative to workdir
-scan_interval_secs = 60     # How often to scan for due jobs
+enabled = true              # default: true
+scan_interval_secs = 60     # default: 60
+max_jobs_per_thread = 10    # default: 10
 ```
 
 ### Design Decisions
 
 - **Channel-agnostic**: Jobs fire by injecting `InboundMessage` into the existing `ThreadManager` — no channel-specific code in the scheduler
-- **JSON file storage** over SQLite for simplicity — no schema migrations, no database connection
+- **Per-thread JSON file storage**: Jobs are stored in `<thread>/.jyc/jobs/<id>.json` — each thread manages its own jobs, no global directory. The scheduler scans all workspace directories for thread directories with `.jyc/jobs/` subdirectories.
 - **7-field cron** (sec min hour dom mon dow year) for precision — the `cron` crate supports sub-minute scheduling
 - **Pre-computed next_fire_at**: Each job stores its next fire time, computed after each fire — avoids re-parsing cron on every scan cycle
 - **One-time job lifecycle**: After firing, `enabled` is set to `false` and `next_fire_at` to `None`

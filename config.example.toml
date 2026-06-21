@@ -7,13 +7,13 @@ max_queue_size_per_thread = 10
 
 # --- Scheduler ---
 # Enable channel-agnostic scheduled jobs.
-# When enabled, the background JobScheduler scans for due jobs and fires them
-# by injecting InboundMessage into the originating thread.
-# Default: disabled.
+# When enabled, the background JobScheduler scans all threads for due jobs
+# and fires them by injecting InboundMessage into the originating thread.
+# Default: enabled.
 # [scheduler]
 # enabled = true
-# jobs_dir = ".jyc/jobs"     # Relative to workdir
 # scan_interval_secs = 60    # How often to scan for due jobs
+# max_jobs_per_thread = 10   # Max jobs per thread (prevents unbounded creation)
 
 # --- Channel: jiny283 ---
 

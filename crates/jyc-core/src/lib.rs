@@ -4,6 +4,7 @@ pub mod attachment_storage;
 pub mod chat_log_store;
 pub mod command;
 pub mod email_parser;
+pub mod job_store;
 pub mod message_router;
 pub mod message_storage;
 pub mod metrics;

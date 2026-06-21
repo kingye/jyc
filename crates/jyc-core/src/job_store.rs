@@ -14,6 +14,7 @@ use tokio::fs;
 /// Jobs are stored as individual JSON files under the configured
 /// `jobs_dir`. This avoids SQLite dependency while providing
 /// atomic per-file operations.
+#[derive(Clone)]
 pub struct JobStore {
     /// Directory containing job JSON files.
     jobs_dir: PathBuf,

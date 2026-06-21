@@ -8,7 +8,11 @@ use tracing::Instrument;
 
 use jyc_agent::JycAgentService;
 use jyc_core::agent::AgentService;
+use jyc_core::job_store::JobStore;
 use jyc_core::static_agent::StaticAgentService;
+
+use jyc_services::job_scheduler::JobScheduler;
+use std::collections::HashMap;
 
 use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
@@ -117,6 +121,25 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
+
+    // 3.5. Initialize JobStore (for job scheduler and agent job tools)
+    let scheduler_config = config_snapshot.scheduler.clone();
+    let job_store: Option<Arc<JobStore>> = if scheduler_config.enabled {
+        let jobs_dir = workdir.join(&scheduler_config.jobs_dir);
+        let store = Arc::new(
+            JobStore::new(&jobs_dir)
+                .await
+                .context("Failed to initialize job store")?,
+        );
+        tracing::info!(
+            jobs_dir = %jobs_dir.display(),
+            scan_interval_secs = scheduler_config.scan_interval_secs,
+            "Job store initialized"
+        );
+        Some(store)
+    } else {
+        None
+    };
 
     // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)
     let has_wecom = config_snapshot
@@ -447,7 +470,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     channel_config.disabled_mcp_servers.clone(),
                     channel_config.skills.clone(),
                     channel_config.disabled_skills.clone(),
-                    None, // job_store: wired in Step 6
+                    job_store.clone(),
                 ))
             }
             "static" => {
@@ -1024,6 +1047,30 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     if tasks.is_empty() {
         anyhow::bail!("No channels configured");
+    }
+
+    // 4.5. Start JobScheduler (if scheduler is enabled in config)
+    if let Some(ref store) = job_store {
+        // Build thread manager map keyed by channel name
+        let tm_map: HashMap<String, Arc<ThreadManager>> = all_thread_managers
+            .iter()
+            .map(|tm| (tm.channel_name().to_string(), tm.clone()))
+            .collect();
+        let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
+
+        let scheduler = JobScheduler::new(
+            (**store).clone(),
+            tm_map,
+            scheduler_config.scan_interval_secs,
+            true,
+        );
+
+        let scheduler_cancel = cancel.clone();
+        tasks.push(tokio::spawn(async move {
+            scheduler.run(scheduler_cancel).await;
+        }));
+
+        tracing::info!("Job scheduler started");
     }
 
     // 5. Start inspect server (if configured)

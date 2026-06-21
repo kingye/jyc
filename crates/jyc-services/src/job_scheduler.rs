@@ -321,4 +321,216 @@ mod tests {
         assert!(!updated.enabled);
         assert!(updated.last_fired_at.is_some());
     }
+
+    // --- Integration tests ---
+
+    /// Full lifecycle test: create a one-time job → scheduler fires it → verify state.
+    #[tokio::test]
+    async fn test_job_lifecycle_one_time() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path()).await.unwrap();
+
+        // Create a one-time job that fires immediately
+        let job = jyc_types::JobConfig::new_one_time(
+            Utc::now(),
+            "lifecycle-test".to_string(),
+            "email".to_string(),
+            "test-channel".to_string(),
+            "Integration test job".to_string(),
+        );
+        let job_id = job.id.clone();
+        store.create(&job).await.unwrap();
+
+        // Verify job exists in store
+        let stored = store.get(&job_id).await.unwrap().unwrap();
+        assert!(stored.enabled);
+        assert!(stored.next_fire_at.is_some());
+        assert!(stored.last_fired_at.is_none());
+
+        // Run the scheduler cycle
+        let scheduler = create_test_scheduler(store.clone(), true).await;
+        scheduler.run_cycle().await;
+
+        // Verify job was fired and disabled
+        let updated = store.get(&job_id).await.unwrap().unwrap();
+        assert!(!updated.enabled, "One-time job should be disabled after firing");
+        assert!(updated.last_fired_at.is_some(), "Job should have last_fired_at");
+        assert!(updated.next_fire_at.is_none(), "One-time job should have no next fire after firing");
+    }
+
+    /// Full lifecycle test: create a recurring job → manually fire it → verify state.
+    #[tokio::test]
+    async fn test_job_lifecycle_recurring() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path()).await.unwrap();
+
+        // Create a recurring job
+        let mut job = jyc_types::JobConfig::new_recurring(
+            "*/30 * * * * * *",
+            "recurring-test".to_string(),
+            "email".to_string(),
+            "test-channel".to_string(),
+            "Recurring integration test".to_string(),
+        );
+        let job_id = job.id.clone();
+        let original_next = job.next_fire_at;
+        store.create(&job).await.unwrap();
+
+        // Manually fire the job (simulates what the scheduler does)
+        job.mark_fired();
+        store.update(&job).await.unwrap();
+
+        // Verify recurring job stays enabled and has a new next_fire_at
+        let updated = store.get(&job_id).await.unwrap().unwrap();
+        assert!(updated.enabled, "Recurring job should stay enabled after firing");
+        assert!(updated.last_fired_at.is_some(), "Job should have last_fired_at");
+        assert!(updated.next_fire_at.is_some(), "Recurring job should have next fire");
+        // Next fire must be >= original next fire
+        assert!(updated.next_fire_at >= original_next);
+    }
+
+    /// Test that the scheduler only fires enabled jobs.
+    #[tokio::test]
+    async fn test_scheduler_skips_disabled_jobs() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path()).await.unwrap();
+
+        // Create a disabled job that is due
+        let mut job = jyc_types::JobConfig::new_one_time(
+            Utc::now(),
+            "disabled-test".to_string(),
+            "email".to_string(),
+            "test-channel".to_string(),
+            "Should not fire".to_string(),
+        );
+        job.enabled = false;
+        store.create(&job).await.unwrap();
+
+        // Run the scheduler cycle
+        let scheduler = create_test_scheduler(store.clone(), true).await;
+        scheduler.run_cycle().await;
+
+        // Verify disabled job was NOT touched
+        let stored = store.get(&job.id).await.unwrap().unwrap();
+        assert!(!stored.enabled);
+        assert!(stored.last_fired_at.is_none(), "Disabled job should not have been fired");
+    }
+
+    /// Test job store CRUD operations in sequence.
+    #[tokio::test]
+    async fn test_job_crud_workflow() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path()).await.unwrap();
+
+        // Create
+        let job = jyc_types::JobConfig::new_recurring(
+            "0 0 9 * * * *",
+            "crud-test".to_string(),
+            "email".to_string(),
+            "work".to_string(),
+            "Daily at 9 AM".to_string(),
+        );
+        store.create(&job).await.unwrap();
+        assert!(store.get(&job.id).await.unwrap().is_some());
+
+        // List
+        let jobs = store.list().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+
+        // Update
+        let mut updated = job.clone();
+        updated.prompt = "Updated prompt".to_string();
+        store.update(&updated).await.unwrap();
+        let fetched = store.get(&job.id).await.unwrap().unwrap();
+        assert_eq!(fetched.prompt, "Updated prompt");
+
+        // Delete
+        let deleted = store.delete(&job.id).await.unwrap();
+        assert!(deleted);
+        assert!(store.get(&job.id).await.unwrap().is_none());
+
+        // List empty
+        let jobs = store.list().await.unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    /// Test job creation through the config interface (new_one_time, new_recurring).
+    #[tokio::test]
+    async fn test_job_creation_constructors() {
+        let future = Utc::now() + chrono::Duration::days(1);
+
+        // One-time
+        let one_time = jyc_types::JobConfig::new_one_time(
+            future,
+            "thread-1".to_string(),
+            "wecom_bot".to_string(),
+            "general".to_string(),
+            "Reminder text".to_string(),
+        );
+        assert_eq!(one_time.at, Some(future));
+        assert!(one_time.cron.is_none());
+
+        // Recurring
+        let recurring = jyc_types::JobConfig::new_recurring(
+            "0 0 8 * * * *",
+            "thread-2".to_string(),
+            "email".to_string(),
+            "work".to_string(),
+            "Daily summary".to_string(),
+        );
+        assert_eq!(recurring.cron.as_deref(), Some("0 0 8 * * * *"));
+        assert!(recurring.at.is_none());
+    }
+
+    /// Test that mark_fired correctly advances the recurring job's next_fire_at.
+    #[tokio::test]
+    async fn test_mark_fired_advances_recurring() {
+        let mut job = jyc_types::JobConfig::new_recurring(
+            "* * * * * * *",  // Every second
+            "advance-test".to_string(),
+            "email".to_string(),
+            "work".to_string(),
+            "Every second".to_string(),
+        );
+
+        let before = job.next_fire_at;
+        // Ensure time passes so mark_fired's now > creation now
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        job.mark_fired();
+        let after = job.next_fire_at;
+
+        assert!(job.enabled, "Recurring job should stay enabled");
+        assert!(job.last_fired_at.is_some(), "Should have last_fired_at");
+        assert!(after >= before, "Next fire should not go backwards");
+    }
+
+    /// Test that multiple due jobs are all fired in one cycle.
+    #[tokio::test]
+    async fn test_run_cycle_fires_multiple_jobs() {
+        let tmp = tempdir().unwrap();
+        let store = JobStore::new(tmp.path()).await.unwrap();
+
+        // Create 3 jobs that are due now
+        for i in 0..3 {
+            let job = jyc_types::JobConfig::new_one_time(
+                Utc::now(),
+                format!("thread-{i}"),
+                "email".to_string(),
+                "test-channel".to_string(),
+                format!("Job {i}"),
+            );
+            store.create(&job).await.unwrap();
+        }
+
+        let scheduler = create_test_scheduler(store.clone(), true).await;
+        scheduler.run_cycle().await;
+
+        // All 3 jobs should be fired
+        let jobs = store.list().await.unwrap();
+        assert_eq!(jobs.len(), 3);
+        for job in &jobs {
+            assert!(!job.enabled, "One-time job should be disabled after firing");
+            assert!(job.last_fired_at.is_some(), "Job should have been fired");
+        }
+    }
 }

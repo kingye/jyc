@@ -128,7 +128,8 @@ impl Tool for JobCreateTool {
         let cron = input.get("cron").and_then(|c| c.as_str());
         let at_str = input.get("at").and_then(|a| a.as_str());
 
-        // Extract thread/channel info from working directory path
+        // Extract thread/channel info from working directory path.
+        // Directory structure: <workdir>/<channel_name>/workspace/<thread_name>/
         let thread_name = ctx
             .working_dir
             .file_name()
@@ -136,11 +137,6 @@ impl Tool for JobCreateTool {
             .unwrap_or("unknown")
             .to_string();
 
-        // We need channel information, but it's not directly in ToolContext.
-        // We store channel info in metadata or fall back to "unknown".
-        // The thread directory structure is <workdir>/<channel>/workspace/<thread>/
-        // so we can try to extract channel from the parent path.
-        let channel = "unknown".to_string();
         let channel_name = ctx
             .working_dir
             .parent()
@@ -149,6 +145,12 @@ impl Tool for JobCreateTool {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
+
+        // The channel type (e.g. "email", "github") is not directly derivable
+        // from the directory path — only the channel config name is. Use the
+        // channel_name as the channel value; the channel_name is the key field
+        // for ThreadManager lookup when the job fires.
+        let channel = channel_name.clone();
 
         let job = if let Some(cron_expr) = cron {
             // Check if the expression is valid by trying to compute next fire time.

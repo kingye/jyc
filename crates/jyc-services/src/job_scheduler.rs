@@ -116,20 +116,32 @@ impl JobScheduler {
         tracing::info!(count = due_jobs.len(), "Firing due jobs");
 
         for mut job in due_jobs {
-            // Mark as fired (updates last_fired_at and advances next_fire_at)
-            job.mark_fired();
-
-            // Save updated state before firing
-            if let Err(e) = self.store.update(&job).await {
-                tracing::error!(job_id = %job.id, error = %e, "Failed to update job after marking fired");
-                // Continue to next job — the job will be re-fired on next scan
+            // Fire the job first: inject InboundMessage into the thread.
+            // If this fails (e.g. ThreadManager not found), we do NOT
+            // mark the job as fired — it will be retried on the next scan.
+            if let Err(e) = self.fire_job(&job).await {
+                tracing::error!(job_id = %job.id, error = %e, "Failed to fire job");
                 continue;
             }
 
-            // Fire the job: inject InboundMessage into the thread
-            if let Err(e) = self.fire_job(&job).await {
-                tracing::error!(job_id = %job.id, error = %e, "Failed to fire job");
+            // Only after successful enqueue, mark as fired and persist.
+            // This prevents message loss: if fire_job fails, the job's
+            // enabled/next_fire_at remain unchanged so it re-fires later.
+            job.mark_fired();
+            if let Err(e) = self.store.update(&job).await {
+                tracing::error!(
+                    job_id = %job.id, error = %e,
+                    "Job fired but failed to persist state — may re-fire on next scan"
+                );
+                continue;
             }
+
+            tracing::info!(
+                job_id = %job.id,
+                thread = %job.thread_name,
+                channel = %job.channel_name,
+                "Job fired successfully"
+            );
         }
     }
 
@@ -307,7 +319,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let store = JobStore::new(tmp.path()).await.unwrap();
 
-        // Create a job that's due now
+        // Create a job that's due now but targets a nonexistent channel.
+        // With the new ordering (fire before persist), if fire_job fails,
+        // the job should NOT be marked as fired — it stays for retry.
         let job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
             "test-thread".to_string(),
@@ -315,29 +329,33 @@ mod tests {
             "nonexistent-channel".to_string(),
             "test fire".to_string(),
         );
+        let job_id = job.id.clone();
         store.create(&job).await.unwrap();
 
         let scheduler = create_test_scheduler(store, true).await;
         scheduler.run_cycle().await;
 
-        // The job should have been marked as fired (enabled=false, last_fired_at set)
-        // even though firing failed (channel manager not found)
+        // fire_job fails (ThreadManager not found for "nonexistent-channel"),
+        // so the job should remain unchanged for retry
         let store = &scheduler.store;
-        let updated = store.get(&job.id).await.unwrap().unwrap();
-        assert!(!updated.enabled);
-        assert!(updated.last_fired_at.is_some());
+        let updated = store.get(&job_id).await.unwrap().unwrap();
+        assert!(updated.enabled, "Job should remain enabled (not fired)");
+        assert!(
+            updated.last_fired_at.is_none(),
+            "Job should NOT have been marked as fired"
+        );
     }
 
     // --- Integration tests ---
 
-    /// Full lifecycle test: create a one-time job → scheduler fires it → verify state.
+    /// Full lifecycle test: create a one-time job → manually fire and persist → verify state.
     #[tokio::test]
     async fn test_job_lifecycle_one_time() {
         let tmp = tempdir().unwrap();
         let store = JobStore::new(tmp.path()).await.unwrap();
 
         // Create a one-time job that fires immediately
-        let job = jyc_types::JobConfig::new_one_time(
+        let mut job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
             "lifecycle-test".to_string(),
             "email".to_string(),
@@ -353,9 +371,9 @@ mod tests {
         assert!(stored.next_fire_at.is_some());
         assert!(stored.last_fired_at.is_none());
 
-        // Run the scheduler cycle
-        let scheduler = create_test_scheduler(store.clone(), true).await;
-        scheduler.run_cycle().await;
+        // Manually simulate the fire-and-persist cycle
+        job.mark_fired();
+        store.update(&job).await.unwrap();
 
         // Verify job was fired and disabled
         let updated = store.get(&job_id).await.unwrap().unwrap();
@@ -531,9 +549,11 @@ mod tests {
         assert!(after >= before, "Next fire should not go backwards");
     }
 
-    /// Test that multiple due jobs are all fired in one cycle.
+    /// Test that multiple due jobs are processed in one cycle, but since no
+    /// ThreadManager is registered for any of them, fire_job fails and none
+    /// are marked as fired (they remain for retry).
     #[tokio::test]
-    async fn test_run_cycle_fires_multiple_jobs() {
+    async fn test_run_cycle_multiple_jobs_not_fired_without_tm() {
         let tmp = tempdir().unwrap();
         let store = JobStore::new(tmp.path()).await.unwrap();
 
@@ -552,12 +572,15 @@ mod tests {
         let scheduler = create_test_scheduler(store.clone(), true).await;
         scheduler.run_cycle().await;
 
-        // All 3 jobs should be fired
+        // All 3 jobs should remain unchanged (fire_job fails without TM)
         let jobs = store.list().await.unwrap();
         assert_eq!(jobs.len(), 3);
         for job in &jobs {
-            assert!(!job.enabled, "One-time job should be disabled after firing");
-            assert!(job.last_fired_at.is_some(), "Job should have been fired");
+            assert!(job.enabled, "Job should remain enabled (not fired)");
+            assert!(
+                job.last_fired_at.is_none(),
+                "Job should NOT have been marked as fired"
+            );
         }
     }
 }

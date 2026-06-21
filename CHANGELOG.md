@@ -4,6 +4,17 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **WeCom Bot outbound attachment upload.** The `wecom_bot` channel now
+  supports uploading and sending attachments in replies. Files are uploaded
+  over the existing WebSocket using `aibot_upload_media_init`,
+  `aibot_upload_media_chunk`, and `aibot_upload_media_finish`, then sent as
+  separate `file`, `image`, `voice`, or `video` messages. Common document
+  types (pdf, xlsx, csv, ppt, doc, etc.) are supported as file messages.
+  Validation reuses the generic `OutboundAttachmentConfig`, consistent with
+  Feishu and email. (#257)
+
 ## [0.3.10] - 2026-06-17
 
 ### Added

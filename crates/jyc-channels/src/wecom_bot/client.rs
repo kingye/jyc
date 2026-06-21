@@ -5,11 +5,12 @@
 //!
 //! Reference: doc 101463 - Smart Robot WebSocket Long Connection
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::interval;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
@@ -19,7 +20,7 @@ use jyc_types::WecomBotConfig;
 use super::types::{BotEvent, BotMessage};
 
 /// Generate a req_id matching the Node.js SDK format: `{prefix}_{timestamp}_{random}`.
-fn generate_req_id(prefix: &str) -> String {
+pub(crate) fn generate_req_id(prefix: &str) -> String {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -46,6 +47,73 @@ pub enum ServerMessage {
     Event(BotEvent),
 }
 
+/// Shared handle for sending outbound messages and awaiting ack responses.
+///
+/// Created by `WecomBotWsClient` after the WebSocket connection is established
+/// and shared with the outbound adapter.
+#[derive(Debug, Clone)]
+pub struct WecomBotConnectionHandle {
+    /// Sender for outbound JSON frames.
+    pub sender: mpsc::UnboundedSender<String>,
+    /// Registry for correlating server ack frames with in-flight requests.
+    pub pending_responses:
+        std::sync::Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+}
+
+impl WecomBotConnectionHandle {
+    /// Create a new connection handle.
+    pub fn new(
+        sender: mpsc::UnboundedSender<String>,
+        pending_responses: std::sync::Arc<
+            Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+        >,
+    ) -> Self {
+        Self {
+            sender,
+            pending_responses,
+        }
+    }
+
+    /// Send a JSON command through the WebSocket and await the matching ack frame.
+    ///
+    /// Registers a one-shot receiver keyed by `req_id`, sends the frame, and waits
+    /// for `timeout`. Returns the full ack JSON value so the caller can parse the
+    /// response body and check `errcode`.
+    pub async fn send_and_wait(
+        &self,
+        cmd: &str,
+        req_id: &str,
+        body: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut guard = self.pending_responses.lock().await;
+            guard.insert(req_id.to_string(), tx);
+        }
+
+        let frame = serde_json::json!({
+            "cmd": cmd,
+            "headers": {"req_id": req_id},
+            "body": body,
+        })
+        .to_string();
+
+        if let Err(e) = self.sender.send(frame) {
+            let mut guard = self.pending_responses.lock().await;
+            guard.remove(req_id);
+            anyhow::bail!("Failed to send WeCom Bot {cmd} command: {e}");
+        }
+
+        let response = tokio::time::timeout(timeout, rx)
+            .await
+            .with_context(|| format!("WeCom Bot {cmd} command timed out waiting for ack"))?
+            .with_context(|| format!("WeCom Bot {cmd} ack channel closed"))?;
+
+        Ok(response)
+    }
+}
+
 /// WeCom Bot WebSocket client.
 ///
 /// Handles low-level WebSocket operations: connect, subscribe, heartbeat, reconnect.
@@ -59,6 +127,8 @@ pub struct WecomBotWsClient {
     reconnect_count: u32,
     /// Sender for outbound messages. Set after WebSocket connection is established.
     outbound_sender: Option<mpsc::UnboundedSender<String>>,
+    /// Registry for routing server ack frames to awaiting requests.
+    pending_responses: std::sync::Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl WecomBotWsClient {
@@ -69,6 +139,7 @@ impl WecomBotWsClient {
             state: ConnectionState::Disconnected,
             reconnect_count: 0,
             outbound_sender: None,
+            pending_responses: std::sync::Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -96,7 +167,7 @@ impl WecomBotWsClient {
     pub async fn run(
         &mut self,
         on_message: &(dyn Fn(ServerMessage) -> Result<()> + Send + Sync),
-        on_connect: Option<&(dyn Fn(mpsc::UnboundedSender<String>) + Send + Sync)>,
+        on_connect: Option<&(dyn Fn(WecomBotConnectionHandle) + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         loop {
@@ -161,7 +232,7 @@ impl WecomBotWsClient {
     async fn connect_and_listen(
         &mut self,
         on_message: &(dyn Fn(ServerMessage) -> Result<()> + Send + Sync),
-        on_connect: Option<&(dyn Fn(mpsc::UnboundedSender<String>) + Send + Sync)>,
+        on_connect: Option<&(dyn Fn(WecomBotConnectionHandle) + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         self.state = ConnectionState::Connecting;
@@ -282,9 +353,13 @@ impl WecomBotWsClient {
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<String>();
         self.outbound_sender = Some(outbound_tx.clone());
 
+        // Create the shared connection handle used by the outbound adapter.
+        let handle =
+            WecomBotConnectionHandle::new(outbound_tx.clone(), self.pending_responses.clone());
+
         // Notify caller that connection is ready (for shared sender setup)
         if let Some(callback) = on_connect {
-            callback(outbound_tx.clone());
+            callback(handle);
         }
 
         // Spawn writer task: handles heartbeat + outbound messages
@@ -453,8 +528,22 @@ impl WecomBotWsClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
+            // Route ack frames to any awaiting request (e.g. media upload).
+            let routed = {
+                let mut guard = self.pending_responses.lock().await;
+                guard
+                    .remove(req_id)
+                    .map(|tx| tx.send(raw.clone()).is_ok())
+                    .unwrap_or(false)
+            };
+
             if errcode == 0 {
                 tracing::info!(req_id = %req_id, errmsg = %errmsg, "WeCom Bot operation succeeded");
+                return Ok(());
+            }
+
+            // If the frame was routed to an awaiting request, let the awaiter handle the error.
+            if routed {
                 return Ok(());
             }
 
@@ -616,5 +705,102 @@ mod tests {
         client.reconnect_count = 5;
         client.reset_reconnect_count();
         assert_eq!(client.reconnect_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_and_wait_receives_ack() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let pending = std::sync::Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
+        let handle = WecomBotConnectionHandle::new(tx, pending.clone());
+
+        let wait_task = tokio::spawn(async move {
+            handle
+                .send_and_wait(
+                    "aibot_upload_media_init",
+                    "req_test_1",
+                    serde_json::json!({"type": "file"}),
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+
+        let sent = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel open");
+        let sent_json: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(sent_json["cmd"], "aibot_upload_media_init");
+        assert_eq!(sent_json["headers"]["req_id"], "req_test_1");
+
+        let mut guard = pending.lock().await;
+        let sender = guard.remove("req_test_1").expect("pending registered");
+        sender
+            .send(serde_json::json!({
+                "headers": {"req_id": "req_test_1"},
+                "errcode": 0,
+                "errmsg": "ok",
+                "body": {"upload_id": "upload_abc"}
+            }))
+            .unwrap();
+        drop(guard);
+
+        let response = wait_task
+            .await
+            .expect("task completed")
+            .expect("wait succeeded");
+        assert_eq!(response["body"]["upload_id"], "upload_abc");
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_and_wait_timeout() {
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let pending = std::sync::Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
+        let handle = WecomBotConnectionHandle::new(tx, pending);
+
+        let result = handle
+            .send_and_wait(
+                "ping",
+                "req_timeout",
+                serde_json::json!({}),
+                Duration::from_millis(10),
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_send_and_wait_cleans_up_on_send_failure() {
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let pending = std::sync::Arc::new(Mutex::new(HashMap::<
+            String,
+            oneshot::Sender<serde_json::Value>,
+        >::new()));
+        let handle = WecomBotConnectionHandle::new(tx, pending.clone());
+
+        // Drop the receiver so the sender's send() fails.
+        drop(rx);
+
+        let result = handle
+            .send_and_wait(
+                "aibot_upload_media_init",
+                "req_cleanup",
+                serde_json::json!({"type": "file"}),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let guard = pending.lock().await;
+        assert!(
+            guard.is_empty(),
+            "pending_responses should be cleaned up when send fails"
+        );
     }
 }

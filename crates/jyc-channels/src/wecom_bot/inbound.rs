@@ -164,10 +164,9 @@ pub struct WecomBotInboundAdapter {
     channel_name: String,
     #[allow(dead_code)]
     workspace_root: std::path::PathBuf,
-    /// Shared sender Arc for outbound adapter
-    sender_arc: Option<
-        std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
-    >,
+    /// Shared connection handle Arc for outbound adapter
+    handle_arc:
+        Option<std::sync::Arc<tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>>>,
 }
 
 impl WecomBotInboundAdapter {
@@ -180,16 +179,16 @@ impl WecomBotInboundAdapter {
             config: config.clone(),
             channel_name,
             workspace_root,
-            sender_arc: None,
+            handle_arc: None,
         }
     }
 
-    /// Create a new adapter with a shared sender Arc for outbound adapter.
-    pub fn with_shared_sender(
+    /// Create a new adapter with a shared connection handle Arc for outbound adapter.
+    pub fn with_shared_handle(
         config: &WecomBotConfig,
         channel_name: String,
-        sender_arc: std::sync::Arc<
-            tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+        handle_arc: std::sync::Arc<
+            tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>,
         >,
     ) -> Self {
         let workspace_root =
@@ -199,7 +198,7 @@ impl WecomBotInboundAdapter {
             config: config.clone(),
             channel_name,
             workspace_root,
-            sender_arc: Some(sender_arc),
+            handle_arc: Some(handle_arc),
         }
     }
 
@@ -214,25 +213,25 @@ impl WecomBotInboundAdapter {
             config: config.clone(),
             channel_name,
             workspace_root,
-            sender_arc: None,
+            handle_arc: None,
         }
     }
 
-    /// Create a new adapter with custom workspace root and shared sender.
+    /// Create a new adapter with custom workspace root and shared handle.
     #[allow(dead_code)]
-    pub fn with_workspace_and_sender(
+    pub fn with_workspace_and_handle(
         config: &WecomBotConfig,
         channel_name: String,
         workspace_root: std::path::PathBuf,
-        sender_arc: std::sync::Arc<
-            tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+        handle_arc: std::sync::Arc<
+            tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>,
         >,
     ) -> Self {
         Self {
             config: config.clone(),
             channel_name,
             workspace_root,
-            sender_arc: Some(sender_arc),
+            handle_arc: Some(handle_arc),
         }
     }
 }
@@ -270,7 +269,7 @@ impl jyc_types::InboundAdapter for WecomBotInboundAdapter {
         let (raw_tx, mut raw_rx) = tokio::sync::mpsc::unbounded_channel::<ServerMessage>();
         let channel_name = self.channel_name.clone();
         let config = self.config.clone();
-        let shared_sender = self.sender_arc.clone();
+        let shared_handle = self.handle_arc.clone();
         let ws_cancel = cancel.child_token();
 
         // Spawn WebSocket client task that forwards raw messages to the channel
@@ -284,13 +283,13 @@ impl jyc_types::InboundAdapter for WecomBotInboundAdapter {
                 Ok(())
             };
 
-            let on_connect = move |sender: tokio::sync::mpsc::UnboundedSender<String>| {
-                if let Some(ref shared) = shared_sender {
+            let on_connect = move |handle: super::client::WecomBotConnectionHandle| {
+                if let Some(ref shared) = shared_handle {
                     let shared = shared.clone();
                     tokio::spawn(async move {
                         let mut guard = shared.lock().await;
-                        *guard = Some(sender);
-                        tracing::info!("WeCom Bot outbound sender updated");
+                        *guard = Some(handle);
+                        tracing::info!("WeCom Bot outbound handle updated");
                     });
                 }
             };

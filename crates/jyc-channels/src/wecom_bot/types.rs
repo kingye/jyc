@@ -14,6 +14,9 @@ pub const CMD_AIBOT_PING: &str = "ping";
 pub const CMD_AIBOT_RESPOND_MSG: &str = "aibot_respond_msg";
 pub const CMD_AIBOT_RESPOND_WELCOME_MSG: &str = "aibot_respond_welcome_msg";
 pub const CMD_AIBOT_SEND_MSG: &str = "aibot_send_msg";
+pub const CMD_AIBOT_UPLOAD_MEDIA_INIT: &str = "aibot_upload_media_init";
+pub const CMD_AIBOT_UPLOAD_MEDIA_CHUNK: &str = "aibot_upload_media_chunk";
+pub const CMD_AIBOT_UPLOAD_MEDIA_FINISH: &str = "aibot_upload_media_finish";
 
 /// Server-to-client commands.
 pub const CMD_AIBOT_MSG_CALLBACK: &str = "aibot_msg_callback";
@@ -258,6 +261,65 @@ pub struct StreamPayload {
     pub content: String,
     /// Whether this is the final chunk
     pub finish: bool,
+}
+
+// ─── Media Upload Types ───────────────────────────────────────────
+
+/// Request body for `aibot_upload_media_init`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadMediaInitBody {
+    /// Media type: `file`, `image`, `voice`, `video`.
+    #[serde(rename = "type")]
+    pub media_type: String,
+    /// File name.
+    pub filename: String,
+    /// Total file size in bytes.
+    #[serde(rename = "total_size")]
+    pub total_size: usize,
+    /// Number of chunks (max 100).
+    #[serde(rename = "total_chunks")]
+    pub total_chunks: usize,
+    /// MD5 digest of the full file (optional but recommended).
+    pub md5: String,
+}
+
+/// Response body for `aibot_upload_media_init`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadMediaInitResponse {
+    /// Upload session ID.
+    pub upload_id: String,
+}
+
+/// Request body for `aibot_upload_media_chunk`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadMediaChunkBody {
+    /// Upload session ID.
+    pub upload_id: String,
+    /// Chunk index, starting from 0.
+    #[serde(rename = "chunk_index")]
+    pub chunk_index: usize,
+    /// Base64-encoded chunk data.
+    #[serde(rename = "base64_data")]
+    pub base64_data: String,
+}
+
+/// Request body for `aibot_upload_media_finish`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadMediaFinishBody {
+    /// Upload session ID.
+    pub upload_id: String,
+}
+
+/// Response body for `aibot_upload_media_finish`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadMediaFinishResponse {
+    /// Media type.
+    #[serde(rename = "type")]
+    pub media_type: String,
+    /// Media ID valid for 3 days.
+    pub media_id: String,
+    /// Upload timestamp.
+    pub created_at: String,
 }
 
 #[cfg(test)]

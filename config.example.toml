@@ -728,6 +728,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # Uses WebSocket long connection (wss://openws.work.weixin.qq.com).
 # No token or encoding_aes_key required (unlike wecom HTTP callback).
+# Supports outbound attachments (file/image/voice/video) via WebSocket upload.
 #
 # [channels.my_wecom_bot]
 # type = "wecom_bot"

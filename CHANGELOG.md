@@ -4,6 +4,14 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Channel-agnostic scheduled job system.** Background JobScheduler runs
+  alongside the monitor, fires recurring (cron) or one-time jobs by injecting
+  InboundMessage into the originating thread. Agent tools (`job_list`,
+  `job_create`, `job_delete`, `job_toggle`) let users manage jobs from any
+  thread. Jobs are persisted as JSON files in `.jyc/jobs/`. (#262, #263)
+
 ## [0.3.11] - 2026-06-21
 
 ### Added

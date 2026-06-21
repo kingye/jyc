@@ -3442,6 +3442,91 @@ The WeChat inbound adapter:
 - Single thread per bot — no multi-chat routing
 - JSON format is OpenILink-specific — no protocol abstraction layer
 
+## Scheduled Job System
+
+### Overview
+
+JYC supports channel-agnostic scheduled jobs — recurring or one-time tasks created by the AI from any thread. The JobScheduler runs as a background task alongside the per-channel inbound monitors, firing due jobs by injecting `InboundMessage` into the originating thread via `ThreadManager::enqueue`.
+
+### Architecture
+
+```
+User in thread: "Every day at 8 AM, send me the daily summary"
+    │
+    ├── Agent calls job_create("0 0 8 * * * *", "send daily summary")
+    │       │
+    │       ▼
+    │   JobStore.write(<jobs_dir>/{id}.json)
+    │       │
+    │       ▼
+    └── JobScheduler (background tokio task)
+            │
+            ├── scan cycle: list enabled jobs, check next_fire_at
+            │
+            ├── job due? → mark_fired() → save → fire_job()
+            │       │
+            │       ▼
+            │   InboundMessage {
+            │       sender: "scheduler",
+            │       topic: "Scheduled job: send daily summary",
+            │       content.text: "send daily summary",
+            │       metadata.job_id: "..."
+            │   }
+            │       │
+            │       ▼
+            │   ThreadManager::enqueue(message, thread_name, ...)
+            │       │
+            │       ▼
+            │   Worker processes message → AI generates reply
+            │
+            └── sleep until next due job (or scan interval)
+```
+
+### Components
+
+1. **JobConfig** (`jyc-types/src/job.rs`) — Data model for scheduled jobs
+   - `cron`: 7-field cron expression ("sec min hour dom mon dow year") for recurring jobs
+   - `at`: ISO 8601 timestamp for one-time jobs
+   - `enabled`: Whether the job fires
+   - `thread_name`, `channel`, `channel_name`: Routing info for firing
+   - `prompt`: Instructions injected as the message body when job fires
+   - `next_fire_at`: Pre-computed next scheduled fire time (updated after each fire)
+
+2. **JobStore** (`jyc-core/src/job_store.rs`) — File-based CRUD persistence
+   - Each job stored as `<jobs_dir>/<id>.json`
+   - Atomic writes via temp file + rename
+   - Methods: `list`, `get`, `create`, `update`, `upsert`, `delete`
+
+3. **JobScheduler** (`jyc-services/src/job_scheduler.rs`) — Background scan-and-fire loop
+   - Lists all enabled jobs, checks `next_fire_at <= now`
+   - Fires due jobs by injecting `InboundMessage` into `ThreadManager`
+   - Updates job state (last_fired_at, next_fire_at, enabled for one-time)
+   - Sleeps until next due job (or scan interval)
+
+4. **Job Management Tools** (`jyc-agent/src/tools/builtin/job_tools.rs`) — Agent tools
+   - `job_list`: List all scheduled jobs with schedule info
+   - `job_create`: Create new recurring (cron) or one-time (at) jobs
+   - `job_delete`: Delete a job by ID
+   - `job_toggle`: Enable/disable a job
+
+### Configuration
+
+```toml
+[scheduler]
+enabled = true
+jobs_dir = ".jyc/jobs"      # Relative to workdir
+scan_interval_secs = 60     # How often to scan for due jobs
+```
+
+### Design Decisions
+
+- **Channel-agnostic**: Jobs fire by injecting `InboundMessage` into the existing `ThreadManager` — no channel-specific code in the scheduler
+- **JSON file storage** over SQLite for simplicity — no schema migrations, no database connection
+- **7-field cron** (sec min hour dom mon dow year) for precision — the `cron` crate supports sub-minute scheduling
+- **Pre-computed next_fire_at**: Each job stores its next fire time, computed after each fire — avoids re-parsing cron on every scan cycle
+- **One-time job lifecycle**: After firing, `enabled` is set to `false` and `next_fire_at` to `None`
+- **Job ID**: UUID v4, generated at creation time
+
 ## References
 
 - [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping

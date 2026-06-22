@@ -21,6 +21,11 @@ use jyc_types::channel::OutboundAdapter;
 /// Shared thread managers map keyed by channel name.
 pub type ThreadManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
 
+/// Shared outbound adapters map keyed by channel name.
+/// Used by `jyc_send_message` to support the `channel` parameter for
+/// cross-channel proactive messaging.
+pub type OutboundsMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<dyn OutboundAdapter>>>>;
+
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
     /// Working directory for the tool.
@@ -61,6 +66,12 @@ pub struct ToolContext<'a> {
     /// Current thread name, for tools that need source context (e.g.
     /// `jyc_send_to_thread` sets `source_thread` metadata from this).
     pub current_thread: Option<String>,
+    /// Cross-channel outbound adapters keyed by channel name.
+    /// Used by `jyc_send_message` to support the `channel` parameter for
+    /// sending proactive messages through any channel's outbound adapter.
+    /// `None` when running in contexts without cross-channel support
+    /// (e.g. unit tests).
+    pub outbounds: Option<OutboundsMap>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -75,6 +86,7 @@ impl<'a> ToolContext<'a> {
             thread_managers: None,
             current_channel: None,
             current_thread: None,
+            outbounds: None,
         }
     }
 
@@ -89,6 +101,7 @@ impl<'a> ToolContext<'a> {
             thread_managers: None,
             current_channel: None,
             current_thread: None,
+            outbounds: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

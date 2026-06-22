@@ -12,13 +12,13 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::ThreadManagersMap;
 use crate::types::AgentConfig;
 use crate::vision::VisionClient;
 use std::sync::Arc;
@@ -133,7 +133,7 @@ pub struct JycAgentService {
     /// Cross-channel thread managers keyed by channel name.
     /// Passed through to `AgentLoopConfig` so the `jyc_send_to_thread` tool
     /// can inject messages into threads in other channels.
-    thread_managers: Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
+    thread_managers: Option<ThreadManagersMap>,
 }
 
 impl JycAgentService {
@@ -177,10 +177,7 @@ impl JycAgentService {
     ///
     /// Called by the monitor during startup to inject the thread manager map
     /// into each agent service after all channels have been initialized.
-    pub fn set_thread_managers(
-        &mut self,
-        tm: Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>,
-    ) {
+    pub fn set_thread_managers(&mut self, tm: ThreadManagersMap) {
         self.thread_managers = Some(tm);
     }
 

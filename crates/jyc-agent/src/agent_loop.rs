@@ -6,7 +6,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,10 +14,9 @@ use tracing;
 
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_core::thread_manager::ThreadManager;
 
 use crate::provider::{Provider, is_transient_sse_error};
-use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
+use crate::tools::{ToolContext, ToolOutput, ThreadManagersMap, registry::ToolRegistry};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
 /// Default maximum number of tool-call iterations before giving up.
@@ -67,8 +65,7 @@ pub struct AgentLoopConfig<'a> {
     /// Cross-channel thread managers keyed by channel name.
     /// Passed through to `ToolContext` so the `jyc_send_to_thread` tool
     /// can inject messages into threads in other channels.
-    pub thread_managers:
-        Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
+    pub thread_managers: Option<ThreadManagersMap>,
 }
 
 /// Run the agent loop to completion.

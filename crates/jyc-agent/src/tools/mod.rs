@@ -18,6 +18,10 @@ use crate::types::{ImageSource, ToolDefinition};
 use jyc_core::thread_manager::ThreadManager;
 use jyc_types::channel::OutboundAdapter;
 
+/// Shared thread managers map keyed by channel name.
+pub type ThreadManagersMap =
+    Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
+
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
     /// Working directory for the tool.
@@ -51,8 +55,7 @@ pub struct ToolContext<'a> {
     /// Used by `jyc_send_to_thread` tool to inject messages into threads
     /// in other channels. `None` when running in contexts without
     /// cross-channel communication (e.g. unit tests).
-    pub thread_managers:
-        Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
+    pub thread_managers: Option<ThreadManagersMap>,
 }
 
 impl<'a> ToolContext<'a> {

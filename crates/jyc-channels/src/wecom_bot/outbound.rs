@@ -420,6 +420,95 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         Ok(SendResult { message_id })
     }
 
+    /// Send a message with file attachments to a WeCom Bot conversation.
+    ///
+    /// Sends text first via `aibot_send_msg`, then uploads each attachment
+    /// and sends as a separate media message. Reuses the same module-level
+    /// functions (`upload_attachment`, `build_media_message_body`,
+    /// `wecom_media_type`) as `send_reply`'s attachment handling.
+    async fn send_message_with_attachments(
+        &self,
+        recipient: &str,
+        subject: &str,
+        body: &str,
+        attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        // Validate attachments if configuration is present
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config
+        {
+            attachment_validator::validate_outbound_attachments(attachments, config)
+                .await
+                .context("Failed to validate outbound attachments")?;
+            tracing::debug!("Outbound attachments validated successfully for WeCom Bot");
+        }
+
+        // Send text message first (reuse send_message logic)
+        let text_result = self.send_message(recipient, subject, body).await?;
+
+        // Send attachments as separate media messages
+        if let Some(attachments) = attachments
+            && !attachments.is_empty()
+        {
+            let handle = {
+                let guard = self.handle.lock().await;
+                guard
+                    .clone()
+                    .context("WeCom Bot outbound handle not set; cannot upload attachments")?
+            };
+
+            for att in attachments {
+                let media_type = wecom_media_type(&att.content_type, &att.filename);
+
+                match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
+                {
+                    Ok(media_id) => {
+                        let mut body = build_media_message_body(media_type, &media_id);
+                        body["chatid"] = serde_json::Value::String(recipient.to_string());
+
+                        let json = serde_json::json!({
+                            "cmd": "aibot_send_msg",
+                            "headers": {"req_id": format!("aibot_send_msg_{}_{}",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis(),
+                                uuid::Uuid::new_v4().to_string().replace('-', "")[..8].to_string()
+                            )},
+                            "body": body,
+                        })
+                        .to_string();
+
+                        if let Err(e) = handle.sender.send(json) {
+                            tracing::warn!(
+                                filename = %att.filename,
+                                error = %e,
+                                "Failed to send WeCom Bot attachment message"
+                            );
+                        } else {
+                            tracing::info!(
+                                filename = %att.filename,
+                                media_type = %media_type,
+                                "WeCom Bot attachment message sent"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            filename = %att.filename,
+                            error = %e,
+                            "Failed to upload WeCom Bot attachment"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(SendResult {
+            message_id: text_result.message_id,
+        })
+    }
+
     /// Send a processing indicator (`finish=false`) so the user sees
     /// "正在思考中..." while AI is working.
     ///

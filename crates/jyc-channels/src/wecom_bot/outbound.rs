@@ -313,13 +313,12 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
                 match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
                 {
                     Ok(media_id) => {
-                        let body = build_media_message_body(media_type, &media_id);
                         let att_cmd = if proactive_chatid.is_some() {
                             "aibot_send_msg"
                         } else {
                             "aibot_respond_msg"
                         };
-                        let mut body = body;
+                        let mut body = build_media_message_body(media_type, &media_id);
                         if let Some(ref chatid) = proactive_chatid {
                             body["chatid"] = serde_json::Value::String(chatid.clone());
                         }

@@ -133,7 +133,9 @@ pub struct JycAgentService {
     /// Cross-channel thread managers keyed by channel name.
     /// Passed through to `AgentLoopConfig` so the `jyc_send_to_thread` tool
     /// can inject messages into threads in other channels.
-    thread_managers: Option<ThreadManagersMap>,
+    /// Uses `std::sync::Mutex` for interior mutability (set after construction
+    /// via `set_thread_managers()` on an `Arc<Self>`).
+    thread_managers: std::sync::Mutex<Option<ThreadManagersMap>>,
 }
 
 impl JycAgentService {
@@ -169,7 +171,7 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
-            thread_managers: None,
+            thread_managers: std::sync::Mutex::new(None),
         }
     }
 
@@ -177,8 +179,8 @@ impl JycAgentService {
     ///
     /// Called by the monitor during startup to inject the thread manager map
     /// into each agent service after all channels have been initialized.
-    pub fn set_thread_managers(&mut self, tm: ThreadManagersMap) {
-        self.thread_managers = Some(tm);
+    pub fn set_thread_managers(&self, tm: ThreadManagersMap) {
+        *self.thread_managers.lock().expect("thread_managers poisoned") = Some(tm);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -377,7 +379,12 @@ impl JycAgentService {
         );
 
         // Cross-Thread Communication section (when thread managers are available)
-        if let Some(ref tm_map) = self.thread_managers {
+        let tm_map_opt = self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned")
+            .clone();
+        if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
                  You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
@@ -970,6 +977,11 @@ impl AgentService for JycAgentService {
 
         // 7. Run agent loop
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
+        let thread_managers = self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned")
+            .clone();
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider
@@ -988,7 +1000,7 @@ impl AgentService for JycAgentService {
             additional_read_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
-            thread_managers: self.thread_managers.clone(),
+            thread_managers: thread_managers.clone(),
         })
         .await?;
 

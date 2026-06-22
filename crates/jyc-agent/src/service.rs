@@ -17,8 +17,8 @@ use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
-use crate::tools::registry::ToolRegistry;
 use crate::tools::ThreadManagersMap;
+use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
 use crate::vision::VisionClient;
 use std::sync::Arc;
@@ -184,7 +184,10 @@ impl JycAgentService {
     /// Called by the monitor during startup to inject the thread manager map
     /// into each agent service after all channels have been initialized.
     pub fn set_thread_managers(&self, tm: ThreadManagersMap) {
-        *self.thread_managers.lock().expect("thread_managers poisoned") = Some(tm);
+        *self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned") = Some(tm);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -296,7 +299,11 @@ impl JycAgentService {
     }
 
     /// Build the system prompt for a thread.
-    async fn build_system_prompt(&self, thread_path: &Path, matched_pattern: Option<&str>) -> String {
+    async fn build_system_prompt(
+        &self,
+        thread_path: &Path,
+        matched_pattern: Option<&str>,
+    ) -> String {
         let mut prompt = String::new();
 
         // Security: directory boundaries
@@ -397,17 +404,17 @@ impl JycAgentService {
             let map = tm_map.lock().await;
             for (channel_name, tm) in map.iter() {
                 let channel_type = tm.channel_type();
-                prompt.push_str(&format!("- Channel \"{}\" ({})\n", channel_name, channel_type));
+                prompt.push_str(&format!(
+                    "- Channel \"{}\" ({})\n",
+                    channel_name, channel_type
+                ));
                 // List active threads for this channel
                 let threads = tm.list_threads().await;
                 if threads.is_empty() {
                     prompt.push_str("    (no active threads)\n");
                 } else {
                     for thread_info in &threads {
-                        prompt.push_str(&format!(
-                            "  - {}\n",
-                            thread_info.name
-                        ));
+                        prompt.push_str(&format!("  - {}\n", thread_info.name));
                     }
                 }
             }
@@ -966,8 +973,9 @@ impl AgentService for JycAgentService {
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
-        let system_prompt =
-            self.build_system_prompt(thread_path, message.matched_pattern.as_deref()).await;
+        let system_prompt = self
+            .build_system_prompt(thread_path, message.matched_pattern.as_deref())
+            .await;
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry

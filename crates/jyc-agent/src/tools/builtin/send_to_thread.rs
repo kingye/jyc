@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use tracing;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
-use jyc_types::{InboundMessage, MessageContent, MessageAttachment, PatternMatch};
+use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
 /// Tool for sending messages to threads in other channels.
 pub struct SendToThreadTool;
@@ -140,7 +140,11 @@ impl Tool for SendToThreadTool {
                 return Ok(ToolOutput::error(format!(
                     "Channel '{}' not found. Available channels: {}",
                     channel,
-                    tm_map.keys().map(|k| format!("\"{}\"", k)).collect::<Vec<_>>().join(", "),
+                    tm_map
+                        .keys()
+                        .map(|k| format!("\"{}\"", k))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 )));
             }
         };
@@ -168,7 +172,9 @@ impl Tool for SendToThreadTool {
                 .iter()
                 .map(|filename| {
                     let file_path = ctx.working_dir.join(filename);
-                    let size = std::fs::metadata(&file_path).map(|m| m.len() as usize).unwrap_or(0);
+                    let size = std::fs::metadata(&file_path)
+                        .map(|m| m.len() as usize)
+                        .unwrap_or(0);
                     MessageAttachment {
                         filename: filename.clone(),
                         content_type: "application/octet-stream".to_string(),

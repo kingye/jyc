@@ -19,8 +19,7 @@ use jyc_core::thread_manager::ThreadManager;
 use jyc_types::channel::OutboundAdapter;
 
 /// Shared thread managers map keyed by channel name.
-pub type ThreadManagersMap =
-    Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
+pub type ThreadManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
 
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {

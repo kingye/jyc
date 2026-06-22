@@ -12,6 +12,7 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
@@ -129,6 +130,10 @@ pub struct JycAgentService {
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
     channel_disabled_skills: Option<Vec<String>>,
+    /// Cross-channel thread managers keyed by channel name.
+    /// Passed through to `AgentLoopConfig` so the `jyc_send_to_thread` tool
+    /// can inject messages into threads in other channels.
+    thread_managers: Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
 }
 
 impl JycAgentService {
@@ -164,7 +169,19 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
+            thread_managers: None,
         }
+    }
+
+    /// Set the cross-channel thread managers map.
+    ///
+    /// Called by the monitor during startup to inject the thread manager map
+    /// into each agent service after all channels have been initialized.
+    pub fn set_thread_managers(
+        &mut self,
+        tm: Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>,
+    ) {
+        self.thread_managers = Some(tm);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -959,7 +976,7 @@ impl AgentService for JycAgentService {
             additional_read_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
-            thread_managers: None,
+            thread_managers: self.thread_managers.clone(),
         })
         .await?;
 

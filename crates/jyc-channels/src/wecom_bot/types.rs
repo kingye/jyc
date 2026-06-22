@@ -205,6 +205,7 @@ pub struct BotEvent {
     /// Chat ID
     pub chatid: String,
     /// Event type: enter_chat, template_card_event, feedback_event, disconnected_event
+    #[serde(deserialize_with = "deserialize_event_field")]
     pub event: String,
     /// Event data (type-specific)
     #[serde(default)]
@@ -212,6 +213,45 @@ pub struct BotEvent {
     /// Request ID (from headers, not body)
     #[serde(default)]
     pub req_id: String,
+}
+
+/// Custom deserializer for `BotEvent.event` that accepts both a plain string
+/// (`"enter_chat"`) and an object (`{"eventtype": "enter_chat"}`).
+///
+/// WeCom API sometimes sends events as nested objects instead of plain strings.
+fn deserialize_event_field<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct EventVisitor;
+
+    impl<'de> de::Visitor<'de> for EventVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or an object with an \"eventtype\" field")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+            Ok(value.to_string())
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<String, M::Error> {
+            let mut eventtype = None;
+            while let Some(key) = map.next_key::<String>()? {
+                if key.to_lowercase() == "eventtype" {
+                    eventtype = Some(map.next_value::<String>()?);
+                } else {
+                    let _: serde::de::IgnoredAny = map.next_value()?;
+                }
+            }
+            eventtype.ok_or_else(|| de::Error::missing_field("eventtype"))
+        }
+    }
+
+    deserializer.deserialize_any(EventVisitor)
 }
 
 /// Payload for responding/sending messages.
@@ -363,6 +403,25 @@ mod tests {
                 "aibotid": "bot_xxx",
                 "chatid": "chat_456",
                 "event": "enter_chat"
+            }
+        }"#;
+        let raw: serde_json::Value = serde_json::from_str(json).unwrap();
+        let body = raw.get("body").cloned().unwrap();
+        let event: BotEvent = serde_json::from_value(body).unwrap();
+        assert_eq!(event.event, "enter_chat");
+        assert_eq!(event.chatid, "chat_456");
+    }
+
+    #[test]
+    fn test_parse_event_object_form() {
+        // WeCom may send event as an object: {"eventtype": "enter_chat"}
+        let json = r#"{
+            "cmd": "aibot_event_callback",
+            "headers": {"req_id": "req_def"},
+            "body": {
+                "aibotid": "bot_xxx",
+                "chatid": "chat_456",
+                "event": {"eventtype": "enter_chat"}
             }
         }"#;
         let raw: serde_json::Value = serde_json::from_str(json).unwrap();

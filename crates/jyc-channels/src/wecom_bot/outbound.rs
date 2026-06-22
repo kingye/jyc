@@ -105,6 +105,8 @@ impl WecomBotOutboundAdapter {
 
     /// Send a text/markdown reply through the WebSocket.
     ///
+    /// When `chatid` is `Some`, uses `aibot_send_msg` (proactive mode).
+    /// When `chatid` is `None`, uses `aibot_respond_msg` (passive reply mode).
     /// NOTE: aibot_respond_msg only supports msgtype="stream" (and "template_card").
     /// Text/markdown must be sent as a stream with finish=true.
     async fn send_text_reply(
@@ -113,18 +115,31 @@ impl WecomBotOutboundAdapter {
         content: &str,
         stream_id: &str,
         finish: bool,
+        chatid: Option<&str>,
     ) -> Result<()> {
-        let json = serde_json::json!({
-            "cmd": "aibot_respond_msg",
-            "headers": {"req_id": req_id},
-            "body": {
-                "msgtype": "stream",
-                "stream": {
-                    "id": stream_id,
-                    "content": content,
-                    "finish": finish
-                }
+        let cmd = if chatid.is_some() {
+            "aibot_send_msg"
+        } else {
+            "aibot_respond_msg"
+        };
+
+        let mut body = serde_json::json!({
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "content": content,
+                "finish": finish
             }
+        });
+
+        if let Some(chatid) = chatid {
+            body["chatid"] = serde_json::Value::String(chatid.to_string());
+        }
+
+        let json = serde_json::json!({
+            "cmd": cmd,
+            "headers": {"req_id": req_id},
+            "body": body,
         })
         .to_string();
 
@@ -141,7 +156,7 @@ impl WecomBotOutboundAdapter {
         stream_id: &str,
         content: &str,
     ) -> Result<()> {
-        self.send_text_reply(req_id, content, stream_id, false)
+        self.send_text_reply(req_id, content, stream_id, false, None)
             .await
             .context("Failed to update WeCom Bot processing indicator")
     }
@@ -205,16 +220,32 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             format!("{}\n\n{}", clean_reply, footer)
         };
 
-        // 5. Get req_id from original message metadata
-        let req_id = original
+        // 5. Get req_id from original message metadata.
+        //    Proactive messages (scheduled tasks) have no req_id — derive chatid
+        //    from thread_path and use aibot_send_msg instead.
+        let original_req_id = original
             .metadata
             .get("req_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if req_id.is_empty() {
-            tracing::warn!("Original message missing req_id, reply may not be correlated by WeCom");
-        }
+        let (req_id, proactive_chatid) = if original_req_id.is_empty() {
+            // Derive chatid from thread_path: strip "bot-" prefix from last component
+            let thread_name = thread_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let chatid = thread_name.strip_prefix("bot-").unwrap_or(thread_name);
+            let new_req_id = generate_req_id("aibot_send_msg");
+            tracing::warn!(
+                thread_name = %thread_name,
+                chatid = %chatid,
+                "Original message missing req_id, using proactive send"
+            );
+            (new_req_id, Some(chatid.to_string()))
+        } else {
+            (original_req_id.to_string(), None)
+        };
 
         // 6. Validate attachments if configuration is present
         if let Some(attachments) = attachments
@@ -247,9 +278,15 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         };
 
         // 8. Send reply via WebSocket with finish=true
-        self.send_text_reply(req_id, &full_reply, &stream_id, true)
-            .await
-            .context("Failed to send WeCom Bot reply")?;
+        self.send_text_reply(
+            &req_id,
+            &full_reply,
+            &stream_id,
+            true,
+            proactive_chatid.as_deref(),
+        )
+        .await
+        .context("Failed to send WeCom Bot reply")?;
 
         let message_id = uuid::Uuid::new_v4().to_string();
 
@@ -276,9 +313,17 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
                 match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
                 {
                     Ok(media_id) => {
-                        let body = build_media_message_body(media_type, &media_id);
+                        let att_cmd = if proactive_chatid.is_some() {
+                            "aibot_send_msg"
+                        } else {
+                            "aibot_respond_msg"
+                        };
+                        let mut body = build_media_message_body(media_type, &media_id);
+                        if let Some(ref chatid) = proactive_chatid {
+                            body["chatid"] = serde_json::Value::String(chatid.clone());
+                        }
                         let json = serde_json::json!({
-                            "cmd": "aibot_respond_msg",
+                            "cmd": att_cmd,
                             "headers": {"req_id": req_id},
                             "body": body,
                         })
@@ -492,7 +537,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             return Ok(());
         }
 
-        self.send_text_reply(req_id, content, handle, false)
+        self.send_text_reply(req_id, content, handle, false, None)
             .await
             .context("Failed to update WeCom Bot processing indicator")?;
 

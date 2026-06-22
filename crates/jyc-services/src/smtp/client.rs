@@ -305,6 +305,79 @@ impl SmtpClient {
         Ok(message_id)
     }
 
+    /// Send a fresh (non-reply) email with file attachments — no threading headers.
+    ///
+    /// Same as `send_mail` but attaches files to a `multipart/mixed` wrapper.
+    /// No `In-Reply-To` or `References` headers (this is a fresh message, not a reply).
+    /// Follows the same MIME multipart pattern as `send_reply` for attachment parts.
+    pub async fn send_mail_with_attachments(
+        &mut self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        markdown_body: &str,
+        attachments: &[EmailAttachment],
+    ) -> Result<String> {
+        let html_body = markdown_to_html(markdown_body);
+
+        let from_mailbox: Mailbox = from
+            .parse()
+            .with_context(|| format!("invalid from address: {from}"))?;
+        let to_mailbox: Mailbox = to
+            .parse()
+            .with_context(|| format!("invalid to address: {to}"))?;
+
+        let body_part = MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(markdown_body.to_string()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html_body),
+            );
+
+        let email = if attachments.is_empty() {
+            Message::builder()
+                .from(from_mailbox)
+                .to(to_mailbox)
+                .subject(subject)
+                .multipart(body_part)
+                .context("failed to build email message")?
+        } else {
+            let mut mixed = MultiPart::mixed().multipart(body_part);
+            for att in attachments {
+                let ct: ContentType = att
+                    .content_type
+                    .parse()
+                    .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
+                let attachment =
+                    Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
+                mixed = mixed.singlepart(attachment);
+            }
+            Message::builder()
+                .from(from_mailbox)
+                .to(to_mailbox)
+                .subject(subject)
+                .multipart(mixed)
+                .context("failed to build email with attachments")?
+        };
+
+        let message_id = email
+            .headers()
+            .get_raw("Message-ID")
+            .unwrap_or_default()
+            .to_string();
+
+        self.send_with_retry(email).await?;
+
+        tracing::info!(to = %to, subject = %subject, attachments = attachments.len(), "Email with attachments sent");
+
+        Ok(message_id)
+    }
+
     /// Send an email with structured retry logic based on SMTP error classification.
     ///
     /// Error handling strategy:

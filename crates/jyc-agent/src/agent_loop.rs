@@ -66,6 +66,9 @@ pub struct AgentLoopConfig<'a> {
     /// Passed through to `ToolContext` so the `jyc_send_to_thread` tool
     /// can inject messages into threads in other channels.
     pub thread_managers: Option<ThreadManagersMap>,
+    /// Current channel name, for tools that need source context
+    /// (e.g. `jyc_send_to_thread` sets `source_channel` metadata from this).
+    pub current_channel: Option<String>,
 }
 
 /// Run the agent loop to completion.
@@ -89,6 +92,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         pattern_inject_images,
         outbound,
         thread_managers,
+        current_channel,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -196,6 +200,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ctx.pattern_inject_images = pattern_inject_images;
             ctx.outbound = outbound.clone();
             ctx.thread_managers = thread_managers.clone();
+            ctx.current_channel = current_channel.clone();
+            ctx.current_thread = Some(thread_name.to_string());
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
@@ -347,6 +353,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.pattern_inject_images = pattern_inject_images;
         ctx.outbound = outbound.clone();
         ctx.thread_managers = thread_managers.clone();
+        ctx.current_channel = current_channel.clone();
+        ctx.current_thread = Some(thread_name.to_string());
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {

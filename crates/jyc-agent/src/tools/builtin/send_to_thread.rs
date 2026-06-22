@@ -180,14 +180,18 @@ impl Tool for SendToThreadTool {
                 .collect(),
             metadata: {
                 let mut m = HashMap::new();
-                m.insert(
-                    "source_channel".to_string(),
-                    serde_json::Value::String(String::new()),
-                );
-                m.insert(
-                    "source_thread".to_string(),
-                    serde_json::Value::String(String::new()),
-                );
+                if let Some(ref src_ch) = ctx.current_channel {
+                    m.insert(
+                        "source_channel".to_string(),
+                        serde_json::Value::String(src_ch.clone()),
+                    );
+                }
+                if let Some(ref src_th) = ctx.current_thread {
+                    m.insert(
+                        "source_thread".to_string(),
+                        serde_json::Value::String(src_th.clone()),
+                    );
+                }
                 m
             },
             matched_pattern: None,

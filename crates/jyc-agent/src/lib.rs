@@ -108,6 +108,7 @@ mod integration_tests {
             pattern_inject_images: false,
             outbound: None,
             thread_managers: None,
+            current_channel: None,
         })
         .await
         .unwrap();

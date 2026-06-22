@@ -18,6 +18,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Cross-thread/channel communication tool (`jyc_send_to_thread`).** New
+  builtin tool that enables AI agents to inject messages into threads in other
+  channels. The tool is backed by `ThreadManager::enqueue()` (same mechanism as
+  the JobScheduler). ToolContext carries a cross-channel `thread_managers` map
+  (keyed by channel name) wired from Monitor → JycAgentService → AgentLoopConfig
+  → ToolContext. System prompt lists available channels. Attachment validation
+  mirrors `ReplyMessageTool`. (#268)
+
 - **Channel-agnostic scheduled job system.** Background JobScheduler runs
   alongside the monitor, scans all threads for due jobs (per-thread
   `.jyc/jobs/<id>.json` storage), fires recurring (cron) or one-time jobs by

@@ -56,6 +56,12 @@ pub struct ToolContext<'a> {
     /// in other channels. `None` when running in contexts without
     /// cross-channel communication (e.g. unit tests).
     pub thread_managers: Option<ThreadManagersMap>,
+    /// Current channel name, for tools that need source context (e.g.
+    /// `jyc_send_to_thread` sets `source_channel` metadata from this).
+    pub current_channel: Option<String>,
+    /// Current thread name, for tools that need source context (e.g.
+    /// `jyc_send_to_thread` sets `source_thread` metadata from this).
+    pub current_thread: Option<String>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -68,6 +74,8 @@ impl<'a> ToolContext<'a> {
             pattern_inject_images: false,
             outbound: None,
             thread_managers: None,
+            current_channel: None,
+            current_thread: None,
         }
     }
 
@@ -80,6 +88,8 @@ impl<'a> ToolContext<'a> {
             pattern_inject_images: false,
             outbound: None,
             thread_managers: None,
+            current_channel: None,
+            current_thread: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

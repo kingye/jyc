@@ -136,6 +136,8 @@ pub struct JycAgentService {
     /// Uses `std::sync::Mutex` for interior mutability (set after construction
     /// via `set_thread_managers()` on an `Arc<Self>`).
     thread_managers: std::sync::Mutex<Option<ThreadManagersMap>>,
+    /// Current channel name for source context in cross-thread tools.
+    channel_name: String,
 }
 
 impl JycAgentService {
@@ -156,6 +158,7 @@ impl JycAgentService {
         channel_disabled_mcp_servers: Option<Vec<String>>,
         channel_skills: Option<Vec<String>>,
         channel_disabled_skills: Option<Vec<String>>,
+        channel_name: String,
     ) -> Self {
         Self {
             config,
@@ -172,6 +175,7 @@ impl JycAgentService {
             channel_skills,
             channel_disabled_skills,
             thread_managers: std::sync::Mutex::new(None),
+            channel_name,
         }
     }
 
@@ -388,11 +392,24 @@ impl JycAgentService {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
                  You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
-                 Available channels:\n",
+                 Available channels and their active threads:\n",
             );
             let map = tm_map.lock().await;
-            for channel_name in map.keys() {
-                prompt.push_str(&format!("- Channel \"{}\"\n", channel_name));
+            for (channel_name, tm) in map.iter() {
+                let channel_type = tm.channel_type();
+                prompt.push_str(&format!("- Channel \"{}\" ({})\n", channel_name, channel_type));
+                // List active threads for this channel
+                let threads = tm.list_threads().await;
+                if threads.is_empty() {
+                    prompt.push_str("    (no active threads)\n");
+                } else {
+                    for thread_info in &threads {
+                        prompt.push_str(&format!(
+                            "  - {}\n",
+                            thread_info.name
+                        ));
+                    }
+                }
             }
             prompt.push('\n');
         }
@@ -1001,6 +1018,7 @@ impl AgentService for JycAgentService {
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
             thread_managers: thread_managers.clone(),
+            current_channel: Some(self.channel_name.clone()),
         })
         .await?;
 
@@ -1104,6 +1122,7 @@ mod tests {
             None,
             None,
             None,
+            "test".to_string(),
         )
     }
 
@@ -1141,6 +1160,7 @@ mod tests {
             channel_disabled_mcp_servers,
             None,
             None,
+            "test".to_string(),
         )
     }
 
@@ -1163,6 +1183,7 @@ mod tests {
             None,
             channel_skills,
             channel_disabled_skills,
+            "test".to_string(),
         )
     }
 

@@ -452,6 +452,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     channel_config.disabled_mcp_servers.clone(),
                     channel_config.skills.clone(),
                     channel_config.disabled_skills.clone(),
+                    channel_name.clone(),
                 ));
                 all_agent_services.push(jyc_agent_svc.clone());
                 jyc_agent_svc as Arc<dyn AgentService>

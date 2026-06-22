@@ -290,7 +290,7 @@ impl JycAgentService {
     }
 
     /// Build the system prompt for a thread.
-    fn build_system_prompt(&self, thread_path: &Path, matched_pattern: Option<&str>) -> String {
+    async fn build_system_prompt(&self, thread_path: &Path, matched_pattern: Option<&str>) -> String {
         let mut prompt = String::new();
 
         // Security: directory boundaries
@@ -375,6 +375,20 @@ impl JycAgentService {
              This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.md`.\n\
              You can read it with the `read` tool if you need context from prior conversations.\n",
         );
+
+        // Cross-Thread Communication section (when thread managers are available)
+        if let Some(ref tm_map) = self.thread_managers {
+            prompt.push_str(
+                "\n## Cross-Thread Communication\n\n\
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
+                 Available channels:\n",
+            );
+            let map = tm_map.lock().await;
+            for channel_name in map.keys() {
+                prompt.push_str(&format!("- Channel \"{}\"\n", channel_name));
+            }
+            prompt.push('\n');
+        }
 
         prompt
     }
@@ -927,8 +941,9 @@ impl AgentService for JycAgentService {
 
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
+        // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt =
-            self.build_system_prompt(thread_path, message.matched_pattern.as_deref());
+            self.build_system_prompt(thread_path, message.matched_pattern.as_deref()).await;
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry

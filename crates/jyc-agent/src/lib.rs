@@ -107,6 +107,8 @@ mod integration_tests {
             additional_read_roots: Vec::new(),
             pattern_inject_images: false,
             outbound: None,
+            thread_managers: None,
+            current_channel: None,
         })
         .await
         .unwrap();

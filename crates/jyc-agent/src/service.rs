@@ -17,6 +17,7 @@ use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
+use crate::tools::ThreadManagersMap;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
 use crate::vision::VisionClient;
@@ -129,6 +130,14 @@ pub struct JycAgentService {
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
     channel_disabled_skills: Option<Vec<String>>,
+    /// Cross-channel thread managers keyed by channel name.
+    /// Passed through to `AgentLoopConfig` so the `jyc_send_to_thread` tool
+    /// can inject messages into threads in other channels.
+    /// Uses `std::sync::Mutex` for interior mutability (set after construction
+    /// via `set_thread_managers()` on an `Arc<Self>`).
+    thread_managers: std::sync::Mutex<Option<ThreadManagersMap>>,
+    /// Current channel name for source context in cross-thread tools.
+    channel_name: String,
 }
 
 impl JycAgentService {
@@ -149,6 +158,7 @@ impl JycAgentService {
         channel_disabled_mcp_servers: Option<Vec<String>>,
         channel_skills: Option<Vec<String>>,
         channel_disabled_skills: Option<Vec<String>>,
+        channel_name: String,
     ) -> Self {
         Self {
             config,
@@ -164,7 +174,20 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
+            thread_managers: std::sync::Mutex::new(None),
+            channel_name,
         }
+    }
+
+    /// Set the cross-channel thread managers map.
+    ///
+    /// Called by the monitor during startup to inject the thread manager map
+    /// into each agent service after all channels have been initialized.
+    pub fn set_thread_managers(&self, tm: ThreadManagersMap) {
+        *self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned") = Some(tm);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -276,7 +299,11 @@ impl JycAgentService {
     }
 
     /// Build the system prompt for a thread.
-    fn build_system_prompt(&self, thread_path: &Path, matched_pattern: Option<&str>) -> String {
+    async fn build_system_prompt(
+        &self,
+        thread_path: &Path,
+        matched_pattern: Option<&str>,
+    ) -> String {
         let mut prompt = String::new();
 
         // Security: directory boundaries
@@ -361,6 +388,38 @@ impl JycAgentService {
              This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.md`.\n\
              You can read it with the `read` tool if you need context from prior conversations.\n",
         );
+
+        // Cross-Thread Communication section (when thread managers are available)
+        let tm_map_opt = self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned")
+            .clone();
+        if let Some(ref tm_map) = tm_map_opt {
+            prompt.push_str(
+                "\n## Cross-Thread Communication\n\n\
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
+                 Available channels and their active threads:\n",
+            );
+            let map = tm_map.lock().await;
+            for (channel_name, tm) in map.iter() {
+                let channel_type = tm.channel_type();
+                prompt.push_str(&format!(
+                    "- Channel \"{}\" ({})\n",
+                    channel_name, channel_type
+                ));
+                // List active threads for this channel
+                let threads = tm.list_threads().await;
+                if threads.is_empty() {
+                    prompt.push_str("    (no active threads)\n");
+                } else {
+                    for thread_info in &threads {
+                        prompt.push_str(&format!("  - {}\n", thread_info.name));
+                    }
+                }
+            }
+            prompt.push('\n');
+        }
 
         prompt
     }
@@ -913,8 +972,10 @@ impl AgentService for JycAgentService {
 
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
-        let system_prompt =
-            self.build_system_prompt(thread_path, message.matched_pattern.as_deref());
+        // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
+        let system_prompt = self
+            .build_system_prompt(thread_path, message.matched_pattern.as_deref())
+            .await;
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry
@@ -941,6 +1002,11 @@ impl AgentService for JycAgentService {
 
         // 7. Run agent loop
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
+        let thread_managers = self
+            .thread_managers
+            .lock()
+            .expect("thread_managers poisoned")
+            .clone();
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider
@@ -959,6 +1025,8 @@ impl AgentService for JycAgentService {
             additional_read_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
+            thread_managers: thread_managers.clone(),
+            current_channel: Some(self.channel_name.clone()),
         })
         .await?;
 
@@ -1062,6 +1130,7 @@ mod tests {
             None,
             None,
             None,
+            "test".to_string(),
         )
     }
 
@@ -1099,6 +1168,7 @@ mod tests {
             channel_disabled_mcp_servers,
             None,
             None,
+            "test".to_string(),
         )
     }
 
@@ -1121,6 +1191,7 @@ mod tests {
             None,
             channel_skills,
             channel_disabled_skills,
+            "test".to_string(),
         )
     }
 

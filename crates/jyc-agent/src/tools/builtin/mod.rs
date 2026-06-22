@@ -7,6 +7,7 @@ pub mod grep;
 pub mod job_tools;
 pub mod read;
 pub mod read_image;
+pub mod send_to_thread;
 pub mod webfetch;
 pub mod write;
 
@@ -30,6 +31,7 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(job_tools::JobCreateTool));
     registry.register(Box::new(job_tools::JobDeleteTool));
     registry.register(Box::new(job_tools::JobToggleTool));
+    registry.register(Box::new(send_to_thread::SendToThreadTool));
 
     registry
 }

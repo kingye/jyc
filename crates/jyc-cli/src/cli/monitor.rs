@@ -118,6 +118,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
     let mut all_channels: Vec<jyc_types::ChannelInfo> = Vec::new();
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
+    // Collect JycAgentService instances for wiring cross-channel thread managers
+    let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
 
@@ -437,7 +439,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             )))
                         })
                 };
-                Arc::new(JycAgentService::new(
+                let jyc_agent_svc = Arc::new(JycAgentService::new(
                     agent_cfg,
                     workdir.to_path_buf(),
                     config_snapshot.mcps.clone(),
@@ -450,7 +452,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     channel_config.disabled_mcp_servers.clone(),
                     channel_config.skills.clone(),
                     channel_config.disabled_skills.clone(),
-                ))
+                    channel_name.clone(),
+                ));
+                all_agent_services.push(jyc_agent_svc.clone());
+                jyc_agent_svc as Arc<dyn AgentService>
             }
             "static" => {
                 let text = agent_config
@@ -1028,30 +1033,39 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
-    // 4.5. Start JobScheduler (if scheduler is enabled in config)
-    let scheduler_config = config_snapshot.scheduler.clone();
-    if scheduler_config.enabled {
-        // Build thread manager map keyed by channel name
+    // 4.5. Wire cross-channel thread managers into agent services
+    {
         let tm_map: HashMap<String, Arc<ThreadManager>> = all_thread_managers
             .iter()
             .map(|tm| (tm.channel_name().to_string(), tm.clone()))
             .collect();
         let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
-
-        let scheduler = JobScheduler::new(
-            tm_map,
-            all_workspace_dirs.clone(),
-            scheduler_config.scan_interval_secs,
-            scheduler_config.max_jobs_per_thread,
-            true,
+        for svc in &all_agent_services {
+            svc.set_thread_managers(tm_map.clone());
+        }
+        tracing::info!(
+            "Wired thread managers into {} agent service(s)",
+            all_agent_services.len()
         );
 
-        let scheduler_cancel = cancel.clone();
-        tasks.push(tokio::spawn(async move {
-            scheduler.run(scheduler_cancel).await;
-        }));
+        // Start JobScheduler (if scheduler is enabled in config)
+        let scheduler_config = config_snapshot.scheduler.clone();
+        if scheduler_config.enabled {
+            let scheduler = JobScheduler::new(
+                tm_map,
+                all_workspace_dirs.clone(),
+                scheduler_config.scan_interval_secs,
+                scheduler_config.max_jobs_per_thread,
+                true,
+            );
 
-        tracing::info!("Job scheduler started");
+            let scheduler_cancel = cancel.clone();
+            tasks.push(tokio::spawn(async move {
+                scheduler.run(scheduler_cancel).await;
+            }));
+
+            tracing::info!("Job scheduler started");
+        }
     }
 
     // 5. Start inspect server (if configured)

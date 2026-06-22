@@ -10,11 +10,16 @@ pub mod registry;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
+use jyc_core::thread_manager::ThreadManager;
 use jyc_types::channel::OutboundAdapter;
+
+/// Shared thread managers map keyed by channel name.
+pub type ThreadManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
 
 /// Context provided to tools during execution.
 pub struct ToolContext<'a> {
@@ -45,6 +50,17 @@ pub struct ToolContext<'a> {
     /// the tool registry. `None` when the agent runs in contexts without
     /// a pre-warmed outbound adapter.
     pub outbound: Option<Arc<dyn OutboundAdapter>>,
+    /// Cross-channel thread managers keyed by channel name.
+    /// Used by `jyc_send_to_thread` tool to inject messages into threads
+    /// in other channels. `None` when running in contexts without
+    /// cross-channel communication (e.g. unit tests).
+    pub thread_managers: Option<ThreadManagersMap>,
+    /// Current channel name, for tools that need source context (e.g.
+    /// `jyc_send_to_thread` sets `source_channel` metadata from this).
+    pub current_channel: Option<String>,
+    /// Current thread name, for tools that need source context (e.g.
+    /// `jyc_send_to_thread` sets `source_thread` metadata from this).
+    pub current_thread: Option<String>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -56,6 +72,9 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
+            thread_managers: None,
+            current_channel: None,
+            current_thread: None,
         }
     }
 
@@ -67,6 +86,9 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
+            thread_managers: None,
+            current_channel: None,
+            current_thread: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

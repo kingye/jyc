@@ -433,14 +433,15 @@ mod tool_registry {
         assert!(registry.has_tool("job_create"));
         assert!(registry.has_tool("job_delete"));
         assert!(registry.has_tool("job_toggle"));
-        assert_eq!(registry.len(), 11);
+        assert!(registry.has_tool("jyc_send_to_thread"));
+        assert_eq!(registry.len(), 12);
     }
 
     #[test]
     fn registry_produces_definitions() {
         let registry = create_builtin_registry();
         let definitions = registry.definitions();
-        assert_eq!(definitions.len(), 11);
+        assert_eq!(definitions.len(), 12);
 
         // Each definition should have name, description, and input_schema
         for def in &definitions {
@@ -854,6 +855,7 @@ mod skills {
             None,
             None,
             None,
+            "test".to_string(),
         )
     }
 

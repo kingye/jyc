@@ -232,17 +232,18 @@ impl OutboundAdapter for EmailOutboundAdapter {
     ) -> Result<SendResult> {
         let Some(atts) = attachments else {
             return Ok(SendResult {
-                message_id: self.send_message(recipient, subject, body).await?.message_id,
+                message_id: self
+                    .send_message(recipient, subject, body)
+                    .await?
+                    .message_id,
             });
         };
 
         // Validate attachments if configuration is present
         if let Some(ref config) = self.attachment_config {
-            if let Err(e) =
-                attachment_validator::validate_outbound_attachments(atts, config).await
+            if let Err(e) = attachment_validator::validate_outbound_attachments(atts, config).await
             {
-                let filenames: Vec<&str> =
-                    atts.iter().map(|a| a.filename.as_str()).collect();
+                let filenames: Vec<&str> = atts.iter().map(|a| a.filename.as_str()).collect();
                 tracing::error!(
                     error = %format!("{:#}", e),
                     attachments = ?filenames,
@@ -256,8 +257,13 @@ impl OutboundAdapter for EmailOutboundAdapter {
         // Load file bytes from paths
         let mut email_attachments = Vec::new();
         for att in atts {
-            let data = tokio::fs::read(&att.path).await
-                .with_context(|| format!("Failed to read attachment '{}' from {}", att.filename, att.path.display()))?;
+            let data = tokio::fs::read(&att.path).await.with_context(|| {
+                format!(
+                    "Failed to read attachment '{}' from {}",
+                    att.filename,
+                    att.path.display()
+                )
+            })?;
             email_attachments.push(EmailAttachment {
                 filename: att.filename.clone(),
                 content_type: att.content_type.clone(),

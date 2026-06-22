@@ -1054,9 +1054,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         );
 
         // Build and inject outbound adapters map
-        let outbounds_map: HashMap<String, Arc<dyn OutboundAdapter>> = all_outbounds
-            .into_iter()
-            .collect();
+        let outbounds_map: HashMap<String, Arc<dyn OutboundAdapter>> =
+            all_outbounds.into_iter().collect();
         let outbounds_map = Arc::new(tokio::sync::Mutex::new(outbounds_map));
         for svc in &all_agent_services {
             svc.set_outbounds(outbounds_map.clone());

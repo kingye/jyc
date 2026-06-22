@@ -353,8 +353,7 @@ impl SmtpClient {
                     .content_type
                     .parse()
                     .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
-                let attachment =
-                    Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
+                let attachment = Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
                 mixed = mixed.singlepart(attachment);
             }
             Message::builder()

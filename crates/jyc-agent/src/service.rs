@@ -203,10 +203,7 @@ impl JycAgentService {
     /// Called by the monitor during startup to inject the outbound adapter map
     /// into each agent service after all channels have been initialized.
     pub fn set_outbounds(&self, outbounds: OutboundsMap) {
-        *self
-            .outbounds
-            .lock()
-            .expect("outbounds poisoned") = Some(outbounds);
+        *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -414,11 +411,7 @@ impl JycAgentService {
             .lock()
             .expect("thread_managers poisoned")
             .clone();
-        let outbounds_configured = self
-            .outbounds
-            .lock()
-            .expect("outbounds poisoned")
-            .is_some();
+        let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
@@ -437,9 +430,7 @@ impl JycAgentService {
                 );
             }
 
-            prompt.push_str(
-                "Available channels and their active threads:\n",
-            );
+            prompt.push_str("Available channels and their active threads:\n");
             let map = tm_map.lock().await;
             for (channel_name, tm) in map.iter() {
                 let channel_type = tm.channel_type();
@@ -1062,11 +1053,7 @@ impl AgentService for JycAgentService {
             .lock()
             .expect("thread_managers poisoned")
             .clone();
-        let outbounds = self
-            .outbounds
-            .lock()
-            .expect("outbounds poisoned")
-            .clone();
+        let outbounds = self.outbounds.lock().expect("outbounds poisoned").clone();
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider

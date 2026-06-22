@@ -231,7 +231,9 @@ pub trait OutboundAdapter: Send + Sync {
         _body: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        Err(anyhow::anyhow!("Attachments not supported for this channel type"))
+        Err(anyhow::anyhow!(
+            "Attachments not supported for this channel type"
+        ))
     }
 
     /// Send a processing indicator to inform the user that AI is working.

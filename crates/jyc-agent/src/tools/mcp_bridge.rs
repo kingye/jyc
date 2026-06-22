@@ -221,41 +221,40 @@ impl Tool for SendMessageTool {
         }
 
         // Determine which outbound adapter to use
-        let outbound: Arc<dyn jyc_types::channel::OutboundAdapter> =
-            if let Some(ref ch) = channel {
-                // Cross-channel: look up from outbounds map
-                let outbounds_map = match ctx.outbounds.as_ref() {
-                    Some(m) => m,
-                    None => {
-                        return Ok(ToolOutput::error(format!(
-                            "Cross-channel messaging is not available: no outbounds map configured. \
+        let outbound: Arc<dyn jyc_types::channel::OutboundAdapter> = if let Some(ref ch) = channel {
+            // Cross-channel: look up from outbounds map
+            let outbounds_map = match ctx.outbounds.as_ref() {
+                Some(m) => m,
+                None => {
+                    return Ok(ToolOutput::error(format!(
+                        "Cross-channel messaging is not available: no outbounds map configured. \
                              Cannot send to channel '{}'",
-                            ch
-                        )));
-                    }
-                };
-                let map = outbounds_map.lock().await;
-                match map.get(ch) {
-                    Some(o) => o.clone(),
-                    None => {
-                        return Ok(ToolOutput::error(format!(
-                            "Unknown channel '{}'. Available channels: {}",
-                            ch,
-                            map.keys().cloned().collect::<Vec<_>>().join(", ")
-                        )));
-                    }
-                }
-            } else {
-                // Same-channel: use current outbound adapter
-                match ctx.outbound.as_ref() {
-                    Some(o) => o.clone(),
-                    None => {
-                        return Ok(ToolOutput::error(
-                            "No outbound adapter available for proactive messaging",
-                        ));
-                    }
+                        ch
+                    )));
                 }
             };
+            let map = outbounds_map.lock().await;
+            match map.get(ch) {
+                Some(o) => o.clone(),
+                None => {
+                    return Ok(ToolOutput::error(format!(
+                        "Unknown channel '{}'. Available channels: {}",
+                        ch,
+                        map.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )));
+                }
+            }
+        } else {
+            // Same-channel: use current outbound adapter
+            match ctx.outbound.as_ref() {
+                Some(o) => o.clone(),
+                None => {
+                    return Ok(ToolOutput::error(
+                        "No outbound adapter available for proactive messaging",
+                    ));
+                }
+            }
+        };
 
         // Process attachments if provided
         let attachment_objs: Option<Vec<OutboundAttachment>> =
@@ -274,10 +273,10 @@ impl Tool for SendMessageTool {
                                 filename
                             )));
                         }
-                        if let Ok(canonical) = file_path.canonicalize() {
-                            if let Err(msg) = ctx.check_path_boundary(filename, &canonical) {
-                                return Ok(ToolOutput::error(msg));
-                            }
+                        if let Ok(canonical) = file_path.canonicalize()
+                            && let Err(msg) = ctx.check_path_boundary(filename, &canonical)
+                        {
+                            return Ok(ToolOutput::error(msg));
                         }
 
                         // Determine content type from extension (simple mapping)
@@ -383,7 +382,9 @@ fn detect_content_type(filename: &str) -> String {
         "html" | "htm" => "text/html".to_string(),
         "md" => "text/markdown".to_string(),
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
         _ => "application/octet-stream".to_string(),
     }
 }

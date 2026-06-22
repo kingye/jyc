@@ -16,7 +16,9 @@ use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 
 use crate::provider::{Provider, is_transient_sse_error};
-use crate::tools::{OutboundsMap, ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry};
+use crate::tools::{
+    OutboundsMap, ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry,
+};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
 /// Default maximum number of tool-call iterations before giving up.

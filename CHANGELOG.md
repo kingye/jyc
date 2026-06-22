@@ -4,6 +4,18 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **WeCom Bot `enter_chat` event parse error.** Added custom serde deserializer
+  for `BotEvent.event` that accepts both plain string form (`"enter_chat"`) and
+  object form (`{"eventtype": "enter_chat"}`), fixing a parse failure caused by
+  WeCom API inconsistency. (#264, #266)
+
+- **WeCom Bot scheduled task proactive message `req_id` error.** When `req_id`
+  is missing (scheduled tasks), `send_reply` now derives `chatid` from
+  `thread_path`, generates a fresh `req_id`, and uses `aibot_send_msg`
+  (proactive) instead of `aibot_respond_msg` (passive reply). (#264, #266)
+
 ### Added
 
 - **Channel-agnostic scheduled job system.** Background JobScheduler runs

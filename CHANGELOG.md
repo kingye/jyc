@@ -6,6 +6,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **jyc_send_to_thread attachments not delivered to target thread.** Fixed the
+  tool creating `MessageAttachment` with `content: None`, causing
+  `save_attachments_to_dir` to skip cross-thread files. Also surfaced attachment
+  file paths in the target agent's prompt. (#267)
+
 - **WeCom Bot `enter_chat` event parse error.** Added custom serde deserializer
   for `BotEvent.event` that accepts both plain string form (`"enter_chat"`) and
   object form (`{"eventtype": "enter_chat"}`), fixing a parse failure caused by

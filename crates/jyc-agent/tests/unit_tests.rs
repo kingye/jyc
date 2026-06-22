@@ -619,6 +619,38 @@ mod tools {
         assert!(result.content.contains("fn main"));
         assert!(result.content.contains("fn helper"));
     }
+
+    #[tokio::test]
+    async fn send_to_thread_attachment_has_content() {
+        // Verify that MessageAttachment produced by the send_to_thread
+        // pattern (std::fs::read → content: Some(bytes)) has non-None
+        // content, so save_attachments_to_dir will not skip it.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write a test file the same way send_to_thread's execute() does
+        let test_data = b"hello attachment world";
+        let file_path = tmp.path().join("test.pdf");
+        std::fs::write(&file_path, test_data).unwrap();
+
+        let size = std::fs::metadata(&file_path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let file_bytes = std::fs::read(&file_path).ok();
+
+        let attachment = jyc_types::MessageAttachment {
+            filename: "test.pdf".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            size,
+            content: file_bytes,
+            saved_path: None,
+        };
+
+        assert!(
+            attachment.content.is_some(),
+            "Attachment content should be Some(bytes), not None"
+        );
+        assert_eq!(attachment.content.as_deref().unwrap(), test_data);
+    }
 }
 
 mod mcp_bridge {

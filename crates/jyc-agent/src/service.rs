@@ -472,6 +472,22 @@ impl JycAgentService {
         };
 
         prompt.push_str(body);
+
+        // Append attachment file paths for non-image attachments so the
+        // target agent is aware of all incoming files, even when the body
+        // is non-empty and the "[no text body]" fallback never triggers.
+        let attachment_paths: Vec<String> = message
+            .attachments
+            .iter()
+            .filter_map(|a| a.saved_path.as_ref().map(|p| p.display().to_string()))
+            .collect();
+        if !attachment_paths.is_empty() {
+            prompt.push_str("\n\nAttachments:\n");
+            for path in &attachment_paths {
+                prompt.push_str(&format!("- {}\n", path));
+            }
+        }
+
         prompt
     }
 

@@ -23,6 +23,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`jyc_send_message` enhanced with cross-channel and attachment support.** The
+  builtin tool now accepts an optional `channel` parameter for sending proactive
+  messages through any configured channel's outbound adapter (bypassing agent
+  processing), and an optional `attachments` parameter for including file
+  attachments (supported by email, Feishu, and WeCom Bot channels). Existing
+  usage without these parameters is fully backward compatible. (#267, #270)
+
 - **Cross-thread/channel communication tool (`jyc_send_to_thread`).** New
   builtin tool that enables AI agents to inject messages into threads in other
   channels. The tool is backed by `ThreadManager::enqueue()` (same mechanism as

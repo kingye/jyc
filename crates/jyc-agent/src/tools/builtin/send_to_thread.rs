@@ -175,12 +175,13 @@ impl Tool for SendToThreadTool {
                     let size = std::fs::metadata(&file_path)
                         .map(|m| m.len() as usize)
                         .unwrap_or(0);
+                    let file_bytes = std::fs::read(&file_path).ok();
                     MessageAttachment {
                         filename: filename.clone(),
                         content_type: "application/octet-stream".to_string(),
                         size,
-                        content: None,
-                        saved_path: Some(file_path),
+                        content: file_bytes,
+                        saved_path: None,
                     }
                 })
                 .collect(),

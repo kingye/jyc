@@ -10,10 +10,12 @@ pub mod registry;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
+use jyc_core::thread_manager::ThreadManager;
 use jyc_types::channel::OutboundAdapter;
 
 /// Context provided to tools during execution.
@@ -45,6 +47,12 @@ pub struct ToolContext<'a> {
     /// the tool registry. `None` when the agent runs in contexts without
     /// a pre-warmed outbound adapter.
     pub outbound: Option<Arc<dyn OutboundAdapter>>,
+    /// Cross-channel thread managers keyed by channel name.
+    /// Used by `jyc_send_to_thread` tool to inject messages into threads
+    /// in other channels. `None` when running in contexts without
+    /// cross-channel communication (e.g. unit tests).
+    pub thread_managers:
+        Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -56,6 +64,7 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
+            thread_managers: None,
         }
     }
 
@@ -67,6 +76,7 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
+            thread_managers: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

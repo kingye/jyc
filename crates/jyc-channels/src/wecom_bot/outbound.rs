@@ -278,9 +278,15 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         };
 
         // 8. Send reply via WebSocket with finish=true
-        self.send_text_reply(&req_id, &full_reply, &stream_id, true, proactive_chatid.as_deref())
-            .await
-            .context("Failed to send WeCom Bot reply")?;
+        self.send_text_reply(
+            &req_id,
+            &full_reply,
+            &stream_id,
+            true,
+            proactive_chatid.as_deref(),
+        )
+        .await
+        .context("Failed to send WeCom Bot reply")?;
 
         let message_id = uuid::Uuid::new_v4().to_string();
 

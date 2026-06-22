@@ -698,6 +698,7 @@ mod mcp_bridge {
     }
 
     /// Mock outbound adapter that records send_message and send_message_with_attachments calls.
+    #[allow(clippy::type_complexity)]
     struct MockOutbound {
         calls: Arc<Mutex<Vec<(String, String, String)>>>,
         attachment_calls: Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,

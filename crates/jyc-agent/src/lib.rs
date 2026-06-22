@@ -109,6 +109,7 @@ mod integration_tests {
             outbound: None,
             thread_managers: None,
             current_channel: None,
+            outbounds: None,
         })
         .await
         .unwrap();

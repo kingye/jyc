@@ -6,6 +6,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,6 +15,7 @@ use tracing;
 
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::thread_manager::ThreadManager;
 
 use crate::provider::{Provider, is_transient_sse_error};
 use crate::tools::{ToolContext, ToolOutput, registry::ToolRegistry};
@@ -62,6 +64,11 @@ pub struct AgentLoopConfig<'a> {
     /// `jyc_send_message`). Passed through to `ToolContext` so tools
     /// can send messages directly without signal-file indirection.
     pub outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
+    /// Cross-channel thread managers keyed by channel name.
+    /// Passed through to `ToolContext` so the `jyc_send_to_thread` tool
+    /// can inject messages into threads in other channels.
+    pub thread_managers:
+        Option<Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>>,
 }
 
 /// Run the agent loop to completion.
@@ -84,6 +91,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         additional_read_roots,
         pattern_inject_images,
         outbound,
+        thread_managers,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -190,6 +198,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
             ctx.pattern_inject_images = pattern_inject_images;
             ctx.outbound = outbound.clone();
+            ctx.thread_managers = thread_managers.clone();
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
@@ -340,6 +349,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
         ctx.pattern_inject_images = pattern_inject_images;
         ctx.outbound = outbound.clone();
+        ctx.thread_managers = thread_managers.clone();
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {

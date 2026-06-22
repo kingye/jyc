@@ -959,6 +959,7 @@ impl AgentService for JycAgentService {
             additional_read_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
+            thread_managers: None,
         })
         .await?;
 

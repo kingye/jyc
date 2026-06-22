@@ -1,6 +1,6 @@
 # JYC
 
-Channel-agnostic AI agent that operates through messaging channels. Users interact by sending messages (Email, GitHub, FeiShu, etc.), and the agent responds autonomously using OpenCode AI.
+Channel-agnostic AI agent that operates through messaging channels. Users interact by sending messages (Email, GitHub, FeiShu, etc.), and the agent responds autonomously using the configured AI model.
 
 **Why Rust:** Single static binary, zero runtime dependencies, memory safety without GC, and predictable low-latency performance for long-running server processes.
 
@@ -23,7 +23,7 @@ Channel-agnostic AI agent that operates through messaging channels. Users intera
 
 ### Runtime Dependencies (Optional)
 
-These tools are used by the AI agent (via OpenCode) when processing messages. Install them on the server where JYC runs:
+These tools are used by the AI agent when processing messages. Install them on the server where JYC runs:
 
 ```bash
 # Debian/Ubuntu
@@ -277,42 +277,9 @@ jyc monitor --workdir /path/to/data --verbose
 RUST_LOG=jyc=debug,async_imap=warn jyc monitor --workdir /path/to/data
 ```
 
-### Checking OpenCode Logs
-
-OpenCode (the AI runtime JYC uses) writes its own logs separately from JYC.
-
-**Log location:**
-```
-~/.local/share/opencode/log/
-```
-
-In Docker, this is persisted via the OpenCode data volume mount:
-```
-/root/.local/share/opencode/log/
-```
-
-Log files are named with timestamps (e.g., `2025-01-09T123456.log`). The most recent 10 log files are kept.
-
-```bash
-# List OpenCode log files (most recent last)
-ls -lt ~/.local/share/opencode/log/
-
-# View the latest log
-ls -t ~/.local/share/opencode/log/*.log | head -1 | xargs tail -f
-
-# In Docker
-docker exec -it jyc ls -lt /root/.local/share/opencode/log/
-docker exec -it jyc tail -f "$(docker exec jyc ls -t /root/.local/share/opencode/log/*.log | head -1)"
-```
-
-**OpenCode session data** (sessions, messages) is stored at:
-```
-~/.local/share/opencode/project/
-```
-
 ### Checking MCP Reply Tool Logs
 
-The MCP reply tool (subprocess spawned by OpenCode) logs to a per-thread file:
+The MCP reply tool (subprocess spawned by the agent) logs to a per-thread file:
 
 ```
 <workdir>/<channel>/workspace/<thread>/.jyc/reply-tool.log
@@ -328,18 +295,13 @@ This is useful for diagnosing reply delivery failures.
 - Check that sender/subject rules match incoming emails
 
 **AI replies are not sent:**
-- Check OpenCode logs for API errors (`~/.local/share/opencode/log/`)
+- Check JYC logs for AI provider/API errors
 - Check the MCP reply tool log (`.jyc/reply-tool.log` in the thread directory)
-- Verify OpenCode config has valid API keys (`~/.config/opencode/opencode.jsonc`)
+- Verify the `[agent]` section in `config.toml` has valid API credentials
 
 **Session/context issues:**
 - Send `/reset` in an email to clear the AI session for that thread
-- Or manually delete `.jyc/opencode-session.json` in the thread directory
-
-**OpenCode server won't start:**
-- Check that `opencode` is installed and in PATH
-- Check OpenCode logs at `~/.local/share/opencode/log/`
-- Try running `opencode --version` to verify installation
+- Or manually delete `.jyc/agent-session.json` in the thread directory
 
 **Container-specific issues:**
 - See [docker/README.md](docker/README.md) troubleshooting section

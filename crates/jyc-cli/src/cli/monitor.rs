@@ -120,6 +120,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
     // Collect JycAgentService instances for wiring cross-channel thread managers
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
+    // Collect outbound adapters keyed by channel name for cross-channel messaging
+    let mut all_outbounds: Vec<(String, Arc<dyn OutboundAdapter>)> = Vec::new();
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
 
@@ -334,6 +336,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             .await
             .with_context(|| format!("channel '{channel_name}': outbound connection failed"))?;
         tracing::info!(channel = %channel_name, channel_type = %channel_type, "Outbound connected");
+
+        // Collect outbound adapter for cross-channel messaging
+        all_outbounds.push((channel_name.clone(), outbound.clone()));
 
         // Create agent based on configured mode
         // Resolve effective model per-channel: channel-level override beats global
@@ -1033,7 +1038,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
-    // 4.5. Wire cross-channel thread managers into agent services
+    // 4.5. Wire cross-channel thread managers and outbound adapters into agent services
     {
         let tm_map: HashMap<String, Arc<ThreadManager>> = all_thread_managers
             .iter()
@@ -1045,6 +1050,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         }
         tracing::info!(
             "Wired thread managers into {} agent service(s)",
+            all_agent_services.len()
+        );
+
+        // Build and inject outbound adapters map
+        let outbounds_map: HashMap<String, Arc<dyn OutboundAdapter>> =
+            all_outbounds.into_iter().collect();
+        let outbounds_map = Arc::new(tokio::sync::Mutex::new(outbounds_map));
+        for svc in &all_agent_services {
+            svc.set_outbounds(outbounds_map.clone());
+        }
+        tracing::info!(
+            "Wired outbound adapters into {} agent service(s)",
             all_agent_services.len()
         );
 

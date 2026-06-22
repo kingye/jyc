@@ -220,6 +220,22 @@ pub trait OutboundAdapter: Send + Sync {
     /// Send a fresh (non-reply) message to an arbitrary recipient.
     async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult>;
 
+    /// Send a fresh message with file attachments.
+    ///
+    /// Default implementation returns an error so non-email channels fail
+    /// gracefully rather than silently dropping attachments.
+    async fn send_message_with_attachments(
+        &self,
+        _recipient: &str,
+        _subject: &str,
+        _body: &str,
+        _attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        Err(anyhow::anyhow!(
+            "Attachments not supported for this channel type"
+        ))
+    }
+
     /// Send a processing indicator to inform the user that AI is working.
     ///
     /// Channels that support streaming (e.g., WeCom Bot) can show a

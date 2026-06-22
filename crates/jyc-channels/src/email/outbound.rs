@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -216,6 +216,72 @@ impl OutboundAdapter for EmailOutboundAdapter {
         let message_id = smtp
             .send_mail(&self.from_address, recipient, subject, body)
             .await?;
+        Ok(SendResult { message_id })
+    }
+
+    /// Send a fresh message email with file attachments.
+    ///
+    /// Validates attachments against config (if present), loads file bytes,
+    /// then sends via SMTP with multipart/mixed MIME structure.
+    async fn send_message_with_attachments(
+        &self,
+        recipient: &str,
+        subject: &str,
+        body: &str,
+        attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        let Some(atts) = attachments else {
+            return Ok(SendResult {
+                message_id: self
+                    .send_message(recipient, subject, body)
+                    .await?
+                    .message_id,
+            });
+        };
+
+        // Validate attachments if configuration is present
+        if let Some(ref config) = self.attachment_config {
+            if let Err(e) = attachment_validator::validate_outbound_attachments(atts, config).await
+            {
+                let filenames: Vec<&str> = atts.iter().map(|a| a.filename.as_str()).collect();
+                tracing::error!(
+                    error = %format!("{:#}", e),
+                    attachments = ?filenames,
+                    "Outbound attachment validation failed"
+                );
+                return Err(e.context("Failed to validate outbound attachments"));
+            }
+            tracing::debug!("Outbound attachments validated successfully");
+        }
+
+        // Load file bytes from paths
+        let mut email_attachments = Vec::new();
+        for att in atts {
+            let data = tokio::fs::read(&att.path).await.with_context(|| {
+                format!(
+                    "Failed to read attachment '{}' from {}",
+                    att.filename,
+                    att.path.display()
+                )
+            })?;
+            email_attachments.push(EmailAttachment {
+                filename: att.filename.clone(),
+                content_type: att.content_type.clone(),
+                data,
+            });
+        }
+
+        let mut smtp = self.smtp.lock().await;
+        let message_id = smtp
+            .send_mail_with_attachments(
+                &self.from_address,
+                recipient,
+                subject,
+                body,
+                &email_attachments,
+            )
+            .await?;
+
         Ok(SendResult { message_id })
     }
 }

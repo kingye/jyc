@@ -45,6 +45,73 @@ impl FeishuOutboundAdapter {
             footer_enabled,
         }
     }
+
+    /// Send attachments as separate Feishu messages (upload → send).
+    ///
+    /// Images are uploaded via `upload_image` then sent via `send_image_message`.
+    /// Other files are uploaded via `upload_file` then sent via `send_file_message`.
+    /// Errors are logged as warnings rather than failing the entire operation.
+    async fn send_attachments(&self, chat_id: &str, attachments: &[OutboundAttachment]) {
+        use crate::feishu::client::{feishu_file_type, is_image_content_type};
+
+        for att in attachments {
+            if is_image_content_type(&att.content_type) {
+                // Image: upload → send image message
+                match self.client.upload_image(&att.path, &att.filename).await {
+                    Ok(image_key) => {
+                        match self.client.send_image_message(chat_id, &image_key).await {
+                            Ok(_) => tracing::info!(
+                                filename = %att.filename,
+                                "Image attachment sent via Feishu"
+                            ),
+                            Err(e) => tracing::warn!(
+                                filename = %att.filename,
+                                error = %e,
+                                "Failed to send Feishu image message"
+                            ),
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        filename = %att.filename,
+                        error = %e,
+                        "Failed to upload Feishu image attachment"
+                    ),
+                }
+            } else {
+                // File: upload → send file message
+                let ext = att
+                    .path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                let file_type = feishu_file_type(&ext);
+
+                match self
+                    .client
+                    .upload_file(&att.path, &att.filename, file_type)
+                    .await
+                {
+                    Ok(file_key) => match self.client.send_file_message(chat_id, &file_key).await {
+                        Ok(_) => tracing::info!(
+                            filename = %att.filename,
+                            file_type = %file_type,
+                            "File attachment sent via Feishu"
+                        ),
+                        Err(e) => tracing::warn!(
+                            filename = %att.filename,
+                            error = %e,
+                            "Failed to send Feishu file message"
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        filename = %att.filename,
+                        error = %e,
+                        "Failed to upload Feishu file attachment"
+                    ),
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -140,68 +207,10 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         );
 
         // 2. Send attachments as separate messages (upload → send)
-        if let Some(attachments) = attachments {
-            use crate::feishu::client::{feishu_file_type, is_image_content_type};
-
-            for att in attachments {
-                if is_image_content_type(&att.content_type) {
-                    // Image: upload → send image message
-                    match self.client.upload_image(&att.path, &att.filename).await {
-                        Ok(image_key) => {
-                            match self.client.send_image_message(chat_id, &image_key).await {
-                                Ok(_) => tracing::info!(
-                                    filename = %att.filename,
-                                    "Image attachment sent"
-                                ),
-                                Err(e) => tracing::warn!(
-                                    filename = %att.filename,
-                                    error = %e,
-                                    "Failed to send image attachment message"
-                                ),
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            filename = %att.filename,
-                            error = %e,
-                            "Failed to upload image attachment"
-                        ),
-                    }
-                } else {
-                    // File: upload → send file message
-                    let ext = att
-                        .path
-                        .extension()
-                        .map(|e| e.to_string_lossy().to_lowercase())
-                        .unwrap_or_default();
-                    let file_type = feishu_file_type(&ext);
-
-                    match self
-                        .client
-                        .upload_file(&att.path, &att.filename, file_type)
-                        .await
-                    {
-                        Ok(file_key) => {
-                            match self.client.send_file_message(chat_id, &file_key).await {
-                                Ok(_) => tracing::info!(
-                                    filename = %att.filename,
-                                    file_type = %file_type,
-                                    "File attachment sent"
-                                ),
-                                Err(e) => tracing::warn!(
-                                    filename = %att.filename,
-                                    error = %e,
-                                    "Failed to send file attachment message"
-                                ),
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            filename = %att.filename,
-                            error = %e,
-                            "Failed to upload file attachment"
-                        ),
-                    }
-                }
-            }
+        if let Some(attachments) = attachments
+            && !attachments.is_empty()
+        {
+            self.send_attachments(chat_id, attachments).await;
         }
 
         // 5. Store reply to chat log
@@ -237,6 +246,59 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
             .context("Failed to send Feishu alert")?;
 
         tracing::info!("Feishu alert sent to {}: {}", recipient, subject);
+
+        Ok(SendResult {
+            message_id: result.message_id,
+        })
+    }
+
+    /// Send a message with file attachments to a Feishu chat.
+    ///
+    /// Sends text first, then uploads and sends each attachment as a separate
+    /// Feishu message (image or file). Reuses the same upload/send logic as
+    /// `send_reply`'s attachment handling.
+    async fn send_message_with_attachments(
+        &self,
+        recipient: &str,
+        subject: &str,
+        body: &str,
+        attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        // Ensure client is initialized
+        self.client.initialize().await.context(
+            "Failed to initialize Feishu client before sending message with attachments",
+        )?;
+
+        // Validate attachments if configuration is present
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config
+        {
+            attachment_validator::validate_outbound_attachments(attachments, config)
+                .await
+                .context("Failed to validate outbound attachments")?;
+            tracing::debug!("Outbound attachments validated successfully for Feishu");
+        }
+
+        // Send text message first
+        let alert_text = format!("**{}**\n\n{}", subject, body);
+        let result = self
+            .client
+            .send_text_message(recipient, &alert_text)
+            .await
+            .context("Failed to send Feishu text message")?;
+
+        tracing::info!(
+            chat_id = %recipient,
+            text_len = alert_text.len(),
+            "Feishu text message sent with attachments"
+        );
+
+        // Send attachments as separate messages (upload → send)
+        if let Some(attachments) = attachments
+            && !attachments.is_empty()
+        {
+            self.send_attachments(recipient, attachments).await;
+        }
 
         Ok(SendResult {
             message_id: result.message_id,

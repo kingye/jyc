@@ -16,7 +16,9 @@ use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 
 use crate::provider::{Provider, is_transient_sse_error};
-use crate::tools::{ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry};
+use crate::tools::{
+    OutboundsMap, ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry,
+};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
 /// Default maximum number of tool-call iterations before giving up.
@@ -69,6 +71,10 @@ pub struct AgentLoopConfig<'a> {
     /// Current channel name, for tools that need source context
     /// (e.g. `jyc_send_to_thread` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,
+    /// Cross-channel outbound adapters keyed by channel name.
+    /// Passed through to `ToolContext` so the `jyc_send_message` tool can
+    /// send proactive messages through any channel's outbound adapter.
+    pub outbounds: Option<OutboundsMap>,
 }
 
 /// Run the agent loop to completion.
@@ -93,6 +99,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         outbound,
         thread_managers,
         current_channel,
+        outbounds,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -202,6 +209,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ctx.thread_managers = thread_managers.clone();
             ctx.current_channel = current_channel.clone();
             ctx.current_thread = Some(thread_name.to_string());
+            ctx.outbounds = outbounds.clone();
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
@@ -355,6 +363,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.thread_managers = thread_managers.clone();
         ctx.current_channel = current_channel.clone();
         ctx.current_thread = Some(thread_name.to_string());
+        ctx.outbounds = outbounds.clone();
 
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {

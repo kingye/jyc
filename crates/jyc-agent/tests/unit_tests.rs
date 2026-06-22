@@ -697,20 +697,29 @@ mod mcp_bridge {
         );
     }
 
-    /// Mock outbound adapter that records send_message calls.
+    /// Mock outbound adapter that records send_message and send_message_with_attachments calls.
+    #[allow(clippy::type_complexity)]
     struct MockOutbound {
         calls: Arc<Mutex<Vec<(String, String, String)>>>,
+        attachment_calls: Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,
     }
 
     impl MockOutbound {
         #[allow(clippy::type_complexity)]
-        fn new() -> (Self, Arc<Mutex<Vec<(String, String, String)>>>) {
+        fn new() -> (
+            Self,
+            Arc<Mutex<Vec<(String, String, String)>>>,
+            Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,
+        ) {
             let calls = Arc::new(Mutex::new(Vec::new()));
+            let attachment_calls = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     calls: calls.clone(),
+                    attachment_calls: attachment_calls.clone(),
                 },
                 calls,
+                attachment_calls,
             )
         }
     }
@@ -759,6 +768,29 @@ mod mcp_bridge {
             ));
             Ok(SendResult {
                 message_id: "mock-msg".to_string(),
+            })
+        }
+
+        async fn send_message_with_attachments(
+            &self,
+            recipient: &str,
+            subject: &str,
+            body: &str,
+            attachments: Option<&[OutboundAttachment]>,
+        ) -> anyhow::Result<SendResult> {
+            let att_filenames: Vec<String> = attachments
+                .unwrap_or_default()
+                .iter()
+                .map(|a| a.filename.clone())
+                .collect();
+            self.attachment_calls.lock().unwrap().push((
+                recipient.to_string(),
+                subject.to_string(),
+                body.to_string(),
+                att_filenames,
+            ));
+            Ok(SendResult {
+                message_id: "mock-attachment-msg".to_string(),
             })
         }
     }
@@ -812,7 +844,7 @@ mod mcp_bridge {
     async fn send_message_sends_via_outbound() {
         let tmp = tempfile::tempdir().unwrap();
         let tool = SendMessageTool;
-        let (mock, calls) = MockOutbound::new();
+        let (mock, calls, _attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
         ctx.outbound = Some(Arc::new(mock));
 
@@ -837,6 +869,200 @@ mod mcp_bridge {
         assert_eq!(recorded[0].0, "wecomkf:kf001:user123");
         assert_eq!(recorded[0].1, "Alert");
         assert_eq!(recorded[0].2, "System is down");
+    }
+
+    #[tokio::test]
+    async fn send_message_with_channel_cross_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, calls, _attachment_calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        // Set up an outbounds map with the mock for channel "email"
+        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
+            std::collections::HashMap::new();
+        outbounds_map.insert("email".to_string(), Arc::new(mock));
+        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
+
+        let result = tool
+            .execute(
+                json!({
+                    "channel": "email",
+                    "recipient": "user@example.com",
+                    "subject": "Cross-channel alert",
+                    "message": "Hello from another channel"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("user@example.com"));
+        assert!(result.content.contains("mock-msg"));
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "user@example.com");
+        assert_eq!(recorded[0].1, "Cross-channel alert");
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_unknown_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, _calls, _attachment_calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
+            std::collections::HashMap::new();
+        outbounds_map.insert("email".to_string(), Arc::new(mock));
+        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
+
+        let result = tool
+            .execute(
+                json!({
+                    "channel": "nonexistent",
+                    "recipient": "user@example.com",
+                    "message": "hello"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Unknown channel"));
+        assert!(result.content.contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_missing_outbounds_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let mut ctx = ToolContext::new(tmp.path());
+        // outbounds is None (not configured)
+        ctx.outbounds = None;
+
+        let result = tool
+            .execute(
+                json!({
+                    "channel": "email",
+                    "recipient": "user@example.com",
+                    "message": "hello"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .content
+                .contains("Cross-channel messaging is not available")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_with_attachments_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, _calls, attachment_calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+
+        // Create a test attachment file
+        let file_path = tmp.path().join("report.pdf");
+        tokio::fs::write(&file_path, b"pdf content").await.unwrap();
+
+        let result = tool
+            .execute(
+                json!({
+                    "recipient": "user@example.com",
+                    "subject": "Report",
+                    "message": "Here is your report",
+                    "attachments": ["report.pdf"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("user@example.com"));
+        assert!(result.content.contains("mock-attachment-msg"));
+        assert!(result.content.contains("1 attachment(s)"));
+
+        let recorded = attachment_calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "user@example.com");
+        assert_eq!(recorded[0].1, "Report");
+        assert_eq!(recorded[0].3, vec!["report.pdf"]);
+    }
+
+    #[tokio::test]
+    async fn send_message_attachment_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, _calls, _attachment_calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+
+        let result = tool
+            .execute(
+                json!({
+                    "recipient": "user@example.com",
+                    "message": "Here is your report",
+                    "attachments": ["nonexistent.pdf"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.content.contains("Attachment not found"));
+        assert!(result.content.contains("nonexistent.pdf"));
+    }
+
+    #[tokio::test]
+    async fn send_message_cross_channel_with_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SendMessageTool;
+        let (mock, _calls, attachment_calls) = MockOutbound::new();
+        let mut ctx = ToolContext::new(tmp.path());
+        // Set up outbounds map for cross-channel
+        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
+            std::collections::HashMap::new();
+        outbounds_map.insert("email".to_string(), Arc::new(mock));
+        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
+
+        // Create a test attachment file
+        let file_path = tmp.path().join("data.csv");
+        tokio::fs::write(&file_path, b"a,b,c\n1,2,3").await.unwrap();
+
+        let result = tool
+            .execute(
+                json!({
+                    "channel": "email",
+                    "recipient": "external@example.com",
+                    "subject": "CSV Export",
+                    "message": "Here is your export",
+                    "attachments": ["data.csv"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("external@example.com"));
+        assert!(result.content.contains("mock-attachment-msg"));
+        assert!(result.content.contains("1 attachment(s)"));
+
+        let recorded = attachment_calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "external@example.com");
+        assert_eq!(recorded[0].3, vec!["data.csv"]);
     }
 }
 

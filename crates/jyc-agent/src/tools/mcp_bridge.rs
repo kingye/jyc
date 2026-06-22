@@ -6,9 +6,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tracing;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
+use jyc_types::channel::OutboundAttachment;
 
 /// Reply message tool — writes reply for delivery by the monitor process.
 ///
@@ -133,6 +135,13 @@ impl Tool for ReplyMessageTool {
 /// This is the in-process equivalent of the `jyc_send_message` MCP tool.
 /// Unlike `ReplyMessageTool` which replies within the current thread, this
 /// tool sends messages to arbitrary recipients for alerts and notifications.
+///
+/// Supports:
+/// - `channel`: optional target channel name for cross-channel messaging.
+///   When omitted, uses the current channel's outbound adapter (backward compatible).
+/// - `attachments`: optional list of file paths (relative to working directory)
+///   to include as attachments. Only supported by channels with attachment capability
+///   (e.g. email). Non-email channels return an error if attachments are provided.
 pub struct SendMessageTool;
 
 #[async_trait]
@@ -162,6 +171,18 @@ impl Tool for SendMessageTool {
                 "message": {
                     "type": "string",
                     "description": "The message body to send"
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Optional target channel name for cross-channel sending. \
+                                     When omitted, uses the current channel. \
+                                     The recipient format must match the target channel type."
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional list of file paths within the working directory to attach. \
+                                     Only supported by email channels."
                 }
             },
             "required": ["recipient", "message"]
@@ -181,6 +202,16 @@ impl Tool for SendMessageTool {
             .and_then(|m| m.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
 
+        let channel: Option<String> = input
+            .get("channel")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let attachment_filenames: Option<Vec<String>> = input
+            .get("attachments")
+            .and_then(|a| serde_json::from_value(a.clone()).ok());
+
         if recipient.trim().is_empty() {
             return Ok(ToolOutput::error("Recipient cannot be empty"));
         }
@@ -189,37 +220,138 @@ impl Tool for SendMessageTool {
             return Ok(ToolOutput::error("Message cannot be empty"));
         }
 
-        let outbound = match ctx.outbound.as_ref() {
-            Some(o) => o,
-            None => {
-                return Ok(ToolOutput::error(
-                    "No outbound adapter available for proactive messaging",
-                ));
+        // Determine which outbound adapter to use
+        let outbound: Arc<dyn jyc_types::channel::OutboundAdapter> = if let Some(ref ch) = channel {
+            // Cross-channel: look up from outbounds map
+            let outbounds_map = match ctx.outbounds.as_ref() {
+                Some(m) => m,
+                None => {
+                    return Ok(ToolOutput::error(format!(
+                        "Cross-channel messaging is not available: no outbounds map configured. \
+                             Cannot send to channel '{}'",
+                        ch
+                    )));
+                }
+            };
+            let map = outbounds_map.lock().await;
+            match map.get(ch) {
+                Some(o) => o.clone(),
+                None => {
+                    return Ok(ToolOutput::error(format!(
+                        "Unknown channel '{}'. Available channels: {}",
+                        ch,
+                        map.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )));
+                }
+            }
+        } else {
+            // Same-channel: use current outbound adapter
+            match ctx.outbound.as_ref() {
+                Some(o) => o.clone(),
+                None => {
+                    return Ok(ToolOutput::error(
+                        "No outbound adapter available for proactive messaging",
+                    ));
+                }
             }
         };
 
-        match outbound.send_message(recipient, subject, message).await {
-            Ok(result) => {
-                tracing::info!(
-                    recipient = %recipient,
-                    message_id = %result.message_id,
-                    "Proactive message sent"
-                );
-                Ok(ToolOutput::success(format!(
-                    "Message sent to '{}' (message_id: {})",
-                    recipient, result.message_id
-                )))
+        // Process attachments if provided
+        let attachment_objs: Option<Vec<OutboundAttachment>> =
+            if let Some(ref filenames) = attachment_filenames {
+                if filenames.is_empty() {
+                    None
+                } else {
+                    let mut atts = Vec::new();
+                    for filename in filenames {
+                        let file_path = ctx.working_dir.join(filename);
+
+                        // Security: ensure within working directory (canonical prefix check)
+                        if !file_path.exists() {
+                            return Ok(ToolOutput::error(format!(
+                                "Attachment not found: '{}'",
+                                filename
+                            )));
+                        }
+                        if let Ok(canonical) = file_path.canonicalize()
+                            && let Err(msg) = ctx.check_path_boundary(filename, &canonical)
+                        {
+                            return Ok(ToolOutput::error(msg));
+                        }
+
+                        // Determine content type from extension (simple mapping)
+                        let content_type = detect_content_type(filename);
+
+                        atts.push(OutboundAttachment {
+                            filename: filename.clone(),
+                            path: file_path,
+                            content_type,
+                        });
+                    }
+                    Some(atts)
+                }
+            } else {
+                None
+            };
+
+        // Send the message
+        if let Some(ref atts) = attachment_objs {
+            match outbound
+                .send_message_with_attachments(recipient, subject, message, Some(atts))
+                .await
+            {
+                Ok(result) => {
+                    tracing::info!(
+                        recipient = %recipient,
+                        attachment_count = atts.len(),
+                        message_id = %result.message_id,
+                        channel = ?channel,
+                        "Proactive message with attachments sent"
+                    );
+                    Ok(ToolOutput::success(format!(
+                        "Message sent to '{}' (message_id: {}) with {} attachment(s)",
+                        recipient,
+                        result.message_id,
+                        atts.len()
+                    )))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        recipient = %recipient,
+                        error = %e,
+                        "Failed to send proactive message with attachments"
+                    );
+                    Ok(ToolOutput::error(format!(
+                        "Failed to send message to '{}': {}",
+                        recipient, e
+                    )))
+                }
             }
-            Err(e) => {
-                tracing::error!(
-                    recipient = %recipient,
-                    error = %e,
-                    "Failed to send proactive message"
-                );
-                Ok(ToolOutput::error(format!(
-                    "Failed to send message to '{}': {}",
-                    recipient, e
-                )))
+        } else {
+            match outbound.send_message(recipient, subject, message).await {
+                Ok(result) => {
+                    tracing::info!(
+                        recipient = %recipient,
+                        message_id = %result.message_id,
+                        channel = ?channel,
+                        "Proactive message sent"
+                    );
+                    Ok(ToolOutput::success(format!(
+                        "Message sent to '{}' (message_id: {})",
+                        recipient, result.message_id
+                    )))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        recipient = %recipient,
+                        error = %e,
+                        "Failed to send proactive message"
+                    );
+                    Ok(ToolOutput::error(format!(
+                        "Failed to send message to '{}': {}",
+                        recipient, e
+                    )))
+                }
             }
         }
     }
@@ -229,4 +361,30 @@ impl Tool for SendMessageTool {
 pub fn register_mcp_tools(registry: &mut crate::tools::registry::ToolRegistry) {
     registry.register(Box::new(ReplyMessageTool));
     registry.register(Box::new(SendMessageTool));
+}
+
+/// Simple content type detection from file extension.
+/// Falls back to `application/octet-stream` for unknown extensions.
+fn detect_content_type(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "pdf" => "application/pdf".to_string(),
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "gif" => "image/gif".to_string(),
+        "webp" => "image/webp".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        "csv" => "text/csv".to_string(),
+        "json" => "application/json".to_string(),
+        "xml" => "application/xml".to_string(),
+        "zip" => "application/zip".to_string(),
+        "txt" => "text/plain".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "md" => "text/markdown".to_string(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        _ => "application/octet-stream".to_string(),
+    }
 }

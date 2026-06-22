@@ -163,8 +163,6 @@ impl SmtpClient {
         references: Option<&[String]>,
         attachments: Option<&[EmailAttachment]>,
     ) -> Result<String> {
-        let html_body = markdown_to_html(markdown_body);
-
         // Build subject with Re: prefix
         let reply_subject = if subject.to_lowercase().starts_with("re:") {
             subject.to_string()
@@ -172,72 +170,17 @@ impl SmtpClient {
             format!("Re: {subject}")
         };
 
-        let from_mailbox: Mailbox = if let Some(name) = from_name {
-            format!("{name} <{from}>")
-                .parse()
-                .with_context(|| format!("invalid from address: {from}"))?
-        } else {
-            from.parse()
-                .with_context(|| format!("invalid from address: {from}"))?
-        };
-
-        let to_mailbox: Mailbox = to
-            .parse()
-            .with_context(|| format!("invalid to address: {to}"))?;
-
-        let mut builder = Message::builder()
-            .from(from_mailbox)
-            .to(to_mailbox)
-            .subject(&reply_subject);
-
-        // Add threading headers
-        if let Some(reply_to) = in_reply_to {
-            builder = builder.header(InReplyTo::from(reply_to.to_string()));
-        }
-        if let Some(refs) = references {
-            let refs_str = refs.join(" ");
-            builder = builder.header(References::from(refs_str));
-        }
-
-        // Build the body part (text + HTML alternative)
-        let body_part = MultiPart::alternative()
-            .singlepart(
-                SinglePart::builder()
-                    .header(ContentType::TEXT_PLAIN)
-                    .body(markdown_body.to_string()),
-            )
-            .singlepart(
-                SinglePart::builder()
-                    .header(ContentType::TEXT_HTML)
-                    .body(html_body),
-            );
-
-        // Build the email: if attachments, wrap in mixed multipart
-        let email = if let Some(atts) = attachments {
-            if atts.is_empty() {
-                builder
-                    .multipart(body_part)
-                    .context("failed to build email message")?
-            } else {
-                let mut mixed = MultiPart::mixed().multipart(body_part);
-                for att in atts {
-                    let ct: ContentType = att
-                        .content_type
-                        .parse()
-                        .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
-                    let attachment =
-                        Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
-                    mixed = mixed.singlepart(attachment);
-                }
-                builder
-                    .multipart(mixed)
-                    .context("failed to build email with attachments")?
-            }
-        } else {
-            builder
-                .multipart(body_part)
-                .context("failed to build email message")?
-        };
+        // Build the email message using the shared helper
+        let email = self.build_email(
+            from,
+            from_name,
+            to,
+            &reply_subject,
+            markdown_body,
+            in_reply_to,
+            references,
+            attachments,
+        )?;
 
         let message_id = email
             .headers()
@@ -264,33 +207,8 @@ impl SmtpClient {
         subject: &str,
         markdown_body: &str,
     ) -> Result<String> {
-        let html_body = markdown_to_html(markdown_body);
-
-        let from_mailbox: Mailbox = from
-            .parse()
-            .with_context(|| format!("invalid from address: {from}"))?;
-        let to_mailbox: Mailbox = to
-            .parse()
-            .with_context(|| format!("invalid to address: {to}"))?;
-
-        let email = Message::builder()
-            .from(from_mailbox)
-            .to(to_mailbox)
-            .subject(subject)
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_PLAIN)
-                            .body(markdown_body.to_string()),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_HTML)
-                            .body(html_body),
-                    ),
-            )
-            .context("failed to build email message")?;
+        // Build a simple email without attachments or threading headers
+        let email = self.build_email(from, None, to, subject, markdown_body, None, None, None)?;
 
         let message_id = email
             .headers()
@@ -303,6 +221,130 @@ impl SmtpClient {
         tracing::info!(to = %to, subject = %subject, "Email sent");
 
         Ok(message_id)
+    }
+
+    /// Send a fresh (non-reply) email with file attachments — no threading headers.
+    ///
+    /// Same as `send_mail` but attaches files to a `multipart/mixed` wrapper.
+    /// No `In-Reply-To` or `References` headers (this is a fresh message, not a reply).
+    pub async fn send_mail_with_attachments(
+        &mut self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        markdown_body: &str,
+        attachments: &[EmailAttachment],
+    ) -> Result<String> {
+        let email = self.build_email(
+            from,
+            None,
+            to,
+            subject,
+            markdown_body,
+            None,
+            None,
+            Some(attachments),
+        )?;
+
+        let message_id = email
+            .headers()
+            .get_raw("Message-ID")
+            .unwrap_or_default()
+            .to_string();
+
+        self.send_with_retry(email).await?;
+
+        tracing::info!(to = %to, subject = %subject, attachments = attachments.len(), "Email with attachments sent");
+
+        Ok(message_id)
+    }
+
+    /// Private helper: build a lettre `Message` from the given components.
+    ///
+    /// Handles markdown→HTML conversion, multipart/alternative body,
+    /// multipart/mixed wrapper for attachments, and optional threading headers.
+    /// Does NOT send the email — the caller is responsible for calling
+    /// `send_with_retry` and extracting the `Message-ID`.
+    #[allow(clippy::too_many_arguments)]
+    fn build_email(
+        &self,
+        from: &str,
+        from_name: Option<&str>,
+        to: &str,
+        subject: &str,
+        markdown_body: &str,
+        in_reply_to: Option<&str>,
+        references: Option<&[String]>,
+        attachments: Option<&[EmailAttachment]>,
+    ) -> Result<Message> {
+        let html_body = markdown_to_html(markdown_body);
+
+        let from_mailbox: Mailbox = if let Some(name) = from_name {
+            format!("{name} <{from}>")
+                .parse()
+                .with_context(|| format!("invalid from address: {from}"))?
+        } else {
+            from.parse()
+                .with_context(|| format!("invalid from address: {from}"))?
+        };
+
+        let to_mailbox: Mailbox = to
+            .parse()
+            .with_context(|| format!("invalid to address: {to}"))?;
+
+        let mut builder = Message::builder()
+            .from(from_mailbox)
+            .to(to_mailbox)
+            .subject(subject);
+
+        // Add threading headers (used by send_reply, skipped by send_mail*)
+        if let Some(reply_to) = in_reply_to {
+            builder = builder.header(InReplyTo::from(reply_to.to_string()));
+        }
+        if let Some(refs) = references {
+            let refs_str = refs.join(" ");
+            builder = builder.header(References::from(refs_str));
+        }
+
+        // Build the body part (text + HTML alternative)
+        let body_part = MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(markdown_body.to_string()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html_body),
+            );
+
+        // Build the email: if attachments, wrap in mixed multipart
+        if let Some(atts) = attachments {
+            if atts.is_empty() {
+                builder
+                    .multipart(body_part)
+                    .context("failed to build email message")
+            } else {
+                let mut mixed = MultiPart::mixed().multipart(body_part);
+                for att in atts {
+                    let ct: ContentType = att
+                        .content_type
+                        .parse()
+                        .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
+                    let attachment =
+                        Attachment::new(att.filename.clone()).body(att.data.clone(), ct);
+                    mixed = mixed.singlepart(attachment);
+                }
+                builder
+                    .multipart(mixed)
+                    .context("failed to build email with attachments")
+            }
+        } else {
+            builder
+                .multipart(body_part)
+                .context("failed to build email message")
+        }
     }
 
     /// Send an email with structured retry logic based on SMTP error classification.

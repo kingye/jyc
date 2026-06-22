@@ -17,6 +17,7 @@ use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
+use crate::tools::OutboundsMap;
 use crate::tools::ThreadManagersMap;
 use crate::tools::registry::ToolRegistry;
 use crate::types::AgentConfig;
@@ -138,6 +139,12 @@ pub struct JycAgentService {
     thread_managers: std::sync::Mutex<Option<ThreadManagersMap>>,
     /// Current channel name for source context in cross-thread tools.
     channel_name: String,
+    /// Cross-channel outbound adapters keyed by channel name.
+    /// Passed through to `AgentLoopConfig` so the `jyc_send_message` tool
+    /// can send proactive messages through any channel's outbound adapter.
+    /// Uses `std::sync::Mutex` for interior mutability (set after construction
+    /// via `set_outbounds()` on an `Arc<Self>`).
+    outbounds: std::sync::Mutex<Option<OutboundsMap>>,
 }
 
 impl JycAgentService {
@@ -176,6 +183,7 @@ impl JycAgentService {
             channel_disabled_skills,
             thread_managers: std::sync::Mutex::new(None),
             channel_name,
+            outbounds: std::sync::Mutex::new(None),
         }
     }
 
@@ -188,6 +196,14 @@ impl JycAgentService {
             .thread_managers
             .lock()
             .expect("thread_managers poisoned") = Some(tm);
+    }
+
+    /// Set the cross-channel outbound adapters map.
+    ///
+    /// Called by the monitor during startup to inject the outbound adapter map
+    /// into each agent service after all channels have been initialized.
+    pub fn set_outbounds(&self, outbounds: OutboundsMap) {
+        *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
     }
 
     /// Discover skills from multiple paths, with priority-based deduplication.
@@ -395,12 +411,26 @@ impl JycAgentService {
             .lock()
             .expect("thread_managers poisoned")
             .clone();
+        let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
-                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
-                 Available channels and their active threads:\n",
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n",
             );
+
+            // Note about direct outbound messaging via jyc_send_message
+            if outbounds_configured {
+                prompt.push_str(
+                    "For direct outbound messaging (bypassing agent processing), \
+                     use `jyc_send_message` with the optional `channel` parameter set to \
+                     a target channel name.\n\
+                     `jyc_send_message` sends directly through the channel's outbound adapter \
+                     without agent processing. `jyc_send_to_thread` injects into a thread queue \
+                     for agent processing.\n\n",
+                );
+            }
+
+            prompt.push_str("Available channels and their active threads:\n");
             let map = tm_map.lock().await;
             for (channel_name, tm) in map.iter() {
                 let channel_type = tm.channel_type();
@@ -1023,6 +1053,7 @@ impl AgentService for JycAgentService {
             .lock()
             .expect("thread_managers poisoned")
             .clone();
+        let outbounds = self.outbounds.lock().expect("outbounds poisoned").clone();
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider
@@ -1043,6 +1074,7 @@ impl AgentService for JycAgentService {
             outbound: self.outbound.clone(),
             thread_managers: thread_managers.clone(),
             current_channel: Some(self.channel_name.clone()),
+            outbounds,
         })
         .await?;
 

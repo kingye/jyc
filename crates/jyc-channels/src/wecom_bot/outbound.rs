@@ -160,6 +160,61 @@ impl WecomBotOutboundAdapter {
             .await
             .context("Failed to update WeCom Bot processing indicator")
     }
+
+    /// Upload and send media attachments through the WebSocket.
+    ///
+    /// For each attachment: upload via `upload_attachment`, build a media message
+    /// body via `build_media_message_body`, and send via the WebSocket.
+    /// `cmd` is the command to use (e.g. `"aibot_send_msg"` or `"aibot_respond_msg"`).
+    /// When `chat_id` is `Some`, it is included in the message body.
+    async fn send_media_attachments(
+        &self,
+        handle: &WecomBotConnectionHandle,
+        attachments: &[OutboundAttachment],
+        cmd: &str,
+        req_id: &str,
+        chat_id: Option<&str>,
+    ) {
+        for att in attachments {
+            let media_type = wecom_media_type(&att.content_type, &att.filename);
+
+            match upload_attachment(handle, &att.path, &att.filename, &att.content_type).await {
+                Ok(media_id) => {
+                    let mut body = build_media_message_body(media_type, &media_id);
+                    if let Some(cid) = chat_id {
+                        body["chatid"] = serde_json::Value::String(cid.to_string());
+                    }
+                    let json = serde_json::json!({
+                        "cmd": cmd,
+                        "headers": {"req_id": req_id},
+                        "body": body,
+                    })
+                    .to_string();
+
+                    if let Err(e) = handle.sender.send(json) {
+                        tracing::warn!(
+                            filename = %att.filename,
+                            error = %e,
+                            "Failed to send WeCom Bot attachment message"
+                        );
+                    } else {
+                        tracing::info!(
+                            filename = %att.filename,
+                            media_type = %media_type,
+                            "WeCom Bot attachment message sent"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        filename = %att.filename,
+                        error = %e,
+                        "Failed to upload WeCom Bot attachment"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -299,59 +354,28 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         );
 
         // 9. Upload and send attachments as separate media messages.
-        if let Some(attachments) = attachments {
+        if let Some(attachments) = attachments
+            && !attachments.is_empty()
+        {
             let handle = {
                 let guard = self.handle.lock().await;
                 guard
                     .clone()
                     .context("WeCom Bot outbound handle not set; cannot upload attachments")?
             };
-
-            for att in attachments {
-                let media_type = wecom_media_type(&att.content_type, &att.filename);
-
-                match upload_attachment(&handle, &att.path, &att.filename, &att.content_type).await
-                {
-                    Ok(media_id) => {
-                        let att_cmd = if proactive_chatid.is_some() {
-                            "aibot_send_msg"
-                        } else {
-                            "aibot_respond_msg"
-                        };
-                        let mut body = build_media_message_body(media_type, &media_id);
-                        if let Some(ref chatid) = proactive_chatid {
-                            body["chatid"] = serde_json::Value::String(chatid.clone());
-                        }
-                        let json = serde_json::json!({
-                            "cmd": att_cmd,
-                            "headers": {"req_id": req_id},
-                            "body": body,
-                        })
-                        .to_string();
-
-                        if let Err(e) = handle.sender.send(json) {
-                            tracing::warn!(
-                                filename = %att.filename,
-                                error = %e,
-                                "Failed to send WeCom Bot attachment message"
-                            );
-                        } else {
-                            tracing::info!(
-                                filename = %att.filename,
-                                media_type = %media_type,
-                                "WeCom Bot attachment message sent"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            filename = %att.filename,
-                            error = %e,
-                            "Failed to upload WeCom Bot attachment"
-                        );
-                    }
-                }
-            }
+            let att_cmd = if proactive_chatid.is_some() {
+                "aibot_send_msg"
+            } else {
+                "aibot_respond_msg"
+            };
+            self.send_media_attachments(
+                &handle,
+                attachments,
+                att_cmd,
+                &req_id,
+                proactive_chatid.as_deref(),
+            )
+            .await;
         }
 
         // 10. Store reply to chat log
@@ -398,7 +422,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis(),
-                uuid::Uuid::new_v4().to_string().replace('-', "")[..8].to_string()
+                &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
             )},
             "body": body_json
         })
@@ -418,6 +442,65 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         );
 
         Ok(SendResult { message_id })
+    }
+
+    /// Send a message with file attachments to a WeCom Bot conversation.
+    ///
+    /// Sends text first via `aibot_send_msg`, then uploads each attachment
+    /// and sends as a separate media message. Reuses the same module-level
+    /// functions (`upload_attachment`, `build_media_message_body`,
+    /// `wecom_media_type`) as `send_reply`'s attachment handling.
+    async fn send_message_with_attachments(
+        &self,
+        recipient: &str,
+        subject: &str,
+        body: &str,
+        attachments: Option<&[OutboundAttachment]>,
+    ) -> Result<SendResult> {
+        // Validate attachments if configuration is present
+        if let Some(attachments) = attachments
+            && let Some(ref config) = self.attachment_config
+        {
+            attachment_validator::validate_outbound_attachments(attachments, config)
+                .await
+                .context("Failed to validate outbound attachments")?;
+            tracing::debug!("Outbound attachments validated successfully for WeCom Bot");
+        }
+
+        // Send text message first (reuse send_message logic)
+        let text_result = self.send_message(recipient, subject, body).await?;
+
+        // Send attachments as separate media messages
+        if let Some(attachments) = attachments
+            && !attachments.is_empty()
+        {
+            let handle = {
+                let guard = self.handle.lock().await;
+                guard
+                    .clone()
+                    .context("WeCom Bot outbound handle not set; cannot upload attachments")?
+            };
+            let req_id = format!(
+                "aibot_send_msg_{}_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
+            );
+            self.send_media_attachments(
+                &handle,
+                attachments,
+                "aibot_send_msg",
+                &req_id,
+                Some(recipient),
+            )
+            .await;
+        }
+
+        Ok(SendResult {
+            message_id: text_result.message_id,
+        })
     }
 
     /// Send a processing indicator (`finish=false`) so the user sees

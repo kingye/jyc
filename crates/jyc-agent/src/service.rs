@@ -414,11 +414,31 @@ impl JycAgentService {
             .lock()
             .expect("thread_managers poisoned")
             .clone();
+        let outbounds_configured = self
+            .outbounds
+            .lock()
+            .expect("outbounds poisoned")
+            .is_some();
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
-                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\n\
-                 Available channels and their active threads:\n",
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n",
+            );
+
+            // Note about direct outbound messaging via jyc_send_message
+            if outbounds_configured {
+                prompt.push_str(
+                    "For direct outbound messaging (bypassing agent processing), \
+                     use `jyc_send_message` with the optional `channel` parameter set to \
+                     a target channel name.\n\
+                     `jyc_send_message` sends directly through the channel's outbound adapter \
+                     without agent processing. `jyc_send_to_thread` injects into a thread queue \
+                     for agent processing.\n\n",
+                );
+            }
+
+            prompt.push_str(
+                "Available channels and their active threads:\n",
             );
             let map = tm_map.lock().await;
             for (channel_name, tm) in map.iter() {

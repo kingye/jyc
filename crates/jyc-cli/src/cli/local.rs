@@ -275,10 +275,8 @@ fn run_tui(
                 KeyCode::Up => {
                     app.scroll_offset = app.scroll_offset.saturating_sub(1);
                 }
-                KeyCode::Down => {
-                    if app.scroll_offset + 1 < app.conversation.len() {
-                        app.scroll_offset += 1;
-                    }
+                KeyCode::Down if app.scroll_offset + 1 < app.conversation.len() => {
+                    app.scroll_offset += 1;
                 }
                 _ => {}
             }

@@ -369,6 +369,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                                         context_window: model_def.context_window,
                                         supports_images: model_def.supports_images,
                                         params: model_def.params.clone(),
+                                        user_agent: model_def.user_agent.clone(),
                                     },
                                 )
                             })
@@ -382,6 +383,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                                 context_window: def.context_window,
                                 supports_images: def.supports_images,
                                 params: def.params.clone(),
+                                user_agent: def.user_agent.clone(),
                                 models,
                             },
                         )

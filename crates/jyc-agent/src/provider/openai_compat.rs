@@ -157,11 +157,9 @@ impl Provider for OpenAiCompatProvider {
             .client
             .post(&url)
             .header("content-type", "application/json");
-        let req = self.apply_headers(req);
+        let req = self.apply_headers(req).json(&body);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
-
-        req = req.json(&body);
 
         // Use EventSource for proper SSE streaming (same as Anthropic provider)
         let es =
@@ -343,11 +341,9 @@ impl Provider for OpenAiCompatProvider {
             .client
             .post(&url)
             .header("content-type", "application/json");
-        let req = self.apply_headers(req);
+        let req = self.apply_headers(req).json(&body);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
-
-        req = req.json(&body);
 
         // Capture data needed to diagnose 4xx/5xx after the SSE source fails.
         // EventSource's error string is just "Invalid status code: 400 Bad Request"
@@ -730,9 +726,7 @@ mod tests {
             .and(header("content-type", "application/json"))
             .and(header("authorization", "Bearer test-key"))
             .and(header("user-agent", "opencode/1.15.13"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                "data: {\"id\":\"cmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-            ))
+            .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
 
@@ -752,14 +746,15 @@ mod tests {
             .await
             .expect("complete should return a stream");
 
-        let mut text = String::new();
-        while let Some(event) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta(t)) = event {
-                text.push_str(&t);
-            }
-        }
+        // Drive the stream to completion (the mock returns 204, so it will end quickly).
+        while stream.next().await.is_some() {}
 
-        assert_eq!(text, "hi");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("user-agent").unwrap(),
+            "opencode/1.15.13"
+        );
     }
 
     #[tokio::test]
@@ -788,11 +783,11 @@ mod tests {
         )
         .expect("provider construction");
 
-        let messages = vec![Message::user("hello")];
+        let raw_messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
         let mut stream = provider
-            .complete(&messages, &[], "")
+            .complete_raw(&raw_messages, &[], "")
             .await
-            .expect("complete should return a stream");
+            .expect("complete_raw should return a stream");
 
         while stream.next().await.is_some() {}
 

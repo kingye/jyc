@@ -189,6 +189,9 @@ pub struct ProviderConfig {
     pub supports_images: Option<bool>,
     /// Extra parameters merged into every API request for this provider
     pub params: Option<serde_json::Value>,
+    /// Optional User-Agent header override for all models under this provider.
+    /// Model-level `user_agent` takes precedence.
+    pub user_agent: Option<String>,
     /// Per-model configuration
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelConfig>,
@@ -205,6 +208,9 @@ pub struct ModelConfig {
     pub supports_images: Option<bool>,
     /// Extra parameters merged into API request (overrides provider params)
     pub params: Option<serde_json::Value>,
+    /// Optional User-Agent header override for requests made by this model.
+    /// Takes precedence over provider-level `user_agent`.
+    pub user_agent: Option<String>,
 }
 
 /// Vision model configuration for the `read_image` tool fallback.
@@ -432,6 +438,7 @@ mod tests {
             context_window: None,
             supports_images: None,
             params: None,
+            user_agent: None,
             models: std::collections::HashMap::new(),
         };
         assert_eq!(config.provider_type, "test");
@@ -443,6 +450,7 @@ mod tests {
             context_window: Some(4096),
             supports_images: Some(true),
             params: None,
+            user_agent: None,
         };
         assert_eq!(config.context_window, Some(4096));
     }

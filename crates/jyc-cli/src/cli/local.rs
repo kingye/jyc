@@ -26,14 +26,11 @@ use ratatui::{
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use jyc_agent::JycAgentService;
 use jyc_channels::local::LocalMatcher;
 use jyc_channels::local::inbound::LocalInboundAdapter;
 use jyc_channels::local::outbound::LocalOutboundAdapter;
-use jyc_core::agent::AgentService;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
-use jyc_core::static_agent::StaticAgentService;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{InboundAdapter, InboundAdapterOptions, OutboundAdapter, load_config};
 
@@ -83,132 +80,17 @@ pub async fn run(args: &LocalArgs, workdir: &Path) -> Result<()> {
     tracing::info!(channel = %channel_name, "Local outbound connected");
 
     // 5. Create agent
-    let agent_config = Arc::new(config_snapshot.agent.clone());
-    let effective_model = channel_config
-        .model
-        .clone()
-        .or_else(|| agent_config.model.clone());
-    let effective_small_model = channel_config
-        .small_model
-        .clone()
-        .or_else(|| agent_config.small_model.clone());
-
-    let _footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
-
-    let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
-        "agent" => {
-            let model = effective_model;
-            tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
-            let providers = agent_config
-                .providers
-                .iter()
-                .map(|(name, def)| {
-                    let models = def
-                        .models
-                        .iter()
-                        .map(|(model_name, model_def)| {
-                            (
-                                model_name.clone(),
-                                jyc_agent::types::ModelConfig {
-                                    context_window: model_def.context_window,
-                                    supports_images: model_def.supports_images,
-                                    params: model_def.params.clone(),
-                                    user_agent: model_def.user_agent.clone(),
-                                },
-                            )
-                        })
-                        .collect();
-                    (
-                        name.clone(),
-                        jyc_agent::types::ProviderConfig {
-                            provider_type: def.provider_type.clone(),
-                            base_url: def.base_url.clone(),
-                            api_key_env: def.api_key_env.clone(),
-                            context_window: def.context_window,
-                            supports_images: def.supports_images,
-                            params: def.params.clone(),
-                            user_agent: def.user_agent.clone(),
-                            models,
-                        },
-                    )
-                })
-                .collect();
-            let agent_cfg = jyc_agent::types::AgentConfig {
-                model,
-                small_model: effective_small_model.clone(),
-                providers,
-                max_iterations: agent_config.max_iterations,
-                vision: agent_config
-                    .vision
-                    .clone()
-                    .map(|v| jyc_agent::types::VisionConfig {
-                        enabled: v.enabled,
-                        provider: v.provider,
-                        model: v.model,
-                        prompt: v.prompt,
-                    }),
-            };
-            let channel_patterns = patterns.clone();
-            let vision_client: Option<std::sync::Arc<jyc_agent::vision::VisionClient>> = {
-                agent_config
-                    .vision
-                    .as_ref()
-                    .filter(|v| v.enabled)
-                    .and_then(|v| {
-                        let provider_def = agent_config.providers.get(&v.provider)?;
-                        let base_url = provider_def
-                            .base_url
-                            .clone()
-                            .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-                        let api_key_env = provider_def
-                            .api_key_env
-                            .clone()
-                            .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
-                        let api_key = std::env::var(&api_key_env).unwrap_or_default();
-                        if api_key.is_empty() {
-                            tracing::warn!(
-                                provider = %v.provider,
-                                api_key_env = %api_key_env,
-                                "Vision fallback: API key not found in environment"
-                            );
-                            return None;
-                        }
-                        Some(std::sync::Arc::new(jyc_agent::vision::VisionClient::new(
-                            base_url,
-                            api_key,
-                            v.model.clone(),
-                            v.prompt.clone(),
-                        )))
-                    })
-            };
-            let jyc_agent_svc = Arc::new(JycAgentService::new(
-                agent_cfg,
-                workdir.to_path_buf(),
-                config_snapshot.mcps.clone(),
-                channel_config.mcps.clone(),
-                channel_patterns,
-                None, // inbound attachment config
-                vision_client,
-                Some(outbound.clone()),
-                channel_config.disabled_tools.clone(),
-                channel_config.disabled_mcp_servers.clone(),
-                channel_config.skills.clone(),
-                channel_config.disabled_skills.clone(),
-                channel_name.clone(),
-            ));
-            jyc_agent_svc as Arc<dyn AgentService>
-        }
-        "static" => {
-            let text = agent_config
-                .text
-                .as_deref()
-                .unwrap_or("Thank you for your message.");
-            Arc::new(StaticAgentService::new(text))
-        }
-        other => {
-            anyhow::bail!("unsupported agent mode: '{other}'");
-        }
-    };
+    let agent_result = crate::cli::agent_builder::build_agent_service(
+        &config_snapshot.agent,
+        channel_config,
+        workdir,
+        outbound.clone(),
+        patterns.clone(),
+        config_snapshot.mcps.clone(),
+        None, // local channel has no inbound attachment config
+        &channel_name,
+    )?;
+    let agent = agent_result.agent;
 
     // 6. Create thread manager and router
     let cancel = CancellationToken::new();

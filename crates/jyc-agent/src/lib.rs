@@ -35,6 +35,7 @@ mod integration_tests {
                 context_window: None,
                 supports_images: None,
                 params: None,
+                user_agent: None,
                 models: HashMap::new(),
             },
         );
@@ -75,6 +76,7 @@ mod integration_tests {
                 context_window: None,
                 supports_images: None,
                 params: None,
+                user_agent: None,
                 models: HashMap::new(),
             },
         );

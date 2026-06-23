@@ -22,6 +22,8 @@ pub struct OpenAiCompatProvider {
     params: Option<serde_json::Value>,
     /// Whether the active model accepts image content blocks.
     supports_images: bool,
+    /// Optional User-Agent header override.
+    user_agent: Option<String>,
 }
 
 impl OpenAiCompatProvider {
@@ -31,6 +33,7 @@ impl OpenAiCompatProvider {
         api_key: Option<&str>,
         params: Option<serde_json::Value>,
         supports_images: bool,
+        user_agent: Option<&str>,
     ) -> Result<Self> {
         // Connection pool hygiene:
         //
@@ -62,7 +65,20 @@ impl OpenAiCompatProvider {
             api_key: api_key.map(|s| s.to_string()),
             params,
             supports_images,
+            user_agent: user_agent.map(|s| s.to_string()),
         })
+    }
+
+    /// Apply common headers (authorization, user-agent) to a request builder.
+    fn apply_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut req = req;
+        if let Some(ref key) = self.api_key {
+            req = req.header("authorization", format!("Bearer {key}"));
+        }
+        if let Some(ref ua) = self.user_agent {
+            req = req.header("user-agent", ua.as_str());
+        }
+        req
     }
 }
 
@@ -137,18 +153,13 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Build request
-        let mut req = self
+        let req = self
             .client
             .post(&url)
             .header("content-type", "application/json");
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("authorization", format!("Bearer {key}"));
-        }
+        let req = self.apply_headers(req).json(&body);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
-
-        req = req.json(&body);
 
         // Use EventSource for proper SSE streaming (same as Anthropic provider)
         let es =
@@ -326,18 +337,13 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Build and send request
-        let mut req = self
+        let req = self
             .client
             .post(&url)
             .header("content-type", "application/json");
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("authorization", format!("Bearer {key}"));
-        }
+        let req = self.apply_headers(req).json(&body);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
-
-        req = req.json(&body);
 
         // Capture data needed to diagnose 4xx/5xx after the SSE source fails.
         // EventSource's error string is just "Invalid status code: 400 Bad Request"
@@ -346,6 +352,7 @@ impl Provider for OpenAiCompatProvider {
         let diag_url = url.clone();
         let diag_body = body.clone();
         let diag_api_key = self.api_key.clone();
+        let diag_user_agent = self.user_agent.clone();
         let diag_client = self.client.clone();
 
         let es =
@@ -355,7 +362,13 @@ impl Provider for OpenAiCompatProvider {
             (
                 es,
                 OpenAiStreamState::default(),
-                Some((diag_client, diag_url, diag_body, diag_api_key)),
+                Some((
+                    diag_client,
+                    diag_url,
+                    diag_body,
+                    diag_api_key,
+                    diag_user_agent,
+                )),
             ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
@@ -398,14 +411,18 @@ impl Provider for OpenAiCompatProvider {
                             // a diagnostic POST with the same body so the caller
                             // sees the provider's actual error (validation message,
                             // rate limit reason, etc.).
-                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take()
+                            let diagnosed = if let Some((client, url, body, api_key, user_agent)) =
+                                diag.take()
                             {
                                 super::fetch_error_body(&client, &url, &body, |req| {
+                                    let mut req = req;
                                     if let Some(key) = api_key.as_deref() {
-                                        req.header("authorization", format!("Bearer {key}"))
-                                    } else {
-                                        req
+                                        req = req.header("authorization", format!("Bearer {key}"));
                                     }
+                                    if let Some(ua) = user_agent.as_deref() {
+                                        req = req.header("user-agent", ua);
+                                    }
+                                    req
                                 })
                                 .await
                             } else {
@@ -690,4 +707,88 @@ fn image_block_openai(source: &crate::types::ImageSource) -> serde_json::Value {
         "type": "image_url",
         "image_url": { "url": url },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Message;
+    use futures::StreamExt;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn complete_sends_custom_user_agent() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("content-type", "application/json"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("user-agent", "opencode/1.15.13"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "test-model",
+            Some("test-key"),
+            None,
+            false,
+            Some("opencode/1.15.13"),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+
+        // Drive the stream to completion (the mock returns 204, so it will end quickly).
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("user-agent").unwrap(),
+            "opencode/1.15.13"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_post_sends_custom_user_agent_on_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("user-agent", "opencode/1.15.13"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": { "message": "bad request", "type": "invalid_request_error" }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "test-model",
+            Some("test-key"),
+            None,
+            false,
+            Some("opencode/1.15.13"),
+        )
+        .expect("provider construction");
+
+        let raw_messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
+        let mut stream = provider
+            .complete_raw(&raw_messages, &[], "")
+            .await
+            .expect("complete_raw should return a stream");
+
+        while stream.next().await.is_some() {}
+
+        // wiremock will panic at drop if the request count expectation is not met.
+    }
 }

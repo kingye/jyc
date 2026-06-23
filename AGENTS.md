@@ -39,9 +39,9 @@ and uses OpenCode to generate AI replies.
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
-提交 PR 前必须在本地通过以下四步检查：
+提交 PR 前必须在本地通过以下检查：
 
-> 注意：`.github/workflows/ci.yml` 会自动执行格式化、Clippy、测试（覆盖率检查 `cargo llvm-cov` 会运行全部测试）等检查；Agent 无需在本地重复运行 CI 已覆盖的检查（如 `cargo test`、`cargo llvm-cov`）。
+> 注意：`.github/workflows/ci.yml` 会自动执行格式化、Clippy、测试（覆盖率检查 `cargo llvm-cov` 会运行全部测试）等检查；Agent 无需在本地重复运行 CI 已覆盖的慢速检查（如 `cargo test`、`cargo llvm-cov`）。
 
 1. **格式化检查**
    ```bash
@@ -53,7 +53,7 @@ and uses OpenCode to generate AI replies.
    ```
 3. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
 4. **禁止本地运行 CI 专属检查** — `cargo llvm-cov`、`cargo-tarpaulin` 等覆盖率工具，以及 GitHub Actions 工作流中已自动执行的其他检查（包括测试），禁止在本地运行。
-   覆盖率等检查速度太慢，CI（`.github/workflows/ci.yml`）会在 PR 提交后自动运行并检查阈值。
+   这些检查速度太慢，CI（`.github/workflows/ci.yml`）会在 PR 提交后自动运行并检查阈值。
 
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 格式：

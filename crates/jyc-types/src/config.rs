@@ -370,6 +370,9 @@ pub struct ProviderDef {
     /// Extra parameters merged into every API request for this provider
     #[serde(default)]
     pub params: Option<serde_json::Value>,
+    /// Optional User-Agent header override for all models under this provider.
+    /// Model-level `user_agent` takes precedence over this value.
+    pub user_agent: Option<String>,
     /// Per-model context window overrides
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelDef>,
@@ -386,6 +389,10 @@ pub struct ModelDef {
     /// Extra parameters merged into API request when using this model (overrides provider params)
     #[serde(default)]
     pub params: Option<serde_json::Value>,
+    /// Optional User-Agent header override for requests made by this model.
+    /// When set, the provider sends this value as the `User-Agent` header
+    /// instead of the HTTP client's default.
+    pub user_agent: Option<String>,
 }
 
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.

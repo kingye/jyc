@@ -36,8 +36,7 @@ use jyc_core::message_storage::MessageStorage;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_types::{
-    load_config, ChannelPattern, InboundAdapterOptions, InboundMessage, MessageContent,
-    OutboundAdapter,
+    load_config, InboundAdapter, InboundAdapterOptions, OutboundAdapter,
 };
 
 #[derive(Args, Debug)]
@@ -96,7 +95,7 @@ pub async fn run(args: &LocalArgs, workdir: &Path) -> Result<()> {
         .clone()
         .or_else(|| agent_config.small_model.clone());
 
-    let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
+    let _footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
 
     let agent: Arc<dyn AgentService> = match agent_config.mode.as_str() {
         "agent" => {
@@ -228,7 +227,7 @@ pub async fn run(args: &LocalArgs, workdir: &Path) -> Result<()> {
         channel_name.clone(),
         "local".to_string(),
         workspace_dir.clone(),
-        None, // no metrics handle in local mode
+        jyc_core::metrics::MetricsHandle::noop(), // no metrics in local mode
     ));
 
     let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));

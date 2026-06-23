@@ -30,6 +30,9 @@ enum Commands {
     /// Monitor inbound channels and process messages with AI
     Monitor(cli::monitor::MonitorArgs),
 
+    /// Local TUI chat — interactive terminal session with AI
+    Local(cli::local::LocalArgs),
+
     /// Live TUI dashboard — connects to a running jyc monitor
     Dashboard(cli::dashboard::DashboardArgs),
 
@@ -113,6 +116,7 @@ async fn main() -> Result<()> {
 
     let result = match &cli.command {
         Commands::Monitor(args) => cli::monitor::run(args, &workdir).await,
+        Commands::Local(args) => cli::local::run(args, &workdir).await,
         Commands::Dashboard(args) => cli::dashboard::run(args).await,
         Commands::Config { action } => cli::config::run(action, &workdir).await,
         Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,

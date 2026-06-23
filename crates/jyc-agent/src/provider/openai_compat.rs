@@ -712,3 +712,88 @@ fn image_block_openai(source: &crate::types::ImageSource) -> serde_json::Value {
         "image_url": { "url": url },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Message;
+    use futures::StreamExt;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn complete_sends_custom_user_agent() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("content-type", "application/json"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("user-agent", "opencode/1.15.13"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "data: {\"id\":\"cmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "test-model",
+            Some("test-key"),
+            None,
+            false,
+            Some("opencode/1.15.13"),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+
+        let mut text = String::new();
+        while let Some(event) = stream.next().await {
+            if let Ok(StreamEvent::TextDelta(t)) = event {
+                text.push_str(&t);
+            }
+        }
+
+        assert_eq!(text, "hi");
+    }
+
+    #[tokio::test]
+    async fn diagnostic_post_sends_custom_user_agent_on_error() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("user-agent", "opencode/1.15.13"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(&serde_json::json!({
+                "error": { "message": "bad request", "type": "invalid_request_error" }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiCompatProvider::new(
+            &server.uri(),
+            "test-model",
+            Some("test-key"),
+            None,
+            false,
+            Some("opencode/1.15.13"),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+
+        while stream.next().await.is_some() {}
+
+        // wiremock will panic at drop if the request count expectation is not met.
+    }
+}

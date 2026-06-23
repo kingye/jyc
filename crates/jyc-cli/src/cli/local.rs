@@ -318,10 +318,24 @@ fn draw_ui(frame: &mut Frame, app: &mut LocalApp) {
         } else {
             Style::default().fg(Color::Green)
         };
-        conv_lines.push(Line::from(vec![
-            Span::styled(format!("[{}] ", role), role_style),
-            Span::raw(text.replace('\n', " ")),
-        ]));
+        for (idx, line_text) in text.lines().enumerate() {
+            let prefix = if idx == 0 {
+                format!("[{}] ", role)
+            } else {
+                "     ".to_string() // indent continuation lines
+            };
+            conv_lines.push(Line::from(vec![
+                Span::styled(prefix, role_style),
+                Span::raw(line_text.to_string()),
+            ]));
+        }
+        // If text ends with a newline, add an empty continuation line
+        if text.ends_with('\n') {
+            conv_lines.push(Line::from(vec![
+                Span::styled("     ".to_string(), role_style),
+                Span::raw("".to_string()),
+            ]));
+        }
     }
 
     // Auto-scroll to bottom unless user scrolled up

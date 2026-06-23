@@ -27,17 +27,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use jyc_agent::JycAgentService;
+use jyc_channels::local::LocalMatcher;
 use jyc_channels::local::inbound::LocalInboundAdapter;
 use jyc_channels::local::outbound::LocalOutboundAdapter;
-use jyc_channels::local::LocalMatcher;
 use jyc_core::agent::AgentService;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::thread_manager::ThreadManager;
-use jyc_types::{
-    load_config, InboundAdapter, InboundAdapterOptions, OutboundAdapter,
-};
+use jyc_types::{InboundAdapter, InboundAdapterOptions, OutboundAdapter, load_config};
 
 #[derive(Args, Debug)]
 pub struct LocalArgs {
@@ -248,11 +246,7 @@ pub async fn run(args: &LocalArgs, workdir: &Path) -> Result<()> {
         },
     );
 
-    let adapter = LocalInboundAdapter::new(
-        channel_name.clone(),
-        outbound.output_tx_arc(),
-        run_tui,
-    );
+    let adapter = LocalInboundAdapter::new(channel_name.clone(), outbound.output_tx_arc(), run_tui);
 
     let patterns_for_callback = patterns.clone();
     let router_for_callback = router.clone();
@@ -366,40 +360,45 @@ fn run_tui(
         }
 
         // Handle input
-        if event::poll(poll_interval).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = event::read() {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Char('d')
-                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            app.send_input(&input_tx);
-                        }
-                        KeyCode::Char(c) => {
-                            app.input_buffer.push(c);
-                        }
-                        KeyCode::Enter => {
-                            app.input_buffer.push('\n');
-                        }
-                        KeyCode::Backspace => {
-                            app.input_buffer.pop();
-                        }
-                        KeyCode::Up => {
-                            app.scroll_offset = app.scroll_offset.saturating_sub(1);
-                        }
-                        KeyCode::Down => {
-                            if app.scroll_offset + 1 < app.conversation.len() {
-                                app.scroll_offset += 1;
-                            }
-                        }
-                        _ => {}
+        if event::poll(poll_interval).unwrap_or(false)
+            && let Ok(Event::Key(key)) = event::read()
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('c')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    app.should_quit = true;
+                }
+                KeyCode::Char('d')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    app.send_input(&input_tx);
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                }
+                KeyCode::Enter => {
+                    app.input_buffer.push('\n');
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                }
+                KeyCode::Up => {
+                    app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if app.scroll_offset + 1 < app.conversation.len() {
+                        app.scroll_offset += 1;
                     }
                 }
+                _ => {}
             }
         }
 

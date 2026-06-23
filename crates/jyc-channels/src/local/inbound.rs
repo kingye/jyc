@@ -134,12 +134,10 @@ impl jyc_types::InboundAdapter for LocalInboundAdapter {
         tracing::info!(channel = %self.channel_name, "Local outbound output_tx set");
 
         // Consume the TUI spawner closure.
-        let run_tui = self
-            .run_tui
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("LocalInboundAdapter::start() called more than once"))?;
+        let run_tui =
+            self.run_tui.lock().unwrap().take().ok_or_else(|| {
+                anyhow::anyhow!("LocalInboundAdapter::start() called more than once")
+            })?;
 
         // Spawn the TUI in a blocking task.
         let tui_handle = (run_tui)(input_tx, output_rx);

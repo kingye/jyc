@@ -30,9 +30,7 @@ impl LocalOutboundAdapter {
     }
 
     /// Get the shared output sender Arc so the inbound adapter can set it.
-    pub fn output_tx_arc(
-        &self,
-    ) -> Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>> {
+    pub fn output_tx_arc(&self) -> Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>> {
         self.output_tx.clone()
     }
 

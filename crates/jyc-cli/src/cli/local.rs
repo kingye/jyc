@@ -207,11 +207,14 @@ impl LocalApp {
 
     fn send_input(&mut self, input_tx: &tokio::sync::mpsc::UnboundedSender<String>) {
         let text = self.input_buffer.trim().to_string();
-        if !text.is_empty() {
-            self.add_user_message(text.clone());
-            if let Err(e) = input_tx.send(text) {
-                tracing::warn!(error = %e, "Failed to send input to adapter");
-            }
+        if text.is_empty() {
+            // Silently ignore empty/whitespace-only input; keep buffer so
+            // the user sees nothing was sent.
+            return;
+        }
+        self.add_user_message(text.clone());
+        if let Err(e) = input_tx.send(text) {
+            tracing::warn!(error = %e, "Failed to send input to adapter");
         }
         self.input_buffer.clear();
     }

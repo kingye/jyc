@@ -764,11 +764,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("user-agent", "opencode/1.15.13"))
-            .respond_with(
-                ResponseTemplate::new(400).set_body_json(&serde_json::json!({
-                    "error": { "message": "bad request", "type": "invalid_request_error" }
-                })),
-            )
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": { "message": "bad request", "type": "invalid_request_error" }
+            })))
             .expect(2)
             .mount(&server)
             .await;

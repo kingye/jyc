@@ -146,7 +146,12 @@ impl jyc_types::InboundAdapter for LocalInboundAdapter {
         let mut process_error = None;
         loop {
             tokio::select! {
-                Some(text) = input_rx.recv() => {
+                text = input_rx.recv() => {
+                    let Some(text) = text else {
+                        // Channel closed — TUI exited.
+                        break;
+                    };
+
                     if cancel.is_cancelled() {
                         break;
                     }
@@ -179,10 +184,6 @@ impl jyc_types::InboundAdapter for LocalInboundAdapter {
                     }
                 }
                 _ = cancel.cancelled() => {
-                    break;
-                }
-                else => {
-                    // Both input_rx closed and not cancelled — TUI exited.
                     break;
                 }
             }

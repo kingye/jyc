@@ -227,9 +227,14 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # base_url = "https://api.deepseek.com"
 # api_key_env = "DEEPSEEK_API_KEY"
 # context_window = 128000
+# # Optional: replace the default User-Agent header for this provider's requests.
+# # Useful for endpoints (e.g. Kimi coding) that gate access by client identity.
+# # user_agent = "opencode/1.15.13"
 #
 # [agent.providers.deepseek.models."deepseek-v4-pro"]
 # supports_images = true
+# # Model-level user_agent overrides the provider-level value.
+# # user_agent = "opencode/1.15.13"
 #
 # [agent.providers.anthropic]
 # type = "anthropic"

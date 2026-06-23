@@ -186,6 +186,13 @@ pub fn create_provider(
         .or(config.supports_images)
         .unwrap_or(false);
 
+    // Resolve user_agent: model-level overrides provider-level.
+    let user_agent = config
+        .models
+        .get(model_id)
+        .and_then(|m| m.user_agent.as_deref())
+        .or(config.user_agent.as_deref());
+
     match config.provider_type.as_str() {
         "anthropic" => {
             let base_url = config
@@ -213,6 +220,7 @@ pub fn create_provider(
                 api_key.as_deref(),
                 params,
                 supports_images,
+                user_agent,
             )?))
         }
         other => anyhow::bail!(

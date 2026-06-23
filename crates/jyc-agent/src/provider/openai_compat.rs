@@ -22,6 +22,8 @@ pub struct OpenAiCompatProvider {
     params: Option<serde_json::Value>,
     /// Whether the active model accepts image content blocks.
     supports_images: bool,
+    /// Optional User-Agent header override.
+    user_agent: Option<String>,
 }
 
 impl OpenAiCompatProvider {
@@ -31,6 +33,7 @@ impl OpenAiCompatProvider {
         api_key: Option<&str>,
         params: Option<serde_json::Value>,
         supports_images: bool,
+        user_agent: Option<&str>,
     ) -> Result<Self> {
         // Connection pool hygiene:
         //
@@ -62,7 +65,20 @@ impl OpenAiCompatProvider {
             api_key: api_key.map(|s| s.to_string()),
             params,
             supports_images,
+            user_agent: user_agent.map(|s| s.to_string()),
         })
+    }
+
+    /// Apply common headers (authorization, user-agent) to a request builder.
+    fn apply_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut req = req;
+        if let Some(ref key) = self.api_key {
+            req = req.header("authorization", format!("Bearer {key}"));
+        }
+        if let Some(ref ua) = self.user_agent {
+            req = req.header("user-agent", ua.as_str());
+        }
+        req
     }
 }
 
@@ -137,14 +153,11 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Build request
-        let mut req = self
+        let req = self
             .client
             .post(&url)
             .header("content-type", "application/json");
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("authorization", format!("Bearer {key}"));
-        }
+        let req = self.apply_headers(req);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
 
@@ -326,14 +339,11 @@ impl Provider for OpenAiCompatProvider {
         }
 
         // Build and send request
-        let mut req = self
+        let req = self
             .client
             .post(&url)
             .header("content-type", "application/json");
-
-        if let Some(ref key) = self.api_key {
-            req = req.header("authorization", format!("Bearer {key}"));
-        }
+        let req = self.apply_headers(req);
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
 
@@ -346,6 +356,7 @@ impl Provider for OpenAiCompatProvider {
         let diag_url = url.clone();
         let diag_body = body.clone();
         let diag_api_key = self.api_key.clone();
+        let diag_user_agent = self.user_agent.clone();
         let diag_client = self.client.clone();
 
         let es =
@@ -355,7 +366,13 @@ impl Provider for OpenAiCompatProvider {
             (
                 es,
                 OpenAiStreamState::default(),
-                Some((diag_client, diag_url, diag_body, diag_api_key)),
+                Some((
+                    diag_client,
+                    diag_url,
+                    diag_body,
+                    diag_api_key,
+                    diag_user_agent,
+                )),
             ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
@@ -398,14 +415,18 @@ impl Provider for OpenAiCompatProvider {
                             // a diagnostic POST with the same body so the caller
                             // sees the provider's actual error (validation message,
                             // rate limit reason, etc.).
-                            let diagnosed = if let Some((client, url, body, api_key)) = diag.take()
+                            let diagnosed = if let Some((client, url, body, api_key, user_agent)) =
+                                diag.take()
                             {
                                 super::fetch_error_body(&client, &url, &body, |req| {
+                                    let mut req = req;
                                     if let Some(key) = api_key.as_deref() {
-                                        req.header("authorization", format!("Bearer {key}"))
-                                    } else {
-                                        req
+                                        req = req.header("authorization", format!("Bearer {key}"));
                                     }
+                                    if let Some(ua) = user_agent.as_deref() {
+                                        req = req.header("user-agent", ua);
+                                    }
+                                    req
                                 })
                                 .await
                             } else {

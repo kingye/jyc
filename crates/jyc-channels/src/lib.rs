@@ -2,6 +2,7 @@ pub mod email;
 pub mod feishu;
 pub mod gitee;
 pub mod github;
+pub mod local;
 pub mod registry;
 pub mod wechat;
 pub mod wecom;

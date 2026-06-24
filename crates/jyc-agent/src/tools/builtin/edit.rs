@@ -70,8 +70,8 @@ impl Tool for EditTool {
             ctx.working_dir.join(file_path)
         };
 
-        // Security: ensure path is within working directory.
-        if let Err(msg) = ctx.check_path_boundary(file_path, &path) {
+        // Security: ensure path is within working directory or write roots.
+        if let Err(msg) = ctx.check_write_boundary(file_path, &path) {
             return Ok(ToolOutput::error(msg));
         }
 

@@ -23,6 +23,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Per-pattern filesystem access whitelist (`access.read` / `access.write`).**
+  Patterns can now declare additional paths outside the thread working directory
+  that the agent may read from or write to. Write paths are automatically
+  readable. Tilde (`~`) expands to `$HOME`. Prevents repeated "Access denied"
+  failures when the agent needs to read dependency source (e.g.,
+  `~/.cargo/registry/src`) or write to build directories. (#275)
+
 - **`jyc_send_message` enhanced with cross-channel and attachment support.** The
   builtin tool now accepts an optional `channel` parameter for sending proactive
   messages through any configured channel's outbound adapter (bypassing agent

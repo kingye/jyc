@@ -407,6 +407,39 @@ pub struct ChannelPattern {
     /// Merged with channel-level `disabled_skills`.
     #[serde(default)]
     pub disabled_skills: Option<Vec<String>>,
+
+    /// Per-pattern filesystem access whitelist.
+    ///
+    /// Extends the agent's read/write boundary beyond the thread working
+    /// directory. Paths listed in `write` are also readable automatically.
+    ///
+    /// Tilde (`~`) expands to `$HOME`. Relative paths resolve against the
+    /// thread working directory and are ignored (already accessible).
+    ///
+    /// ```toml
+    /// [channels.jyc_repo.patterns.access]
+    /// read = ["~/.cargo/registry/src"]
+    /// write = ["/tmp/jyc-builds"]
+    /// ```
+    #[serde(default)]
+    pub access: Option<AccessConfig>,
+}
+
+/// Per-pattern filesystem access whitelist.
+///
+/// `read` paths widen the read boundary for tools like `read`, `bash`,
+/// `grep`, and `glob`. `write` paths widen the write boundary for `write`,
+/// `edit`, and `bash` — and are automatically readable too.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccessConfig {
+    /// Additional read paths outside the working directory.
+    #[serde(default)]
+    pub read: Vec<String>,
+
+    /// Additional write paths outside the working directory.
+    /// Write paths are also readable automatically.
+    #[serde(default)]
+    pub write: Vec<String>,
 }
 
 impl Default for ChannelPattern {
@@ -432,6 +465,7 @@ impl Default for ChannelPattern {
             disabled_mcp_servers: None,
             skills: None,
             disabled_skills: None,
+            access: None,
         }
     }
 }

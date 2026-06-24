@@ -21,13 +21,9 @@ use jyc_types::{InspectState, Severity, ThreadStatus};
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
-    /// Inspect server address
+    /// Inspect server address (also used for WebSocket chat)
     #[arg(long, default_value = "127.0.0.1:9876")]
     pub addr: String,
-
-    /// WebSocket server address for chat pane
-    #[arg(long, default_value = "127.0.0.1:9877")]
-    pub ws_addr: String,
 }
 
 /// Phase of the chat pane UI.
@@ -165,7 +161,7 @@ impl App {
 
     // ── Chat pane helpers ──────────────────────────────────────────────
 
-    fn open_chat(&mut self, ws_addr: &str) {
+    fn open_chat(&mut self, addr: &str) {
         self.chat_visible = true;
         self.chat_phase = ChatPhase::PatternSelect;
         self.chat_patterns.clear();
@@ -183,7 +179,7 @@ impl App {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
-        let url = format!("ws://{}/ws", ws_addr);
+        let url = format!("ws://{}/ws", addr);
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
     }
 
@@ -433,9 +429,9 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
             && key.kind == KeyEventKind::Press
         {
             if app.chat_visible {
-                handle_chat_keys(&mut app, key, &args.ws_addr);
+                handle_chat_keys(&mut app, key);
             } else {
-                handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.ws_addr).await;
+                handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr).await;
             }
         }
 
@@ -451,7 +447,7 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     result
 }
 
-fn handle_chat_keys(app: &mut App, key: event::KeyEvent, _ws_addr: &str) {
+fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
     match app.chat_phase {
         ChatPhase::PatternSelect => match key.code {
             KeyCode::Char('c') | KeyCode::Esc => {
@@ -519,14 +515,14 @@ async fn handle_normal_keys(
     key: event::KeyEvent,
     client: &mut InspectClient,
     last_poll: &mut std::time::Instant,
-    ws_addr: &str,
+    addr: &str,
 ) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.should_quit = true;
         }
         KeyCode::Char('c') => {
-            app.open_chat(ws_addr);
+            app.open_chat(addr);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.next_thread();

@@ -15,6 +15,21 @@ use jyc_core::thread_manager::ThreadManager;
 use jyc_types::AppConfig;
 use jyc_types::*;
 
+/// Handler for WebSocket connections on the inspect server.
+///
+/// The websocket channel registers itself as the handler. When a dashboard
+/// client connects via WebSocket upgrade on `/ws`, the inspect server hands
+/// the stream to this handler.
+#[async_trait::async_trait]
+pub trait WebsocketHandler: Send + Sync {
+    /// Handle a single WebSocket connection.
+    async fn handle(
+        &self,
+        ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
+        addr: std::net::SocketAddr,
+    ) -> anyhow::Result<()>;
+}
+
 /// Max activity entries kept per thread.
 const MAX_ACTIVITY_ENTRIES: usize = 60;
 
@@ -51,6 +66,8 @@ pub struct InspectContext {
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
     /// Per-channel workspace directories (parallel to channels)
     pub workspace_dirs: Vec<PathBuf>,
+    /// Optional WebSocket handler for dashboard chat connections.
+    pub websocket_handler: Option<Arc<dyn WebsocketHandler>>,
 }
 
 /// TCP-based inspect server.
@@ -93,7 +110,7 @@ impl InspectServer {
                             tracing::debug!(addr = %addr, "Inspect client connected");
                             let ctx = self.context.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_client(stream, ctx).await {
+                                if let Err(e) = Self::handle_client(stream, ctx, addr).await {
                                     tracing::debug!(error = %e, "Inspect client disconnected");
                                 }
                             });
@@ -114,9 +131,30 @@ impl InspectServer {
     }
 
     async fn handle_client(
-        stream: tokio::net::TcpStream,
+        mut stream: tokio::net::TcpStream,
         context: Arc<InspectContext>,
+        addr: std::net::SocketAddr,
     ) -> anyhow::Result<()> {
+        // Detect protocol by reading the first byte.
+        // 'G' => HTTP GET (WebSocket upgrade); '{' => JSON inspect protocol.
+        let mut first_byte = [0u8; 1];
+        let n = tokio::io::AsyncReadExt::read(&mut stream, &mut first_byte).await?;
+        if n == 0 {
+            return Ok(()); // Client disconnected immediately
+        }
+
+        if first_byte[0] == b'G' {
+            // HTTP request — likely WebSocket upgrade
+            if let Some(ref handler) = context.websocket_handler {
+                let stream = PrependStream::new(stream, first_byte[0]);
+                let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+                handler.handle(ws_stream, addr).await?;
+            }
+            return Ok(());
+        }
+
+        // JSON inspect protocol — prepend the byte back and continue as before
+        let stream = PrependStream::new(stream, first_byte[0]);
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
@@ -489,6 +527,93 @@ impl ActivityTracker {
     }
 }
 
+/// A wrapper around `tokio::net::TcpStream` that prepends a single byte
+/// to the beginning of the read stream. Used to "put back" the first byte
+/// after protocol detection.
+pub struct PrependStream {
+    inner: tokio::net::TcpStream,
+    prepend: Option<u8>,
+}
+
+impl PrependStream {
+    pub fn new(inner: tokio::net::TcpStream, byte: u8) -> Self {
+        Self {
+            inner,
+            prepend: Some(byte),
+        }
+    }
+
+    fn into_split(self) -> (PrependReadHalf, tokio::net::tcp::OwnedWriteHalf) {
+        let (read, write) = self.inner.into_split();
+        (
+            PrependReadHalf {
+                inner: read,
+                prepend: self.prepend,
+            },
+            write,
+        )
+    }
+}
+
+impl tokio::io::AsyncRead for PrependStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(byte) = self.prepend.take()
+            && buf.remaining() > 0
+        {
+            buf.put_slice(&[byte]);
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for PrependStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+struct PrependReadHalf {
+    inner: tokio::net::tcp::OwnedReadHalf,
+    prepend: Option<u8>,
+}
+
+impl tokio::io::AsyncRead for PrependReadHalf {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(byte) = self.prepend.take()
+            && buf.remaining() > 0
+        {
+            buf.put_slice(&[byte]);
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
 fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
     let severity = match event {
@@ -612,6 +737,7 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![],
+            websocket_handler: None,
         })
     }
 
@@ -847,6 +973,7 @@ mode = "agent"
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),
             workspace_dirs: vec![],
+            websocket_handler: None,
         });
 
         let cancel = CancellationToken::new();
@@ -933,6 +1060,7 @@ mode = "agent"
             config_path: None,
             config: None,
             workspace_dirs: vec![workspace_dir],
+            websocket_handler: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1027,6 +1155,7 @@ mode = "agent"
             config_path: None,
             config: None,
             workspace_dirs: vec![workspace_dir],
+            websocket_handler: None,
         });
 
         let cancel = CancellationToken::new();

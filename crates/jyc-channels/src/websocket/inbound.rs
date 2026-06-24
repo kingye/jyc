@@ -3,12 +3,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tokio_tungstenite::accept_async;
 use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
@@ -79,30 +77,64 @@ enum ClientMessage {
 
 /// WebSocket inbound adapter.
 ///
-/// Runs a TCP listener that accepts WebSocket connections from dashboard clients.
-/// Handles the JSON protocol and dispatches messages to the agent via `on_message`.
+type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>;
+
+/// Does NOT run its own TCP listener. Instead, it implements
+/// `jyc_inspect::server::WebsocketHandler` and is registered with the inspect
+/// server, which shares the same port for both JSON queries and WebSocket
+/// upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
-    bind: String,
     patterns: Vec<ChannelPattern>,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.
     broadcast_tx: broadcast::Sender<String>,
+    /// Message callback — set during `start()`, used by the WebSocket handler.
+    on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
 }
 
 impl WebsocketInboundAdapter {
     /// Create a new websocket inbound adapter.
     pub fn new(
         channel_name: String,
-        bind: String,
         patterns: Vec<ChannelPattern>,
         broadcast_tx: broadcast::Sender<String>,
     ) -> Self {
         Self {
             channel_name,
-            bind,
             patterns,
             broadcast_tx,
+            on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
+    async fn handle(
+        &self,
+        ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
+        addr: SocketAddr,
+    ) -> anyhow::Result<()> {
+        let pattern_names: Vec<String> = self
+            .patterns
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.name.clone())
+            .collect();
+
+        let broadcast_rx = self.broadcast_tx.subscribe();
+        let channel_name = self.channel_name.clone();
+        let on_message = self.on_message.clone();
+
+        handle_connection_impl(
+            ws_stream,
+            addr,
+            channel_name,
+            pattern_names,
+            broadcast_rx,
+            on_message,
+        )
+        .await
     }
 }
 
@@ -135,88 +167,30 @@ impl ChannelMatcher for WebsocketInboundAdapter {
 
 #[async_trait]
 impl InboundAdapter for WebsocketInboundAdapter {
-    async fn start(&self, options: InboundAdapterOptions, cancel: CancellationToken) -> Result<()> {
-        let listener = TcpListener::bind(&self.bind)
-            .await
-            .with_context(|| format!("failed to bind WebSocket server to {}", self.bind))?;
-        tracing::info!(
-            channel = %self.channel_name,
-            bind = %self.bind,
-            "WebSocket server listening"
-        );
-
-        let pattern_names: Vec<String> = self
-            .patterns
-            .iter()
-            .filter(|p| p.enabled)
-            .map(|p| p.name.clone())
-            .collect();
-
-        // Wrap on_message in Arc so it can be shared across connections
-        let on_message = std::sync::Arc::new(options.on_message);
-
-        loop {
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    let (stream, addr) = match accept_result {
-                        Ok(v) => v,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "WebSocket accept error");
-                            continue;
-                        }
-                    };
-
-                    let ws_stream = match accept_async(stream).await {
-                        Ok(ws) => ws,
-                        Err(e) => {
-                            tracing::warn!(error = %e, addr = %addr, "WebSocket handshake failed");
-                            continue;
-                        }
-                    };
-
-                    let broadcast_rx = self.broadcast_tx.subscribe();
-
-                    let channel_name = self.channel_name.clone();
-                    let pattern_names = pattern_names.clone();
-                    let on_message = on_message.clone();
-                    let cancel_conn = cancel.clone();
-
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(
-                            ws_stream,
-                            addr,
-                            channel_name,
-                            pattern_names,
-                            on_message,
-                            broadcast_rx,
-                            cancel_conn,
-                        )
-                        .await
-                        {
-                            tracing::warn!(error = %e, addr = %addr, "WebSocket connection error");
-                        }
-                    });
-                }
-                _ = cancel.cancelled() => {
-                    tracing::info!(channel = %self.channel_name, "WebSocket server shutting down");
-                    break;
-                }
-            }
-        }
-
+    async fn start(
+        &self,
+        options: InboundAdapterOptions,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        // Store the on_message callback so the WebsocketHandler can use it.
+        let mut guard = self.on_message.lock().await;
+        *guard = Some(options.on_message);
+        tracing::info!(channel = %self.channel_name, "WebSocket inbound adapter registered (no independent listener)");
         Ok(())
     }
 }
 
-async fn handle_connection(
-    ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+async fn handle_connection_impl<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
     addr: SocketAddr,
     channel_name: String,
     pattern_names: Vec<String>,
-    on_message: std::sync::Arc<Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>>,
     mut broadcast_rx: broadcast::Receiver<String>,
-    cancel: CancellationToken,
-) -> Result<()> {
+    on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
+{
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     tracing::info!(addr = %addr, channel = %channel_name, "WebSocket client connected");
@@ -291,8 +265,13 @@ async fn handle_connection(
                             matched_pattern: None,
                         };
 
-                        if let Err(e) = (on_message)(message) {
-                            tracing::error!(error = %e, "WebSocket on_message error");
+                        let guard = on_message.lock().await;
+                        if let Some(ref callback) = *guard {
+                            if let Err(e) = (callback)(message) {
+                                tracing::error!(error = %e, "WebSocket on_message error");
+                            }
+                        } else {
+                            tracing::warn!("WebSocket on_message callback not set — message dropped");
                         }
                     }
                 }
@@ -313,10 +292,6 @@ async fn handle_connection(
                         // Client is slow, just continue
                     }
                 }
-            }
-            _ = cancel.cancelled() => {
-                tracing::info!(addr = %addr, "Connection cancelled");
-                break;
             }
         }
     }

@@ -781,15 +781,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Channel: WebSocket ---
 #
-# Runs a WebSocket server inside `jyc monitor` for interactive
+# Runs a WebSocket handler on the inspect server port for interactive
 # terminal-based AI interaction via `jyc dashboard`. Press `c`
 # in the dashboard to open the chat pane.
+# Requires `inspect.enabled = true`.
 #
 # [channels.my_ws]
 # type = "websocket"
-#
-# [channels.my_ws.websocket]
-# bind = "127.0.0.1:9877"
 #
 # # Optional: override model for this channel
 # # model = "anthropic/claude-opus-4-6"

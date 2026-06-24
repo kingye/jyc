@@ -209,6 +209,7 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![],
+            websocket_handler: None,
         })
     }
 
@@ -335,6 +336,7 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![workspace_dir],
+            websocket_handler: None,
         });
 
         let cancel = CancellationToken::new();

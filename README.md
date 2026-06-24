@@ -194,7 +194,7 @@ jyc monitor            # Start the agent (main command)
                        #   --reset           Reset monitoring state before starting
 jyc dashboard          # Live TUI dashboard (connects via inspect server)
                        #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
-                       #   --ws-addr <ADDR>  WebSocket server address (default: 127.0.0.1:9877)
+                       #                     Also used for WebSocket chat on /ws
                        #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
 jyc config init        # Generate config template
 jyc config validate    # Validate config file

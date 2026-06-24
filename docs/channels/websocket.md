@@ -19,9 +19,6 @@ Unlike the old standalone `jyc local` command, the websocket channel is a first-
 [channels.my_ws]
 type = "websocket"
 
-[channels.my_ws.websocket]
-bind = "127.0.0.1:9877"
-
 # Optional: override model for this channel
 # model = "anthropic/claude-opus-4-6"
 # small_model = "deepseek/deepseek-v4-flash"
@@ -37,7 +34,6 @@ enabled = true
 | Field | Description |
 |-------|-------------|
 | `type` | Must be `"websocket"` |
-| `bind` | WebSocket server bind address (default: `"127.0.0.1:9877"`) |
 
 ### Optional Fields
 
@@ -46,6 +42,18 @@ enabled = true
 | `model` | Per-channel model override |
 | `small_model` | Per-channel small model override |
 | `patterns` | Pattern rules (first enabled pattern is the default) |
+
+### Prerequisites
+
+The websocket channel requires the inspect server to be enabled:
+
+```toml
+[inspect]
+enabled = true
+bind = "127.0.0.1:9876"
+```
+
+The WebSocket handler rides on the same port as the inspect server. Dashboard clients connect to `ws://<inspect_addr>/ws`.
 
 ## Usage
 
@@ -137,10 +145,16 @@ JSON envelope over WebSocket:
 ┌─────────────────────────────────────────────┐
 │  jyc monitor                                │
 │  ┌───────────────────────────────────────┐  │
+│  │  Inspect Server (dual-protocol)       │  │
+│  │  • TCP JSON for state queries         │  │
+│  │  • WebSocket upgrade on /ws           │  │
+│  │  • Hands WebSocket to handler         │  │
+│  └──────────┬────────────────────────────┘  │
+│             │                               │
+│  ┌──────────▼────────────────────────────┐  │
 │  │  WebSocket Inbound Adapter            │  │
-│  │  • TCP listener (tokio-tungstenite)   │  │
-│  │  • Accepts dashboard connections      │  │
 │  │  • Handles JSON protocol              │  │
+│  │  • Dispatches to MessageRouter        │  │
 │  └──────────┬────────────────────────────┘  │
 │             │                               │
 │  ┌──────────▼────────────────────────────┐  │
@@ -154,11 +168,12 @@ JSON envelope over WebSocket:
 │  └───────────────────────────────────────┘  │
 └─────────────────────────────────────────────┘
          ▲                               │
-         │ ws://127.0.0.1:9877/ws        │ broadcast
+         │ ws://127.0.0.1:9876/ws      │ broadcast
          │                               ▼
 ┌─────────────────────────────────────────────┐
 │  jyc dashboard                              │
-│  • Chat pane with WebSocket client          │
+│  • TCP JSON for state queries               │
+│  • WebSocket client for chat                │
 │  • Receives broadcast replies               │
 └─────────────────────────────────────────────┘
 ```
@@ -166,9 +181,9 @@ JSON envelope over WebSocket:
 ### Communication Flow
 
 ```
-Dashboard ──► WebSocket ──► InboundAdapter ──► MessageRouter ──► Agent
-                                                              │
-Dashboard ◄── WebSocket ◄── OutboundAdapter ◄─────────────────┘
+Dashboard ──► Inspect Server ──► WebSocket Handler ──► MessageRouter ──► Agent
+                                                                   │
+Dashboard ◄── WebSocket ◄────── OutboundAdapter ◄──────────────────┘
 ```
 
 All connected dashboard clients receive broadcast replies via `tokio::sync::broadcast`.

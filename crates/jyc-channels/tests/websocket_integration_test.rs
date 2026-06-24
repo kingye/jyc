@@ -1,28 +1,22 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use jyc_channels::websocket::{WebsocketInboundAdapter, WebsocketOutboundAdapter};
+use jyc_inspect::server::WebsocketHandler;
 use jyc_types::{
     ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage, MessageContent,
     OutboundAdapter,
 };
 
 #[tokio::test]
-async fn test_websocket_list_patterns_and_message() {
-    // Use port 0 to let OS assign a free port
-    let bind = "127.0.0.1:0".to_string();
-
-    // Get the actual bound address
-    let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
-    let actual_addr = listener.local_addr().unwrap();
-    drop(listener);
-
-    let bind = actual_addr.to_string();
+async fn test_websocket_adapter_start_and_handle() {
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
     let outbound = WebsocketOutboundAdapter::new(broadcast_tx.clone());
+
     let patterns = vec![
         ChannelPattern {
             name: "general".to_string(),
@@ -43,12 +37,12 @@ async fn test_websocket_list_patterns_and_message() {
             ..Default::default()
         },
     ];
-    let inbound = WebsocketInboundAdapter::new(
+
+    let inbound = Arc::new(WebsocketInboundAdapter::new(
         "test-ws".to_string(),
-        bind.clone(),
         patterns,
         outbound.broadcast_tx(),
-    );
+    ));
 
     // Capture incoming messages
     let (msg_tx, mut msg_rx) = tokio::sync::mpsc::unbounded_channel::<InboundMessage>();
@@ -66,18 +60,39 @@ async fn test_websocket_list_patterns_and_message() {
     };
 
     let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
 
-    // Start the inbound adapter
-    let adapter_handle = tokio::spawn(async move {
-        inbound.start(options, cancel_clone).await.unwrap();
+    // Start the inbound adapter (sets the on_message callback)
+    inbound.start(options, cancel.clone()).await.unwrap();
+
+    // Bind a local TCP listener to simulate the inspect server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Spawn a task that accepts a connection and hands it to the handler
+    let handler = inbound.clone();
+    let server_handle = tokio::spawn(async move {
+        let (mut stream, client_addr) = listener.accept().await.unwrap();
+
+        // Read the first byte to detect protocol (same logic as inspect server)
+        let mut first_byte = [0u8; 1];
+        let n = tokio::io::AsyncReadExt::read(&mut stream, &mut first_byte)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(first_byte[0], b'G');
+
+        // Prepend the byte back and perform WebSocket handshake
+        let stream = jyc_inspect::server::PrependStream::new(stream, first_byte[0]);
+        let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
+
+        handler.handle(ws_stream, client_addr).await.unwrap();
     });
 
     // Give the server a moment to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     // Connect test client
-    let url = format!("ws://{}/ws", bind);
+    let url = format!("ws://{}/ws", addr);
     let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
@@ -131,14 +146,13 @@ async fn test_websocket_list_patterns_and_message() {
     assert_eq!(received.content.text.as_ref().unwrap(), message_text);
     assert_eq!(received.sender, "user");
 
-    // Close connection and stop server
+    // Close connection
     let _ = write
         .send(tokio_tungstenite::tungstenite::Message::Close(None))
         .await;
-    cancel.cancel();
 
-    // Wait for server to shut down (with timeout)
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), adapter_handle).await;
+    // Wait for server to shut down
+    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), server_handle).await;
 }
 
 #[tokio::test]

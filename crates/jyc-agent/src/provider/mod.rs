@@ -23,6 +23,11 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// Such messages are invalid for replay — even if they have reasoning_content
 /// (DeepSeek) or other provider-specific fields.
 ///
+/// Also removes assistant messages whose `tool_calls` lack matching tool result
+/// messages (dangling tool_calls), along with all subsequent messages. API
+/// providers reject contexts where a tool_call_id does not have a corresponding
+/// tool/tool_result response.
+///
 /// IMPORTANT: `reasoning_content` on real assistant turns is preserved. DeepSeek
 /// reasoner models (with `thinking = enabled`) require that reasoning_content
 /// produced by the model be replayed back on subsequent requests; stripping it

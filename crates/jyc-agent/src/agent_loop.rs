@@ -854,6 +854,13 @@ const SSE_MAX_ATTEMPTS: u32 = 3;
 /// Length must be `SSE_MAX_ATTEMPTS - 1`.
 const SSE_RETRY_BACKOFF_MS: &[u64] = &[1000, 2000];
 
+/// Maximum gap (seconds) between SSE events before the stream is considered
+/// hung. The reqwest client-level timeout is 300s, but a hung stream where
+/// the server opened the connection but never sends data (or stops mid-stream)
+/// would block for the full 300s. This per-read timeout catches it in 120s
+/// and triggers a retry via the transient-error classifier.
+const SSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Issue one LLM call and collect its streaming response, retrying on
 /// transient SSE / network failures.
 ///
@@ -942,7 +949,17 @@ async fn collect_response(stream: crate::provider::EventStream) -> Result<Collec
 
     tokio::pin!(stream);
 
-    while let Some(event) = stream.next().await {
+    loop {
+        let event = match tokio::time::timeout(SSE_READ_TIMEOUT, stream.next()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "SSE stream timed out: no events for {}s",
+                    SSE_READ_TIMEOUT.as_secs()
+                ));
+            }
+        };
         match event? {
             StreamEvent::TextDelta(text) => {
                 response.text.push_str(&text);

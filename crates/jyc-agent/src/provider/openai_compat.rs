@@ -379,9 +379,10 @@ impl Provider for OpenAiCompatProvider {
 
                     match es.next().await {
                         Some(Ok(Event::Open)) => {
-                            // Connection succeeded; we no longer need diagnostic
-                            // capability. Drop the cloned data to free memory.
-                            diag = None;
+                            // Keep diag alive — mid-stream errors (body decode
+                            // failure, hung connection, TCP reset) still benefit
+                            // from a diagnostic POST to capture the server's
+                            // error body.
                             continue;
                         }
                         Some(Ok(Event::Message(msg))) => {

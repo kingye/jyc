@@ -155,10 +155,7 @@ impl Provider for AnthropicProvider {
                 loop {
                     match es.next().await {
                         Some(Ok(Event::Open)) => {
-                            // Connection succeeded; drop diag handle to free
-                            // the cloned body. Mid-stream errors past this
-                            // point can't be diagnosed by re-POSTing anyway.
-                            diag = None;
+                            // Keep diag alive for mid-stream error diagnosis.
                             continue;
                         }
                         Some(Ok(Event::Message(msg))) => {
@@ -371,7 +368,7 @@ impl Provider for AnthropicProvider {
                 loop {
                     match es.next().await {
                         Some(Ok(Event::Open)) => {
-                            diag = None;
+                            // Keep diag alive for mid-stream error diagnosis.
                             continue;
                         }
                         Some(Ok(Event::Message(msg))) => {

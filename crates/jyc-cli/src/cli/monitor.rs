@@ -19,6 +19,8 @@ use jyc_channels::gitee::inbound::GiteeMatcher;
 use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
+use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
+use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
 use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_channels::wecom::inbound::WecomInboundAdapter;
@@ -203,6 +205,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
+        // For websocket, we share the broadcast sender between inbound and outbound
+        let mut websocket_broadcast_tx: Option<tokio::sync::broadcast::Sender<String>> = None;
         let outbound: Arc<dyn OutboundAdapter> = match channel_type {
             "email" => {
                 let outbound_config = channel_config.outbound.as_ref().ok_or_else(|| {
@@ -317,6 +321,17 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_attachment_config,
                     footer_enabled,
                 ))
+            }
+            "websocket" => {
+                let _ws_config = channel_config
+                    .websocket
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_default();
+                let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
+                let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone());
+                websocket_broadcast_tx = Some(broadcast_tx);
+                Arc::new(adapter)
             }
             other => {
                 tracing::warn!(
@@ -910,7 +925,71 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                 tasks.push(task);
             }
-            _ => unreachable!(), // Already handled above with continue
+            "websocket" => {
+                let ws_config = channel_config
+                    .websocket
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_default();
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let broadcast_tx = websocket_broadcast_tx.clone().ok_or_else(|| {
+                    anyhow::anyhow!("channel '{channel_name}': websocket broadcast tx not initialized")
+                })?;
+                let channel_name_for_matcher = channel_name_owned.clone();
+
+                let task = tokio::spawn(async move {
+                    use jyc_types::InboundAdapter;
+
+                    let adapter = WebsocketInboundAdapter::new(
+                        channel_name_owned.clone(),
+                        ws_config.bind,
+                        patterns.clone(),
+                        broadcast_tx,
+                    );
+
+                    let thread_manager_clone = thread_manager.clone();
+                    let options = jyc_types::InboundAdapterOptions {
+                        on_message: Box::new(move |message| {
+                            let router = router_for_callback.clone();
+                            let patterns = patterns_for_callback.clone();
+                            let channel_name = channel_name_for_matcher.clone();
+
+                            tokio::spawn(async move {
+                                router.route(&WebsocketMatcher::new(channel_name), message, &patterns).await;
+                            });
+
+                            Ok(())
+                        }),
+                        on_thread_close: Some(Box::new(move |thread_name: String| {
+                            let tm = thread_manager_clone.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                            });
+                            Ok(())
+                        })),
+                        on_error: Box::new(|error| {
+                            tracing::error!(error = %error, "WebSocket inbound error");
+                        }),
+                        attachment_config: inbound_attachment_config.clone(),
+                    };
+
+                    if let Err(e) = adapter.start(options, cancel_child).await {
+                        tracing::error!(
+                            error = %e,
+                            "WebSocket inbound adapter error"
+                        );
+                    }
+
+                    // Shutdown thread manager for this channel
+                    tm.shutdown().await;
+                }.instrument(channel_span));
+
+                tasks.push(task);
+            }
+            _ => continue, // Gracefully skip unknown channel types
         }
     }
 

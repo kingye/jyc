@@ -1239,7 +1239,7 @@ mod retry_tests {
     async fn non_transient_errors_fail_immediately() {
         let provider = FlakyProvider {
             fail_count: 99,
-            fail_message: "server overload (HTTP 429 body: {\"error\": \"rate limit\"})"
+            fail_message: "invalid request (HTTP 400 body: {\"error\": \"bad payload\"})"
                 .to_string(),
             calls: AtomicUsize::new(0),
         };

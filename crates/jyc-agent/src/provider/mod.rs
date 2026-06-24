@@ -414,7 +414,8 @@ where
 /// error after issuing a one-shot diagnostic POST. The status code carried
 /// in that suffix is authoritative:
 ///
-/// - `4xx` / `5xx` → the request is structurally rejected (auth, quota,
+/// - `429` → rate-limit exceeded; resolves after the retry window. **Transient.**
+/// - Other `4xx` / `5xx` → the request is structurally rejected (auth, quota,
 ///   schema, model-not-supported). **Terminal.**
 /// - `2xx` → the diagnostic POST succeeded. The original SSE failure was
 ///   purely a transport-level glitch (stale connection in pool, NAT idle
@@ -451,6 +452,11 @@ pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
 
     // If the diagnostic POST captured a status code, trust it.
     if let Some(status) = extract_diag_status(&msg) {
+        if status == 429 {
+            // 429 Too Many Requests — rate-limit that resolves after
+            // the retry window. Retry with backoff.
+            return true;
+        }
         if (400..600).contains(&status) {
             // Structured rejection — retry won't help.
             return false;
@@ -566,6 +572,27 @@ mod classifier_tests {
         assert!(
             !is_transient_sse_error(&e),
             "diag-5xx is terminal — surface to user, retry policy is not the right hammer"
+        );
+    }
+
+    #[test]
+    fn diag_status_429_is_transient() {
+        // 429 Too Many Requests — rate-limit that resolves after
+        // the retry window. Retry with backoff.
+        let e = err("SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions) \
+             (HTTP 429 body: {\"error\":{\"message\":\"rate limit exceeded\"}})");
+        assert!(
+            is_transient_sse_error(&e),
+            "diag-429 is a rate-limit → transient"
+        );
+    }
+
+    #[test]
+    fn extract_diag_status_429() {
+        assert_eq!(
+            extract_diag_status("foo (HTTP 429 body: {\"error\": ...})"),
+            Some(429)
         );
     }
 

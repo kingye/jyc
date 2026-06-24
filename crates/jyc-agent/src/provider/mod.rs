@@ -466,6 +466,27 @@ mod classifier_tests {
     }
 
     #[test]
+    fn diag_status_429_is_transient() {
+        // 429 Too Many Requests — rate-limit that resolves after
+        // the retry window. Retry with backoff.
+        let e = err("SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions) \
+             (HTTP 429 body: {\"error\":{\"message\":\"rate limit exceeded\"}})");
+        assert!(
+            is_transient_sse_error(&e),
+            "diag-429 is a rate-limit → transient"
+        );
+    }
+
+    #[test]
+    fn extract_diag_status_429() {
+        assert_eq!(
+            extract_diag_status("foo (HTTP 429 body: {\"error\": ...})"),
+            Some(429)
+        );
+    }
+
+    #[test]
     fn decode_body_error_no_diag_is_transient() {
         // Pre-this-fix production case: reqwest body decoder glitched
         // mid-stream, diag wasn't issued (already past Event::Open).

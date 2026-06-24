@@ -402,9 +402,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.current_thread = Some(thread_name.to_string());
         ctx.outbounds = outbounds.clone();
 
+        let mut cancelled_during_tools = false;
+
         for tool_call in &response.tool_calls {
             if cancel.is_cancelled() {
                 tracing::info!("Cancelled during tool execution");
+                cancelled_during_tools = true;
                 break;
             }
 
@@ -484,6 +487,41 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &output.content,
                 output.is_error,
             ));
+        }
+
+        // If cancelled mid-tool-execution, the assistant message we just added
+        // to raw_context has tool_calls whose results were not all appended.
+        // This creates a dangling tool_call that the API rejects on the next
+        // run (400: "tool_call_ids did not have response messages"). Remove
+        // the last assistant message to prevent persisting corrupted context.
+        if cancelled_during_tools {
+            tracing::warn!(
+                "Cancelled during tool execution — removing dangling assistant message from raw_context"
+            );
+            // Find and remove the last assistant message with tool_calls.
+            // It was pushed at line ~349 and is followed only by the tool
+            // results that were completed before cancellation.
+            if let Some(pos) = raw_context.iter().rposition(|msg| {
+                msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                    && msg
+                        .get("tool_calls")
+                        .and_then(|t| t.as_array())
+                        .is_some_and(|a| !a.is_empty())
+            }) {
+                // Remove the assistant message and everything after it
+                // (partial tool results that reference the dangling call).
+                raw_context.truncate(pos);
+            }
+            // Also remove from internal history: the last assistant message
+            // with a ToolUse block and any subsequent tool results.
+            if let Some(pos) = history.iter().rposition(|m| {
+                m.role == Role::Assistant
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+            }) {
+                history.truncate(pos);
+            }
         }
 
         // Drain any images queued by tools (e.g. `read_image`) during this

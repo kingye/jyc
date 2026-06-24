@@ -26,23 +26,27 @@ mod filter_valid_messages {
     }
 
     #[test]
-    fn keeps_assistant_with_tool_calls() {
+    fn drops_assistant_with_tool_calls_missing_results() {
+        // Assistant tool_calls without matching tool results are dangling and
+        // cannot be replayed; they are dropped by filter_valid_messages.
         let messages = vec![json!({"role": "assistant", "content": null, "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
         ]})];
         let result = filter_valid_messages(&messages);
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
-    fn keeps_assistant_with_reasoning_and_tool_calls() {
+    fn drops_assistant_with_reasoning_and_tool_calls_missing_results() {
+        // reasoning_content is preserved on valid assistant turns, but a tool
+        // call with no matching result is still dangling and is dropped.
         let messages = vec![
             json!({"role": "assistant", "content": null, "reasoning_content": "thinking...", "tool_calls": [
                 {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
             ]}),
         ];
         let result = filter_valid_messages(&messages);
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
@@ -86,12 +90,14 @@ mod filter_valid_messages {
     }
 
     #[test]
-    fn keeps_anthropic_assistant_with_tool_use_block() {
+    fn drops_anthropic_assistant_with_tool_use_block_missing_results() {
+        // Anthropic tool_use blocks without matching tool_result blocks are
+        // dangling and are dropped.
         let messages = vec![json!({"role": "assistant", "content": [
             {"type": "tool_use", "id": "1", "name": "bash", "input": {}}
         ]})];
         let result = filter_valid_messages(&messages);
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 0);
     }
 
     #[test]

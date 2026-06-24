@@ -23,6 +23,11 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// Such messages are invalid for replay — even if they have reasoning_content
 /// (DeepSeek) or other provider-specific fields.
 ///
+/// Also removes assistant messages whose `tool_calls` lack matching tool result
+/// messages (dangling tool_calls), along with all subsequent messages. API
+/// providers reject contexts where a tool_call_id does not have a corresponding
+/// tool/tool_result response.
+///
 /// IMPORTANT: `reasoning_content` on real assistant turns is preserved. DeepSeek
 /// reasoner models (with `thinking = enabled`) require that reasoning_content
 /// produced by the model be replayed back on subsequent requests; stripping it
@@ -34,7 +39,7 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// - OpenAI: `"content": "text"` + `"tool_calls": [...]`
 /// - Anthropic: `"content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]`
 pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    raw_messages
+    let filtered: Vec<serde_json::Value> = raw_messages
         .iter()
         .filter(|m| {
             if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
@@ -68,7 +73,112 @@ pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_js
             has_string_content || has_array_content || has_tool_calls
         })
         .cloned()
-        .collect()
+        .collect();
+
+    repair_dangling_tool_calls(filtered)
+}
+
+/// Remove assistant messages whose `tool_calls` lack matching `tool` result
+/// messages, along with all subsequent messages that depend on them.
+///
+/// This repairs contexts corrupted by mid-execution cancellation or process
+/// crashes: the assistant message was persisted but not all tool results
+/// were appended, causing the API to reject the next request with
+/// `"tool_call_ids did not have response messages"`.
+///
+/// For both OpenAI (`tool_calls` array) and Anthropic (`content` with
+/// `tool_use` blocks) formats, extracts the tool call IDs and checks that
+/// each has a corresponding `role: "tool"` (OpenAI) or `tool_result`
+/// (Anthropic) message. If any are missing, the assistant message and
+/// everything after it is dropped — later messages may depend on the
+/// missing tool results and would create cascading errors.
+fn repair_dangling_tool_calls(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut result = Vec::with_capacity(messages.len());
+
+    for (i, msg) in messages.iter().enumerate() {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+
+        if role == "assistant" {
+            // Collect tool call IDs from this assistant message.
+            let tool_call_ids: Vec<String> = extract_tool_call_ids(msg);
+
+            if !tool_call_ids.is_empty() {
+                // Check that every tool_call_id has a matching tool result
+                // in the subsequent messages.
+                let remaining = &messages[i + 1..];
+                let all_responded = tool_call_ids.iter().all(|id| {
+                    remaining.iter().any(|m| {
+                        m.get("role").and_then(|r| r.as_str()) == Some("tool")
+                            && m.get("tool_call_id").and_then(|t| t.as_str()) == Some(id.as_str())
+                    }) || remaining.iter().any(|m| {
+                        // Anthropic format: tool_result block in a user message
+                        m.get("role").and_then(|r| r.as_str()) == Some("user")
+                            && m.get("content")
+                                .and_then(|c| c.as_array())
+                                .is_some_and(|blocks| {
+                                    blocks.iter().any(|b| {
+                                        b.get("type").and_then(|t| t.as_str())
+                                            == Some("tool_result")
+                                            && b.get("tool_use_id").and_then(|t| t.as_str())
+                                                == Some(id.as_str())
+                                    })
+                                })
+                    })
+                });
+
+                if !all_responded {
+                    let missing: Vec<&String> = tool_call_ids
+                        .iter()
+                        .filter(|id| {
+                            !remaining.iter().any(|m| {
+                                m.get("role").and_then(|r| r.as_str()) == Some("tool")
+                                    && m.get("tool_call_id").and_then(|t| t.as_str())
+                                        == Some(id.as_str())
+                            })
+                        })
+                        .collect();
+                    tracing::warn!(
+                        missing_ids = ?missing,
+                        "Dropping assistant message with dangling tool_calls and all subsequent messages"
+                    );
+                    // Drop this message and everything after it.
+                    break;
+                }
+            }
+        }
+
+        result.push(msg.clone());
+    }
+
+    result
+}
+
+/// Extract tool call IDs from an assistant message (both OpenAI and
+/// Anthropic formats).
+fn extract_tool_call_ids(msg: &serde_json::Value) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    // OpenAI format: tool_calls array
+    if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+        for tc in tool_calls {
+            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+
+    // Anthropic format: content array with tool_use blocks
+    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+        for block in content {
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                && let Some(id) = block.get("id").and_then(|i| i.as_str())
+            {
+                ids.push(id.to_string());
+            }
+        }
+    }
+
+    ids
 }
 
 /// Trait for LLM providers.
@@ -499,5 +609,140 @@ mod classifier_tests {
         assert_eq!(extract_diag_status("plain error"), None);
         assert_eq!(extract_diag_status("(HTTP "), None);
         assert_eq!(extract_diag_status("(HTTP abc body:)"), None);
+    }
+}
+
+#[cfg(test)]
+mod dangling_tool_call_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn openai_complete_context_not_modified() {
+        // Assistant with tool_calls + matching tool result → kept
+        let msgs = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(result.len(), 4, "complete context should be unchanged");
+    }
+
+    #[test]
+    fn openai_dangling_tool_call_dropped() {
+        // Assistant with tool_calls but NO matching tool result → dropped
+        // along with all subsequent messages
+        let msgs = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "working", "tool_calls": [{"id": "bash:57", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "assistant", "content": "this should also be dropped"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(
+            result.len(),
+            1,
+            "dangling assistant + subsequent should be dropped"
+        );
+        assert_eq!(result[0].get("role").and_then(|r| r.as_str()), Some("user"));
+    }
+
+    #[test]
+    fn openai_partial_tool_results_dropped() {
+        // Assistant with 2 tool_calls, only 1 tool result → dangling
+        let msgs = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                {"id": "call_2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+            // call_2 has no tool result
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(result.len(), 1, "partial results → assistant dropped");
+    }
+
+    #[test]
+    fn openai_all_tool_results_present_kept() {
+        // Assistant with 2 tool_calls, both have results → kept
+        let msgs = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                {"id": "call_2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+            json!({"role": "tool", "tool_call_id": "call_2", "content": "file content"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(result.len(), 5, "complete context should be unchanged");
+    }
+
+    #[test]
+    fn no_tool_calls_not_affected() {
+        // Regular assistant message (no tool_calls) → not affected
+        let msgs = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi there"}),
+            json!({"role": "user", "content": "bye"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn multiple_assistant_messages_only_dangling_dropped() {
+        // First assistant has complete tool results, second is dangling
+        let msgs = vec![
+            json!({"role": "user", "content": "task"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            // call_2 has no result
+            json!({"role": "assistant", "content": "should be dropped"}),
+        ];
+        let result = filter_valid_messages(&msgs);
+        assert_eq!(
+            result.len(),
+            3,
+            "first assistant kept, dangling + after dropped"
+        );
+        // Verify the first assistant is still there
+        assert!(result[1].get("tool_calls").is_some());
+        // Verify tool result is there
+        assert_eq!(
+            result[2].get("tool_call_id").and_then(|t| t.as_str()),
+            Some("call_1")
+        );
+    }
+
+    #[test]
+    fn extract_ids_openai_format() {
+        let msg = json!({"role": "assistant", "tool_calls": [
+            {"id": "call_a", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+            {"id": "call_b", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+        ]});
+        let ids = extract_tool_call_ids(&msg);
+        assert_eq!(ids, vec!["call_a", "call_b"]);
+    }
+
+    #[test]
+    fn extract_ids_anthropic_format() {
+        let msg = json!({"role": "assistant", "content": [
+            {"type": "text", "text": "thinking..."},
+            {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {}}
+        ]});
+        let ids = extract_tool_call_ids(&msg);
+        assert_eq!(ids, vec!["toolu_1"]);
+    }
+
+    #[test]
+    fn extract_ids_no_tool_calls() {
+        let msg = json!({"role": "assistant", "content": "just text"});
+        let ids = extract_tool_call_ids(&msg);
+        assert!(ids.is_empty());
     }
 }

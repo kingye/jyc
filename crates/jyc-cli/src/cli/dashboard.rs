@@ -275,6 +275,19 @@ impl App {
                 if let Some(tx) = &self.ws_tx {
                     let _ = tx.send(list_msg);
                 }
+
+                // Auto-re-subscribe to the previously selected thread, if any
+                if let Some(ref thread) = self.chat_thread {
+                    let subscribe_msg = serde_json::json!({
+                        "type": "subscribe",
+                        "thread": thread,
+                    })
+                    .to_string();
+                    if let Some(tx) = &self.ws_tx {
+                        let _ = tx.send(subscribe_msg);
+                    }
+                    self.set_status(format!("Reconnected to {thread}"));
+                }
             }
             WsEvent::Disconnected => {
                 self.set_status("WebSocket disconnected".to_string());

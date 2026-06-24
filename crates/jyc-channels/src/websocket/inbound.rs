@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::accept_async;
+use tokio_util::sync::CancellationToken;
 
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,

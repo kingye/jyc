@@ -75,9 +75,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         _message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        let thread = _original
-            .topic
-            .as_str();
+        let thread = _original.topic.as_str();
         self.broadcast_reply(thread, reply_text).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(text_len = reply_text.len(), message_id = %message_id, "WebSocket reply broadcast");

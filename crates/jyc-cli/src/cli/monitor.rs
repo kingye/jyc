@@ -934,7 +934,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let broadcast_tx = websocket_broadcast_tx.clone().ok_or_else(|| {
-                    anyhow::anyhow!("channel '{channel_name}': websocket broadcast tx not initialized")
+                    anyhow::anyhow!(
+                        "channel '{channel_name}': websocket broadcast tx not initialized"
+                    )
                 })?;
                 let channel_name_for_matcher = channel_name_owned.clone();
 

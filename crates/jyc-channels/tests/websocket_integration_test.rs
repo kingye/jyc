@@ -121,20 +121,14 @@ async fn test_websocket_list_patterns_and_message() {
         .unwrap();
 
     // Verify the message was routed
-    let received = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        msg_rx.recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(received.channel, "test-ws");
     assert_eq!(received.topic, "general");
-    assert_eq!(
-        received.content.text.as_ref().unwrap(),
-        message_text
-    );
+    assert_eq!(received.content.text.as_ref().unwrap(), message_text);
     assert_eq!(received.sender, "user");
 
     // Close connection and stop server
@@ -176,7 +170,13 @@ async fn test_websocket_broadcast_reply() {
 
     // Send reply should broadcast
     let result = outbound
-        .send_reply(&message, "AI reply", std::path::Path::new("/tmp"), "msg_001", None)
+        .send_reply(
+            &message,
+            "AI reply",
+            std::path::Path::new("/tmp"),
+            "msg_001",
+            None,
+        )
         .await;
     assert!(result.is_ok());
 

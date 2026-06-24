@@ -406,7 +406,7 @@ InboundMessage with image attachment
 
 Registered automatically when the provider has `supports_images() == true`. The model can call it mid-loop with either `path` or `url`.
 
-**Boundary checking**: `path` is validated against the working directory + configured attachment roots. `url` must be http/https.
+**Boundary checking**: `path` is validated against the working directory + configured read roots (`additional_read_roots`) + write roots (`additional_write_roots`, since write implies read). Roots are populated from per-pattern `access.read` and `access.write` config. `url` must be http/https.
 
 **Side-channel queue**: Images loaded mid-loop are pushed onto `ToolContext.pending_images`. The agent loop drains this queue after each tool batch and emits a synthetic user-role turn carrying the image blocks. This avoids embedding base64 in `tool_result` content (unsupported by most OpenAI-compat servers for `role: "tool"`).
 

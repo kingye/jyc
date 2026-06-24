@@ -26,7 +26,7 @@ Execute shell commands in the working directory.
 - `command` (string, required): The bash command to execute
 - `timeout` (integer, optional): Timeout in seconds (default: 120)
 
-**Security:** Best-effort path boundary check — scans for absolute-path tokens and verifies they are within `working_dir`. This is a heuristic, not a sandbox. Full isolation requires OS-level containment.
+**Security:** Best-effort path boundary check — scans for absolute-path tokens (outside quoted strings) and verifies they are within `working_dir` or configured read/write roots (`access.read` / `access.write`). This is a heuristic, not a sandbox. Full isolation requires OS-level containment.
 
 **Limits:** Output truncated at 128 KB.
 
@@ -46,7 +46,7 @@ Read a file or directory listing.
 - `offset` (integer, optional): Line number to start from, 1-indexed (default: 1)
 - `limit` (integer, optional): Maximum lines to read (default: 2000)
 
-**Security:** Path must be within `working_dir` or `additional_read_roots`. Symlink exemption supported for `repo_group` setups.
+**Security:** Path must be within `working_dir`, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for `repo_group` setups.
 
 **Example:**
 ```json
@@ -63,11 +63,7 @@ Create or overwrite a file. Creates parent directories as needed.
 - `file_path` (string, required): Path to the file
 - `content` (string, required): Content to write
 
-**Security:** Path must be within `working_dir`.
-
-**Example:**
-```json
-{"file_path": "src/lib.rs", "content": "pub fn hello() {}"}
+**Security:** Path must be within `working_dir` or configured write roots (`access.write`).
 ```
 
 ---
@@ -87,7 +83,7 @@ Perform exact string replacement in a file.
 - Fails if `old_string` matches multiple times and `replace_all` is false
 - Fails if `old_string == new_string`
 
-**Security:** Path must be within `working_dir`.
+**Security:** Path must be within `working_dir` or configured write roots (`access.write`).
 
 **Example:**
 ```json
@@ -338,16 +334,24 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 
 | Tool | Boundary Check | Notes |
 |------|---------------|-------|
-| `bash` | Best-effort absolute-path heuristic | Not a sandbox; OS-level isolation recommended for untrusted input |
-| `read` | `check_path_boundary()` working_dir + additional_read_roots | Symlink exemption for repo_group |
-| `write` | `check_path_boundary()` working_dir only | Creates parent dirs automatically |
-| `edit` | `check_path_boundary()` working_dir only | — |
+| `bash` | `check_write_boundary()` — scans unquoted absolute-path tokens | Not a sandbox; OS-level isolation recommended for untrusted input |
+| `read` | `check_path_boundary()` working_dir + read_roots + write_roots | Symlink exemption for repo_group |
+| `write` | `check_write_boundary()` working_dir + write_roots | Creates parent dirs automatically |
+| `edit` | `check_write_boundary()` working_dir + write_roots | — |
 | `glob` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
-| `read_image` | `check_path_boundary()` working_dir + additional_read_roots | URL mode requires http(s) |
+| `read_image` | `check_path_boundary()` working_dir + read_roots + write_roots | URL mode requires http(s) |
 | `jyc_reply_reply_message` | Attachment path validation | Must be within thread directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
+
+Read/write roots are configured per-pattern via the `access` sub-table:
+
+```toml
+[channels.xxx.patterns.access]
+read = ["~/.cargo/registry/src"]   # readable by all tools
+write = ["/tmp/jyc-builds"]         # writable + readable (write implies read)
+```
 
 ---
 

@@ -332,7 +332,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     channel_name.to_string(),
                     patterns.clone(),
                     broadcast_tx,
-                ));
+                ).with_workspace_dir(workspace_dir.clone()));
                 websocket_handlers.push(handler);
                 Arc::new(adapter)
             }

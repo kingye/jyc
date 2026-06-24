@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -90,6 +91,8 @@ pub struct WebsocketInboundAdapter {
     broadcast_tx: broadcast::Sender<String>,
     /// Message callback — set during `start()`, used by the WebSocket handler.
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
+    /// Workspace directory for the channel, used to locate thread directories.
+    workspace_dir: Option<PathBuf>,
 }
 
 impl WebsocketInboundAdapter {
@@ -104,7 +107,14 @@ impl WebsocketInboundAdapter {
             patterns,
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            workspace_dir: None,
         }
+    }
+
+    /// Set the workspace directory for this adapter.
+    pub fn with_workspace_dir(mut self, workspace_dir: PathBuf) -> Self {
+        self.workspace_dir = Some(workspace_dir);
+        self
     }
 
     /// Return the channel name for this adapter.
@@ -131,6 +141,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let broadcast_rx = self.broadcast_tx.subscribe();
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
+        let workspace_dir = self.workspace_dir.clone();
 
         handle_connection_impl(
             ws_stream,
@@ -139,6 +150,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             pattern_names,
             broadcast_rx,
             on_message,
+            workspace_dir,
         )
         .await
     }
@@ -193,6 +205,7 @@ async fn handle_connection_impl<S>(
     pattern_names: Vec<String>,
     mut broadcast_rx: broadcast::Receiver<String>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
+    workspace_dir: Option<PathBuf>,
 ) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,

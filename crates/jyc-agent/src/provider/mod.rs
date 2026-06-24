@@ -375,7 +375,14 @@ where
         .header("content-type", "application/json")
         .json(body);
     let req = apply_auth(req);
-    let resp = req.send().await.ok()?;
+    // Short, explicit timeout — this is a best-effort diagnostic POST on an
+    // already-broken connection. The client-level timeout is 300s, which would
+    // stall the thread for 5 minutes if the upstream hangs.
+    let resp = req
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
     let status = resp.status().as_u16();
     let text = resp
         .text()

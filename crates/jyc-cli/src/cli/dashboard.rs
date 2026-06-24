@@ -1201,8 +1201,8 @@ fn render_activity_log_inner(
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
-            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/c]close",
-            ChatPhase::Chatting => "[Tab]focus [PgUp/PgDn]scroll [Ctrl+D]send [Esc/p]back [c]close",
+            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
+            ChatPhase::Chatting => "[Tab]focus [↑↓]scroll [Enter]send [Esc]back [Ctrl+Q]close",
         }
     } else {
         "[q]quit [↑↓]select [r]refresh [R]reload [s]reset [c]chat"

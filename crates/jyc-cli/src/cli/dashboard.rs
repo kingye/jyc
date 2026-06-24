@@ -206,6 +206,17 @@ impl App {
         if let Some(tx) = &self.ws_tx {
             let _ = tx.send(subscribe_msg);
         }
+
+        // Request recent activity history
+        if let Some(tx) = &self.ws_tx {
+            let history_msg = serde_json::json!({
+                "type": "get_history",
+                "thread": self.chat_thread.as_deref().unwrap_or(""),
+                "limit": 100,
+            })
+            .to_string();
+            let _ = tx.send(history_msg);
+        }
     }
 
     fn go_to_pattern_select(&mut self) {
@@ -330,6 +341,19 @@ impl App {
                         });
                         self.chat_scroll = 0;
                     }
+                }
+            }
+            Some("history") => {
+                if let Some(entries) = parsed.get("entries").and_then(|v| v.as_array()) {
+                    for entry in entries {
+                        if let Some(text) = entry.get("text").and_then(|v| v.as_str()) {
+                            self.chat_messages.push(ChatMessage {
+                                sender: "activity".to_string(),
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                    self.chat_scroll = 0;
                 }
             }
             _ => {}
@@ -1039,15 +1063,19 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     // Show messages
     for msg in &app.chat_messages {
-        let prefix = if msg.sender == "user" {
-            "You: "
-        } else {
-            "AI: "
-        };
-        let style = if msg.sender == "user" {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::Green)
+        let (prefix, style) = match msg.sender.as_str() {
+            "user" => (
+                "You: ",
+                Style::default().fg(Color::Cyan),
+            ),
+            "ai" => (
+                "AI: ",
+                Style::default().fg(Color::Green),
+            ),
+            _ => (
+                "● ",
+                Style::default().fg(Color::DarkGray),
+            ),
         };
         lines.push(Line::from(vec![
             Span::styled(prefix, style.add_modifier(Modifier::BOLD)),

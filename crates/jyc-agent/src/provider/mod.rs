@@ -370,10 +370,18 @@ pub async fn fetch_error_body<F>(
 where
     F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
 {
+    // Force stream=false so the server returns a one-shot JSON error
+    // response instead of an infinite SSE stream. Without this,
+    // resp.text() hangs reading the stream until timeout, and the
+    // diagnostic body is never captured.
+    let mut body = body.clone();
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
+    }
     let req = client
         .post(url)
         .header("content-type", "application/json")
-        .json(body);
+        .json(&body);
     let req = apply_auth(req);
     // Short, explicit timeout — this is a best-effort diagnostic POST on an
     // already-broken connection. The client-level timeout is 300s, which would

@@ -107,6 +107,7 @@ mod integration_tests {
             prior_raw_context: Vec::new(),
             max_iterations: None,
             additional_read_roots: Vec::new(),
+            additional_write_roots: Vec::new(),
             pattern_inject_images: false,
             outbound: None,
             thread_managers: None,

@@ -495,17 +495,26 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
 }
 
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
+    // Ctrl+Q is handled at the top level since it applies in both phases
+    let is_ctrl_q = key.code == KeyCode::Char('q')
+        && key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if is_ctrl_q {
+        app.close_chat();
+        return;
+    }
+
     match app.chat_phase {
         ChatPhase::PatternSelect => match key.code {
-            KeyCode::Char('c') | KeyCode::Esc => {
+            KeyCode::Esc => {
                 app.close_chat();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 if app.chat_pattern_selected > 0 {
                     app.chat_pattern_selected -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if app.chat_pattern_selected + 1 < app.chat_patterns.len() {
                     app.chat_pattern_selected += 1;
                 }
@@ -519,26 +528,22 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
             _ => {}
         },
         ChatPhase::Chatting => match key.code {
-            KeyCode::Char('c') if key.modifiers.is_empty() => {
-                app.close_chat();
+            KeyCode::Enter if !app.chat_input.trim().is_empty()
+                && app.chat_focus == ChatFocus::ChatPane =>
+            {
+                app.send_chat_message();
             }
             KeyCode::Esc => {
-                app.go_to_pattern_select();
-            }
-            KeyCode::Char('p') if key.modifiers.is_empty() => {
                 app.go_to_pattern_select();
             }
             KeyCode::Tab => {
                 app.toggle_focus();
             }
-            KeyCode::PageUp => {
+            KeyCode::Up => {
                 app.scroll_up();
             }
-            KeyCode::PageDown => {
+            KeyCode::Down => {
                 app.scroll_down();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.send_chat_message();
             }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {

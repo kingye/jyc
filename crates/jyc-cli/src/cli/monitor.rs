@@ -1060,10 +1060,23 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             config_path: Some(config_path.clone()),
             config: Some(config.clone()),
             workspace_dirs: all_workspace_dirs.clone(),
-            websocket_handler: websocket_handlers
-                .into_iter()
-                .next()
-                .map(|h| h as Arc<dyn jyc_inspect::server::WebsocketHandler>),
+            websocket_handlers: {
+                let handlers: HashMap<String, Arc<dyn jyc_inspect::server::WebsocketHandler>> =
+                    websocket_handlers
+                        .into_iter()
+                        .map(|h| {
+                            (
+                                h.channel_name().to_string(),
+                                h as Arc<dyn jyc_inspect::server::WebsocketHandler>,
+                            )
+                        })
+                        .collect();
+                if handlers.is_empty() {
+                    None
+                } else {
+                    Some(handlers)
+                }
+            },
         });
 
         // Start activity tracker (subscribes to thread event buses)

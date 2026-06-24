@@ -82,7 +82,7 @@ async fn test_websocket_adapter_start_and_handle() {
         assert_eq!(first_byte[0], b'G');
 
         // Prepend the byte back and perform WebSocket handshake
-        let stream = jyc_inspect::server::PrependStream::new(stream, first_byte[0]);
+        let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
         let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
 
         handler.handle(ws_stream, client_addr).await.unwrap();

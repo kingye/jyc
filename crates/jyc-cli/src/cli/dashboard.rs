@@ -11,7 +11,7 @@ use ratatui::{
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::io::stdout;
 use std::time::Duration;
@@ -324,7 +324,8 @@ impl App {
     }
 }
 
-/// Runs a WebSocket client in a background task.
+/// Runs a WebSocket client in a background task with auto-reconnect.
+/// Exponential backoff from 1s to 30s max.
 async fn ws_client_task(
     url: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -332,53 +333,86 @@ async fn ws_client_task(
 ) {
     use futures_util::{SinkExt, StreamExt};
 
-    let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = event_tx.send(WsEvent::Error(format!("Connect failed: {e}")));
-            return;
-        }
-    };
+    let mut backoff = 1u64; // seconds
 
-    let _ = event_tx.send(WsEvent::Connected);
-
-    let (mut write, mut read) = ws_stream.split();
-
-    loop {
-        tokio::select! {
-            msg = read.next() => {
-                match msg {
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                        let _ = event_tx.send(WsEvent::Message(text));
-                    }
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
-                        let _ = event_tx.send(WsEvent::Disconnected);
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        let _ = event_tx.send(WsEvent::Error(format!("Read error: {e}")));
-                        break;
-                    }
-                    None => {
-                        let _ = event_tx.send(WsEvent::Disconnected);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(text) => {
-                        if let Err(e) = write.send(
-                            tokio_tungstenite::tungstenite::Message::Text(text)
-                        ).await {
-                            let _ = event_tx.send(WsEvent::Error(format!("Send error: {e}")));
-                            break;
+    'reconnect: loop {
+        // Attempt connection
+        let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = event_tx.send(WsEvent::Error(format!("Connect failed: {e}")));
+                // Wait for backoff before retrying, but check for clean shutdown
+                let delay = std::cmp::min(backoff, 30);
+                backoff = std::cmp::min(backoff * 2, 30);
+                let sleep = tokio::time::sleep(tokio::time::Duration::from_secs(delay));
+                tokio::pin!(sleep);
+                loop {
+                    tokio::select! {
+                        _ = &mut sleep => break,
+                        cmd = cmd_rx.recv() => {
+                            // Clean shutdown requested (user closed chat)
+                            if cmd.is_none() {
+                                break 'reconnect;
+                            }
                         }
                     }
-                    None => break,
+                }
+                continue 'reconnect;
+            }
+        };
+
+        // Reset backoff on successful connection
+        backoff = 1;
+        let _ = event_tx.send(WsEvent::Connected);
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Main message loop
+        let connection_lost = loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                            let _ = event_tx.send(WsEvent::Message(text));
+                        }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
+                            break true;
+                        }
+                        Some(Err(e)) => {
+                            let _ = event_tx.send(WsEvent::Error(format!("Read error: {e}")));
+                            break true;
+                        }
+                        None => {
+                            break true;
+                        }
+                        _ => {}
+                    }
+                }
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(text) => {
+                            if let Err(e) = write.send(
+                                tokio_tungstenite::tungstenite::Message::Text(text)
+                            ).await {
+                                let _ = event_tx.send(WsEvent::Error(format!("Send error: {e}")));
+                                break true;
+                            }
+                        }
+                        None => break false, // Clean shutdown — cmd channel closed
+                    }
                 }
             }
+        };
+
+        if connection_lost {
+            let _ = event_tx.send(WsEvent::Disconnected);
+            // Backoff before reconnecting
+            let delay = std::cmp::min(backoff, 30);
+            backoff = std::cmp::min(backoff * 2, 30);
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            // Continue reconnection loop
+        } else {
+            break; // Clean shutdown
         }
     }
 }
@@ -971,7 +1005,7 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
 }
 
@@ -1023,7 +1057,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let skip = (lines.len() + app.chat_scroll).saturating_sub(inner_height);
     let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
 
-    let paragraph = Paragraph::new(visible_lines);
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
 }
 

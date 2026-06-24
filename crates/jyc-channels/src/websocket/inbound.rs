@@ -106,6 +106,12 @@ impl WebsocketInboundAdapter {
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
+
+    /// Return the channel name for this adapter.
+    /// Used by the inspect server for path-based handler routing.
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
 }
 
 #[async_trait::async_trait]

@@ -66,8 +66,10 @@ pub struct InspectContext {
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
     /// Per-channel workspace directories (parallel to channels)
     pub workspace_dirs: Vec<PathBuf>,
-    /// Optional WebSocket handler for dashboard chat connections.
-    pub websocket_handler: Option<Arc<dyn WebsocketHandler>>,
+    /// WebSocket handlers keyed by channel name.
+    /// `GET /ws/my_channel` routes to `handlers["my_channel"]`.
+    /// `GET /ws` (no channel) routes to the first available handler.
+    pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
 }
 
 /// TCP-based inspect server.
@@ -131,32 +133,45 @@ impl InspectServer {
     }
 
     async fn handle_client(
-        mut stream: tokio::net::TcpStream,
+        stream: tokio::net::TcpStream,
         context: Arc<InspectContext>,
         addr: std::net::SocketAddr,
     ) -> anyhow::Result<()> {
-        // Detect protocol by reading the first byte.
-        // 'G' => HTTP GET (WebSocket upgrade); '{' => JSON inspect protocol.
-        let mut first_byte = [0u8; 1];
-        let n = tokio::io::AsyncReadExt::read(&mut stream, &mut first_byte).await?;
-        if n == 0 {
+        // Read the first line to detect protocol and extract path.
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut first_line = String::new();
+        let bytes_read = reader.read_line(&mut first_line).await?;
+        if bytes_read == 0 {
             return Ok(()); // Client disconnected immediately
         }
 
-        if first_byte[0] == b'G' {
-            // HTTP request — likely WebSocket upgrade
-            if let Some(ref handler) = context.websocket_handler {
-                let stream = PrependStream::new(stream, first_byte[0]);
-                let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+        // Get the remaining buffered data (if any) before we inspect the stream
+        let remaining = reader.buffer().to_vec();
+        let stream = reader.into_inner();
+
+        // Reconstruct the full buffer: first_line + remaining
+        let mut prepend_bytes = first_line.into_bytes();
+        prepend_bytes.extend(remaining);
+
+        if prepend_bytes.first() == Some(&b'G') {
+            // HTTP request — extract WebSocket path for multi-channel routing
+            let request_str = String::from_utf8_lossy(&prepend_bytes);
+            let first_line = request_str.lines().next().unwrap_or("");
+            let path = Self::extract_ws_path(first_line);
+            let handler = Self::resolve_ws_handler(&context, path);
+
+            if let Some(handler) = handler {
+                let prepend_stream = PrependStream::new(stream, prepend_bytes);
+                let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
                 handler.handle(ws_stream, addr).await?;
             }
             return Ok(());
         }
 
-        // JSON inspect protocol — prepend the byte back and continue as before
-        let stream = PrependStream::new(stream, first_byte[0]);
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
+        // JSON inspect protocol
+        let prepend_stream = PrependStream::new(stream, prepend_bytes);
+        let (reader_half, mut writer) = prepend_stream.into_split();
+        let mut reader = BufReader::new(reader_half);
         let mut line = String::new();
 
         loop {
@@ -185,6 +200,32 @@ impl InspectServer {
         }
 
         Ok(())
+    }
+
+    /// Extract the WebSocket path from an HTTP GET request line.
+    /// e.g. "GET /ws/my_channel HTTP/1.1" → Some("my_channel")
+    ///      "GET /ws HTTP/1.1" → None (fallback to first handler)
+    fn extract_ws_path(request_line: &str) -> Option<String> {
+        let path = request_line.split_whitespace().nth(1)?;
+        if path == "/ws" {
+            return None; // No specific channel — fallback to first handler
+        }
+        // Extract channel name from /ws/{channel_name}
+        path.strip_prefix("/ws/")
+            .map(|s| s.split('/').next().unwrap_or(s).to_string())
+    }
+
+    /// Resolve a websocket handler by path.
+    /// If path is None (bare /ws), returns the first available handler.
+    fn resolve_ws_handler(
+        context: &InspectContext,
+        path: Option<String>,
+    ) -> Option<&Arc<dyn WebsocketHandler>> {
+        let handlers = context.websocket_handlers.as_ref()?;
+        match path {
+            Some(name) => handlers.get(&name),
+            None => handlers.values().next(),
+        }
     }
 
     async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
@@ -527,19 +568,21 @@ impl ActivityTracker {
     }
 }
 
-/// A wrapper around `tokio::net::TcpStream` that prepends a single byte
-/// to the beginning of the read stream. Used to "put back" the first byte
-/// after protocol detection.
+/// A wrapper around `tokio::net::TcpStream` that prepends buffered bytes
+/// to the beginning of the read stream. Used to "put back" the first bytes
+/// after protocol detection and path extraction.
 pub struct PrependStream {
     inner: tokio::net::TcpStream,
-    prepend: Option<u8>,
+    prepend: Vec<u8>,
+    prepend_pos: usize,
 }
 
 impl PrependStream {
-    pub fn new(inner: tokio::net::TcpStream, byte: u8) -> Self {
+    pub fn new(inner: tokio::net::TcpStream, bytes: Vec<u8>) -> Self {
         Self {
             inner,
-            prepend: Some(byte),
+            prepend: bytes,
+            prepend_pos: 0,
         }
     }
 
@@ -549,6 +592,7 @@ impl PrependStream {
             PrependReadHalf {
                 inner: read,
                 prepend: self.prepend,
+                prepend_pos: self.prepend_pos,
             },
             write,
         )
@@ -561,10 +605,13 @@ impl tokio::io::AsyncRead for PrependStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        if let Some(byte) = self.prepend.take()
-            && buf.remaining() > 0
-        {
-            buf.put_slice(&[byte]);
+        // Serve prepended bytes first
+        if self.prepend_pos < self.prepend.len() {
+            let remaining = &self.prepend[self.prepend_pos..];
+            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
+            buf.put_slice(&remaining[..to_copy]);
+            self.prepend_pos += to_copy;
+            return std::task::Poll::Ready(Ok(()));
         }
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
@@ -596,7 +643,8 @@ impl tokio::io::AsyncWrite for PrependStream {
 
 struct PrependReadHalf {
     inner: tokio::net::tcp::OwnedReadHalf,
-    prepend: Option<u8>,
+    prepend: Vec<u8>,
+    prepend_pos: usize,
 }
 
 impl tokio::io::AsyncRead for PrependReadHalf {
@@ -605,10 +653,12 @@ impl tokio::io::AsyncRead for PrependReadHalf {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        if let Some(byte) = self.prepend.take()
-            && buf.remaining() > 0
-        {
-            buf.put_slice(&[byte]);
+        if self.prepend_pos < self.prepend.len() {
+            let remaining = &self.prepend[self.prepend_pos..];
+            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
+            buf.put_slice(&remaining[..to_copy]);
+            self.prepend_pos += to_copy;
+            return std::task::Poll::Ready(Ok(()));
         }
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
@@ -737,7 +787,7 @@ mod tests {
             config_path: None,
             config: None,
             workspace_dirs: vec![],
-            websocket_handler: None,
+            websocket_handlers: None,
         })
     }
 
@@ -973,7 +1023,7 @@ mode = "agent"
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),
             workspace_dirs: vec![],
-            websocket_handler: None,
+            websocket_handlers: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1060,7 +1110,7 @@ mode = "agent"
             config_path: None,
             config: None,
             workspace_dirs: vec![workspace_dir],
-            websocket_handler: None,
+            websocket_handlers: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1155,7 +1205,7 @@ mode = "agent"
             config_path: None,
             config: None,
             workspace_dirs: vec![workspace_dir],
-            websocket_handler: None,
+            websocket_handlers: None,
         });
 
         let cancel = CancellationToken::new();

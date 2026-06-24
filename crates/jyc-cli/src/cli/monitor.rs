@@ -323,11 +323,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 ))
             }
             "websocket" => {
-                let _ws_config = channel_config
-                    .websocket
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or_default();
                 let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
                 let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone());
                 websocket_broadcast_tx = Some(broadcast_tx);

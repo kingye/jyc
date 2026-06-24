@@ -52,12 +52,19 @@ All notable changes to JYC will be documented in this file.
   `job_create`, `job_delete`, `job_toggle`) let users manage jobs from any
   thread. Configurable max jobs per thread (default: 10). (#262, #263)
 
-- **Local TUI channel (`jyc local`).** New channel type that enables direct
-  terminal-based AI interaction via ratatui + crossterm. Run `jyc local --name
-  <channel>` to start an interactive chat session. Each instance is an
-  independent process with its own workspace and agent context, using an
-  mpsc-bridged `spawn_blocking` TUI (same pattern as WeCom Bot's WebSocket
-  bridge). Supports agent and static modes. (#271, #273)
+- **WebSocket channel with dashboard chat pane.** Replaces the standalone
+  `jyc local` command. The `websocket` channel type runs inside `jyc monitor`
+  and serves a WebSocket server for `jyc dashboard` clients. Press `c` in the
+  dashboard to open an interactive chat pane with pattern selection, real-time
+  messaging, and multi-client broadcast via `tokio::sync::broadcast`. (#284,
+  #285)
+
+### Removed
+
+- **Local TUI channel and `jyc local` CLI command.** The standalone `local`
+  channel and `jyc local` subcommand are removed entirely. Users should migrate
+  to the `websocket` channel type and use `jyc dashboard` for terminal-based
+  interaction. (#284, #285)
 
 ## [0.3.11] - 2026-06-21
 

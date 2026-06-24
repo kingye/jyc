@@ -85,8 +85,8 @@ pub struct WebsocketInboundAdapter {
     channel_name: String,
     bind: String,
     patterns: Vec<ChannelPattern>,
-    /// Broadcast receiver for outbound replies — each connection subscribes to this.
-    broadcast_rx: tokio::sync::Mutex<Option<broadcast::Receiver<String>>>,
+    /// Broadcast sender — cloned for each new connection via `subscribe()`.
+    broadcast_tx: broadcast::Sender<String>,
 }
 
 impl WebsocketInboundAdapter {
@@ -101,7 +101,7 @@ impl WebsocketInboundAdapter {
             channel_name,
             bind,
             patterns,
-            broadcast_rx: tokio::sync::Mutex::new(Some(broadcast_tx.subscribe())),
+            broadcast_tx,
         }
     }
 }
@@ -174,17 +174,7 @@ impl InboundAdapter for WebsocketInboundAdapter {
                         }
                     };
 
-                    let broadcast_rx = {
-                        let mut guard = self.broadcast_rx.lock().await;
-                        guard.take()
-                    };
-
-                    // If no receiver available, create a new one from a dummy sender
-                    let broadcast_rx = broadcast_rx.unwrap_or_else(|| {
-                        // This should not happen in normal operation, but handle gracefully
-                        let (tx, _rx) = broadcast::channel(1);
-                        tx.subscribe()
-                    });
+                    let broadcast_rx = self.broadcast_tx.subscribe();
 
                     let channel_name = self.channel_name.clone();
                     let pattern_names = pattern_names.clone();
@@ -228,7 +218,6 @@ async fn handle_connection(
     cancel: CancellationToken,
 ) -> Result<()> {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let mut _subscribed_thread: Option<String> = None;
 
     tracing::info!(addr = %addr, channel = %channel_name, "WebSocket client connected");
 
@@ -277,7 +266,6 @@ async fn handle_connection(
                         }
                     }
                     ClientMessage::Subscribe { thread } => {
-                        _subscribed_thread = Some(thread.clone());
                         tracing::info!(addr = %addr, thread = %thread, "Client subscribed to thread");
                     }
                     ClientMessage::Message { thread, text } => {

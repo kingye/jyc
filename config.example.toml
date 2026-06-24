@@ -778,3 +778,23 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "bot"]
+
+# --- Channel: Local TUI ---
+#
+# Starts an interactive terminal chat session with JYC.
+# Each `jyc local` instance is an independent process with its own
+# workspace and agent context. No server or external service required.
+#
+# Run: jyc local --name my_local
+#
+# [channels.my_local]
+# type = "local"
+#
+# # Optional: override model for this channel
+# # model = "anthropic/claude-opus-4-6"
+# # small_model = "deepseek/deepseek-v4-flash"
+#
+# # Define a catch-all pattern (local input always matches the first enabled pattern)
+# [[channels.my_local.patterns]]
+# name = "all"
+# enabled = true

@@ -304,7 +304,8 @@ where
 /// error after issuing a one-shot diagnostic POST. The status code carried
 /// in that suffix is authoritative:
 ///
-/// - `4xx` / `5xx` → the request is structurally rejected (auth, quota,
+/// - `429` → rate-limit exceeded; resolves after the retry window. **Transient.**
+/// - Other `4xx` / `5xx` → the request is structurally rejected (auth, quota,
 ///   schema, model-not-supported). **Terminal.**
 /// - `2xx` → the diagnostic POST succeeded. The original SSE failure was
 ///   purely a transport-level glitch (stale connection in pool, NAT idle
@@ -341,6 +342,11 @@ pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
 
     // If the diagnostic POST captured a status code, trust it.
     if let Some(status) = extract_diag_status(&msg) {
+        if status == 429 {
+            // 429 Too Many Requests — rate-limit that resolves after
+            // the retry window. Retry with backoff.
+            return true;
+        }
         if (400..600).contains(&status) {
             // Structured rejection — retry won't help.
             return false;

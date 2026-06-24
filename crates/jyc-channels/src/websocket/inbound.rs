@@ -82,7 +82,10 @@ enum ClientMessage {
     #[serde(rename = "message")]
     Message { thread: String, text: String },
     #[serde(rename = "get_history")]
-    GetHistory { thread: String, limit: Option<usize> },
+    GetHistory {
+        thread: String,
+        limit: Option<usize>,
+    },
 }
 
 /// WebSocket inbound adapter.

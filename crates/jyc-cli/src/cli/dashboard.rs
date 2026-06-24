@@ -520,8 +520,7 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
 
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
     // Ctrl+Q is handled at the top level since it applies in both phases
-    let is_ctrl_q = key.code == KeyCode::Char('q')
-        && key.modifiers.contains(KeyModifiers::CONTROL);
+    let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 
     if is_ctrl_q {
         app.close_chat();
@@ -552,8 +551,8 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
             _ => {}
         },
         ChatPhase::Chatting => match key.code {
-            KeyCode::Enter if !app.chat_input.trim().is_empty()
-                && app.chat_focus == ChatFocus::ChatPane =>
+            KeyCode::Enter
+                if !app.chat_input.trim().is_empty() && app.chat_focus == ChatFocus::ChatPane =>
             {
                 app.send_chat_message();
             }
@@ -1064,18 +1063,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     // Show messages
     for msg in &app.chat_messages {
         let (prefix, style) = match msg.sender.as_str() {
-            "user" => (
-                "You: ",
-                Style::default().fg(Color::Cyan),
-            ),
-            "ai" => (
-                "AI: ",
-                Style::default().fg(Color::Green),
-            ),
-            _ => (
-                "● ",
-                Style::default().fg(Color::DarkGray),
-            ),
+            "user" => ("You: ", Style::default().fg(Color::Cyan)),
+            "ai" => ("AI: ", Style::default().fg(Color::Green)),
+            _ => ("● ", Style::default().fg(Color::DarkGray)),
         };
         lines.push(Line::from(vec![
             Span::styled(prefix, style.add_modifier(Modifier::BOLD)),

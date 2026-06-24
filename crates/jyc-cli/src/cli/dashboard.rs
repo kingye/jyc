@@ -678,10 +678,9 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Channels bar
-            Constraint::Percentage(35), // Threads table
-            Constraint::Min(0),         // Bottom section (compact info + chat + activity)
-            Constraint::Length(1),      // Status bar
+            Constraint::Length(3), // Channels bar
+            Constraint::Min(0),    // Bottom section (compact info + chat + activity)
+            Constraint::Length(1), // Status bar
         ])
         .split(area);
 
@@ -692,10 +691,9 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Percentage(50), // Chat / Pattern select
             Constraint::Percentage(50), // Activity log
         ])
-        .split(main_chunks[2]);
+        .split(main_chunks[1]);
 
     render_channels(frame, main_chunks[0], app);
-    render_threads(frame, main_chunks[1], app);
     render_compact_info(frame, bottom_chunks[0], app);
 
     if app.chat_phase == ChatPhase::PatternSelect {
@@ -705,7 +703,7 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     render_activity_log(frame, bottom_chunks[2], app);
-    render_status_bar(frame, main_chunks[3], app);
+    render_status_bar(frame, main_chunks[2], app);
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {

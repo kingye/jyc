@@ -1702,6 +1702,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "futures-util",
  "jyc-agent",
  "jyc-channels",
  "jyc-core",
@@ -1715,10 +1716,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

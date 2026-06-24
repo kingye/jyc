@@ -129,6 +129,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut cycle_count: usize = 0;
     let mut total_iterations: usize = 0;
 
+    // Guardrail: some providers (e.g., GLM-5.2 via Ark) intermittently
+    // generate tool calls with empty arguments, causing every tool to fail
+    // with "Missing parameter". The model does not self-correct, leading to
+    // an infinite loop. Track consecutive iterations where ALL tool calls
+    // had empty arguments; abort after the threshold to avoid wasting tokens.
+    const MAX_EMPTY_TOOL_CALL_ITERATIONS: u32 = 3;
+    let mut consecutive_empty_tool_iterations: u32 = 0;
+
     // Publish ProcessingStarted
     publish_event(
         event_bus,
@@ -347,6 +355,29 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 history,
                 raw_context,
             });
+        }
+
+        // 5b. Guardrail: detect models that repeatedly generate tool calls
+        //     with empty arguments. If ALL tool calls in this iteration have
+        //     empty arguments (empty string or "{}"), increment a counter.
+        //     After MAX_EMPTY_TOOL_CALL_ITERATIONS consecutive occurrences,
+        //     abort the loop to avoid wasting tokens.
+        if all_tool_calls_empty(&response.tool_calls) {
+            consecutive_empty_tool_iterations += 1;
+            if consecutive_empty_tool_iterations >= MAX_EMPTY_TOOL_CALL_ITERATIONS {
+                tracing::warn!(
+                    consecutive = consecutive_empty_tool_iterations,
+                    "Model repeatedly generated tool calls with empty arguments, aborting loop"
+                );
+                anyhow::bail!(
+                    "model generated tool calls with empty arguments for {} consecutive \
+                     iterations — this usually indicates the provider does not support \
+                     function calling correctly",
+                    consecutive_empty_tool_iterations
+                );
+            }
+        } else {
+            consecutive_empty_tool_iterations = 0;
         }
 
         // 6. Execute tool calls
@@ -712,6 +743,16 @@ struct ToolCall {
     arguments: String,
 }
 
+/// Check if all tool calls have empty arguments (empty string, whitespace-only,
+/// or `{}`). Used by the guardrail to detect models that generate tool calls
+/// without proper arguments. Returns `false` for an empty slice.
+fn all_tool_calls_empty(tool_calls: &[ToolCall]) -> bool {
+    !tool_calls.is_empty()
+        && tool_calls
+            .iter()
+            .all(|tc| tc.arguments.trim().is_empty() || tc.arguments.trim() == "{}")
+}
+
 /// Collected response from streaming.
 #[derive(Debug, Default)]
 struct CollectedResponse {
@@ -866,9 +907,21 @@ async fn collect_response(stream: crate::provider::EventStream) -> Result<Collec
                 response.reasoning_content.push_str(&text);
             }
             StreamEvent::ToolUseStart { id, name } => {
+                // Flush previous tool call if one is in progress.
+                // This handles providers that send multiple tool calls in a
+                // single response — the next ToolUseStart arrives before the
+                // previous ToolUseEnd, so we must save the previous call now.
+                if let (Some(prev_id), Some(prev_name)) =
+                    (current_tool_id.take(), current_tool_name.take())
+                {
+                    response.tool_calls.push(ToolCall {
+                        id: prev_id,
+                        name: prev_name,
+                        arguments: std::mem::take(&mut current_tool_args),
+                    });
+                }
                 current_tool_id = Some(id);
                 current_tool_name = Some(name);
-                current_tool_args.clear();
             }
             StreamEvent::ToolInputDelta(delta) => {
                 current_tool_args.push_str(&delta);
@@ -1225,5 +1278,53 @@ mod retry_tests {
             vec![Some(2), Some(3)],
             "expected retry events for attempts 2 and 3"
         );
+    }
+}
+
+#[cfg(test)]
+mod guardrail_tests {
+    use super::*;
+
+    fn tc(id: &str, name: &str, args: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: args.to_string(),
+        }
+    }
+
+    #[test]
+    fn empty_string_args_detected() {
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "")]));
+    }
+
+    #[test]
+    fn empty_object_args_detected() {
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "{}")]));
+    }
+
+    #[test]
+    fn whitespace_only_args_detected() {
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "  ")]));
+    }
+
+    #[test]
+    fn non_empty_args_not_detected() {
+        assert!(!all_tool_calls_empty(&[tc(
+            "1",
+            "bash",
+            r#"{"command":"ls"}"#
+        )]));
+    }
+
+    #[test]
+    fn mixed_args_not_all_empty() {
+        let calls = [tc("1", "bash", ""), tc("2", "read", r#"{"file_path":"x"}"#)];
+        assert!(!all_tool_calls_empty(&calls));
+    }
+
+    #[test]
+    fn empty_slice_not_detected() {
+        assert!(!all_tool_calls_empty(&[]));
     }
 }

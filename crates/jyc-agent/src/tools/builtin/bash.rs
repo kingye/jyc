@@ -73,18 +73,19 @@ impl Tool for BashTool {
         // Best-effort boundary check: scan for absolute-path tokens and
         // verify each is within the working directory. This catches obvious
         // escape attempts (cat /etc/passwd) without fully sandboxing bash.
-        for token in command.split_whitespace() {
-            if token.starts_with('/') {
-                let candidate = std::path::Path::new(token);
-                // Only check tokens that start with `/` and correspond to
-                // existing filesystem paths. This catches obvious escape
-                // attempts (e.g. `cat /etc/passwd`) while allowing flags
-                // like `-C` and commands that shell out to relative paths.
-                if candidate.exists()
-                    && let Err(msg) = ctx.check_path_boundary(token, candidate)
-                {
-                    return Ok(ToolOutput::error(msg));
-                }
+        //
+        // Only tokens OUTSIDE of quoted strings are checked. This avoids
+        // false positives on path-like substrings inside data arguments
+        // (e.g., `//` in a markdown comment passed via `--body "..."`).
+        for token in unquoted_path_tokens(command) {
+            let candidate = std::path::Path::new(&token);
+            // Only check tokens that correspond to existing filesystem
+            // paths. This catches obvious escape attempts (e.g.
+            // `cat /etc/passwd`) while allowing flags like `-C`.
+            if candidate.exists()
+                && let Err(msg) = ctx.check_path_boundary(&token, candidate)
+            {
+                return Ok(ToolOutput::error(msg));
             }
         }
 
@@ -149,5 +150,169 @@ impl Tool for BashTool {
                 timeout_secs
             ))),
         }
+    }
+}
+
+/// Extract absolute-path tokens (starting with `/`) from the **unquoted**
+/// portions of a bash command string.
+///
+/// Bash quoting rules handled:
+/// - Single quotes `'...'`: everything inside is literal; the closing `'`
+///   is the next `'` character.
+/// - Double quotes `"..."`: everything inside is literal except `\"`
+///   (escaped quote) which does not close the string.
+/// - Backslash outside quotes: escapes the next character (e.g., `\"`
+///   produces a literal `"` without opening a quoted region).
+///
+/// Tokens inside quotes are **skipped** to avoid false positives on
+/// path-like substrings in data arguments (e.g., `//` in a markdown
+/// comment passed via `--body "..."`).
+fn unquoted_path_tokens(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_single {
+            // Inside single quotes: only `'` ends the region.
+            if ch == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            // Inside double quotes: `\"` is an escaped quote, everything
+            // else (including `\`) is literal until the closing `"`.
+            if ch == '\\' {
+                chars.next(); // skip escaped char
+                continue;
+            }
+            if ch == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        // Outside quotes
+        match ch {
+            '\'' => {
+                // Flush current token before entering single-quote region
+                if !current.is_empty() {
+                    if current.starts_with('/') {
+                        tokens.push(std::mem::take(&mut current));
+                    } else {
+                        current.clear();
+                    }
+                }
+                in_single = true;
+            }
+            '"' => {
+                if !current.is_empty() {
+                    if current.starts_with('/') {
+                        tokens.push(std::mem::take(&mut current));
+                    } else {
+                        current.clear();
+                    }
+                }
+                in_double = true;
+            }
+            '\\' => {
+                // Escaped char outside quotes — skip next char
+                chars.next();
+            }
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    if current.starts_with('/') {
+                        tokens.push(std::mem::take(&mut current));
+                    } else {
+                        current.clear();
+                    }
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    // Flush trailing token
+    if !current.is_empty() && current.starts_with('/') {
+        tokens.push(current);
+    }
+    tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unquoted_absolute_path_detected() {
+        let tokens = unquoted_path_tokens("cat /etc/passwd");
+        assert_eq!(tokens, vec!["/etc/passwd"]);
+    }
+
+    #[test]
+    fn quoted_path_skipped() {
+        // Path inside double quotes should not be extracted
+        let tokens = unquoted_path_tokens(r#"echo "// comment""#);
+        assert!(tokens.is_empty(), "expected no tokens, got {:?}", tokens);
+    }
+
+    #[test]
+    fn single_quoted_path_skipped() {
+        let tokens = unquoted_path_tokens(r#"echo '// comment'"#);
+        assert!(tokens.is_empty(), "expected no tokens, got {:?}", tokens);
+    }
+
+    #[test]
+    fn markdown_body_with_double_slash_skipped() {
+        // Simulates: gh pr comment --body "Review\n\n### // comment\n..."
+        let cmd = r###"gh pr comment 273 --body "## Review\n\n### // comment\n\nDetails here.""###;
+        let tokens = unquoted_path_tokens(cmd);
+        assert!(
+            !tokens.contains(&"//".to_string()),
+            "double-slash inside quotes must not be extracted, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn unquoted_path_after_quoted_string_detected() {
+        let tokens = unquoted_path_tokens(r#"echo "hello" /etc/passwd"#);
+        assert_eq!(tokens, vec!["/etc/passwd"]);
+    }
+
+    #[test]
+    fn escaped_quote_outside_does_not_open_region() {
+        // `\"` outside quotes is a literal quote, not a string opener
+        let tokens = unquoted_path_tokens(r#"echo \"hello\" /tmp"#);
+        assert!(tokens.contains(&"/tmp".to_string()), "got {:?}", tokens);
+    }
+
+    #[test]
+    fn escaped_quote_inside_double_quotes() {
+        // `\"` inside double quotes does not close the string
+        let tokens = unquoted_path_tokens(r#"echo "he said \"hi\"" /var/log"#);
+        assert_eq!(tokens, vec!["/var/log"]);
+    }
+
+    #[test]
+    fn multiple_unquoted_paths_detected() {
+        let tokens = unquoted_path_tokens("cp /etc/hosts /tmp/backup");
+        assert_eq!(tokens, vec!["/etc/hosts", "/tmp/backup"]);
+    }
+
+    #[test]
+    fn relative_paths_ignored() {
+        let tokens = unquoted_path_tokens("cd repo && gh issue view 197");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn mixed_quoted_and_unquoted() {
+        let cmd = r###"cd repo && gh pr comment 273 --body "see // here" && cat /etc/hostname"###;
+        let tokens = unquoted_path_tokens(cmd);
+        assert_eq!(tokens, vec!["/etc/hostname"]);
     }
 }

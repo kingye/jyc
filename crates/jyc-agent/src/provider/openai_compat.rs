@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde_json;
+use std::collections::VecDeque;
 
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
@@ -170,8 +171,8 @@ impl Provider for OpenAiCompatProvider {
             (es, OpenAiStreamState::default()),
             |(mut es, mut state)| async move {
                 loop {
-                    // Drain buffered events first
-                    if let Some(event) = state.pending_events.pop() {
+                    // Drain buffered events first (FIFO)
+                    if let Some(event) = state.pending_events.pop_front() {
                         return Some((Ok(event), (es, state)));
                     }
 
@@ -181,8 +182,8 @@ impl Provider for OpenAiCompatProvider {
                             let data = &msg.data;
 
                             if data.trim() == "[DONE]" {
-                                state.pending_events.push(StreamEvent::Done);
-                                if let Some(event) = state.pending_events.pop() {
+                                state.pending_events.push_back(StreamEvent::Done);
+                                if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state)));
                                 }
                                 return None;
@@ -192,7 +193,7 @@ impl Provider for OpenAiCompatProvider {
                                 state.pending_events.extend(events);
                             }
 
-                            if let Some(event) = state.pending_events.pop() {
+                            if let Some(event) = state.pending_events.pop_front() {
                                 return Some((Ok(event), (es, state)));
                             }
                             // No events from this chunk (e.g., reasoning_content only), continue
@@ -201,7 +202,7 @@ impl Provider for OpenAiCompatProvider {
                             let err_msg = format!("{e}");
                             if err_msg.contains("Stream ended") {
                                 // Drain remaining events
-                                if let Some(event) = state.pending_events.pop() {
+                                if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state)));
                                 }
                                 return None;
@@ -213,7 +214,7 @@ impl Provider for OpenAiCompatProvider {
                         }
                         None => {
                             // Drain remaining events
-                            if let Some(event) = state.pending_events.pop() {
+                            if let Some(event) = state.pending_events.pop_front() {
                                 return Some((Ok(event), (es, state)));
                             }
                             return None;
@@ -372,7 +373,7 @@ impl Provider for OpenAiCompatProvider {
             ),
             |(mut es, mut state, mut diag)| async move {
                 loop {
-                    if let Some(event) = state.pending_events.pop() {
+                    if let Some(event) = state.pending_events.pop_front() {
                         return Some((Ok(event), (es, state, diag)));
                     }
 
@@ -386,8 +387,8 @@ impl Provider for OpenAiCompatProvider {
                         Some(Ok(Event::Message(msg))) => {
                             let data = &msg.data;
                             if data.trim() == "[DONE]" {
-                                state.pending_events.push(StreamEvent::Done);
-                                if let Some(event) = state.pending_events.pop() {
+                                state.pending_events.push_back(StreamEvent::Done);
+                                if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state, diag)));
                                 }
                                 return None;
@@ -395,14 +396,14 @@ impl Provider for OpenAiCompatProvider {
                             if let Some(events) = parse_openai_chunk(data, &mut state) {
                                 state.pending_events.extend(events);
                             }
-                            if let Some(event) = state.pending_events.pop() {
+                            if let Some(event) = state.pending_events.pop_front() {
                                 return Some((Ok(event), (es, state, diag)));
                             }
                         }
                         Some(Err(e)) => {
                             let err_msg = format!("{e}");
                             if err_msg.contains("Stream ended") {
-                                if let Some(event) = state.pending_events.pop() {
+                                if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state, diag)));
                                 }
                                 return None;
@@ -437,7 +438,7 @@ impl Provider for OpenAiCompatProvider {
                             return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
                         }
                         None => {
-                            if let Some(event) = state.pending_events.pop() {
+                            if let Some(event) = state.pending_events.pop_front() {
                                 return Some((Ok(event), (es, state, diag)));
                             }
                             return None;
@@ -456,8 +457,8 @@ impl Provider for OpenAiCompatProvider {
 struct OpenAiStreamState {
     /// Tool calls being assembled from deltas.
     tool_calls: Vec<ToolCallAccumulator>,
-    /// Events ready to be yielded.
-    pending_events: Vec<StreamEvent>,
+    /// Events ready to be yielded (FIFO queue).
+    pending_events: VecDeque<StreamEvent>,
 }
 
 #[derive(Default, Clone)]
@@ -515,6 +516,10 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
 
         // Tool calls
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            tracing::trace!(
+                tool_calls_json = %serde_json::to_string(tool_calls).unwrap_or_default(),
+                "SSE chunk contains tool_calls"
+            );
             for tc in tool_calls {
                 let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
 
@@ -535,9 +540,28 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
                     if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
                         acc.name = name.to_string();
                     }
-                    if let Some(args) = function.get("arguments").and_then(|a| a.as_str()) {
-                        acc.arguments.push_str(args);
-                        events.push(StreamEvent::ToolInputDelta(args.to_string()));
+                    // Arguments: standard OpenAI sends a string (possibly
+                    // chunked across deltas); some providers (e.g., GLM-5.2
+                    // via Ark) send a JSON object directly. Handle both.
+                    if let Some(args_val) = function.get("arguments") {
+                        match args_val {
+                            serde_json::Value::String(s) => {
+                                acc.arguments.push_str(s);
+                                events.push(StreamEvent::ToolInputDelta(s.to_string()));
+                            }
+                            serde_json::Value::Object(_) => {
+                                let serialized =
+                                    serde_json::to_string(args_val).unwrap_or_default();
+                                acc.arguments.push_str(&serialized);
+                                events.push(StreamEvent::ToolInputDelta(serialized));
+                            }
+                            _ => {
+                                tracing::trace!(
+                                    args_value = %args_val,
+                                    "Unexpected arguments type in tool_calls delta"
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -790,5 +814,100 @@ mod tests {
         while stream.next().await.is_some() {}
 
         // wiremock will panic at drop if the request count expectation is not met.
+    }
+
+    #[test]
+    fn parse_tool_call_string_arguments() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("should parse");
+
+        assert!(!events.is_empty());
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].name, "bash");
+        assert_eq!(state.tool_calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn parse_tool_call_object_arguments() {
+        // GLM-5.2 via Ark sends arguments as a JSON object, not a string.
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": {"command": "ls"}
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("should parse");
+
+        assert!(!events.is_empty());
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].name, "bash");
+        assert_eq!(state.tool_calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn parse_tool_call_chunked_string_arguments() {
+        // Standard OpenAI streaming: arguments arrive as string fragments
+        // across multiple SSE chunks and must be accumulated.
+        let mut state = OpenAiStreamState::default();
+
+        let chunk1 = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"comm"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        parse_openai_chunk(&chunk1, &mut state);
+
+        let chunk2 = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": "and\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        parse_openai_chunk(&chunk2, &mut state);
+
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].arguments, r#"{"command":"ls"}"#);
     }
 }

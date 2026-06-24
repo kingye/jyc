@@ -15,6 +15,8 @@ use jyc_types::{
     MessageContent, PatternMatch,
 };
 
+use jyc_core::activity_log_store::ActivityLogStore;
+
 /// WebSocket channel-specific pattern matching and thread name derivation.
 pub struct WebsocketMatcher {
     channel_name: String,
@@ -62,6 +64,11 @@ impl ChannelMatcher for WebsocketMatcher {
 enum ServerMessage {
     #[serde(rename = "patterns")]
     Patterns { patterns: Vec<String> },
+    #[serde(rename = "history")]
+    History {
+        thread: String,
+        entries: Vec<jyc_types::ActivityEntry>,
+    },
 }
 
 /// Inbound JSON protocol messages from clients.
@@ -74,6 +81,8 @@ enum ClientMessage {
     Subscribe { thread: String },
     #[serde(rename = "message")]
     Message { thread: String, text: String },
+    #[serde(rename = "get_history")]
+    GetHistory { thread: String, limit: Option<usize> },
 }
 
 /// WebSocket inbound adapter.
@@ -291,6 +300,21 @@ where
                             }
                         } else {
                             tracing::warn!("WebSocket on_message callback not set — message dropped");
+                        }
+                    }
+                    ClientMessage::GetHistory { thread, limit } => {
+                        let limit = limit.unwrap_or(100);
+                        let entries = if let Some(ref ws_dir) = workspace_dir {
+                            let thread_path = ws_dir.join(&thread);
+                            ActivityLogStore::load_recent(&thread_path, limit).unwrap_or_default()
+                        } else {
+                            vec![]
+                        };
+                        let response = ServerMessage::History { thread, entries };
+                        let json = serde_json::to_string(&response)?;
+                        if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                            tracing::warn!(error = %e, addr = %addr, "Failed to send history");
+                            break;
                         }
                     }
                 }

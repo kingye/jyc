@@ -86,6 +86,16 @@ enabled = true
 # Per-pattern skills to disable: merged with channel-level `disabled_skills`.
 # disabled_skills = ["coding-principles"]
 
+# Per-pattern filesystem access whitelist.
+# Extends the agent's read/write boundary beyond the thread working directory.
+# Paths in `write` are also readable automatically.
+# Tilde (~) expands to $HOME. Relative paths resolve against the thread
+# working directory and are ignored (already accessible).
+#
+# [channels.jiny283.patterns.access]
+# read = ["~/.cargo/registry/src"]
+# write = ["/tmp/jyc-builds"]
+
 [channels.jiny283.patterns.rules.sender]
 exact = ["kingye@petalmail.com"]
 

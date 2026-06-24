@@ -71,8 +71,9 @@ impl Tool for BashTool {
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
         // Best-effort boundary check: scan for absolute-path tokens and
-        // verify each is within the working directory. This catches obvious
-        // escape attempts (cat /etc/passwd) without fully sandboxing bash.
+        // verify each is within the working directory (or configured
+        // read/write roots). This catches obvious escape attempts
+        // (cat /etc/passwd) without fully sandboxing bash.
         //
         // Only tokens OUTSIDE of quoted strings are checked. This avoids
         // false positives on path-like substrings inside data arguments
@@ -83,7 +84,7 @@ impl Tool for BashTool {
             // paths. This catches obvious escape attempts (e.g.
             // `cat /etc/passwd`) while allowing flags like `-C`.
             if candidate.exists()
-                && let Err(msg) = ctx.check_path_boundary(&token, candidate)
+                && let Err(msg) = ctx.check_write_boundary(&token, candidate)
             {
                 return Ok(ToolOutput::error(msg));
             }

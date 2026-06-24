@@ -567,6 +567,49 @@ impl JycAgentService {
             roots.push(workdir_skills);
         }
 
+        // 3. Per-pattern configured read paths
+        if let Some(pattern) = message
+            .matched_pattern
+            .as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            && let Some(access) = &pattern.access
+        {
+            for p in &access.read {
+                let expanded = expand_path(p);
+                if expanded.is_absolute() {
+                    roots.push(expanded);
+                }
+            }
+            // Write paths are also readable
+            for p in &access.write {
+                let expanded = expand_path(p);
+                if expanded.is_absolute() {
+                    roots.push(expanded);
+                }
+            }
+        }
+
+        roots
+    }
+
+    /// Resolve additional write roots from the matched pattern's `access.write`
+    /// configuration. Paths are tilde-expanded; relative paths are ignored
+    /// (they are already inside the working directory).
+    fn resolve_additional_write_roots(&self, message: &InboundMessage) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(pattern) = message
+            .matched_pattern
+            .as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            && let Some(access) = &pattern.access
+        {
+            for p in &access.write {
+                let expanded = expand_path(p);
+                if expanded.is_absolute() {
+                    roots.push(expanded);
+                }
+            }
+        }
         roots
     }
 
@@ -868,6 +911,21 @@ impl JycAgentService {
     }
 }
 
+/// Expand a tilde (`~`) prefix to `$HOME`. Other paths are returned as-is.
+fn expand_path(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    if p == "~"
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home);
+    }
+    PathBuf::from(p)
+}
+
 /// Persist skill names to the thread's .jyc/skills.json file.
 ///
 /// This allows the dashboard to read the skills list without re-scanning directories.
@@ -1048,6 +1106,7 @@ impl AgentService for JycAgentService {
 
         // 7. Run agent loop
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
+        let additional_write_roots = self.resolve_additional_write_roots(message);
         let thread_managers = self
             .thread_managers
             .lock()
@@ -1070,6 +1129,7 @@ impl AgentService for JycAgentService {
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
             additional_read_roots,
+            additional_write_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
             thread_managers: thread_managers.clone(),

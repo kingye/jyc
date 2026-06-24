@@ -55,6 +55,9 @@ pub struct AgentLoopConfig<'a> {
     /// `working_dir`.
     #[allow(dead_code)]
     pub additional_read_roots: Vec<std::path::PathBuf>,
+    /// Additional absolute paths permitted for write tools (`write`, `edit`,
+    /// `bash`). Configured via per-pattern `write` paths.
+    pub additional_write_roots: Vec<std::path::PathBuf>,
     /// Whether the inbound-attachment pattern allows image injection.
     /// Mirrors `inject_inbound_images`: when `false`, the `read_image`
     /// tool should not use vision-fallback mode even if a `VisionClient`
@@ -95,6 +98,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         prior_raw_context,
         max_iterations,
         additional_read_roots,
+        additional_write_roots,
         pattern_inject_images,
         outbound,
         thread_managers,
@@ -212,6 +216,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             let tool_start = Instant::now();
             let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+            ctx.additional_write_roots = additional_write_roots.clone();
             ctx.pattern_inject_images = pattern_inject_images;
             ctx.outbound = outbound.clone();
             ctx.thread_managers = thread_managers.clone();
@@ -389,6 +394,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         );
 
         let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+        ctx.additional_write_roots = additional_write_roots.clone();
         ctx.pattern_inject_images = pattern_inject_images;
         ctx.outbound = outbound.clone();
         ctx.thread_managers = thread_managers.clone();

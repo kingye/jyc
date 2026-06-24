@@ -36,6 +36,11 @@ pub struct ToolContext<'a> {
     /// boundary (e.g. `read_image`) accept paths under any of these
     /// roots in addition to `working_dir`.
     pub additional_read_roots: Vec<PathBuf>,
+    /// Additional absolute paths the agent may write to outside
+    /// `working_dir` (e.g. configured per-pattern `write` paths).
+    /// Write tools (`write`, `edit`, `bash`) accept paths under any of
+    /// these roots in addition to `working_dir`.
+    pub additional_write_roots: Vec<PathBuf>,
     /// Side-channel for tools (e.g. `read_image`) that need to inject
     /// additional content blocks into the *next* user turn alongside
     /// the textual tool result. The agent loop drains this after each
@@ -80,6 +85,7 @@ impl<'a> ToolContext<'a> {
         Self {
             working_dir,
             additional_read_roots: Vec::new(),
+            additional_write_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
@@ -95,6 +101,7 @@ impl<'a> ToolContext<'a> {
         Self {
             working_dir,
             additional_read_roots,
+            additional_write_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
@@ -156,6 +163,35 @@ impl<'a> ToolContext<'a> {
             }
         }
 
+        Err(format!(
+            "Access denied: path '{}' is outside the working directory",
+            display_path
+        ))
+    }
+
+    /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
+    /// or `additional_write_roots`. Write paths imply read access.
+    ///
+    /// Used by write/edit/bash tools to enforce the write boundary.
+    pub fn check_write_boundary(
+        &self,
+        display_path: &str,
+        resolved: &Path,
+    ) -> std::result::Result<(), String> {
+        // First check read boundary (working_dir + read_roots)
+        if self.check_path_boundary(display_path, resolved).is_ok() {
+            return Ok(());
+        }
+        // Then check write roots
+        let canonical = resolved
+            .canonicalize()
+            .unwrap_or_else(|_| resolved.to_path_buf());
+        for root in &self.additional_write_roots {
+            let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            if canonical.starts_with(&root_canonical) {
+                return Ok(());
+            }
+        }
         Err(format!(
             "Access denied: path '{}' is outside the working directory",
             display_path

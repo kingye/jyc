@@ -1669,6 +1669,7 @@ dependencies = [
  "futures-util",
  "hex",
  "jyc-core",
+ "jyc-inspect",
  "jyc-mcp",
  "jyc-services",
  "jyc-types",
@@ -1702,6 +1703,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "futures-util",
  "jyc-agent",
  "jyc-channels",
  "jyc-core",
@@ -1715,10 +1717,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -1755,13 +1759,16 @@ version = "0.3.11"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "chrono",
+ "futures-util",
  "jyc-core",
  "jyc-types",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tokio-util",
  "tracing",
 ]

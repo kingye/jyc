@@ -7,7 +7,6 @@ use crate::channel::ChannelPattern;
 use crate::feishu_config::FeishuConfig;
 use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
-use crate::local_config::LocalConfig;
 use crate::wechat_config::WechatConfig;
 use crate::wecom_bot_config::WecomBotConfig;
 use crate::wecom_config::WecomConfig;
@@ -163,10 +162,6 @@ pub struct ChannelConfig {
     /// WeCom Smart Robot configuration (for wecom_bot channels)
     #[serde(default)]
     pub wecom_bot: Option<WecomBotConfig>,
-
-    /// Local TUI configuration (for local channels)
-    #[serde(default)]
-    pub local: Option<LocalConfig>,
 
     /// Monitoring settings (IDLE vs poll, interval, etc.)
     pub monitor: Option<MonitorConfig>,

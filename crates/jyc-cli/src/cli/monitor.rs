@@ -19,6 +19,8 @@ use jyc_channels::gitee::inbound::GiteeMatcher;
 use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::github::outbound::GithubOutboundAdapter;
+use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
+use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
 use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_channels::wecom::inbound::WecomInboundAdapter;
@@ -40,6 +42,7 @@ use jyc_core::metrics::MetricsCollector;
 use jyc_core::state_manager::StateManager;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_services::imap::monitor::ImapMonitor;
+use jyc_types::InboundAdapter;
 use jyc_types::MonitorConfig;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config, validation};
@@ -170,6 +173,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     } else {
         None
     };
+
+    // Collect websocket inbound adapters to register with the inspect server later
+    let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -317,6 +323,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     outbound_attachment_config,
                     footer_enabled,
                 ))
+            }
+            "websocket" => {
+                let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
+                let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone());
+                // Store the inbound adapter for later registration with the inspect server
+                let handler = Arc::new(WebsocketInboundAdapter::new(
+                    channel_name.to_string(),
+                    patterns.clone(),
+                    broadcast_tx,
+                ));
+                websocket_handlers.push(handler);
+                Arc::new(adapter)
             }
             other => {
                 tracing::warn!(
@@ -910,7 +928,69 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                 tasks.push(task);
             }
-            _ => unreachable!(), // Already handled above with continue
+            "websocket" => {
+                let patterns_for_callback = patterns.clone();
+                let router_for_callback = router.clone();
+                let channel_name_for_matcher = channel_name_owned.clone();
+
+                // The websocket handler was already created when the outbound adapter was built.
+                // Find it in the list and start it (sets the on_message callback).
+                let handler = websocket_handlers.last().cloned().ok_or_else(|| {
+                    anyhow::anyhow!("channel '{channel_name}': websocket handler not found")
+                })?;
+
+                let thread_manager_clone = thread_manager.clone();
+                let options = jyc_types::InboundAdapterOptions {
+                    on_message: Box::new(move |message| {
+                        let router = router_for_callback.clone();
+                        let patterns = patterns_for_callback.clone();
+                        let channel_name = channel_name_for_matcher.clone();
+
+                        tokio::spawn(async move {
+                            router
+                                .route(&WebsocketMatcher::new(channel_name), message, &patterns)
+                                .await;
+                        });
+
+                        Ok(())
+                    }),
+                    on_thread_close: Some(Box::new(move |thread_name: String| {
+                        let tm = thread_manager_clone.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = tm.close_thread(&thread_name).await {
+                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            }
+                        });
+                        Ok(())
+                    })),
+                    on_error: Box::new(|error| {
+                        tracing::error!(error = %error, "WebSocket inbound error");
+                    }),
+                    attachment_config: inbound_attachment_config.clone(),
+                };
+
+                // Start the adapter (sets the on_message callback; no independent listener)
+                if let Err(e) = handler.start(options, cancel_child.clone()).await {
+                    tracing::error!(
+                        error = %e,
+                        "WebSocket inbound adapter error"
+                    );
+                }
+
+                // WebSocket channel does not need a background task (handler is registered on the inspect server)
+                // But we still need to keep the thread_manager alive, so we push a no-op task
+                let task = tokio::spawn(
+                    async move {
+                        // Wait for cancellation
+                        cancel_child.cancelled().await;
+                        tm.shutdown().await;
+                    }
+                    .instrument(channel_span),
+                );
+
+                tasks.push(task);
+            }
+            _ => continue, // Gracefully skip unknown channel types
         }
     }
 
@@ -980,6 +1060,23 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             config_path: Some(config_path.clone()),
             config: Some(config.clone()),
             workspace_dirs: all_workspace_dirs.clone(),
+            websocket_handlers: {
+                let handlers: HashMap<String, Arc<dyn jyc_inspect::server::WebsocketHandler>> =
+                    websocket_handlers
+                        .into_iter()
+                        .map(|h| {
+                            (
+                                h.channel_name().to_string(),
+                                h as Arc<dyn jyc_inspect::server::WebsocketHandler>,
+                            )
+                        })
+                        .collect();
+                if handlers.is_empty() {
+                    None
+                } else {
+                    Some(handlers)
+                }
+            },
         });
 
         // Start activity tracker (subscribes to thread event buses)

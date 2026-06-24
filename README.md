@@ -139,6 +139,12 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Protocols:** REST API v5 polling (inbound), REST API (outbound)
 - **Agents:** Planner, Developer, Reviewer templates
 
+### ✅ WebSocket
+- **Status:** Production ready (implemented in v0.3.12)
+- **Features:** Interactive chat pane in `jyc dashboard`, multi-client support via broadcast
+- **Protocols:** WebSocket server runs inside `jyc monitor`, dashboard clients connect via `ws://`
+- **Usage:** Press `c` in dashboard to toggle chat pane
+
 ### 🔄 Future Channels (Planned)
 - **Slack:** WebHook and Socket Mode support
 - **Teams:** Microsoft Teams integration
@@ -188,7 +194,8 @@ jyc monitor            # Start the agent (main command)
                        #   --reset           Reset monitoring state before starting
 jyc dashboard          # Live TUI dashboard (connects via inspect server)
                        #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
-                       #   Keyboard: q=quit, ↑/↓=select thread, r=refresh
+                       #                     Also used for WebSocket chat on /ws
+                       #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
 jyc config init        # Generate config template
 jyc config validate    # Validate config file
                        #   --config <FILE>   Config file path (default: config.toml)

@@ -10,6 +10,7 @@ jyc-utils = { path = "../jyc-utils" }
 jyc-core = { path = "../jyc-core" }
 jyc-services = { path = "../jyc-services" }
 jyc-mcp = { path = "../jyc-mcp" }
+jyc-inspect = { path = "../jyc-inspect" }
 mail-parser = "0.9"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

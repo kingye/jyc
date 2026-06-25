@@ -1,5 +1,6 @@
 pub mod close_handler;
 pub mod handler;
+pub mod help_handler;
 pub mod mode_handler;
 pub mod new_handler;
 pub mod registry;

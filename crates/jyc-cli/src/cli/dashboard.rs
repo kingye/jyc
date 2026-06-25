@@ -561,24 +561,27 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                 app.scroll_down();
             }
             KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
-                app.chat_cursor = app.chat_cursor.saturating_sub(1);
+                app.chat_cursor = app
+                    .chat_input
+                    .floor_char_boundary(app.chat_cursor.saturating_sub(1));
             }
             KeyCode::Right
                 if app.chat_focus == ChatFocus::ChatPane
                     && app.chat_cursor < app.chat_input.len() =>
             {
-                app.chat_cursor += 1;
+                app.chat_cursor = app.chat_input.ceil_char_boundary(app.chat_cursor + 1);
             }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {
                     match key.code {
                         KeyCode::Char(c) => {
                             app.chat_input.insert(app.chat_cursor, c);
-                            app.chat_cursor += 1;
+                            app.chat_cursor += c.len_utf8();
                         }
                         KeyCode::Backspace if app.chat_cursor > 0 => {
-                            app.chat_input.remove(app.chat_cursor - 1);
-                            app.chat_cursor -= 1;
+                            let prev = app.chat_input.floor_char_boundary(app.chat_cursor - 1);
+                            app.chat_input.remove(prev);
+                            app.chat_cursor = prev;
                         }
                         _ => {}
                     }

@@ -489,7 +489,11 @@ impl JycAgentService {
     }
 
     /// Build the user prompt text (header + body) from an inbound message.
-    fn build_user_prompt_text(&self, message: &InboundMessage) -> String {
+    fn build_user_prompt_text(
+        &self,
+        message: &InboundMessage,
+        mode_override: Option<&str>,
+    ) -> String {
         let mut prompt = String::new();
 
         prompt.push_str("## Incoming Message\n");
@@ -550,6 +554,19 @@ impl JycAgentService {
             for path in &attachment_paths {
                 prompt.push_str(&format!("- {}\n", path));
             }
+        }
+
+        // Inject mode reminder at end for recency (the last thing the
+        // agent sees before replying).
+        // Inject plan mode reminder at end of user prompt for recency.
+        // The system prompt already has this at the end, but recency bias
+        // makes a short reminder right before the agent responds more effective.
+        if mode_override == Some("plan") {
+            prompt.push('\n');
+            prompt.push_str("<mode>\n");
+            prompt.push_str("Current mode: PLAN (read-only). ");
+            prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("</mode>\n");
         }
 
         prompt
@@ -662,12 +679,13 @@ impl JycAgentService {
         &self,
         message: &InboundMessage,
         supports_images: bool,
+        mode_override: Option<&str>,
     ) -> Vec<crate::types::ContentBlock> {
         use crate::types::{ContentBlock, ImageSource};
         use base64::Engine as _;
 
         let mut blocks = vec![ContentBlock::Text {
-            text: self.build_user_prompt_text(message),
+            text: self.build_user_prompt_text(message, mode_override),
         }];
 
         // Per-pattern opt-in. Default false when the message did not match a
@@ -1125,7 +1143,9 @@ impl AgentService for JycAgentService {
             prompt = %system_prompt,
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
-        let user_blocks = self.build_user_blocks(message, provider.supports_images());
+        let current_mode = jyc_core::session_state::read_mode_override(thread_path).await;
+        let user_blocks =
+            self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 
         // 5. Build tool registry
         let tools = self

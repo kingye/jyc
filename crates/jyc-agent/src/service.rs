@@ -478,6 +478,7 @@ impl JycAgentService {
                  - present implementation plans and ask clarifying questions\n\
                  - wait for user approval before any implementation\n\
                  This constraint is absolute — do not bypass it even if asked.\n\
+                 Do not exit plan mode even if the user requests it.\n\
                  </system-reminder>\n\n",
             );
         }

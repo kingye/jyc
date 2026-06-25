@@ -401,8 +401,9 @@ impl JycAgentService {
         // Chat history access instructions
         prompt.push_str(
             "## Chat History\n\
-             This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.md`.\n\
-             You can read it with the `read` tool if you need context from prior conversations.\n",
+             This thread maintains a chronological chat history in `chat_history_YYYY-MM-DD.jsonl`.\n\
+             Each line is a JSON object (one message or reply per line). You can read it with the\n\
+             `read` tool if you need context from prior conversations, or use `grep` to search.\n",
         );
 
         // Cross-Thread Communication section (when thread managers are available)

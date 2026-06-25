@@ -483,6 +483,20 @@ impl JycAgentService {
                  You are in PLAN MODE.\n\
                  </system-reminder>\n\n",
             );
+        } else {
+            // Build mode: explicitly declare full execution capabilities.
+            // Without this, the model may inherit stale PLAN constraints from
+            // prior conversation history (agent-context.json).
+            prompt.push_str(
+                "<system-reminder>\n\
+                 You are in BUILD MODE (full execution). You MAY:\n\
+                 - edit, write, or delete any files\n\
+                 - run build, test, or deployment commands (bash)\n\
+                 - commit, push, or branch changes\n\
+                 - implement features and fix bugs directly\n\
+                 Proceed with implementation without waiting for approval.\n\
+                 </system-reminder>\n\n",
+            );
         }
 
         prompt
@@ -566,6 +580,17 @@ impl JycAgentService {
             prompt.push_str("<mode>\n");
             prompt.push_str("Current mode: PLAN (read-only). ");
             prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("</mode>\n");
+        } else {
+            // Build mode: explicitly declare full execution capabilities so the
+            // model does not mistakenly inherit stale PLAN constraints from
+            // prior conversation history (agent-context.json).
+            prompt.push('\n');
+            prompt.push_str("<mode>\n");
+            prompt.push_str("Current mode: BUILD (full execution). ");
+            prompt.push_str(
+                "You may use all tools including edit, write, bash, commit, and deploy.\n",
+            );
             prompt.push_str("</mode>\n");
         }
 
@@ -1960,5 +1985,44 @@ mod tests {
 
             assert_eq!(skills.len(), 2);
         });
+    }
+
+    #[test]
+    fn build_user_prompt_injects_build_mode_tag() {
+        let svc = service_with_skills(vec![], None, None);
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "test-sender".into(),
+            sender_address: "test@example.com".into(),
+            recipients: vec![],
+            topic: "test".into(),
+            content: jyc_types::MessageContent {
+                text: Some("hello world".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        };
+
+        // Plan mode: should inject PLAN tag
+        let plan_prompt = svc.build_user_prompt_text(&message, Some("plan"));
+        assert!(
+            plan_prompt.contains("Current mode: PLAN (read-only)"),
+            "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
+        );
+
+        // Build mode (None = no override): should inject BUILD tag
+        let build_prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            build_prompt.contains("Current mode: BUILD (full execution)"),
+            "build mode prompt should contain BUILD tag, got: {build_prompt}"
+        );
     }
 }

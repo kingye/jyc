@@ -1039,6 +1039,12 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             ));
             spans.push(Span::raw(model));
         }
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            "Mode: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(t.mode.as_deref().unwrap_or("build")));
         if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
             let pct = if max > 0 {
                 cur.checked_mul(100)

@@ -15,6 +15,7 @@ use crate::agent::AgentService;
 use crate::command::close_handler::CloseCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
+use crate::command::new_handler::NewCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
@@ -1023,6 +1024,7 @@ async fn process_message(
     command_registry.register(Box::new(PlanCommandHandler));
     command_registry.register(Box::new(BuildCommandHandler));
     command_registry.register(Box::new(ResetCommandHandler));
+    command_registry.register(Box::new(NewCommandHandler));
     command_registry.register(Box::new(TemplateCommandHandler));
     command_registry.register(Box::new(CloseCommandHandler::new(thread_manager.clone())));
 

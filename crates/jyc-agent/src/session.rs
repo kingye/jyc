@@ -624,14 +624,12 @@ fn parse_jsonl_entries(
         };
 
         // Apply cutoff filter
-        if let Some(cutoff_ts) = cutoff {
-            if let Some(ts_str) = record.get("ts").and_then(|v| v.as_str()) {
-                if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
-                    if ts.with_timezone(&chrono::Utc) < *cutoff_ts {
-                        continue;
-                    }
-                }
-            }
+        if let Some(cutoff_ts) = cutoff
+            && let Some(ts_str) = record.get("ts").and_then(|v| v.as_str())
+            && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str)
+            && ts.with_timezone(&chrono::Utc) < *cutoff_ts
+        {
+            continue;
         }
 
         let msg_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");

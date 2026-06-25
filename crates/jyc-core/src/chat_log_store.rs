@@ -74,7 +74,7 @@ impl ChatLogStore {
         Ok(())
     }
 
-/// Append a received message to the chat log.
+    /// Append a received message to the chat log.
     pub fn append_message(&mut self, message: &InboundMessage, is_matched: bool) -> Result<()> {
         self.ensure_file_open()?;
 

@@ -1143,8 +1143,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
         let msg_lines = renderer.render(&blocks, &theme);
 
         for line in msg_lines {
-            let mut spans = vec![Span::styled("│ ", Style::default().fg(bar_color))];
-            spans.extend(line.spans);
+            let bar_span = Span::styled("│ ", Style::new().fg(bar_color));
+            let spans: Vec<Span> = std::iter::once(bar_span).chain(line).collect();
             all_lines.push(Line::from(spans));
         }
     }

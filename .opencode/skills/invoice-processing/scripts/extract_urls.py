@@ -1,7 +1,7 @@
 """Extract invoice download URLs from the latest received message in chat history.
 
 The incoming message prompt may be truncated (forwarded content stripped).
-The full email body including forwarded URLs is saved in chat_history_*.md.
+The full email body including forwarded URLs is saved in chat_history_*.jsonl.
 This script reads the LATEST received message and extracts invoice URLs.
 
 Usage:
@@ -19,6 +19,7 @@ Output (one line per URL found):
 
 from __future__ import annotations
 
+import json
 import glob
 import re
 import sys
@@ -30,28 +31,32 @@ def extract_urls(thread_dir: str = ".") -> list[tuple[str, str]]:
 
     Returns list of (type, url) tuples where type is INVOICE_URL or FILE_URL.
     """
-    # Find the latest chat history file
-    pattern = str(Path(thread_dir) / "chat_history_*.md")
+    # Find the latest chat history file (.jsonl)
+    pattern = str(Path(thread_dir) / "chat_history_*.jsonl")
     files = sorted(glob.glob(pattern))
     if not files:
         return [("NO_CHAT_HISTORY", "")]
 
-    content = open(files[-1], encoding="utf-8").read()
+    # Read the latest file and find the last "received" record (JSONL)
+    last_received_content = None
+    with open(files[-1], encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") == "received":
+                last_received_content = record.get("content", "")
 
-    # Split by --- separator and find the last "type:received" block
-    blocks = content.split("\n---\n")
-    last_received = None
-    for block in reversed(blocks):
-        if "type:received" in block:
-            last_received = block
-            break
-
-    if not last_received:
+    if not last_received_content:
         return [("NO_RECEIVED_MESSAGE", "")]
 
-    # Extract URLs from both markdown link syntax [text](url) and plain text
-    md_urls = re.findall(r'\[.*?\]\((https?://[^)]+)\)', last_received)
-    plain_urls = re.findall(r'https?://[^\s<>"\')\]]+', last_received)
+    # Extract URLs from the content field
+    md_urls = re.findall(r'\[.*?\]\((https?://[^)]+)\)', last_received_content)
+    plain_urls = re.findall(r'https?://[^\s<>"\')\]]+', last_received_content)
 
     # Combine and deduplicate, preserving order
     seen: set[str] = set()

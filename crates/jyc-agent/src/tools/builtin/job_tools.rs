@@ -97,21 +97,18 @@ impl Tool for JobCreateTool {
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression for recurring jobs (7-field format: 'sec min hour dom mon dow year')"
+                    "description": "Cron expression for recurring jobs (7-field format: 'sec min hour dom mon dow year'). Exactly one of cron or at must be provided."
                 },
                 "at": {
                     "type": "string",
-                    "description": "ISO 8601 timestamp for one-time jobs (e.g. '2026-06-22T08:00:00Z')"
+                    "description": "ISO 8601 timestamp for one-time jobs (e.g. '2026-06-22T08:00:00Z'). Exactly one of cron or at must be provided."
                 },
                 "prompt": {
                     "type": "string",
                     "description": "Instructions for the AI to execute when the job fires"
                 }
             },
-            "oneOf": [
-                {"required": ["cron", "prompt"]},
-                {"required": ["at", "prompt"]}
-            ]
+            "required": ["prompt"]
         })
     }
 

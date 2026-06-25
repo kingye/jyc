@@ -331,7 +331,16 @@ impl JycAgentService {
         // Plan mode: inject read-only constraint when mode-override is "plan"
         {
             let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+            tracing::info!(
+                thread = %thread_path.display(),
+                mode = ?mode_override,
+                "Read mode override"
+            );
             if mode_override.as_deref() == Some("plan") {
+                tracing::info!(
+                    thread = %thread_path.display(),
+                    "Injecting PLAN MODE constraint into system prompt"
+                );
                 prompt.push_str(
                     "<system-reminder>\n\
                      CRITICAL: You are in PLAN MODE (read-only). You MUST NOT:\n\
@@ -1102,6 +1111,17 @@ impl AgentService for JycAgentService {
         let system_prompt = self
             .build_system_prompt(thread_path, message.matched_pattern.as_deref())
             .await;
+        tracing::debug!(
+            thread = %thread_name,
+            prompt_len = system_prompt.len(),
+            has_plan_mode = system_prompt.contains("PLAN MODE"),
+            "System prompt built"
+        );
+        tracing::trace!(
+            thread = %thread_name,
+            prompt = %system_prompt,
+            "Full system prompt (enable RUST_LOG=trace to see)"
+        );
         let user_blocks = self.build_user_blocks(message, provider.supports_images());
 
         // 5. Build tool registry

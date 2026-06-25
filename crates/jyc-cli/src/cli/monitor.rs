@@ -326,7 +326,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             }
             "websocket" => {
                 let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
-                let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone());
+                let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
                 // Store the inbound adapter for later registration with the inspect server
                 let mut handler = WebsocketInboundAdapter::new(
                     channel_name.to_string(),

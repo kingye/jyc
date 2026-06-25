@@ -4,11 +4,13 @@
 //! `tokio::sync::broadcast`.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
+use jyc_core::message_storage::MessageStorage;
 use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
 
 /// WebSocket outbound adapter.
@@ -18,12 +20,17 @@ use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult}
 pub struct WebsocketOutboundAdapter {
     /// Broadcast sender — cloned for each new WebSocket connection.
     broadcast_tx: broadcast::Sender<String>,
+    /// Message storage for persisting replies to chat log.
+    storage: Arc<MessageStorage>,
 }
 
 impl WebsocketOutboundAdapter {
     /// Create a new WebSocket outbound adapter with the given broadcast sender.
-    pub fn new(broadcast_tx: broadcast::Sender<String>) -> Self {
-        Self { broadcast_tx }
+    pub fn new(broadcast_tx: broadcast::Sender<String>, storage: Arc<MessageStorage>) -> Self {
+        Self {
+            broadcast_tx,
+            storage,
+        }
     }
 
     /// Get the broadcast sender for the inbound adapter to clone.
@@ -78,6 +85,16 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         let thread = _original.topic.as_str();
         self.broadcast_reply(thread, reply_text).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
+
+        // Persist reply to chat log for history loading
+        if let Err(e) = self
+            .storage
+            .store_reply(_thread_path, reply_text, _message_dir)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to store WebSocket reply to chat log");
+        }
+
         tracing::info!(text_len = reply_text.len(), message_id = %message_id, "WebSocket reply broadcast");
         Ok(SendResult { message_id })
     }
@@ -102,7 +119,9 @@ mod tests {
     #[tokio::test]
     async fn test_send_reply_broadcasts() {
         let (tx, mut rx) = broadcast::channel(16);
-        let adapter = WebsocketOutboundAdapter::new(tx);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
             id: "test".to_string(),
@@ -127,7 +146,7 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", Path::new("/tmp"), "msg_001", None)
+            .send_reply(&message, "AI reply", tmp.path(), "msg_001", None)
             .await;
         assert!(result.is_ok());
 
@@ -142,7 +161,9 @@ mod tests {
     async fn test_send_without_receiver_ok() {
         // broadcast with no receivers should still succeed
         let tx = broadcast::channel(16).0;
-        let adapter = WebsocketOutboundAdapter::new(tx);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
             id: "test".to_string(),
@@ -167,14 +188,16 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", Path::new("/tmp"), "msg_001", None)
+            .send_reply(&message, "AI reply", tmp.path(), "msg_001", None)
             .await;
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_clean_body_passthrough() {
-        let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0, storage);
         assert_eq!(adapter.clean_body("hello\nworld"), "hello\nworld");
     }
 }

@@ -406,7 +406,11 @@ fn load_chat_history(workspace_dir: &Path, thread: &str, max_messages: usize) ->
         entries.splice(0..0, file_entries);
     }
 
-    entries.truncate(max_messages);
+    // Keep only the most recent entries (newest at end)
+    if entries.len() > max_messages {
+        let drain_count = entries.len() - max_messages;
+        entries.drain(0..drain_count);
+    }
     entries
 }
 

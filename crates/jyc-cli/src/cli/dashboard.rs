@@ -1081,10 +1081,17 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
         if t.status == ThreadStatus::Processing {
             spans.push(Span::raw(" | "));
-            spans.push(Span::styled(
-                "⏳ AI thinking...",
-                Style::default().fg(Color::Yellow),
-            ));
+            if let Some(latest) = t.activity.first() {
+                spans.push(Span::styled(
+                    format!("⏳ {}", latest.text),
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    "⏳ AI thinking...",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
         }
         Line::from(spans)
     } else {

@@ -1031,6 +1031,29 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
         ];
+        if let Some(ref model) = t.model {
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "Model: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(model));
+        }
+        if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
+            let pct = if max > 0 {
+                cur.checked_mul(100)
+                    .and_then(|v| v.checked_div(max))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "Tokens: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+        }
         if t.status == ThreadStatus::Processing {
             spans.push(Span::raw(" | "));
             spans.push(Span::styled(

@@ -561,24 +561,27 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                 app.scroll_down();
             }
             KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
-                app.chat_cursor = app.chat_cursor.saturating_sub(1);
+                app.chat_cursor = app
+                    .chat_input
+                    .floor_char_boundary(app.chat_cursor.saturating_sub(1));
             }
             KeyCode::Right
                 if app.chat_focus == ChatFocus::ChatPane
                     && app.chat_cursor < app.chat_input.len() =>
             {
-                app.chat_cursor += 1;
+                app.chat_cursor = app.chat_input.ceil_char_boundary(app.chat_cursor + 1);
             }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {
                     match key.code {
                         KeyCode::Char(c) => {
                             app.chat_input.insert(app.chat_cursor, c);
-                            app.chat_cursor += 1;
+                            app.chat_cursor += c.len_utf8();
                         }
                         KeyCode::Backspace if app.chat_cursor > 0 => {
-                            app.chat_input.remove(app.chat_cursor - 1);
-                            app.chat_cursor -= 1;
+                            let prev = app.chat_input.floor_char_boundary(app.chat_cursor - 1);
+                            app.chat_input.remove(prev);
+                            app.chat_cursor = prev;
                         }
                         _ => {}
                     }
@@ -990,13 +993,18 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = app
-        .table_state
-        .selected()
-        .and_then(|i| state.threads.get(i));
+    let selected = if app.chat_visible && app.chat_phase == ChatPhase::Chatting {
+        app.chat_thread
+            .as_ref()
+            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
+    } else {
+        app.table_state
+            .selected()
+            .and_then(|i| state.threads.get(i))
+    };
 
     let text = if let Some(t) = selected {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&t.name),
             Span::raw(" | "),
@@ -1005,7 +1013,15 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" | "),
             Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
-        ])
+        ];
+        if t.status == ThreadStatus::Processing {
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "⏳ AI thinking...",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        Line::from(spans)
     } else {
         Line::from("Select a thread with ↑/↓")
     };
@@ -1073,10 +1089,38 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
             "ai" => ("AI: ", Style::default().fg(Color::Green)),
             _ => ("● ", Style::default().fg(Color::DarkGray)),
         };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-            Span::raw(&msg.text),
-        ]));
+        let indent = Span::raw(" ".repeat(prefix.len()));
+        for (i, line) in msg.text.lines().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                    Span::raw(line),
+                ]));
+            } else {
+                lines.push(Line::from(vec![indent.clone(), Span::raw(line)]));
+            }
+        }
+    }
+
+    // Show progress indicator when AI is processing
+    if let Some(ref state) = app.state
+        && let Some(chat_name) = &app.chat_thread
+    {
+        let is_processing = state
+            .threads
+            .iter()
+            .any(|t| t.name == *chat_name && t.status == ThreadStatus::Processing);
+        if is_processing {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "⏳ AI is thinking...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
     }
 
     // Show input line at bottom

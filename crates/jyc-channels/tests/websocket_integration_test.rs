@@ -161,7 +161,9 @@ async fn test_websocket_adapter_start_and_handle() {
 #[tokio::test]
 async fn test_websocket_broadcast_reply() {
     let (broadcast_tx, mut broadcast_rx) = broadcast::channel(16);
-    let outbound = WebsocketOutboundAdapter::new(broadcast_tx);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
 
     let message = InboundMessage {
         id: "test".to_string(),

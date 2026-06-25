@@ -77,6 +77,7 @@ struct App {
     chat_thread: Option<String>,
     chat_messages: Vec<ChatMessage>,
     chat_input: String,
+    chat_cursor: usize,
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
@@ -100,6 +101,7 @@ impl App {
             chat_thread: None,
             chat_messages: vec![],
             chat_input: String::new(),
+            chat_cursor: 0,
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
@@ -169,6 +171,7 @@ impl App {
         self.chat_thread = None;
         self.chat_messages.clear();
         self.chat_input.clear();
+        self.chat_cursor = 0;
         self.chat_focus = ChatFocus::ChatPane;
         self.chat_scroll = 0;
         self.activity_scroll = 0;
@@ -196,6 +199,7 @@ impl App {
         self.chat_phase = ChatPhase::Chatting;
         self.chat_thread = Some(pattern.clone());
         self.chat_input.clear();
+        self.chat_cursor = 0;
         self.chat_scroll = 0;
 
         let subscribe_msg = serde_json::json!({
@@ -212,6 +216,7 @@ impl App {
         self.chat_phase = ChatPhase::PatternSelect;
         self.chat_thread = None;
         self.chat_input.clear();
+        self.chat_cursor = 0;
         self.chat_scroll = 0;
     }
 
@@ -254,6 +259,7 @@ impl App {
             text: text.clone(),
         });
         self.chat_input.clear();
+        self.chat_cursor = 0;
         self.chat_scroll = 0;
 
         let msg = serde_json::json!({
@@ -544,14 +550,25 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
             KeyCode::Down => {
                 app.scroll_down();
             }
+            KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
+                app.chat_cursor = app.chat_cursor.saturating_sub(1);
+            }
+            KeyCode::Right
+                if app.chat_focus == ChatFocus::ChatPane
+                    && app.chat_cursor < app.chat_input.len() =>
+            {
+                app.chat_cursor += 1;
+            }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {
                     match key.code {
                         KeyCode::Char(c) => {
-                            app.chat_input.push(c);
+                            app.chat_input.insert(app.chat_cursor, c);
+                            app.chat_cursor += 1;
                         }
-                        KeyCode::Backspace => {
-                            app.chat_input.pop();
+                        KeyCode::Backspace if app.chat_cursor > 0 => {
+                            app.chat_input.remove(app.chat_cursor - 1);
+                            app.chat_cursor -= 1;
                         }
                         _ => {}
                     }
@@ -1056,15 +1073,19 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         "  "
     };
+    let before_cursor = &app.chat_input[..app.chat_cursor];
+    let after_cursor = &app.chat_input[app.chat_cursor..];
     lines.push(Line::from(vec![
         Span::raw(focus_indicator),
         Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::raw(&app.chat_input),
+        Span::raw(before_cursor),
         Span::styled("▌", Style::default().fg(Color::Yellow)),
+        Span::raw(after_cursor),
     ]));
 
     let inner_height = inner.height as usize;
-    let skip = (lines.len() + app.chat_scroll).saturating_sub(inner_height);
+    let max_skip = lines.len().saturating_sub(inner_height);
+    let skip = max_skip.saturating_sub(app.chat_scroll);
     let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
 
     let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
@@ -1081,10 +1102,15 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = app
-        .table_state
-        .selected()
-        .and_then(|i| state.threads.get(i));
+    let selected = if app.chat_visible && app.chat_phase == ChatPhase::Chatting {
+        app.chat_thread
+            .as_ref()
+            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
+    } else {
+        app.table_state
+            .selected()
+            .and_then(|i| state.threads.get(i))
+    };
 
     let selected = match selected {
         Some(t) => t,

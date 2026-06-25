@@ -1986,4 +1986,43 @@ mod tests {
             assert_eq!(skills.len(), 2);
         });
     }
+
+    #[test]
+    fn build_user_prompt_injects_build_mode_tag() {
+        let svc = service_with_skills(vec![], None, None);
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "test-sender".into(),
+            sender_address: "test@example.com".into(),
+            recipients: vec![],
+            topic: "test".into(),
+            content: jyc_types::MessageContent {
+                text: Some("hello world".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        };
+
+        // Plan mode: should inject PLAN tag
+        let plan_prompt = svc.build_user_prompt_text(&message, Some("plan"));
+        assert!(
+            plan_prompt.contains("Current mode: PLAN (read-only)"),
+            "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
+        );
+
+        // Build mode (None = no override): should inject BUILD tag
+        let build_prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            build_prompt.contains("Current mode: BUILD (full execution)"),
+            "build mode prompt should contain BUILD tag, got: {build_prompt}"
+        );
+    }
 }

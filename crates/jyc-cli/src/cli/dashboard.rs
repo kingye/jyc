@@ -326,6 +326,23 @@ impl App {
                     self.chat_pattern_selected = 0;
                 }
             }
+            Some("history") => {
+                if let (Some(thread), Some(messages)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("messages").and_then(|v| v.as_array()),
+                ) && self.chat_thread.as_deref() == Some(thread)
+                {
+                    self.chat_messages = messages
+                        .iter()
+                        .filter_map(|m| {
+                            Some(ChatMessage {
+                                sender: m.get("sender")?.as_str()?.to_string(),
+                                text: m.get("text")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect();
+                }
+            }
             Some("reply") => {
                 if let (Some(thread), Some(text)) = (
                     parsed.get("thread").and_then(|v| v.as_str()),
@@ -1076,33 +1093,37 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     if app.chat_focus == ChatFocus::ChatPane {
         block = block.border_style(Style::default().fg(Color::Cyan));
     }
-
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![];
+    // Split: scrollable messages (top) + fixed input line (bottom)
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
 
-    // Show messages
+    // --- Messages area (markdown-rendered) ---
+    let mut md_text = String::new();
     for msg in &app.chat_messages {
-        let (prefix, style) = match msg.sender.as_str() {
-            "user" => ("You: ", Style::default().fg(Color::Cyan)),
-            "ai" => ("AI: ", Style::default().fg(Color::Green)),
-            _ => ("● ", Style::default().fg(Color::DarkGray)),
-        };
-        let indent = Span::raw(" ".repeat(prefix.len()));
-        for (i, line) in msg.text.lines().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-                    Span::raw(line),
-                ]));
-            } else {
-                lines.push(Line::from(vec![indent.clone(), Span::raw(line)]));
+        match msg.sender.as_str() {
+            "user" => {
+                md_text.push_str("**You:** ");
+                md_text.push_str(&msg.text);
+                md_text.push('\n');
+            }
+            "ai" => {
+                md_text.push_str("**AI:** ");
+                md_text.push_str(&msg.text);
+                md_text.push('\n');
+            }
+            _ => {
+                md_text.push_str(&msg.text);
+                md_text.push('\n');
             }
         }
     }
 
-    // Show progress indicator when AI is processing
+    // Show progress indicator in markdown
     if let Some(ref state) = app.state
         && let Some(chat_name) = &app.chat_thread
     {
@@ -1111,20 +1132,24 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
             .iter()
             .any(|t| t.name == *chat_name && t.status == ThreadStatus::Processing);
         if is_processing {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "⏳ AI is thinking...",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-            ]));
+            md_text.push_str("\n*⏳ AI is thinking...*\n");
         }
     }
 
-    // Show input line at bottom
-    lines.push(Line::from(""));
+    let renderer = ratatui_markdown::markdown::MarkdownRenderer::new(chunks[0].width as usize);
+    let theme = ratatui_markdown::theme::ThemeConfig::default();
+    let blocks = renderer.parse(&md_text);
+    let md_lines = renderer.render(&blocks, &theme);
+
+    let inner_height = chunks[0].height as usize;
+    let max_skip = md_lines.len().saturating_sub(inner_height);
+    let skip = max_skip.saturating_sub(app.chat_scroll);
+    let visible_lines: Vec<Line> = md_lines.into_iter().skip(skip).collect();
+
+    let messages_para = Paragraph::new(visible_lines);
+    frame.render_widget(messages_para, chunks[0]);
+
+    // --- Input line (fixed at bottom) ---
     let focus_indicator = if app.chat_focus == ChatFocus::ChatPane {
         "▶ "
     } else {
@@ -1132,21 +1157,15 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     };
     let before_cursor = &app.chat_input[..app.chat_cursor];
     let after_cursor = &app.chat_input[app.chat_cursor..];
-    lines.push(Line::from(vec![
+    let input_line = Line::from(vec![
         Span::raw(focus_indicator),
         Span::styled("> ", Style::default().fg(Color::Yellow)),
         Span::raw(before_cursor),
         Span::styled("▌", Style::default().fg(Color::Yellow)),
         Span::raw(after_cursor),
-    ]));
-
-    let inner_height = inner.height as usize;
-    let max_skip = lines.len().saturating_sub(inner_height);
-    let skip = max_skip.saturating_sub(app.chat_scroll);
-    let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
-
-    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, inner);
+    ]);
+    let input_para = Paragraph::new(input_line);
+    frame.render_widget(input_para, chunks[1]);
 }
 
 fn render_activity_log(frame: &mut Frame, area: Rect, app: &App) {

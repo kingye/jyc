@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -61,6 +62,18 @@ impl ChannelMatcher for WebsocketMatcher {
 enum ServerMessage {
     #[serde(rename = "patterns")]
     Patterns { patterns: Vec<String> },
+    #[serde(rename = "history")]
+    History {
+        thread: String,
+        messages: Vec<HistoryEntry>,
+    },
+}
+
+/// A single entry in chat history.
+#[derive(Debug, Clone, serde::Serialize)]
+struct HistoryEntry {
+    sender: String,
+    text: String,
 }
 
 /// Inbound JSON protocol messages from clients.
@@ -90,6 +103,8 @@ pub struct WebsocketInboundAdapter {
     broadcast_tx: broadcast::Sender<String>,
     /// Message callback — set during `start()`, used by the WebSocket handler.
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
+    /// Workspace directory for loading chat history.
+    workspace_dir: Option<PathBuf>,
 }
 
 impl WebsocketInboundAdapter {
@@ -104,7 +119,13 @@ impl WebsocketInboundAdapter {
             patterns,
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            workspace_dir: None,
         }
+    }
+
+    /// Set the workspace directory for loading chat history.
+    pub fn set_workspace_dir(&mut self, dir: PathBuf) {
+        self.workspace_dir = Some(dir);
     }
 
     /// Return the channel name for this adapter.
@@ -131,6 +152,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let broadcast_rx = self.broadcast_tx.subscribe();
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
+        let workspace_dir = self.workspace_dir.clone();
 
         handle_connection_impl(
             ws_stream,
@@ -139,6 +161,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             pattern_names,
             broadcast_rx,
             on_message,
+            workspace_dir,
         )
         .await
     }
@@ -193,6 +216,7 @@ async fn handle_connection_impl<S>(
     pattern_names: Vec<String>,
     mut broadcast_rx: broadcast::Receiver<String>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
+    workspace_dir: Option<PathBuf>,
 ) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
@@ -247,6 +271,22 @@ where
                     }
                     ClientMessage::Subscribe { thread } => {
                         tracing::info!(addr = %addr, thread = %thread, "Client subscribed to thread");
+
+                        // Load and send chat history
+                        if let Some(ref dir) = workspace_dir {
+                            let history = load_chat_history(dir, &thread, 100);
+                            if !history.is_empty() {
+                                let response = ServerMessage::History {
+                                    thread: thread.clone(),
+                                    messages: history,
+                                };
+                                let json = serde_json::to_string(&response)?;
+                                if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                                    tracing::warn!(error = %e, addr = %addr, "Failed to send history");
+                                    break;
+                                }
+                            }
+                        }
                     }
                     ClientMessage::Message { thread, text } => {
                         let message = InboundMessage {
@@ -307,6 +347,67 @@ where
         .await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
+}
+
+/// Load recent chat history messages from JSONL files for a thread.
+///
+/// Reads `chat_history_*.jsonl` files in the thread directory, parses each
+/// line, and returns up to `max_messages` most recent entries.
+fn load_chat_history(workspace_dir: &Path, thread: &str, max_messages: usize) -> Vec<HistoryEntry> {
+    let thread_dir = workspace_dir.join(thread);
+    if !thread_dir.exists() {
+        return vec![];
+    }
+
+    // Collect and sort chat history files by name (descending = newest first)
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(&thread_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".jsonl"))
+            })
+            .collect(),
+        Err(_) => return vec![],
+    };
+    files.sort_by(|a, b| b.cmp(a)); // newest first
+
+    let mut entries = Vec::new();
+    for file in files {
+        if entries.len() >= max_messages {
+            break;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // Parse lines in reverse (most recent first within the file)
+        let mut file_entries: Vec<HistoryEntry> = content
+            .lines()
+            .rev()
+            .filter_map(|line| {
+                let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+                let msg_type = parsed.get("type")?.as_str()?;
+                let content = parsed.get("content")?.as_str()?;
+                let sender = match msg_type {
+                    "received" => "user",
+                    "reply" => "ai",
+                    _ => return None,
+                };
+                Some(HistoryEntry {
+                    sender: sender.to_string(),
+                    text: content.to_string(),
+                })
+            })
+            .collect();
+        file_entries.reverse(); // restore chronological order
+        entries.splice(0..0, file_entries);
+    }
+
+    entries.truncate(max_messages);
+    entries
 }
 
 #[cfg(test)]

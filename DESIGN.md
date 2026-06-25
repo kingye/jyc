@@ -199,11 +199,11 @@ Each component has a single, clear responsibility. Data flows through the system
 **MessageStorage**
 
 - Unified chat log storage: appends messages and replies to daily log files
-- HTML comment metadata: stores timestamp, type, sender, channel, and external ID
+- JSONL metadata: stores timestamp, type, matched, sender, sender_name, channel, external_id, topic, model, mode in JSON
 - Dual-write support: during migration, maintains compatibility with legacy format
 - No transformation or business logic - stores messages exactly as given
 - Chat logs are stored in `chat_history_YYYY-MM-DD.jsonl` files
-- Format: HTML comments for metadata + Markdown content
+- Format: one JSON object per line (JSONL)
 
 **PromptBuilder**
 
@@ -261,13 +261,7 @@ JYC 0.1.2 introduces a new unified chat log storage system that replaces the pre
 #### Log File Format
 
 ```
-<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
-**FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
-**SUBJECT:** self-hosting-jyc
-
-部署完成了吗？
-
----
+{"ts":"2026-04-07T01:18:31.002+00:00","type":"received","matched":true,"sender":"ou_c36ae8bf58a1d727fffd2289467fefce","channel":"feishu_bot","external_id":"om_x100b5271f8a044a0b4ca586517f9e5d","topic":"self-hosting-jyc","from":"ou_c36ae8bf58a1d727fffd2289467fefce","content":"部署完成了吗？"}
 ```
 
 #### Migration Strategy

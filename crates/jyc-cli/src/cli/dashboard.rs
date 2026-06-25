@@ -1132,10 +1132,10 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let mut all_lines: Vec<Line> = Vec::new();
 
     for msg in &app.chat_messages {
-        let (prefix, bar_color) = match msg.sender.as_str() {
-            "user" => ("**You:** ", Color::Red),
-            "ai" => ("**AI:** ", Color::Blue),
-            _ => ("", Color::DarkGray),
+        let (prefix, bar) = match msg.sender.as_str() {
+            "user" => ("**You:** ", "▶ "),
+            "ai" => ("**AI:** ", "◀ "),
+            _ => ("", "  "),
         };
 
         let md_text = format!("{prefix}{}\n", msg.text);
@@ -1143,7 +1143,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
         let msg_lines = renderer.render(&blocks, &theme);
 
         for line in msg_lines {
-            let bar_span = Span::styled("│ ", Style::new().fg(bar_color));
+            let bar_span = Span::raw(bar);
             let spans: Vec<Span> = std::iter::once(bar_span).chain(line).collect();
             all_lines.push(Line::from(spans));
         }

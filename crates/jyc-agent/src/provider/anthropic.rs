@@ -87,7 +87,7 @@ impl Provider for AnthropicProvider {
             .map(|t| AnthropicTool {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                input_schema: t.input_schema.clone(),
+                input_schema: sanitize_input_schema(t.input_schema.clone()),
             })
             .collect();
 
@@ -305,7 +305,7 @@ impl Provider for AnthropicProvider {
             .map(|t| AnthropicTool {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                input_schema: t.input_schema.clone(),
+                input_schema: sanitize_input_schema(t.input_schema.clone()),
             })
             .collect();
 
@@ -609,6 +609,22 @@ fn image_block_anthropic(source: &crate::types::ImageSource) -> serde_json::Valu
     }
 }
 
+/// Remove `oneOf`/`allOf`/`anyOf` from a JSON Schema object's top level.
+///
+/// Anthropic Claude Opus 4.6 does not support these JSON Schema
+/// composition keywords. External MCP tools may include them in
+/// their schema definitions, so we strip them defensively at the
+/// provider layer. The tool runtime performs its own parameter
+/// validation, so this sanitization is safe.
+fn sanitize_input_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("oneOf");
+        obj.remove("allOf");
+        obj.remove("anyOf");
+    }
+    schema
+}
+
 /// Anthropic tool definition format.
 #[derive(Serialize)]
 struct AnthropicTool {
@@ -622,8 +638,88 @@ mod tests {
     use super::*;
     use crate::types::Message;
     use futures::StreamExt;
+    use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn sanitize_input_schema_removes_one_of() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "oneOf": [{"required": ["name"]}]
+        });
+        let result = sanitize_input_schema(schema);
+        assert!(result.get("oneOf").is_none(), "oneOf should be removed");
+        assert!(result.get("type").is_some(), "type should be preserved");
+        assert!(
+            result.get("properties").is_some(),
+            "properties should be preserved"
+        );
+    }
+
+    #[test]
+    fn sanitize_input_schema_removes_all_of() {
+        let schema = json!({
+            "type": "object",
+            "allOf": [{"type": "object"}]
+        });
+        let result = sanitize_input_schema(schema);
+        assert!(result.get("allOf").is_none(), "allOf should be removed");
+        assert!(result.get("type").is_some(), "type should be preserved");
+    }
+
+    #[test]
+    fn sanitize_input_schema_removes_any_of() {
+        let schema = json!({
+            "type": "object",
+            "anyOf": [{"type": "object"}, {"type": "string"}]
+        });
+        let result = sanitize_input_schema(schema);
+        assert!(result.get("anyOf").is_none(), "anyOf should be removed");
+    }
+
+    #[test]
+    fn sanitize_input_schema_removes_all_composition_keywords() {
+        let schema = json!({
+            "type": "object",
+            "oneOf": [{"required": ["a"]}],
+            "allOf": [{"type": "object"}],
+            "anyOf": [{"type": "string"}]
+        });
+        let result = sanitize_input_schema(schema);
+        assert!(result.get("oneOf").is_none());
+        assert!(result.get("allOf").is_none());
+        assert!(result.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn sanitize_input_schema_passes_through_non_object() {
+        let schema = json!("string_value");
+        let result = sanitize_input_schema(schema);
+        assert_eq!(result, json!("string_value"));
+    }
+
+    #[test]
+    fn sanitize_input_schema_passes_through_null() {
+        let schema = json!(null);
+        let result = sanitize_input_schema(schema);
+        assert_eq!(result, json!(null));
+    }
+
+    #[test]
+    fn sanitize_input_schema_passes_through_clean_object() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        let result = sanitize_input_schema(schema.clone());
+        assert_eq!(result, schema, "clean object should pass through unchanged");
+    }
 
     /// When Anthropic rejects the request with 400, the diagnostic POST
     /// must recover the response body and include it in the error message

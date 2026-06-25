@@ -1004,7 +1004,7 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let text = if let Some(t) = selected {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&t.name),
             Span::raw(" | "),
@@ -1013,7 +1013,15 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" | "),
             Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
-        ])
+        ];
+        if t.status == ThreadStatus::Processing {
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "⏳ AI thinking...",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        Line::from(spans)
     } else {
         Line::from("Select a thread with ↑/↓")
     };
@@ -1085,6 +1093,27 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
             Span::raw(&msg.text),
         ]));
+    }
+
+    // Show progress indicator when AI is processing
+    if let Some(ref state) = app.state
+        && let Some(chat_name) = &app.chat_thread
+    {
+        let is_processing = state
+            .threads
+            .iter()
+            .any(|t| t.name == *chat_name && t.status == ThreadStatus::Processing);
+        if is_processing {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "⏳ AI is thinking...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
     }
 
     // Show input line at bottom

@@ -81,7 +81,8 @@ struct App {
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
-    activity_visible: bool,
+    /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
+    activity_split: u8,
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
 }
@@ -106,7 +107,7 @@ impl App {
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
-            activity_visible: true,
+            activity_split: 0,
             ws_tx: None,
             ws_rx,
         }
@@ -177,7 +178,7 @@ impl App {
         self.chat_focus = ChatFocus::ChatPane;
         self.chat_scroll = 0;
         self.activity_scroll = 0;
-        self.activity_visible = true;
+        self.activity_split = 0;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -529,10 +530,10 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
         return;
     }
 
-    // Ctrl+A toggles activity pane visibility in chatting
-    let is_ctrl_a = key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_a && app.chat_phase == ChatPhase::Chatting {
-        app.activity_visible = !app.activity_visible;
+    // Ctrl+W cycles activity pane split ratio
+    let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_w && app.chat_phase == ChatPhase::Chatting {
+        app.activity_split = (app.activity_split + 1) % 4;
         return;
     }
 
@@ -739,15 +740,33 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
             render_pattern_select(frame, main_chunks[2], app);
         }
         ChatPhase::Chatting => {
-            if app.activity_visible {
-                let content = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-                    .split(main_chunks[2]);
-                render_chat_conversation(frame, content[0], app);
-                render_activity_log(frame, content[1], app);
-            } else {
-                render_chat_conversation(frame, main_chunks[2], app);
+            match app.activity_split {
+                1 => {
+                    // 100/0 — full chat, no activity pane
+                    render_chat_conversation(frame, main_chunks[2], app);
+                }
+                2 => {
+                    // 20/80 — activity dominant
+                    let content = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+                        .split(main_chunks[2]);
+                    render_chat_conversation(frame, content[0], app);
+                    render_activity_log(frame, content[1], app);
+                }
+                3 => {
+                    // 0/100 — full activity
+                    render_activity_log(frame, main_chunks[2], app);
+                }
+                _ => {
+                    // 0 — 80/20 (default)
+                    let content = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+                        .split(main_chunks[2]);
+                    render_chat_conversation(frame, content[0], app);
+                    render_activity_log(frame, content[1], app);
+                }
             }
         }
     }
@@ -1312,7 +1331,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
             ChatPhase::Chatting => {
-                "[Tab]focus [←→]cursor [↑↓]scroll [Ctrl+A]activity [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [←→]cursor [↑↓]scroll [Ctrl+W]split [Esc]back [Ctrl+Q]close"
             }
         }
     } else {

@@ -479,6 +479,8 @@ impl JycAgentService {
                  - wait for user approval before any implementation\n\
                  This constraint is absolute — do not bypass it even if asked.\n\
                  Do not exit plan mode even if the user requests it.\n\
+                 Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n\
+                 You are in PLAN MODE.\n\
                  </system-reminder>\n\n",
             );
         }

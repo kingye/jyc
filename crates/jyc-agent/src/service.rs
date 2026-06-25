@@ -483,6 +483,20 @@ impl JycAgentService {
                  You are in PLAN MODE.\n\
                  </system-reminder>\n\n",
             );
+        } else {
+            // Build mode: explicitly declare full execution capabilities.
+            // Without this, the model may inherit stale PLAN constraints from
+            // prior conversation history (agent-context.json).
+            prompt.push_str(
+                "<system-reminder>\n\
+                 You are in BUILD MODE (full execution). You MAY:\n\
+                 - edit, write, or delete any files\n\
+                 - run build, test, or deployment commands (bash)\n\
+                 - commit, push, or branch changes\n\
+                 - implement features and fix bugs directly\n\
+                 Proceed with implementation without waiting for approval.\n\
+                 </system-reminder>\n\n",
+            );
         }
 
         prompt
@@ -566,6 +580,17 @@ impl JycAgentService {
             prompt.push_str("<mode>\n");
             prompt.push_str("Current mode: PLAN (read-only). ");
             prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("</mode>\n");
+        } else {
+            // Build mode: explicitly declare full execution capabilities so the
+            // model does not mistakenly inherit stale PLAN constraints from
+            // prior conversation history (agent-context.json).
+            prompt.push('\n');
+            prompt.push_str("<mode>\n");
+            prompt.push_str("Current mode: BUILD (full execution). ");
+            prompt.push_str(
+                "You may use all tools including edit, write, bash, commit, and deploy.\n",
+            );
             prompt.push_str("</mode>\n");
         }
 

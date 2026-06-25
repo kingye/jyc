@@ -59,8 +59,8 @@ This document outlines the phased implementation plan for building JYC, the Rust
 
 | # | Task | Files | Description | Test Strategy |
 |---|------|-------|-------------|---------------|
-| 3.1 | Message storage | `src/core/message_storage.rs` | `store(msg, thread_name)` → append to daily chat log (`chat_history_YYYY-MM-DD.md`). `store_reply(thread_path, reply_text, message_dir)` → append reply to chat log. Attachments saved by inbound adapter before reaching MessageRouter | Unit test: write/read round-trip |
-| 3.2 | Thread trail builder | `src/core/email_parser.rs` | `build_full_reply_text(thread_path, ...)` — build reply with quoted history from `chat_history_*.md` files. `prepare_body_for_quoting(thread_path, current_msg)` — format trail as quoted markdown blocks | Unit test: trail ordering, formatting |
+| 3.1 | Message storage | `src/core/message_storage.rs` | `store(msg, thread_name)` → append to daily chat log (`chat_history_YYYY-MM-DD.jsonl`). `store_reply(thread_path, reply_text, message_dir)` → append reply to chat log. Attachments saved by inbound adapter before reaching MessageRouter | Unit test: write/read round-trip |
+| 3.2 | Thread trail builder | `src/core/email_parser.rs` | `build_full_reply_text(thread_path, ...)` — build reply with quoted history from `chat_history_*.jsonl` files. `prepare_body_for_quoting(thread_path, current_msg)` — format trail as quoted markdown blocks | Unit test: trail ordering, formatting |
 | 3.3 | Channel registry | `src/channels/registry.rs` | `HashMap<String, Arc<dyn InboundAdapter>>` + `HashMap<String, Arc<dyn OutboundAdapter>>`. Register/lookup by channel name | Unit test: register and retrieve adapters |
 | 3.4 | Message router | `src/core/message_router.rs` | Receives `InboundMessage` via mpsc. Looks up adapter from registry. Calls `adapter.match_message()`. Calls `adapter.derive_thread_name()`. Sends to `ThreadManager::enqueue()` | Unit test with mock adapters |
 | 3.5 | Thread manager | `src/core/thread_manager.rs` | `Semaphore` + per-thread `mpsc` channels. `enqueue()`, `spawn_worker()`, process loop. Graceful shutdown via `CancellationToken`. Stats reporting (`get_stats()`) | Unit test: concurrency limiting, queue overflow, ordering |
@@ -341,7 +341,7 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 
 | # | Feature | Version | Description |
 |---|---------|---------|-------------|
-| 8.1 | Chat log storage | v0.1.1 | Unified daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata |
+| 8.1 | Chat log storage | v0.1.1 | Unified daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata |
 | 8.2 | Token-based session management | v0.1.3 | Replace time-based sessions with input token counting. Reset when approaching context limit. |
 | 8.3 | Vision MCP tool | v0.1.5 | `analyze_image` tool for image analysis via OpenAI-compatible vision APIs |
 | 8.4 | Unified attachment config | v0.1.5 | Global `[attachments]` config section for all channels |

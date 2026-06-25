@@ -21,3 +21,4 @@ jyc.bak
 jyc-data 
 
 *-mcps.toml
+**/__pycache__/

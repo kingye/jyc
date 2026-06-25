@@ -1151,6 +1151,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
                 all_lines.push(Line::from(spans));
             }
         }
+        // Blank line between messages
+        all_lines.push(Line::from(""));
     }
 
     // Show progress indicator

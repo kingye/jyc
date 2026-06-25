@@ -22,6 +22,7 @@ impl CommandHandler for NewCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let agent_path = context.thread_path.join(".jyc/agent-session.json");
         let context_path = context.thread_path.join(".jyc/agent-context.json");
+        let activity_path = context.thread_path.join(".jyc/activity.jsonl");
 
         let mut deleted_session = false;
         if agent_path.exists() {
@@ -30,6 +31,10 @@ impl CommandHandler for NewCommandHandler {
         }
         if context_path.exists() {
             tokio::fs::remove_file(&context_path).await?;
+            deleted_session = true;
+        }
+        if activity_path.exists() {
+            tokio::fs::remove_file(&activity_path).await?;
             deleted_session = true;
         }
 
@@ -213,5 +218,28 @@ mode = "agent"
         assert!(result.message.contains("2 chat history files removed"));
         assert!(!tmp.path().join("chat_history_2026-06-25.jsonl").exists());
         assert!(!tmp.path().join("chat_history_2026-06-24.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn test_new_deletes_activity_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("activity.jsonl"),
+            r#"{"text":"test","timestamp":"2026-06-25T10:00:00Z","severity":"info"}"#,
+        )
+        .await
+        .unwrap();
+
+        let handler = NewCommandHandler;
+        let ctx = test_context(tmp.path());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            !tmp.path().join(".jyc/activity.jsonl").exists(),
+            "activity.jsonl should be deleted by /new"
+        );
     }
 }

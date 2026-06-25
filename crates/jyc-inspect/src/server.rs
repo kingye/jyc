@@ -525,30 +525,38 @@ impl ActivityTracker {
                                                                     &event,
                                                                     ThreadEvent::ProcessingCompleted { .. }
                                                                 );
-                                                                 let entry = event_to_activity(&event);
-                                                                 let is_error = entry.severity == Severity::Error;
-                                                                 if let Some(ref path) = thread_path
-                                                                     && let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                         tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
-                                                                     }
-                                                                 let mut map = map.lock().await;
-                                                                 let state = map
-                                                                     .entry((channel_for_task.clone(), name.clone()))
-                                                                     .or_default();
-                                                                 state.entries.push_back(entry);
-                                                                 state.last_active_at = Some(event.timestamp());
-                                                                 if state.entries.len() > MAX_ACTIVITY_ENTRIES {
-                                                                     state.entries.pop_front();
-                                                                 }
-                                                                 if is_processing {
-                                                                     state.is_processing = true;
-                                                                     state.has_error = false;
-                                                                 } else if is_completed {
-                                                                     state.is_processing = false;
-                                                                 }
-                                                                 if is_error {
-                                                                     state.has_error = true;
-                                                                 }
+                                                                let entry = event_to_activity(&event);
+                                                                let is_error = entry.severity == Severity::Error;
+                                                                let is_progress =
+                                                                    matches!(&event, ThreadEvent::ProcessingProgress { .. });
+                                                                if let Some(ref path) = thread_path
+                                                                    && let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                        tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                    }
+                                                                let mut map = map.lock().await;
+                                                                let state = map
+                                                                    .entry((channel_for_task.clone(), name.clone()))
+                                                                    .or_default();
+                                                                // ProcessingProgress is a heartbeat, not a discrete
+                                                                // activity. Persist it to disk but skip the in-memory
+                                                                // activity log so it doesn't crowd out ToolStarted /
+                                                                // ToolCompleted entries that show the actual tool name.
+                                                                if !is_progress {
+                                                                    state.entries.push_back(entry);
+                                                                    if state.entries.len() > MAX_ACTIVITY_ENTRIES {
+                                                                        state.entries.pop_front();
+                                                                    }
+                                                                }
+                                                                state.last_active_at = Some(event.timestamp());
+                                                                if is_processing {
+                                                                    state.is_processing = true;
+                                                                    state.has_error = false;
+                                                                } else if is_completed {
+                                                                    state.is_processing = false;
+                                                                }
+                                                                if is_error {
+                                                                    state.has_error = true;
+                                                                }
                                                             }
                                                             None => break,
                                                         }

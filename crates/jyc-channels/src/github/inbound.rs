@@ -318,6 +318,8 @@ impl GithubInboundAdapter {
             .await
         {
             let _ = f.write_all(format!("{key}\n").as_bytes()).await;
+            let _ = f.flush().await;
+            let _ = f.sync_all().await;
         }
 
         // Compact when >5000 entries: rewrite with only what's in memory

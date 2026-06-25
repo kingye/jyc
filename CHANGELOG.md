@@ -6,6 +6,8 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Anthropic provider: strip `oneOf`/`allOf`/`anyOf` from tool `input_schema`.** Claude Opus 4.6 rejects these JSON Schema composition keywords with a 400 error. External MCP tools may include them, so the Anthropic provider now defensively strips them at the provider layer via `sanitize_input_schema()`. Both `complete()` and `complete_raw()` paths are covered. (#294, #300)
+
 - **jyc_send_to_thread attachments not delivered to target thread.** Fixed the
   tool creating `MessageAttachment` with `content: None`, causing
   `save_attachments_to_dir` to skip cross-thread files. Also surfaced attachment

@@ -16,6 +16,7 @@ use crate::command::close_handler::CloseCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
+use crate::command::model_handler::ModelCommandHandler;
 use crate::command::new_handler::NewCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
@@ -1023,6 +1024,7 @@ async fn process_message(
 
     let mut command_registry = CommandRegistry::new();
     command_registry.register(Box::new(HelpCommandHandler));
+    command_registry.register(Box::new(ModelCommandHandler));
     command_registry.register(Box::new(PlanCommandHandler));
     command_registry.register(Box::new(BuildCommandHandler));
     command_registry.register(Box::new(ResetCommandHandler));

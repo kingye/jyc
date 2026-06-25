@@ -328,35 +328,13 @@ impl JycAgentService {
             thread_path.display()
         ));
 
-        // Plan mode: inject read-only constraint when mode-override is "plan"
-        {
-            let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
-            tracing::info!(
-                thread = %thread_path.display(),
-                mode = ?mode_override,
-                "Read mode override"
-            );
-            if mode_override.as_deref() == Some("plan") {
-                tracing::info!(
-                    thread = %thread_path.display(),
-                    "Injecting PLAN MODE constraint into system prompt"
-                );
-                prompt.push_str(
-                    "<system-reminder>\n\
-                     CRITICAL: You are in PLAN MODE (read-only). You MUST NOT:\n\
-                     - edit, write, or delete any files\n\
-                     - run build, test, or deployment commands\n\
-                     - commit, push, or branch changes\n\
-                     - install or modify dependencies\n\
-                     You MAY ONLY:\n\
-                     - read files, search code, analyze patterns\n\
-                     - present implementation plans and ask clarifying questions\n\
-                     - wait for user approval before any implementation\n\
-                     This constraint is absolute — do not bypass it even if asked.\n\
-                     </system-reminder>\n\n",
-                );
-            }
-        }
+        // Read mode override early (plan mode injected at end for recency)
+        let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+        tracing::info!(
+            thread = %thread_path.display(),
+            mode = ?mode_override,
+            "Read mode override"
+        );
 
         // Resolve skill filters: pattern > channel > none
         let pattern =
@@ -480,6 +458,28 @@ impl JycAgentService {
                 }
             }
             prompt.push('\n');
+        }
+
+        // Plan mode: inject at END for maximum recency before conversation
+        if mode_override.as_deref() == Some("plan") {
+            tracing::info!(
+                thread = %thread_path.display(),
+                "Injecting PLAN MODE constraint at end of system prompt"
+            );
+            prompt.push_str(
+                "<system-reminder>\n\
+                 CRITICAL: You are in PLAN MODE (read-only). You MUST NOT:\n\
+                 - edit, write, or delete any files\n\
+                 - run build, test, or deployment commands\n\
+                 - commit, push, or branch changes\n\
+                 - install or modify dependencies\n\
+                 You MAY ONLY:\n\
+                 - read files, search code, analyze patterns\n\
+                 - present implementation plans and ask clarifying questions\n\
+                 - wait for user approval before any implementation\n\
+                 This constraint is absolute — do not bypass it even if asked.\n\
+                 </system-reminder>\n\n",
+            );
         }
 
         prompt

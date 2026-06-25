@@ -328,6 +328,27 @@ impl JycAgentService {
             thread_path.display()
         ));
 
+        // Plan mode: inject read-only constraint when mode-override is "plan"
+        {
+            let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+            if mode_override.as_deref() == Some("plan") {
+                prompt.push_str(
+                    "<system-reminder>\n\
+                     CRITICAL: You are in PLAN MODE (read-only). You MUST NOT:\n\
+                     - edit, write, or delete any files\n\
+                     - run build, test, or deployment commands\n\
+                     - commit, push, or branch changes\n\
+                     - install or modify dependencies\n\
+                     You MAY ONLY:\n\
+                     - read files, search code, analyze patterns\n\
+                     - present implementation plans and ask clarifying questions\n\
+                     - wait for user approval before any implementation\n\
+                     This constraint is absolute — do not bypass it even if asked.\n\
+                     </system-reminder>\n\n",
+                );
+            }
+        }
+
         // Resolve skill filters: pattern > channel > none
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));

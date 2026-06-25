@@ -1081,17 +1081,10 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
         if t.status == ThreadStatus::Processing {
             spans.push(Span::raw(" | "));
-            if let Some(latest) = t.activity.first() {
-                spans.push(Span::styled(
-                    format!("⏳ {}", latest.text),
-                    Style::default().fg(Color::Yellow),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    "⏳ AI thinking...",
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
+            spans.push(Span::styled(
+                "⏳ AI thinking...",
+                Style::default().fg(Color::Yellow),
+            ));
         }
         Line::from(spans)
     } else {
@@ -1191,15 +1184,19 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(ref state) = app.state
         && let Some(chat_name) = &app.chat_thread
     {
-        let is_processing = state
-            .threads
-            .iter()
-            .any(|t| t.name == *chat_name && t.status == ThreadStatus::Processing);
-        if is_processing {
+        let chat_thread = state.threads.iter().find(|t| t.name == *chat_name);
+        if let Some(ct) = chat_thread
+            && ct.status == ThreadStatus::Processing
+        {
+            let status_text = ct
+                .activity
+                .last()
+                .map(|a| format!("⏳ {}", a.text))
+                .unwrap_or_else(|| "⏳ AI is thinking...".to_string());
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    "⏳ AI is thinking...",
+                    status_text,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::ITALIC),

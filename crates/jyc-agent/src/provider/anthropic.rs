@@ -609,6 +609,22 @@ fn image_block_anthropic(source: &crate::types::ImageSource) -> serde_json::Valu
     }
 }
 
+/// Remove `oneOf`/`allOf`/`anyOf` from a JSON Schema object's top level.
+///
+/// Anthropic Claude Opus 4.6 does not support these JSON Schema
+/// composition keywords. External MCP tools may include them in
+/// their schema definitions, so we strip them defensively at the
+/// provider layer. The tool runtime performs its own parameter
+/// validation, so this sanitization is safe.
+fn sanitize_input_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("oneOf");
+        obj.remove("allOf");
+        obj.remove("anyOf");
+    }
+    schema
+}
+
 /// Anthropic tool definition format.
 #[derive(Serialize)]
 struct AnthropicTool {

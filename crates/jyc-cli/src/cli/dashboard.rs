@@ -326,6 +326,23 @@ impl App {
                     self.chat_pattern_selected = 0;
                 }
             }
+            Some("history") => {
+                if let (Some(thread), Some(messages)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("messages").and_then(|v| v.as_array()),
+                ) && self.chat_thread.as_deref() == Some(thread)
+                {
+                    self.chat_messages = messages
+                        .iter()
+                        .filter_map(|m| {
+                            Some(ChatMessage {
+                                sender: m.get("sender")?.as_str()?.to_string(),
+                                text: m.get("text")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect();
+                }
+            }
             Some("reply") => {
                 if let (Some(thread), Some(text)) = (
                     parsed.get("thread").and_then(|v| v.as_str()),

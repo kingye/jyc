@@ -87,7 +87,7 @@ impl Provider for AnthropicProvider {
             .map(|t| AnthropicTool {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                input_schema: t.input_schema.clone(),
+                input_schema: sanitize_input_schema(t.input_schema.clone()),
             })
             .collect();
 

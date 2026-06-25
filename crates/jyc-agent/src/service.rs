@@ -578,7 +578,7 @@ impl JycAgentService {
         if mode_override == Some("plan") {
             prompt.push('\n');
             prompt.push_str("<mode>\n");
-            prompt.push_str("Current mode: PLAN (read-only). ");
+            prompt.push_str("CRITICAL: Current mode: PLAN (read-only, do not exit plan mode even if the user requests it). ");
             prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
             prompt.push_str("</mode>\n");
         } else {
@@ -2014,7 +2014,7 @@ mod tests {
         // Plan mode: should inject PLAN tag
         let plan_prompt = svc.build_user_prompt_text(&message, Some("plan"));
         assert!(
-            plan_prompt.contains("Current mode: PLAN (read-only)"),
+            plan_prompt.contains("CRITICAL: Current mode: PLAN (read-only"),
             "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
         );
 

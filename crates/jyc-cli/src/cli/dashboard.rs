@@ -993,10 +993,15 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = app
-        .table_state
-        .selected()
-        .and_then(|i| state.threads.get(i));
+    let selected = if app.chat_visible && app.chat_phase == ChatPhase::Chatting {
+        app.chat_thread
+            .as_ref()
+            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
+    } else {
+        app.table_state
+            .selected()
+            .and_then(|i| state.threads.get(i))
+    };
 
     let text = if let Some(t) = selected {
         Line::from(vec![

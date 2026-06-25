@@ -186,7 +186,7 @@ fi
 - If ALL PDF sources fail → proceed to Image Phase
 - If ALL image sources fail → log to errors.jsonl as final failure
 - **NEVER assume an invoice URL requires login** — all known platforms (51fapiao, Maycur) use public links where the URL itself contains the access credential (hash, code, signatureString). Always try to download first.
-- **ALWAYS search `chat_history_*.md` for invoice URLs** — the incoming message prompt may be truncated (forwarded content stripped). The full email body including forwarded URLs is saved in the chat history file. Search ONLY the **latest** received message block (the last `type:received` entry), NOT the entire file. See PROCESSING.md "URL Extraction from Email Body" for the exact script.
+- **ALWAYS search `chat_history_*.jsonl` for invoice URLs** — the incoming message prompt may be truncated (forwarded content stripped). The full email body including forwarded URLs is saved in the chat history file. Search ONLY the **latest** received message record (the last `"type":"received"` entry), NOT the entire file. See PROCESSING.md "URL Extraction from Email Body" for the exact script.
 
 ### Validation Rules
 - 销售方税号 (Seller Tax ID): 18 characters, alphanumeric — **MANDATORY**

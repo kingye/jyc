@@ -48,13 +48,13 @@ is often stripped. You MUST use the bundled script to find invoice URLs.**
 
 The invoice download URL is often in the **forwarded** part of the email, which
 may not appear in the incoming message prompt. The full email body is saved in
-`chat_history_*.md`. Use the bundled script to extract URLs from the **latest**
+`chat_history_*.jsonl`. Use the bundled script to extract URLs from the **latest**
 received message only:
 
 ```bash
 # ⚠️ MANDATORY: Run this script FIRST in Step 2b to find invoice URLs.
 # Do NOT use grep, do NOT search email_body.txt, do NOT invent your own approach.
-# This script reads chat_history_*.md and extracts URLs from the LATEST message only.
+# This script reads chat_history_*.jsonl and extracts URLs from the LATEST message only.
 python3 .opencode/skills/invoice-processing/scripts/extract_urls.py
 ```
 

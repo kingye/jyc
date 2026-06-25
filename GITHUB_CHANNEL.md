@@ -327,17 +327,17 @@ Each thread gets its own directory:
 <workdir>/<channel_name>/workspace/
   issue-42/           ← Planner agent
     .jyc/
-    chat_history_*.md
+    chat_history_*.jsonl
     jyc/              ← Repo clone (read-only for planner)
     AGENTS.md         ← Planner role definition
   pr-43/              ← Developer agent
     .jyc/
-    chat_history_*.md
+    chat_history_*.jsonl
     jyc/              ← Repo clone (developer works here)
     AGENTS.md         ← Developer role definition
   review-pr-43/       ← Reviewer agent
     .jyc/
-    chat_history_*.md
+    chat_history_*.jsonl
     jyc/              ← Repo clone (read-only for reviewer)
     AGENTS.md         ← Reviewer role definition
 ```

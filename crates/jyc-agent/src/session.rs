@@ -550,7 +550,7 @@ async fn save_session_state(path: &Path, state: &SessionState) {
     }
 }
 
-/// Fallback: Load context from chat_history_*.md files (text-only).
+/// Fallback: Load context from chat_history_*.jsonl files (text-only).
 #[allow(dead_code)]
 async fn load_from_chat_history(
     thread_path: &Path,
@@ -562,7 +562,7 @@ async fn load_from_chat_history(
             .filter(|e| {
                 e.file_name()
                     .to_str()
-                    .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".md"))
+                    .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".jsonl"))
             })
             .map(|e| e.path())
             .collect(),
@@ -579,7 +579,7 @@ async fn load_from_chat_history(
             Err(_) => continue,
         };
 
-        let entries = parse_chat_entries(&content, cutoff);
+        let entries = parse_jsonl_entries(&content, cutoff);
         for entry in entries.into_iter().rev() {
             if messages.len() >= 20 {
                 break;
@@ -604,89 +604,49 @@ async fn load_from_chat_history(
     messages
 }
 
-/// Parse chat history markdown entries into Messages.
+/// Parse JSONL chat history entries into Messages.
 #[allow(dead_code)]
-fn parse_chat_entries(
+fn parse_jsonl_entries(
     content: &str,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
 ) -> Vec<Message> {
     let mut messages = Vec::new();
-    let mut current_type: Option<&str> = None;
-    let mut current_text = String::new();
-    let mut current_after_cutoff = cutoff.is_none();
 
     for line in content.lines() {
-        if line.starts_with("<!-- ") && line.ends_with(" -->") {
-            if let Some(msg_type) = current_type
-                && current_after_cutoff
-                && !current_text.trim().is_empty()
-            {
-                let msg = if msg_type == "received" {
-                    Message::user(current_text.trim().to_string())
-                } else {
-                    Message::assistant(current_text.trim().to_string())
-                };
-                messages.push(msg);
-            }
-
-            current_type = if line.contains("type:received") {
-                Some("received")
-            } else if line.contains("type:reply") {
-                Some("reply")
-            } else {
-                None
-            };
-            current_text.clear();
-
-            if let Some(cutoff_ts) = cutoff {
-                current_after_cutoff = extract_timestamp(line)
-                    .map(|ts| ts >= *cutoff_ts)
-                    .unwrap_or(false);
-            }
-        } else if line == "---" {
-            if let Some(msg_type) = current_type
-                && current_after_cutoff
-                && !current_text.trim().is_empty()
-            {
-                let msg = if msg_type == "received" {
-                    Message::user(current_text.trim().to_string())
-                } else {
-                    Message::assistant(current_text.trim().to_string())
-                };
-                messages.push(msg);
-            }
-            current_type = None;
-            current_text.clear();
-        } else if current_type.is_some()
-            && !line.starts_with("**FROM:**")
-            && !line.starts_with("**SUBJECT:**")
-        {
-            current_text.push_str(line);
-            current_text.push('\n');
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
         }
-    }
 
-    if let Some(msg_type) = current_type
-        && current_after_cutoff
-        && !current_text.trim().is_empty()
-    {
-        let msg = if msg_type == "received" {
-            Message::user(current_text.trim().to_string())
-        } else {
-            Message::assistant(current_text.trim().to_string())
+        let record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
+
+        // Apply cutoff filter
+        if let Some(cutoff_ts) = cutoff
+            && let Some(ts_str) = record.get("ts").and_then(|v| v.as_str())
+            && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str)
+            && ts.with_timezone(&chrono::Utc) < *cutoff_ts
+        {
+            continue;
+        }
+
+        let msg_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let content = record
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let msg = match msg_type {
+            "received" => Message::user(content),
+            "reply" => Message::assistant(content),
+            _ => continue,
+        };
+
         messages.push(msg);
     }
 
     messages
-}
-
-/// Extract timestamp from a chat history metadata comment line.
-#[allow(dead_code)]
-fn extract_timestamp(line: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let inner = line.strip_prefix("<!-- ")?.strip_suffix(" -->")?;
-    let ts_str = inner.split('|').next()?.trim();
-    chrono::DateTime::parse_from_rfc3339(ts_str)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .ok()
 }

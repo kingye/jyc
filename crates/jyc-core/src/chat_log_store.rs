@@ -1,7 +1,7 @@
-//! Chat log storage for persisting conversation history in log file format.
+//! Chat log storage for persisting conversation history in JSONL format.
 //!
-//! Replaces the timestamp directory approach with daily rolling log files.
-//! Each thread gets its own chat history files named `chat_history_YYYY-MM-DD.md`.
+//! Each thread gets its own chat history files named `chat_history_YYYY-MM-DD.jsonl`.
+//! Each line is a JSON object representing one message or reply.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -45,7 +45,7 @@ impl ChatLogStore {
     /// Get the path for today's chat history file.
     fn get_today_file_path(&self) -> PathBuf {
         self.thread_path
-            .join(format!("chat_history_{}.md", self.current_date))
+            .join(format!("chat_history_{}.jsonl", self.current_date))
     }
 
     /// Ensure the current file is open and ready for writing.
@@ -78,27 +78,8 @@ impl ChatLogStore {
     pub fn append_message(&mut self, message: &InboundMessage, is_matched: bool) -> Result<()> {
         self.ensure_file_open()?;
 
-        let matched_str = if is_matched {
-            "matched:true"
-        } else {
-            "matched:false"
-        };
-        let external_id_str = message
-            .external_id
-            .as_deref()
-            .map_or(String::new(), |id| format!(" | external_id:{}", id));
-
-        let content = message
-            .content
-            .text
-            .as_deref()
-            .or(message.content.markdown.as_deref())
-            .unwrap_or("[no text content]");
-
-        let mut formatted = String::new();
-
         // Extract user_name from metadata (e.g., WeCom KF provides display names)
-        let mut user_name = message
+        let user_name = message
             .metadata
             .get("user_name")
             .and_then(|v| v.as_str())
@@ -106,35 +87,29 @@ impl ChatLogStore {
             .map(|s| s.to_string());
 
         // Fallback: read from thread.json if metadata lacks user_name
-        if user_name.is_none()
-            && message.channel == "wecomkf"
-            && let Ok(Some(thread_json)) =
-                crate::thread_json::ThreadJson::read_sync(&self.thread_path)
-            && let Some(data) = thread_json.data
-            && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
-        {
-            user_name = Some(name.to_string());
-        }
+        let user_name = user_name.or_else(|| {
+            if message.channel == "wecomkf"
+                && let Ok(Some(thread_json)) =
+                    crate::thread_json::ThreadJson::read_sync(&self.thread_path)
+                && let Some(data) = thread_json.data
+                && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
+            {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        });
 
-        // Metadata comment — sender_address is the canonical ID, sender_name is the display name
-        let sender_name_str = if let Some(ref name) = user_name {
-            format!(" | sender_name:{}", name)
-        } else if message.sender != message.sender_address && !message.sender.is_empty() {
-            format!(" | sender_name:{}", message.sender)
-        } else {
-            String::new()
-        };
-        formatted.push_str(&format!(
-            "<!-- {} | type:received | {} | sender:{}{} | channel:{}{} -->\n",
-            message.timestamp.to_rfc3339(),
-            matched_str,
-            message.sender_address,
-            sender_name_str,
-            message.channel,
-            external_id_str
-        ));
+        // Compute sender_name (display name)
+        let sender_name = user_name.as_deref().or_else(|| {
+            if message.sender != message.sender_address && !message.sender.is_empty() {
+                Some(message.sender.as_str())
+            } else {
+                None
+            }
+        });
 
-        // Content header — use display name for readability
+        // Compute from_display
         let from_display = if let Some(ref name) = user_name {
             if !message.sender_address.is_empty() {
                 format!("{} ({})", name, message.sender_address)
@@ -146,53 +121,60 @@ impl ChatLogStore {
         } else {
             message.sender_address.clone()
         };
-        formatted.push_str(&format!("**FROM:** {}\n", from_display));
-        formatted.push_str(&format!("**SUBJECT:** {}\n\n", message.topic));
 
-        // Content body
-        formatted.push_str(content);
-        formatted.push_str("\n\n---\n");
+        let content = message
+            .content
+            .text
+            .as_deref()
+            .or(message.content.markdown.as_deref())
+            .unwrap_or("[no text content]");
 
-        self.append_formatted(&formatted)
+        let mut record = serde_json::json!({
+            "ts": message.timestamp.to_rfc3339(),
+            "type": "received",
+            "matched": is_matched,
+            "sender": message.sender_address,
+            "channel": message.channel,
+            "topic": message.topic,
+            "from": from_display,
+            "content": content,
+        });
+
+        if let Some(ref name) = sender_name {
+            record["sender_name"] = serde_json::json!(name);
+        }
+
+        if let Some(ref ext_id) = message.external_id {
+            record["external_id"] = serde_json::json!(ext_id);
+        }
+
+        let line = serde_json::to_string(&record)?;
+        self.append_formatted(&line)
     }
 
     /// Append a reply message to the chat log.
     pub fn append_reply(&mut self, reply_text: &str, metadata: &ReplyMetadata) -> Result<()> {
         self.ensure_file_open()?;
 
-        let model_str = metadata
-            .model
-            .as_deref()
-            .map_or(String::new(), |m| format!(" | model:{}", m));
-        let mode_str = metadata
-            .mode
-            .as_deref()
-            .map_or(String::new(), |m| format!(" | mode:{}", m));
+        let mut record = serde_json::json!({
+            "ts": Utc::now().to_rfc3339(),
+            "type": "reply",
+            "matched": true,
+            "sender": metadata.sender,
+            "channel": "jyc",
+            "content": reply_text,
+        });
 
-        let mut formatted = String::new();
-
-        // Metadata comment
-        formatted.push_str(&format!(
-            "<!-- {} | type:reply{} | matched:true | sender:{} | channel:jyc{} -->\n",
-            Utc::now().to_rfc3339(),
-            model_str,
-            metadata.sender,
-            mode_str
-        ));
-
-        // Content header
-        formatted.push_str(&format!("**REPLY-FROM:** {}\n", metadata.sender));
-        if !metadata.subject.is_empty() && metadata.subject != "Re:" {
-            formatted.push_str(&format!("**SUBJECT:** {}\n\n", metadata.subject));
-        } else {
-            formatted.push('\n');
+        if let Some(ref model) = metadata.model {
+            record["model"] = serde_json::json!(model);
         }
 
-        // Content body
-        formatted.push_str(reply_text);
-        formatted.push_str("\n\n---\n");
+        if let Some(ref mode) = metadata.mode {
+            record["mode"] = serde_json::json!(mode);
+        }
 
-        self.append_formatted(&formatted)
+        let line = serde_json::to_string(&record)?;
+        self.append_formatted(&line)
     }
 
     /// Append formatted content to the log file.
@@ -289,15 +271,16 @@ mod tests {
 
         // Read file content
         let content = std::fs::read_to_string(&file_path).unwrap();
-        assert!(content.contains("<!--"));
-        assert!(content.contains("type:received"));
-        assert!(content.contains("matched:true"));
-        assert!(content.contains("Hello, this is a test message."));
-        assert!(content.contains("---"));
-        // Sender display name + address when they differ (e.g. Feishu)
-        assert!(content.contains("sender:ou_test"));
-        assert!(content.contains("sender_name:Test User"));
-        assert!(content.contains("**FROM:** Test User (ou_test)"));
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+
+        assert_eq!(parsed["type"], "received");
+        assert_eq!(parsed["matched"], true);
+        assert_eq!(parsed["sender"], "ou_test");
+        assert_eq!(parsed["sender_name"], "Test User");
+        assert_eq!(parsed["from"], "Test User (ou_test)");
+        assert_eq!(parsed["content"], "Hello, this is a test message.");
+        assert!(parsed["ts"].is_string());
+        assert!(parsed["external_id"].is_string());
     }
 
     #[test]
@@ -318,11 +301,14 @@ mod tests {
 
         let file_path = store.get_today_file_path();
         let content = std::fs::read_to_string(&file_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
 
-        assert!(content.contains("type:reply"));
-        assert!(content.contains("model:ark/deepseek-v3.2"));
-        assert!(content.contains("mode:build"));
-        assert!(content.contains("This is a test reply."));
+        assert_eq!(parsed["type"], "reply");
+        assert_eq!(parsed["model"], "ark/deepseek-v3.2");
+        assert_eq!(parsed["mode"], "build");
+        assert_eq!(parsed["content"], "This is a test reply.");
+        assert_eq!(parsed["matched"], true);
+        assert!(parsed["ts"].is_string());
     }
 
     #[test]
@@ -347,16 +333,33 @@ mod tests {
         let file_path = store.get_today_file_path();
         let content = std::fs::read_to_string(&file_path).unwrap();
 
-        let lines: Vec<&str> = content.split("---\n").collect();
-        // Should have 4 entries + maybe empty trailing
-        assert!(lines.len() >= 4);
+        let lines: Vec<&str> = content.lines().collect();
+        // Should have 4 JSONL lines
+        assert_eq!(lines.len(), 4);
 
-        // Count message types
-        let received_count = content.matches("type:received").count();
-        let reply_count = content.matches("type:reply").count();
+        // Parse each line and verify types
+        let types: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v["type"].as_str().map(String::from))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(types, vec!["received", "reply", "received", "reply"]);
 
-        assert_eq!(received_count, 2);
-        assert_eq!(reply_count, 2);
+        // Verify matched values
+        let matched: Vec<bool> = lines
+            .iter()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v["matched"].as_bool())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(matched, vec![true, true, false, true]);
     }
 
     #[test]
@@ -386,8 +389,9 @@ mod tests {
 
         let file_path = store.get_today_file_path();
         let content = std::fs::read_to_string(&file_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         // Should use user_name from thread.json
-        assert!(content.contains("sender_name:张三"));
-        assert!(content.contains("**FROM:** 张三 (wecomkf:wm123)"));
+        assert_eq!(parsed["sender_name"], "张三");
+        assert_eq!(parsed["from"], "张三 (wecomkf:wm123)");
     }
 }

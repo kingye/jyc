@@ -99,7 +99,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                    Worker (per message) — ThreadManager                   │
 │                                                                          │
 │  0. If event support enabled: create thread event bus and start listener │
- │  1. MessageStorage::store(msg) → append to chat_history_YYYY-MM-DD.md   │
+ │  1. MessageStorage::store(msg) → append to chat_history_YYYY-MM-DD.jsonl   │
 │  2. Save inbound attachments (allowlisted)                               │
 │  3. CommandRegistry::process_commands(body, ctx)                         │
 │     → parse, execute, strip in single pass → cleaned body + results      │
@@ -174,7 +174,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
-13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.md`) with HTML comment metadata
+13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata
 14. **State Manager** — Track processed UIDs per channel, handle migrations
 15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
 16. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
@@ -199,11 +199,11 @@ Each component has a single, clear responsibility. Data flows through the system
 **MessageStorage**
 
 - Unified chat log storage: appends messages and replies to daily log files
-- HTML comment metadata: stores timestamp, type, sender, channel, and external ID
+- JSONL metadata: stores timestamp, type, matched, sender, sender_name, channel, external_id, topic, model, mode in JSON
 - Dual-write support: during migration, maintains compatibility with legacy format
 - No transformation or business logic - stores messages exactly as given
-- Chat logs are stored in `chat_history_YYYY-MM-DD.md` files
-- Format: HTML comments for metadata + Markdown content
+- Chat logs are stored in `chat_history_YYYY-MM-DD.jsonl` files
+- Format: one JSON object per line (JSONL)
 
 **PromptBuilder**
 
@@ -261,13 +261,7 @@ JYC 0.1.2 introduces a new unified chat log storage system that replaces the pre
 #### Log File Format
 
 ```
-<!-- 2026-04-07T01:18:31.002+00:00 | type:received | matched:true | sender:ou_c36ae8bf58a1d727fffd2289467fefce | channel:feishu_bot | external_id:om_x100b5271f8a044a0b4ca586517f9e5d -->
-**FROM:** ou_c36ae8bf58a1d727fffd2289467fefce
-**SUBJECT:** self-hosting-jyc
-
-部署完成了吗？
-
----
+{"ts":"2026-04-07T01:18:31.002+00:00","type":"received","matched":true,"sender":"ou_c36ae8bf58a1d727fffd2289467fefce","channel":"feishu_bot","external_id":"om_x100b5271f8a044a0b4ca586517f9e5d","topic":"self-hosting-jyc","from":"ou_c36ae8bf58a1d727fffd2289467fefce","content":"部署完成了吗？"}
 ```
 
 #### Migration Strategy
@@ -278,9 +272,9 @@ JYC 0.1.2 introduces a new unified chat log storage system that replaces the pre
 
 #### AI Access Pattern
 
-- AI uses `glob "chat_history_*.md"` to find log files
-- `read "chat_history_2026-04-07.md"` to access specific logs
-- `grep "keyword" --include "chat_history_*.md"` to search history
+- AI uses `glob "chat_history_*.jsonl"` to find log files
+- `read "chat_history_2026-04-07.jsonl"` to access specific logs
+- `grep "keyword" --include "chat_history_*.jsonl"` to search history
 
 ### Data Flow Summary
 
@@ -1454,7 +1448,7 @@ When a user sends a follow-up message while the AI is still processing the first
 2. The agent passes `rx` through to the SSE streaming loop (`prompt_with_sse()`)
 3. The SSE `tokio::select!` loop monitors `rx.recv()` alongside SSE events and timeout checks
 4. When a new message arrives during streaming:
-   - Append the new message to the daily chat log (`chat_history_YYYY-MM-DD.md`)
+   - Append the new message to the daily chat log (`chat_history_YYYY-MM-DD.jsonl`)
    - Process commands from the new message (e.g., `/model` switch)
    - Strip quoted history from the body
    - Update `.jyc/reply-context.json` with the new `incomingMessageDir`
@@ -1498,7 +1492,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 **ThreadManager** (`src/core/thread_manager.rs`) — Orchestrator:
 
 - Queue management: per-thread mpsc channels, semaphore-bounded concurrency
-- Message storage: append to daily chat log (`chat_history_YYYY-MM-DD.md`), save attachments
+- Message storage: append to daily chat log (`chat_history_YYYY-MM-DD.jsonl`), save attachments
 - Command processing: parse/execute/strip email commands, send command results
 - Agent dispatch: calls `agent.process()` via `Arc<dyn AgentService>`
 - Fallback: passes raw AI text to outbound adapter if MCP tool wasn't used
@@ -1660,7 +1654,7 @@ JYC uses the following subset of the OpenCode server API:
 │  ┌──────────────────────────────────────────┐                         │
 │  │ 1. STORE                                 │                         │
 │  │    MessageStorage::store(msg, thread)     │                         │
-│  │    → chat_history_YYYY-MM-DD.md (appended)  │                         │
+│  │    → chat_history_YYYY-MM-DD.jsonl (appended)  │                         │
 │  │    → save attachments (allowlisted)       │                         │
 │  └──────────────┬───────────────────────────┘                         │
 │                 │                                                     │
@@ -1815,7 +1809,7 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
      - Default threshold: 122,880 tokens (120K \* 1024)
      - Display format: `{current}K/{max}K` with 0.1K precision
    - **Context preservation**:
-     - Chat history is preserved in `chat_history_YYYY-MM-DD.md` files
+     - Chat history is preserved in `chat_history_YYYY-MM-DD.jsonl` files
      - AI can read chat history for context continuity after session reset
      - Session reset notification injected into AI prompt to reference chat history
 
@@ -1860,7 +1854,7 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
      - Max tokens: Shows actual reset threshold (model context 95% or configured value)
    - **Session reset notification**: When token limit is exceeded:
      - AI prompt includes notification about session reset
-     - References `chat_history_<date>.md` for previous conversation context
+     - References `chat_history_<date>.jsonl` for previous conversation context
      - Clear indication that this is a new session with fresh token counter
 
 6. **Incoming Message (Current)** — Latest message being processed
@@ -1954,7 +1948,7 @@ build*full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, m
 │
 ├── prepare_body_for_quoting(thread_path, current_message, max_history)
 │ │
-│ └── Read chat_history*\*.md files for conversation context
+│ └── Read chat_history*\*.jsonl files for conversation context
 │ │
 │ ├── Current incoming message (stripped of quoted history)
 │ │
@@ -1968,7 +1962,7 @@ build*full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, m
 
 ````
 
-**Trail ordering:** Conversation history is read from `chat_history_*.md` files. Messages and replies are interleaved chronologically, with the most recent entries first.
+**Trail ordering:** Conversation history is read from `chat_history_*.jsonl` files. Messages and replies are interleaved chronologically, with the most recent entries first.
 
 **Prompt echo stripping:** When the AI generates a fallback text response (because the MCP tool failed), it may echo parts of the prompt. `extract_text_from_parts()` strips these markers before building the full reply:
 - `## Incoming Message`
@@ -2102,7 +2096,7 @@ MCP Server (rmcp, stdio transport):
 
 ### Historical Message Quoting (Thread Trail)
 
-`build_full_reply_text()` builds the reply with quoted history from the thread's `chat_history_*.md` files.
+`build_full_reply_text()` builds the reply with quoted history from the thread's `chat_history_*.jsonl` files.
 
 - **Chronological ordering**: Messages and replies are read from chat log files, ordered newest first.
 - **Stripped bodies**: Received messages stripped of quoted history via `strip_quoted_history()`. Reply messages parsed to extract only the AI's response text.
@@ -2384,8 +2378,8 @@ assignees = ["kingye"]
 │   │   └── .processed-uids.txt         # One UID per line, append-only
 │   └── workspace/                       # Thread workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
 │       ├── <thread-dir-1>/              # OpenCode cwd for this thread
-│       │   ├── chat_history_2026-03-19.md   # Daily chat log (messages + replies)
-│       │   ├── chat_history_2026-03-20.md   # Next day's chat log
+│       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
+│       │   ├── chat_history_2026-03-20.jsonl   # Next day's chat log
 │       │   ├── attachments/                 # Saved inbound attachments (if configured)
 │       │   │   └── report.pdf
 │       │   ├── .jyc/
@@ -2649,30 +2643,16 @@ jyc/
 │       └── constants.rs              # Default configs, timeouts
 ```
 
-### Chat Log Entry Format (`chat_history_YYYY-MM-DD.md`)
+### Chat Log Entry Format (`chat_history_YYYY-MM-DD.jsonl`)
 
-```yaml
----
-channel: email
-uid: "12345"
-external_id: "<abc123@mail.example.com>"
-matched_pattern: "support"
-topic: "Help with feature X"
-timestamp: "2026-03-19T23:02:20Z"
----
+Each line is a JSON object with the following fields:
+
+```json
+{"ts":"2026-03-19T23:02:20Z","type":"received","matched":true,"sender":"user@example.com","sender_name":"User Name","channel":"email","external_id":"<abc123@mail.example.com>","topic":"Help with feature X","from":"User Name (user@example.com)","content":"Message body"}
 ```
 
-```markdown
-## Sender Name (10:15 AM)
-
-Message body content here (full body including quoted history preserved)
-
-_Attachments:_
-
-- **report.pdf** (application/pdf, 52410 bytes) saved
-- **malware.exe** (application/x-msdownload, 12345 bytes) skipped
-
----
+```json
+{"ts":"2026-03-19T23:02:21Z","type":"reply","matched":true,"sender":"jyc-bot","channel":"jyc","model":"ark/deepseek-v3.2","mode":"build","content":"AI reply text"}
 ```
 
 ### Chat Log Storage
@@ -2680,8 +2660,8 @@ _Attachments:_
 Messages and replies are appended to daily chat log files:
 
 ```
-chat_history_2026-03-19.md     # All messages and replies for this date
-chat_history_2026-03-20.md     # Next day's log (auto-rotated by date)
+chat_history_2026-03-19.jsonl     # All messages and replies for this date
+chat_history_2026-03-20.jsonl     # Next day's log (auto-rotated by date)
 ```
 
 Each log file contains chronological entries:

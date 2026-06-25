@@ -495,17 +495,25 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
 }
 
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
+    // Ctrl+Q is handled at the top level since it applies in both phases
+    let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if is_ctrl_q {
+        app.close_chat();
+        return;
+    }
+
     match app.chat_phase {
         ChatPhase::PatternSelect => match key.code {
-            KeyCode::Char('c') | KeyCode::Esc => {
+            KeyCode::Esc => {
                 app.close_chat();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 if app.chat_pattern_selected > 0 {
                     app.chat_pattern_selected -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if app.chat_pattern_selected + 1 < app.chat_patterns.len() {
                     app.chat_pattern_selected += 1;
                 }
@@ -519,26 +527,22 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
             _ => {}
         },
         ChatPhase::Chatting => match key.code {
-            KeyCode::Char('c') if key.modifiers.is_empty() => {
-                app.close_chat();
+            KeyCode::Enter
+                if !app.chat_input.trim().is_empty() && app.chat_focus == ChatFocus::ChatPane =>
+            {
+                app.send_chat_message();
             }
             KeyCode::Esc => {
-                app.go_to_pattern_select();
-            }
-            KeyCode::Char('p') if key.modifiers.is_empty() => {
                 app.go_to_pattern_select();
             }
             KeyCode::Tab => {
                 app.toggle_focus();
             }
-            KeyCode::PageUp => {
+            KeyCode::Up => {
                 app.scroll_up();
             }
-            KeyCode::PageDown => {
+            KeyCode::Down => {
                 app.scroll_down();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.send_chat_message();
             }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {
@@ -673,10 +677,9 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Channels bar
-            Constraint::Percentage(35), // Threads table
-            Constraint::Min(0),         // Bottom section (compact info + chat + activity)
-            Constraint::Length(1),      // Status bar
+            Constraint::Length(3), // Channels bar
+            Constraint::Min(0),    // Bottom section (compact info + chat + activity)
+            Constraint::Length(1), // Status bar
         ])
         .split(area);
 
@@ -687,10 +690,9 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Percentage(50), // Chat / Pattern select
             Constraint::Percentage(50), // Activity log
         ])
-        .split(main_chunks[2]);
+        .split(main_chunks[1]);
 
     render_channels(frame, main_chunks[0], app);
-    render_threads(frame, main_chunks[1], app);
     render_compact_info(frame, bottom_chunks[0], app);
 
     if app.chat_phase == ChatPhase::PatternSelect {
@@ -700,7 +702,7 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     render_activity_log(frame, bottom_chunks[2], app);
-    render_status_bar(frame, main_chunks[3], app);
+    render_status_bar(frame, main_chunks[2], app);
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
@@ -1036,15 +1038,10 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     // Show messages
     for msg in &app.chat_messages {
-        let prefix = if msg.sender == "user" {
-            "You: "
-        } else {
-            "AI: "
-        };
-        let style = if msg.sender == "user" {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::Green)
+        let (prefix, style) = match msg.sender.as_str() {
+            "user" => ("You: ", Style::default().fg(Color::Cyan)),
+            "ai" => ("AI: ", Style::default().fg(Color::Green)),
+            _ => ("● ", Style::default().fg(Color::DarkGray)),
         };
         lines.push(Line::from(vec![
             Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
@@ -1170,8 +1167,8 @@ fn render_activity_log_inner(
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
-            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/c]close",
-            ChatPhase::Chatting => "[Tab]focus [PgUp/PgDn]scroll [Ctrl+D]send [Esc/p]back [c]close",
+            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
+            ChatPhase::Chatting => "[Tab]focus [↑↓]scroll [Enter]send [Esc]back [Ctrl+Q]close",
         }
     } else {
         "[q]quit [↑↓]select [r]refresh [R]reload [s]reset [c]chat"

@@ -1133,8 +1133,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     for msg in &app.chat_messages {
         let (prefix, bar_color) = match msg.sender.as_str() {
-            "user" => ("**You:** ", Color::Cyan),
-            "ai" => ("**AI:** ", Color::Green),
+            "user" => ("**You:** ", Color::Red),
+            "ai" => ("**AI:** ", Color::Blue),
             _ => ("", Color::DarkGray),
         };
 

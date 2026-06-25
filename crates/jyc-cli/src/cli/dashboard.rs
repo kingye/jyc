@@ -1089,10 +1089,17 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
             "ai" => ("AI: ", Style::default().fg(Color::Green)),
             _ => ("● ", Style::default().fg(Color::DarkGray)),
         };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-            Span::raw(&msg.text),
-        ]));
+        let indent = Span::raw(" ".repeat(prefix.len()));
+        for (i, line) in msg.text.lines().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                    Span::raw(line),
+                ]));
+            } else {
+                lines.push(Line::from(vec![indent.clone(), Span::raw(line)]));
+            }
+        }
     }
 
     // Show progress indicator when AI is processing

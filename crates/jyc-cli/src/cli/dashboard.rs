@@ -81,6 +81,7 @@ struct App {
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
+    activity_visible: bool,
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
 }
@@ -105,6 +106,7 @@ impl App {
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
+            activity_visible: true,
             ws_tx: None,
             ws_rx,
         }
@@ -175,6 +177,7 @@ impl App {
         self.chat_focus = ChatFocus::ChatPane;
         self.chat_scroll = 0;
         self.activity_scroll = 0;
+        self.activity_visible = true;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -509,6 +512,13 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
         return;
     }
 
+    // Ctrl+A toggles activity pane visibility in chatting
+    let is_ctrl_a = key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_a && app.chat_phase == ChatPhase::Chatting {
+        app.activity_visible = !app.activity_visible;
+        return;
+    }
+
     match app.chat_phase {
         ChatPhase::PatternSelect => match key.code {
             KeyCode::Esc => {
@@ -695,31 +705,34 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Channels bar
-            Constraint::Min(0),    // Bottom section (compact info + chat + activity)
+            Constraint::Length(1), // Compact info bar
+            Constraint::Min(0),    // Content (chat + optional activity)
             Constraint::Length(1), // Status bar
         ])
         .split(area);
 
-    let bottom_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),      // Compact info bar
-            Constraint::Percentage(50), // Chat / Pattern select
-            Constraint::Percentage(50), // Activity log
-        ])
-        .split(main_chunks[1]);
-
     render_channels(frame, main_chunks[0], app);
-    render_compact_info(frame, bottom_chunks[0], app);
+    render_compact_info(frame, main_chunks[1], app);
 
-    if app.chat_phase == ChatPhase::PatternSelect {
-        render_pattern_select(frame, bottom_chunks[1], app);
-    } else {
-        render_chat_conversation(frame, bottom_chunks[1], app);
+    match app.chat_phase {
+        ChatPhase::PatternSelect => {
+            render_pattern_select(frame, main_chunks[2], app);
+        }
+        ChatPhase::Chatting => {
+            if app.activity_visible {
+                let content = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+                    .split(main_chunks[2]);
+                render_chat_conversation(frame, content[0], app);
+                render_activity_log(frame, content[1], app);
+            } else {
+                render_chat_conversation(frame, main_chunks[2], app);
+            }
+        }
     }
 
-    render_activity_log(frame, bottom_chunks[2], app);
-    render_status_bar(frame, main_chunks[2], app);
+    render_status_bar(frame, main_chunks[3], app);
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
@@ -1194,7 +1207,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
-            ChatPhase::Chatting => "[Tab]focus [↑↓]scroll [Enter]send [Esc]back [Ctrl+Q]close",
+            ChatPhase::Chatting => {
+                "[Tab]focus [←→]cursor [↑↓]scroll [Ctrl+A]activity [Esc]back [Ctrl+Q]close"
+            }
         }
     } else {
         "[q]quit [↑↓]select [r]refresh [R]reload [s]reset [c]chat"

@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use jyc_channels::websocket::{WebsocketInboundAdapter, WebsocketOutboundAdapter};
+use jyc_core::message_storage::MessageStorage;
 use jyc_inspect::server::WebsocketHandler;
 use jyc_types::{
     ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage, MessageContent,
@@ -15,7 +16,9 @@ use jyc_types::{
 #[tokio::test]
 async fn test_websocket_adapter_start_and_handle() {
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
-    let outbound = WebsocketOutboundAdapter::new(broadcast_tx.clone());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage);
 
     let patterns = vec![
         ChannelPattern {
@@ -158,7 +161,9 @@ async fn test_websocket_adapter_start_and_handle() {
 #[tokio::test]
 async fn test_websocket_broadcast_reply() {
     let (broadcast_tx, mut broadcast_rx) = broadcast::channel(16);
-    let outbound = WebsocketOutboundAdapter::new(broadcast_tx);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
 
     let message = InboundMessage {
         id: "test".to_string(),

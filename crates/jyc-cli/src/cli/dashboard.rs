@@ -1031,6 +1031,29 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
         ];
+        if let Some(ref model) = t.model {
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "Model: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(model));
+        }
+        if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
+            let pct = if max > 0 {
+                cur.checked_mul(100)
+                    .and_then(|v| v.checked_div(max))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                "Tokens: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+        }
         if t.status == ThreadStatus::Processing {
             spans.push(Span::raw(" | "));
             spans.push(Span::styled(
@@ -1102,28 +1125,31 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(inner);
 
-    // --- Messages area (markdown-rendered) ---
-    let mut md_text = String::new();
+    // --- Messages area (markdown-rendered with colored bars) ---
+    let renderer = ratatui_markdown::markdown::MarkdownRenderer::new(chunks[0].width as usize);
+    let theme = ratatui_markdown::theme::ThemeConfig::default();
+
+    let mut all_lines: Vec<Line> = Vec::new();
+
     for msg in &app.chat_messages {
-        match msg.sender.as_str() {
-            "user" => {
-                md_text.push_str("**You:** ");
-                md_text.push_str(&msg.text);
-                md_text.push('\n');
-            }
-            "ai" => {
-                md_text.push_str("**AI:** ");
-                md_text.push_str(&msg.text);
-                md_text.push('\n');
-            }
-            _ => {
-                md_text.push_str(&msg.text);
-                md_text.push('\n');
-            }
+        let (prefix, bar_color) = match msg.sender.as_str() {
+            "user" => ("**You:** ", Color::Cyan),
+            "ai" => ("**AI:** ", Color::Green),
+            _ => ("", Color::DarkGray),
+        };
+
+        let md_text = format!("{prefix}{}\n", msg.text);
+        let blocks = renderer.parse(&md_text);
+        let msg_lines = renderer.render(&blocks, &theme);
+
+        for line in msg_lines {
+            let mut spans = vec![Span::styled("│ ", Style::default().fg(bar_color))];
+            spans.extend(line.spans);
+            all_lines.push(Line::from(spans));
         }
     }
 
-    // Show progress indicator in markdown
+    // Show progress indicator
     if let Some(ref state) = app.state
         && let Some(chat_name) = &app.chat_thread
     {
@@ -1132,19 +1158,22 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
             .iter()
             .any(|t| t.name == *chat_name && t.status == ThreadStatus::Processing);
         if is_processing {
-            md_text.push_str("\n*⏳ AI is thinking...*\n");
+            all_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "⏳ AI is thinking...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
         }
     }
 
-    let renderer = ratatui_markdown::markdown::MarkdownRenderer::new(chunks[0].width as usize);
-    let theme = ratatui_markdown::theme::ThemeConfig::default();
-    let blocks = renderer.parse(&md_text);
-    let md_lines = renderer.render(&blocks, &theme);
-
     let inner_height = chunks[0].height as usize;
-    let max_skip = md_lines.len().saturating_sub(inner_height);
+    let max_skip = all_lines.len().saturating_sub(inner_height);
     let skip = max_skip.saturating_sub(app.chat_scroll);
-    let visible_lines: Vec<Line> = md_lines.into_iter().skip(skip).collect();
+    let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
 
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);

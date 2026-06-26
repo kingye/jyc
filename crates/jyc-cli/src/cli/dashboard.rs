@@ -521,6 +521,68 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     result
 }
 
+/// Format elapsed time from an RFC 3339 timestamp to now.
+/// Returns a string like "(15s)" or "(2m)" or "" if parsing fails.
+fn format_elapsed(timestamp: &Option<String>) -> String {
+    let ts = match timestamp {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let parsed = match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return String::new(),
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(parsed);
+    let secs = elapsed.num_seconds();
+    if secs < 0 {
+        return String::new();
+    }
+    if secs < 60 {
+        format!("({secs}s)")
+    } else {
+        format!("({}m)", secs / 60)
+    }
+}
+
+/// Move the cursor up or down one line within a multi-line string.
+///
+/// `down = true` moves down, `false` moves up. If the cursor is on the
+/// first/last line, it moves to the start/end of that line respectively.
+fn move_cursor_vertically(input: &str, cursor: &mut usize, down: bool) {
+    // Find the start of the current line
+    let line_start = input[..*cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = input[*cursor..]
+        .find('\n')
+        .map(|p| *cursor + p)
+        .unwrap_or(input.len());
+    let col = *cursor - line_start;
+
+    if down {
+        // Find the next line
+        if line_end < input.len() {
+            let next_start = line_end + 1;
+            let next_end = input[next_start..]
+                .find('\n')
+                .map(|p| next_start + p)
+                .unwrap_or(input.len());
+            *cursor = next_start + col.min(next_end - next_start);
+        } else {
+            // Already on last line, move to end
+            *cursor = input.len();
+        }
+    } else {
+        // Find the previous line
+        if line_start > 0 {
+            let prev_end = line_start - 1; // position of the \n
+            let prev_start = input[..prev_end].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            *cursor = prev_start + col.min(prev_end - prev_start);
+        } else {
+            // Already on first line, move to start
+            *cursor = 0;
+        }
+    }
+}
+
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
     // Ctrl+Q is handled at the top level since it applies in both phases
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -561,10 +623,16 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
             _ => {}
         },
         ChatPhase::Chatting => match key.code {
-            KeyCode::Enter
-                if !app.chat_input.trim().is_empty() && app.chat_focus == ChatFocus::ChatPane =>
-            {
-                app.send_chat_message();
+            KeyCode::Enter if app.chat_focus == ChatFocus::ChatPane => {
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    // Insert newline for multi-line input
+                    app.chat_input.insert(app.chat_cursor, '\n');
+                    app.chat_cursor += 1;
+                } else if !app.chat_input.trim().is_empty() {
+                    app.send_chat_message();
+                }
             }
             KeyCode::Esc => {
                 app.go_to_pattern_select();
@@ -573,10 +641,20 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                 app.toggle_focus();
             }
             KeyCode::Up => {
-                app.scroll_up();
+                if app.chat_focus == ChatFocus::ChatPane && app.chat_input.contains('\n') {
+                    // Move cursor up one line within multi-line input
+                    move_cursor_vertically(&app.chat_input, &mut app.chat_cursor, false);
+                } else {
+                    app.scroll_up();
+                }
             }
             KeyCode::Down => {
-                app.scroll_down();
+                if app.chat_focus == ChatFocus::ChatPane && app.chat_input.contains('\n') {
+                    // Move cursor down one line within multi-line input
+                    move_cursor_vertically(&app.chat_input, &mut app.chat_cursor, true);
+                } else {
+                    app.scroll_down();
+                }
             }
             KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
                 app.chat_cursor = app
@@ -1144,10 +1222,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split: scrollable messages (top) + fixed input line (bottom)
+    // Split: scrollable messages (top) + dynamic input area (bottom)
+    // Input area grows with content (up to 5 lines) for multi-line editing.
+    let input_line_count = app.chat_input.lines().count().clamp(1, 5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
         .split(inner);
 
     // --- Messages area (markdown-rendered with colored bars) ---
@@ -1188,20 +1268,38 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
         if let Some(ct) = chat_thread
             && ct.status == ThreadStatus::Processing
         {
-            let status_text = ct
-                .activity
-                .last()
-                .map(|a| format!("⏳ {}", a.text))
-                .unwrap_or_else(|| "⏳ AI is thinking...".to_string());
-            all_lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    status_text,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-            ]));
+            // Show up to 2 most recent activity entries
+            let recent: Vec<_> = ct.activity.iter().rev().take(2).collect();
+            if recent.is_empty() {
+                all_lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "⏳ AI is thinking...",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            } else {
+                for a in recent.iter().rev() {
+                    // Compute elapsed time from the activity's timestamp
+                    let elapsed = format_elapsed(&a.timestamp);
+                    let label = if elapsed.is_empty() {
+                        format!("⏳ {}", a.text)
+                    } else {
+                        format!("⏳ {} ({})", a.text, elapsed)
+                    };
+                    all_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            label,
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
+            }
         }
     }
 
@@ -1213,22 +1311,75 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);
 
-    // --- Input line (fixed at bottom) ---
+    // --- Input area (multi-line, at bottom) ---
     let focus_indicator = if app.chat_focus == ChatFocus::ChatPane {
         "▶ "
     } else {
         "  "
     };
+    let prompt_span = Span::styled("> ", Style::default().fg(Color::Yellow));
+
+    // Build input lines from chat_input, splitting on '\n'.
+    // The cursor block is inserted at the cursor position.
     let before_cursor = &app.chat_input[..app.chat_cursor];
     let after_cursor = &app.chat_input[app.chat_cursor..];
-    let input_line = Line::from(vec![
-        Span::raw(focus_indicator),
-        Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::raw(before_cursor),
-        Span::styled("▌", Style::default().fg(Color::Yellow)),
-        Span::raw(after_cursor),
-    ]);
-    let input_para = Paragraph::new(input_line);
+
+    let mut input_lines: Vec<Line> = Vec::new();
+    let before_lines: Vec<&str> = before_cursor.split('\n').collect();
+    let after_lines: Vec<&str> = after_cursor.split('\n').collect();
+
+    // The cursor is at the boundary between before_lines (last) and after_lines (first).
+    // before_cursor ends at the end of before_lines' last element.
+    // after_cursor starts at the beginning of after_lines' first element.
+    let n_before = before_lines.len();
+    let n_after = after_lines.len();
+    let total_lines = n_before + n_after - 1; // they share the cursor line
+
+    for (i, _) in (0..total_lines).enumerate() {
+        let mut spans: Vec<Span> = Vec::new();
+        if i == 0 {
+            spans.push(Span::raw(focus_indicator));
+            spans.push(prompt_span.clone());
+        } else {
+            spans.push(Span::raw("    ")); // indent to align after "▶ > "
+        }
+
+        if i < n_before - 1 {
+            // Full line before cursor line
+            spans.push(Span::raw(before_lines[i]));
+        } else if i == n_before - 1 && n_after == 1 {
+            // Cursor line: before + cursor + after (single line)
+            spans.push(Span::raw(before_lines[i]));
+            spans.push(Span::styled("▌", Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(after_lines[0]));
+        } else if i == n_before - 1 {
+            // Cursor line: before + cursor (after has more lines)
+            spans.push(Span::raw(before_lines[i]));
+            spans.push(Span::styled("▌", Style::default().fg(Color::Yellow)));
+        } else {
+            // After cursor lines
+            let after_idx = i - n_before + 1;
+            spans.push(Span::raw(after_lines[after_idx]));
+        }
+
+        input_lines.push(Line::from(spans));
+    }
+
+    // When input exceeds the visible area, scroll to keep the cursor line visible.
+    let cursor_line = before_lines.len() - 1; // 0-indexed line where cursor is
+    let visible_input_lines = input_line_count as usize;
+    let input_scroll = if total_lines > visible_input_lines {
+        // Keep cursor visible: scroll so cursor_line is within the visible window
+        if cursor_line < visible_input_lines {
+            0
+        } else {
+            cursor_line - visible_input_lines + 1
+        }
+    } else {
+        0
+    };
+
+    let input_para = Paragraph::new(input_lines).scroll((input_scroll as u16, 0));
     frame.render_widget(input_para, chunks[1]);
 }
 

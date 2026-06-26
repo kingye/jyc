@@ -522,7 +522,7 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
 }
 
 /// Format elapsed time from an RFC 3339 timestamp to now.
-/// Returns a string like "(15s)" or "(2m)" or "" if parsing fails.
+/// Returns a string like "15s" or "2m" or "" if parsing fails.
 fn format_elapsed(timestamp: &Option<String>) -> String {
     let ts = match timestamp {
         Some(t) => t,
@@ -538,9 +538,9 @@ fn format_elapsed(timestamp: &Option<String>) -> String {
         return String::new();
     }
     if secs < 60 {
-        format!("({secs}s)")
+        format!("{secs}s")
     } else {
-        format!("({}m)", secs / 60)
+        format!("{}m", secs / 60)
     }
 }
 
@@ -1281,13 +1281,22 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
                     ),
                 ]));
             } else {
-                for a in recent.iter().rev() {
-                    // Compute elapsed time from the activity's timestamp
-                    let elapsed = format_elapsed(&a.timestamp);
-                    let label = if elapsed.is_empty() {
-                        format!("⏳ {}", a.text)
+                let total = recent.len();
+                for (idx, a) in recent.iter().rev().enumerate() {
+                    let is_last = idx == total - 1;
+                    let elapsed = if is_last {
+                        format_elapsed(&a.timestamp)
                     } else {
-                        format!("⏳ {} ({})", a.text, elapsed)
+                        String::new()
+                    };
+                    let label = if is_last {
+                        if elapsed.is_empty() {
+                            format!("⏳ {}", a.text)
+                        } else {
+                            format!("⏳ {} {}", a.text, elapsed)
+                        }
+                    } else {
+                        format!("  {}", a.text)
                     };
                     all_lines.push(Line::from(vec![
                         Span::raw("  "),

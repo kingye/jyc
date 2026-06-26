@@ -78,18 +78,26 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         &self,
         _original: &InboundMessage,
         reply_text: &str,
-        _thread_path: &Path,
+        thread_path: &Path,
         _message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        let thread = _original.topic.as_str();
+        // Use the thread directory name (last path component) as the
+        // broadcast key. This matches what WebSocket clients subscribe to
+        // (the thread name derived by the matcher). Using `_original.topic`
+        // would fail for scheduled jobs, where `topic` is a descriptive
+        // string ("Scheduled job: ...") rather than the thread name.
+        let thread = thread_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(_original.topic.as_str());
         self.broadcast_reply(thread, reply_text).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
 
         // Persist reply to chat log for history loading
         if let Err(e) = self
             .storage
-            .store_reply(_thread_path, reply_text, _message_dir)
+            .store_reply(thread_path, reply_text, _message_dir)
             .await
         {
             tracing::warn!(error = %e, "Failed to store WebSocket reply to chat log");
@@ -120,7 +128,9 @@ mod tests {
     async fn test_send_reply_broadcasts() {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
-        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let thread_path = tmp.path().join("general");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&thread_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
@@ -146,7 +156,7 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", tmp.path(), "msg_001", None)
+            .send_reply(&message, "AI reply", &thread_path, "msg_001", None)
             .await;
         assert!(result.is_ok());
 
@@ -157,12 +167,63 @@ mod tests {
         assert_eq!(parsed["text"], "AI reply");
     }
 
+    /// Regression test: scheduled jobs set `topic` to a descriptive string
+    /// ("Scheduled job: ...") rather than the thread name. The broadcast
+    /// must use the thread directory name so WebSocket clients subscribed
+    /// to the thread actually receive the reply.
+    #[tokio::test]
+    async fn test_send_reply_uses_thread_path_not_topic_for_job() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let thread_path = tmp.path().join("dev");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&thread_path));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+
+        // Simulate a scheduled job message: topic is descriptive, not the thread name
+        let message = InboundMessage {
+            id: "job-123".to_string(),
+            channel: "websocket".to_string(),
+            channel_uid: "job-123".to_string(),
+            sender: "scheduler".to_string(),
+            sender_address: "scheduler@jyc".to_string(),
+            recipients: vec![],
+            topic: "Scheduled job: check CI status".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("check CI".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: std::collections::HashMap::new(),
+            matched_pattern: None,
+        };
+
+        let result = adapter
+            .send_reply(&message, "CI passed!", &thread_path, "msg_001", None)
+            .await;
+        assert!(result.is_ok());
+
+        let sent = rx.recv().await.expect("should receive broadcast");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "reply");
+        // Thread must be "dev" (from thread_path), NOT "Scheduled job: ..."
+        assert_eq!(parsed["thread"], "dev");
+        assert_eq!(parsed["text"], "CI passed!");
+    }
+
     #[tokio::test]
     async fn test_send_without_receiver_ok() {
         // broadcast with no receivers should still succeed
         let tx = broadcast::channel(16).0;
         let tmp = tempfile::TempDir::new().unwrap();
-        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let thread_path = tmp.path().join("general");
+        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&thread_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
@@ -188,7 +249,7 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", tmp.path(), "msg_001", None)
+            .send_reply(&message, "AI reply", &thread_path, "msg_001", None)
             .await;
         assert!(result.is_ok());
     }
@@ -196,7 +257,9 @@ mod tests {
     #[test]
     fn test_clean_body_passthrough() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let thread_path = tmp.path().join("general");
+        std::fs::create_dir_all(&thread_path).unwrap();
+        let storage = Arc::new(MessageStorage::new(&thread_path));
         let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0, storage);
         assert_eq!(adapter.clean_body("hello\nworld"), "hello\nworld");
     }

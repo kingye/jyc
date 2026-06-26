@@ -642,7 +642,7 @@ impl ThreadManager {
     /// This includes both actively queued threads and idle threads that have been
     /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
-        use crate::session_state::{read_input_tokens, read_mode_override, read_model_override};
+        use crate::session_state::{read_input_tokens, read_mode_override};
 
         // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
@@ -679,29 +679,75 @@ impl ThreadManager {
             // Read session state
             let (input_tokens, max_tokens) = read_input_tokens(&thread_path).await;
 
-            // Resolve effective model with priority:
-            // 1. .jyc/model-override file (manual runtime override)
-            // 2. Pattern-level model from config
-            // 3. Channel-level model from config
-            // 4. Global agent model from config
-            let model = read_model_override(&thread_path)
-                .await
-                .or_else(|| {
-                    let pattern_name = pattern.as_ref()?;
-                    let cfg = self.config.load();
-                    let channel_cfg = cfg.channels.get(&self.channel_name)?;
-                    let patterns = channel_cfg.patterns.as_ref()?;
-                    let matched = patterns.iter().find(|p| p.name == *pattern_name)?;
-                    matched.model.clone()
-                })
-                .or_else(|| {
-                    let cfg = self.config.load();
-                    let channel_cfg = cfg.channels.get(&self.channel_name)?;
-                    channel_cfg.model.clone()
-                })
-                .or_else(|| self.config.load().agent.model.clone());
-
+            // Read mode first — needed to resolve mode-specific model overrides.
             let mode = read_mode_override(&thread_path).await;
+
+            // Read mode-specific override file first, fallback to legacy.
+            let file_override = {
+                async fn read_trimmed(path: &std::path::Path) -> Option<String> {
+                    tokio::fs::read_to_string(path)
+                        .await
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                }
+                let plan_path = thread_path.join(".jyc").join("plan-model-override");
+                let build_path = thread_path.join(".jyc").join("build-model-override");
+                let legacy_path = thread_path.join(".jyc").join("model-override");
+
+                let mode_specific = match mode.as_deref() {
+                    Some("plan") => read_trimmed(&plan_path).await,
+                    Some("build") => read_trimmed(&build_path).await,
+                    _ => None,
+                };
+                if mode_specific.is_some() {
+                    mode_specific
+                } else {
+                    read_trimmed(&legacy_path).await
+                }
+            };
+
+            // Resolve effective model with priority:
+            // 1. .jyc/<mode>-model-override (mode-specific runtime override)
+            // 2. .jyc/model-override (legacy generic override)
+            // 3. Pattern-level plan_model / build_model (mode-specific)
+            // 4. Pattern-level model (generic)
+            // 5. Channel-level model (generic)
+            // 6. Global plan_model / build_model (mode-specific)
+            // 7. Global model (generic)
+
+            let model = if let Some(ref m) = file_override {
+                Some(m.clone())
+            } else if let Some(ref pattern_name) = pattern {
+                let cfg = self.config.load();
+                let channel_cfg = cfg.channels.get(&self.channel_name);
+                let pattern_override = channel_cfg
+                    .and_then(|c| c.patterns.as_ref())
+                    .and_then(|pats| pats.iter().find(|p| p.name == *pattern_name));
+                pattern_override
+                    .and_then(|p| match mode.as_deref() {
+                        Some("plan") => p.plan_model.clone(),
+                        Some("build") => p.build_model.clone(),
+                        _ => None,
+                    })
+                    .or_else(|| pattern_override.and_then(|p| p.model.clone()))
+            } else {
+                None
+            }
+            .or_else(|| {
+                let cfg = self.config.load();
+                let channel_cfg = cfg.channels.get(&self.channel_name)?;
+                channel_cfg.model.clone()
+            })
+            .or_else(|| {
+                let cfg = self.config.load();
+                match mode.as_deref() {
+                    Some("plan") => cfg.agent.plan_model.clone(),
+                    Some("build") => cfg.agent.build_model.clone(),
+                    _ => None,
+                }
+            })
+            .or_else(|| self.config.load().agent.model.clone());
 
             // Read skills from .jyc/skills.json
             let skills = read_skills(&thread_path).await;

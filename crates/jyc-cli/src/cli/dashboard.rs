@@ -1365,7 +1365,21 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
         input_lines.push(Line::from(spans));
     }
 
-    let input_para = Paragraph::new(input_lines);
+    // When input exceeds the visible area, scroll to keep the cursor line visible.
+    let cursor_line = before_lines.len() - 1; // 0-indexed line where cursor is
+    let visible_input_lines = input_line_count as usize;
+    let input_scroll = if total_lines > visible_input_lines {
+        // Keep cursor visible: scroll so cursor_line is within the visible window
+        if cursor_line < visible_input_lines {
+            0
+        } else {
+            cursor_line - visible_input_lines + 1
+        }
+    } else {
+        0
+    };
+
+    let input_para = Paragraph::new(input_lines).scroll((input_scroll as u16, 0));
     frame.render_widget(input_para, chunks[1]);
 }
 

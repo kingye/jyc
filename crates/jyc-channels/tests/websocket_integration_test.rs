@@ -188,11 +188,13 @@ async fn test_websocket_broadcast_reply() {
     };
 
     // Send reply should broadcast
+    // Use a thread path whose last component is "general" — this is what
+    // the broadcast key is derived from (not the message topic).
     let result = outbound
         .send_reply(
             &message,
             "AI reply",
-            std::path::Path::new("/tmp"),
+            std::path::Path::new("/tmp/general"),
             "msg_001",
             None,
         )

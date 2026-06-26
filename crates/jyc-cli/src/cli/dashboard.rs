@@ -521,6 +521,29 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     result
 }
 
+/// Format elapsed time from an RFC 3339 timestamp to now.
+/// Returns a string like "(15s)" or "(2m)" or "" if parsing fails.
+fn format_elapsed(timestamp: &Option<String>) -> String {
+    let ts = match timestamp {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let parsed = match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return String::new(),
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(parsed);
+    let secs = elapsed.num_seconds();
+    if secs < 0 {
+        return String::new();
+    }
+    if secs < 60 {
+        format!("({secs}s)")
+    } else {
+        format!("({}m)", secs / 60)
+    }
+}
+
 /// Move the cursor up or down one line within a multi-line string.
 ///
 /// `down = true` moves down, `false` moves up. If the cursor is on the
@@ -1259,10 +1282,17 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
                 ]));
             } else {
                 for a in recent.iter().rev() {
+                    // Compute elapsed time from the activity's timestamp
+                    let elapsed = format_elapsed(&a.timestamp);
+                    let label = if elapsed.is_empty() {
+                        format!("⏳ {}", a.text)
+                    } else {
+                        format!("⏳ {} ({})", a.text, elapsed)
+                    };
                     all_lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
-                            format!("⏳ {}", a.text),
+                            label,
                             Style::default()
                                 .fg(Color::Yellow)
                                 .add_modifier(Modifier::ITALIC),

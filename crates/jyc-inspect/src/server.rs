@@ -520,6 +520,7 @@ impl ActivityTracker {
                                                                     ThreadEvent::ProcessingStarted { .. }
                                                                     | ThreadEvent::ProcessingProgress { .. }
                                                                     | ThreadEvent::ToolStarted { .. }
+                                                                    | ThreadEvent::LLMRequestStarted { .. }
                                                                 );
                                                                 let is_completed = matches!(
                                                                     &event,
@@ -706,6 +707,9 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Failed ({duration_secs}s)")
             }
         }
+        ThreadEvent::LLMRequestStarted { iteration, .. } => {
+            format!("Thinking... (iteration {iteration})")
+        }
         ThreadEvent::ToolStarted {
             tool_name, input, ..
         } => match input {
@@ -717,10 +721,16 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             success,
             duration_secs,
             output,
+            input,
             ..
         } => {
             if *success {
-                format!("Tool: {tool_name} (done, {duration_secs}s)")
+                match input {
+                    Some(inp) => {
+                        format!("Tool: {tool_name} (done, {duration_secs}s) — {inp}")
+                    }
+                    None => format!("Tool: {tool_name} (done, {duration_secs}s)"),
+                }
             } else {
                 match output {
                     Some(err) => {

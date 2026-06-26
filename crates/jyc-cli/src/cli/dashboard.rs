@@ -1339,7 +1339,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
                         format!("⏳ {} {}", a.text, elapsed)
                     }
                 } else {
-                    format!("  {}", a.text)
+                    // Pad with 3 spaces to visually align with "⏳ " on the
+                    // last line (⏳ emoji is double-width in most terminals).
+                    format!("   {}", a.text)
                 };
                 all_lines.push(Line::from(vec![
                     Span::raw("  "),

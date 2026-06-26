@@ -338,4 +338,81 @@ mode = "agent"
         assert!(!result.success);
         assert!(result.message.contains("unknown model"));
     }
+
+    #[tokio::test]
+    async fn test_switch_model_in_plan_mode_writes_plan_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Simulate plan mode
+        tokio::fs::write(jyc_dir.join("mode-override"), "plan\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["deepseek/deepseek-reasoner".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // Should write to plan-model-override, not model-override
+        assert!(jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
+            .await
+            .unwrap();
+        assert_eq!(content, "deepseek/deepseek-reasoner");
+    }
+
+    #[tokio::test]
+    async fn test_switch_model_in_build_mode_writes_build_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Simulate build mode
+        tokio::fs::write(jyc_dir.join("mode-override"), "build\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["deepseek/deepseek-chat".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // Should write to build-model-override
+        assert!(jyc_dir.join("build-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(jyc_dir.join("build-model-override"))
+            .await
+            .unwrap();
+        assert_eq!(content, "deepseek/deepseek-chat");
+    }
+
+    #[tokio::test]
+    async fn test_reset_clears_all_mode_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("plan-model-override"), "deepseek/some\n")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("build-model-override"), "ark/glm\n")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("model-override"), "legacy-model\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["reset".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("reset to default model"));
+
+        assert!(!jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("build-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+    }
 }

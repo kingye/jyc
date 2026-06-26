@@ -123,7 +123,7 @@ impl CommandHandler for ModelCommandHandler {
                     let filename = match current_mode.as_deref() {
                         Some("plan") => "plan-model-override",
                         Some("build") => "build-model-override",
-                        _ => "model-override",
+                        _ => "build-model-override", // None = default build mode
                     };
                     let override_path = jyc_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
@@ -271,7 +271,7 @@ mode = "agent"
                 .contains("switched to deepseek/deepseek-chat")
         );
 
-        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/model-override"))
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/build-model-override"))
             .await
             .unwrap();
         assert_eq!(content, "deepseek/deepseek-chat");
@@ -282,9 +282,12 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("model-override"), "deepseek/deepseek-chat\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            jyc_dir.join("build-model-override"),
+            "deepseek/deepseek-chat\n",
+        )
+        .await
+        .unwrap();
 
         let mut ctx = test_context(tmp.path());
         ctx.args = vec!["reset".into()];
@@ -292,7 +295,7 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("reset to default model"));
-        assert!(!jyc_dir.join("model-override").exists());
+        assert!(!jyc_dir.join("build-model-override").exists());
     }
 
     #[tokio::test]

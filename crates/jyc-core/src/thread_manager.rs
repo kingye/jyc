@@ -12,6 +12,7 @@ use crate::thread_event::ThreadEvent;
 use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
 
 use crate::agent::AgentService;
+use crate::command::cancel_handler::CancelCommandHandler;
 use crate::command::close_handler::CloseCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
@@ -1089,6 +1090,7 @@ async fn process_message(
     command_registry.register(Box::new(NewCommandHandler));
     command_registry.register(Box::new(TemplateCommandHandler));
     command_registry.register(Box::new(CloseCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(CancelCommandHandler::new(thread_manager.clone())));
 
     let cmd_context = CommandContext {
         args: vec![],

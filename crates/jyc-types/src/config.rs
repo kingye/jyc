@@ -318,6 +318,14 @@ pub struct AgentConfig {
     /// Model identifier in "provider/model-id" format (e.g., "anthropic/claude-opus-4-6")
     pub model: Option<String>,
 
+    /// Model override for plan (read-only) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub plan_model: Option<String>,
+
+    /// Model override for build (full execution) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub build_model: Option<String>,
+
     /// Optional small/fast model used for ancillary LLM work (cycle-boundary
     /// progress summary and between-message context-reset summary). Falls
     /// back to the main `model` if unset or if provider construction fails

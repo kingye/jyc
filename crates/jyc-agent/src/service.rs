@@ -1077,26 +1077,41 @@ impl AgentService for JycAgentService {
         // 1. Read mode override for this thread (used to select mode-specific model)
         let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
 
-        // 1a. Determine the mode-specific suffix ("plan" or "build") for file,
-        //     pattern, and config overrides. Falls back to generic "model" when
-        //     no mode override is active.
-        let mode_suffix = mode_override.as_deref().unwrap_or("model");
-
         // 1b. Model resolution priority:
-        //     a) .jyc/<mode>-model-override file (highest, mode-specific)
-        //     b) Pattern-level plan_model / build_model / model
-        //     c) Config-level plan_model / build_model / model
-        let mode_override_path = thread_path
-            .join(".jyc")
-            .join(format!("{mode_suffix}-model-override"));
-        let file_override = if mode_override_path.exists() {
-            tokio::fs::read_to_string(&mode_override_path)
-                .await
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        } else {
-            None
+        //     For plan/build mode:
+        //       a) .jyc/<mode>-model-override (mode-specific runtime override)
+        //       b) .jyc/model-override (legacy fallback, for migration)
+        //       c) Pattern-level plan_model / build_model / model
+        //       d) Config-level plan_model / build_model / model
+        //     For default mode (no override):
+        //       a) Pattern-level model
+        //       b) Config-level model
+        //     (Skip file overrides in default mode to avoid stale data from
+        //      the old /model command which wrote model-override for all modes.)
+        let file_override = match mode_override.as_deref() {
+            Some("plan") | Some("build") => {
+                let mode_specific_path = thread_path.join(".jyc").join(format!(
+                    "{}-model-override",
+                    mode_override.as_deref().unwrap()
+                ));
+                let legacy_path = thread_path.join(".jyc").join("model-override");
+                if mode_specific_path.exists() {
+                    tokio::fs::read_to_string(&mode_specific_path)
+                        .await
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else if legacy_path.exists() {
+                    tokio::fs::read_to_string(&legacy_path)
+                        .await
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            }
+            _ => None,
         };
         let pattern = message
             .matched_pattern

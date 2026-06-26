@@ -1258,39 +1258,68 @@ async fn process_message(
         .await;
     });
 
-    let result = if item.live_injection {
-        // Live injection enabled: pass real queue receiver so new messages
-        // arriving during AI processing get injected into the active session.
-        agent
-            .process(
-                &message,
-                thread_name,
-                &store_result.thread_path,
-                &store_result.message_dir,
-                pending_rx,
-                thread_cancel.clone(),
-            )
-            .await?
-    } else {
-        // Live injection disabled: pass a dummy receiver that never yields.
-        // Messages stay in the real queue and are processed sequentially
-        // after the current AI call completes.
-        tracing::debug!("Live injection disabled for this pattern, using sequential processing");
-        let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
-        // Drop _dummy_tx immediately so dummy_rx.recv() returns None instantly,
-        // making the SSE select loop skip the injection arm.
-        drop(_dummy_tx);
-        agent
-            .process(
-                &message,
-                thread_name,
-                &store_result.thread_path,
-                &store_result.message_dir,
-                &mut dummy_rx,
-                thread_cancel.clone(),
-            )
-            .await?
+    // The in-process agent does not consume `pending_rx`. We monitor it
+    // ourselves for `/cancel` messages, which trigger the per-thread
+    // cancellation token and cause the agent loop to break at the next
+    // iteration. Non-cancel messages are re-enqueued so they are processed
+    // after the current AI call completes (same as before).
+    let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
+    drop(_dummy_tx);
+
+    let agent_fut = agent.process(
+        &message,
+        thread_name,
+        &store_result.thread_path,
+        &store_result.message_dir,
+        &mut dummy_rx,
+        thread_cancel.clone(),
+    );
+    tokio::pin!(agent_fut);
+
+    // Buffer non-cancel messages that arrive during AI processing.
+    // They are re-enqueued after the agent finishes, preserving FIFO order.
+    let mut buffered: Vec<QueueItem> = Vec::new();
+
+    let result = loop {
+        tokio::select! {
+            r = &mut agent_fut => {
+                break r?;
+            }
+            msg = pending_rx.recv() => match msg {
+                Some(qi) => {
+                    let text = qi.message.content.text.as_deref().unwrap_or("");
+                    if text.trim() == "/cancel" {
+                        tracing::info!(
+                            thread = %thread_name,
+                            "Cancel requested via /cancel during AI processing"
+                        );
+                        thread_cancel.cancel();
+                        // Continue loop — agent_fut will complete due to cancellation
+                    } else {
+                        // Buffer non-cancel message for re-enqueue after AI finishes
+                        buffered.push(qi);
+                    }
+                }
+                None => {
+                    // Channel closed; just wait for agent to finish
+                    break agent_fut.await?;
+                }
+            },
+        }
     };
+
+    // Re-enqueue buffered messages so they are processed after the current AI call
+    for qi in buffered {
+        thread_manager
+            .enqueue(
+                qi.message,
+                qi.thread_name,
+                qi.pattern_match,
+                qi.attachment_config,
+                qi.live_injection,
+            )
+            .await;
+    }
 
     // Stop the delivery watcher
     delivery_cancel.cancel();

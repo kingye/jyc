@@ -235,12 +235,17 @@ impl Provider for OpenAiCompatProvider {
         &self,
         tool_call_id: &str,
         content: &str,
-        _is_error: bool,
+        is_error: bool,
     ) -> serde_json::Value {
+        let labeled = if is_error {
+            format!("[ERROR] {content}")
+        } else {
+            format!("[SUCCESS] {content}")
+        };
         serde_json::json!({
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": content,
+            "content": labeled,
         })
     }
 
@@ -910,5 +915,46 @@ mod tests {
 
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(state.tool_calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn format_tool_result_prefixed_with_success() {
+        let provider = OpenAiCompatProvider::new(
+            "https://api.example.com",
+            "test",
+            Some("k"),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let result =
+            provider.format_tool_result("id1", "Command completed with exit code 0", false);
+        let content = result["content"].as_str().unwrap();
+        assert!(
+            content.starts_with("[SUCCESS] "),
+            "expected [SUCCESS] prefix, got: {content}"
+        );
+        assert!(content.contains("Command completed with exit code 0"));
+    }
+
+    #[test]
+    fn format_tool_result_prefixed_with_error() {
+        let provider = OpenAiCompatProvider::new(
+            "https://api.example.com",
+            "test",
+            Some("k"),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let result = provider.format_tool_result("id1", "something failed", true);
+        let content = result["content"].as_str().unwrap();
+        assert!(
+            content.starts_with("[ERROR] "),
+            "expected [ERROR] prefix, got: {content}"
+        );
+        assert!(content.contains("something failed"));
     }
 }

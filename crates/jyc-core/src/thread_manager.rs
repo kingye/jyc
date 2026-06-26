@@ -697,8 +697,7 @@ impl ThreadManager {
 
                 let mode_specific = match mode.as_deref() {
                     Some("plan") => read_trimmed(&plan_path).await,
-                    Some("build") => read_trimmed(&build_path).await,
-                    _ => None,
+                    _ => read_trimmed(&build_path).await, // None = build mode
                 };
                 if mode_specific.is_some() {
                     mode_specific
@@ -727,8 +726,7 @@ impl ThreadManager {
                 pattern_override
                     .and_then(|p| match mode.as_deref() {
                         Some("plan") => p.plan_model.clone(),
-                        Some("build") => p.build_model.clone(),
-                        _ => None,
+                        _ => p.build_model.clone(), // None = build mode
                     })
                     .or_else(|| pattern_override.and_then(|p| p.model.clone()))
             } else {
@@ -743,8 +741,7 @@ impl ThreadManager {
                 let cfg = self.config.load();
                 match mode.as_deref() {
                     Some("plan") => cfg.agent.plan_model.clone(),
-                    Some("build") => cfg.agent.build_model.clone(),
-                    _ => None,
+                    _ => cfg.agent.build_model.clone(), // None = build mode
                 }
             })
             .or_else(|| self.config.load().agent.model.clone());

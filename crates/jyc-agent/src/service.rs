@@ -1088,30 +1088,30 @@ impl AgentService for JycAgentService {
         //       b) Config-level model
         //     (Skip file overrides in default mode to avoid stale data from
         //      the old /model command which wrote model-override for all modes.)
-        let file_override = match mode_override.as_deref() {
-            Some("plan") | Some("build") => {
-                let mode_specific_path = thread_path.join(".jyc").join(format!(
-                    "{}-model-override",
-                    mode_override.as_deref().unwrap()
-                ));
-                let legacy_path = thread_path.join(".jyc").join("model-override");
-                if mode_specific_path.exists() {
-                    tokio::fs::read_to_string(&mode_specific_path)
-                        .await
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                } else if legacy_path.exists() {
-                    tokio::fs::read_to_string(&legacy_path)
-                        .await
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                } else {
-                    None
-                }
+        let file_override = {
+            let mode_suffix = match mode_override.as_deref() {
+                Some("plan") => "plan",
+                _ => "build", // default = build mode
+            };
+            let mode_specific_path = thread_path
+                .join(".jyc")
+                .join(format!("{mode_suffix}-model-override"));
+            let legacy_path = thread_path.join(".jyc").join("model-override");
+            if mode_specific_path.exists() {
+                tokio::fs::read_to_string(&mode_specific_path)
+                    .await
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else if legacy_path.exists() {
+                tokio::fs::read_to_string(&legacy_path)
+                    .await
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
             }
-            _ => None,
         };
         let pattern = message
             .matched_pattern
@@ -1121,15 +1121,13 @@ impl AgentService for JycAgentService {
         let pattern_override = pattern
             .and_then(|p| match mode_override.as_deref() {
                 Some("plan") => p.plan_model.as_deref(),
-                Some("build") => p.build_model.as_deref(),
-                _ => None,
+                _ => p.build_model.as_deref(), // default = build
             })
             .or_else(|| pattern.and_then(|p| p.model.as_deref()));
         // Config: try mode-specific field first, then generic model
         let config_override = match mode_override.as_deref() {
             Some("plan") => self.config.plan_model.as_deref(),
-            Some("build") => self.config.build_model.as_deref(),
-            _ => None,
+            _ => self.config.build_model.as_deref(), // default = build
         }
         .or(self.config.model.as_deref());
         let model_override = file_override

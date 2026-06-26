@@ -1074,13 +1074,23 @@ impl AgentService for JycAgentService {
             "Processing message with in-process agent"
         );
 
-        // 1. Read model override with priority:
-        //    a) .jyc/model-override file (highest priority, manual runtime override)
-        //    b) Pattern-level model (from matched pattern config)
-        //    c) Config-level model (from self.config.model, i.e. global or channel-level)
-        let model_override_path = thread_path.join(".jyc").join("model-override");
-        let file_override = if model_override_path.exists() {
-            tokio::fs::read_to_string(&model_override_path)
+        // 1. Read mode override for this thread (used to select mode-specific model)
+        let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+
+        // 1a. Determine the mode-specific suffix ("plan" or "build") for file,
+        //     pattern, and config overrides. Falls back to generic "model" when
+        //     no mode override is active.
+        let mode_suffix = mode_override.as_deref().unwrap_or("model");
+
+        // 1b. Model resolution priority:
+        //     a) .jyc/<mode>-model-override file (highest, mode-specific)
+        //     b) Pattern-level plan_model / build_model / model
+        //     c) Config-level plan_model / build_model / model
+        let mode_override_path = thread_path
+            .join(".jyc")
+            .join(format!("{mode_suffix}-model-override"));
+        let file_override = if mode_override_path.exists() {
+            tokio::fs::read_to_string(&mode_override_path)
                 .await
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -1088,15 +1098,29 @@ impl AgentService for JycAgentService {
         } else {
             None
         };
-        let pattern_override = message
+        let pattern = message
             .matched_pattern
             .as_deref()
-            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
-            .and_then(|p| p.model.as_deref());
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name));
+        // Pattern: try mode-specific field first, then generic model
+        let pattern_override = pattern
+            .and_then(|p| match mode_override.as_deref() {
+                Some("plan") => p.plan_model.as_deref(),
+                Some("build") => p.build_model.as_deref(),
+                _ => None,
+            })
+            .or_else(|| pattern.and_then(|p| p.model.as_deref()));
+        // Config: try mode-specific field first, then generic model
+        let config_override = match mode_override.as_deref() {
+            Some("plan") => self.config.plan_model.as_deref(),
+            Some("build") => self.config.build_model.as_deref(),
+            _ => None,
+        }
+        .or(self.config.model.as_deref());
         let model_override = file_override
             .clone()
             .or_else(|| pattern_override.map(|s| s.to_string()))
-            .or_else(|| self.config.model.clone());
+            .or_else(|| config_override.map(|s| s.to_string()));
 
         // 2. Create provider
         let provider = self

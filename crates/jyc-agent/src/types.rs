@@ -239,6 +239,12 @@ pub struct VisionConfig {
 pub struct AgentConfig {
     /// Default model in "provider/model-id" format
     pub model: Option<String>,
+    /// Model override for plan (read-only) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub plan_model: Option<String>,
+    /// Model override for build (full execution) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub build_model: Option<String>,
     /// Optional small/fast model used for ancillary LLM work — currently:
     /// - cycle-boundary progress summary (in `agent_loop`)
     /// - between-messages context reset summary (in `session::summarize_context`)
@@ -263,6 +269,8 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: None,
+            plan_model: None,
+            build_model: None,
             small_model: None,
             providers: std::collections::HashMap::new(),
             max_iterations: default_max_iterations(),

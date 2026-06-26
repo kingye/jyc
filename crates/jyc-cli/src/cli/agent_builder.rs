@@ -104,6 +104,8 @@ pub fn build_agent_service(
                 .collect();
 
             let agent_cfg = jyc_agent::types::AgentConfig {
+                plan_model: None,
+                build_model: None,
                 model,
                 small_model: effective_small_model.clone(),
                 providers,

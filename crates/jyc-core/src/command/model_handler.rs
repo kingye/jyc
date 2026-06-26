@@ -27,6 +27,9 @@ impl CommandHandler for ModelCommandHandler {
 
         let providers = &context.config.agent.providers;
 
+        // Read current mode to determine which override file to use.
+        let current_mode = crate::session_state::read_mode_override(&context.thread_path).await;
+
         if context.args.is_empty() {
             // /model — list all available models
             if providers.is_empty() {
@@ -54,11 +57,18 @@ impl CommandHandler for ModelCommandHandler {
                 error: None,
             })
         } else if context.args.len() == 1 && context.args[0] == "reset" {
-            // /model reset — remove override, restore default
-            let override_path = jyc_dir.join("model-override");
-
-            if override_path.exists() {
-                tokio::fs::remove_file(&override_path).await?;
+            // /model reset — remove mode-specific and legacy overrides
+            let plan_path = jyc_dir.join("plan-model-override");
+            let build_path = jyc_dir.join("build-model-override");
+            let legacy_path = jyc_dir.join("model-override");
+            let mut removed = false;
+            for path in [&plan_path, &build_path, &legacy_path] {
+                if path.exists() {
+                    tokio::fs::remove_file(path).await?;
+                    removed = true;
+                }
+            }
+            if removed {
                 Ok(CommandResult {
                     success: true,
                     message: "/model: reset to default model".into(),
@@ -109,8 +119,13 @@ impl CommandHandler for ModelCommandHandler {
                         });
                     }
 
-                    // Write override file
-                    let override_path = jyc_dir.join("model-override");
+                    // Write mode-specific override file
+                    let filename = match current_mode.as_deref() {
+                        Some("plan") => "plan-model-override",
+                        Some("build") => "build-model-override",
+                        _ => "model-override",
+                    };
+                    let override_path = jyc_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
 
                     Ok(CommandResult {
@@ -322,5 +337,82 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("unknown model"));
+    }
+
+    #[tokio::test]
+    async fn test_switch_model_in_plan_mode_writes_plan_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Simulate plan mode
+        tokio::fs::write(jyc_dir.join("mode-override"), "plan\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["deepseek/deepseek-reasoner".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // Should write to plan-model-override, not model-override
+        assert!(jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
+            .await
+            .unwrap();
+        assert_eq!(content, "deepseek/deepseek-reasoner");
+    }
+
+    #[tokio::test]
+    async fn test_switch_model_in_build_mode_writes_build_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Simulate build mode
+        tokio::fs::write(jyc_dir.join("mode-override"), "build\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["deepseek/deepseek-chat".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // Should write to build-model-override
+        assert!(jyc_dir.join("build-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(jyc_dir.join("build-model-override"))
+            .await
+            .unwrap();
+        assert_eq!(content, "deepseek/deepseek-chat");
+    }
+
+    #[tokio::test]
+    async fn test_reset_clears_all_mode_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("plan-model-override"), "deepseek/some\n")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("build-model-override"), "ark/glm\n")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("model-override"), "legacy-model\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["reset".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("reset to default model"));
+
+        assert!(!jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("build-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
     }
 }

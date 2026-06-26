@@ -662,17 +662,7 @@ mod tests {
             thread_prefix: None,
             role: None,
             live_injection: true,
-            repo_group: None,
-            inject_inbound_images: false,
-            model: None,
-            small_model: None,
-            mcps: None,
-            disabled_tools: None,
-            disabled_builtin_tools: None,
-            disabled_mcp_servers: None,
-            skills: None,
-            disabled_skills: None,
-            access: None,
+            ..Default::default()
         };
 
         let matcher = WecomBotMatcher;

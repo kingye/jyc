@@ -347,6 +347,12 @@ pub struct ChannelPattern {
     /// but below the runtime `.jyc/model-override` file.
     #[serde(default)]
     pub model: Option<String>,
+    /// Override model for plan (read-only) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub plan_model: Option<String>,
+    /// Override model for build (full execution) mode. Falls back to `model` if unset.
+    #[serde(default)]
+    pub build_model: Option<String>,
     /// Override small_model for this pattern's thread.
     /// Takes priority over channel-level small_model and global [agent].small_model,
     /// but below the runtime `.jyc/model-override` file.
@@ -458,6 +464,8 @@ impl Default for ChannelPattern {
             repo_group: None,
             inject_inbound_images: false,
             model: None,
+            plan_model: None,
+            build_model: None,
             small_model: None,
             mcps: None,
             disabled_tools: None,

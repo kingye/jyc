@@ -27,6 +27,9 @@ impl CommandHandler for ModelCommandHandler {
 
         let providers = &context.config.agent.providers;
 
+        // Read current mode to determine which override file to use.
+        let current_mode = crate::session_state::read_mode_override(&context.thread_path).await;
+
         if context.args.is_empty() {
             // /model — list all available models
             if providers.is_empty() {
@@ -54,11 +57,18 @@ impl CommandHandler for ModelCommandHandler {
                 error: None,
             })
         } else if context.args.len() == 1 && context.args[0] == "reset" {
-            // /model reset — remove override, restore default
-            let override_path = jyc_dir.join("model-override");
-
-            if override_path.exists() {
-                tokio::fs::remove_file(&override_path).await?;
+            // /model reset — remove mode-specific and legacy overrides
+            let plan_path = jyc_dir.join("plan-model-override");
+            let build_path = jyc_dir.join("build-model-override");
+            let legacy_path = jyc_dir.join("model-override");
+            let mut removed = false;
+            for path in [&plan_path, &build_path, &legacy_path] {
+                if path.exists() {
+                    tokio::fs::remove_file(path).await?;
+                    removed = true;
+                }
+            }
+            if removed {
                 Ok(CommandResult {
                     success: true,
                     message: "/model: reset to default model".into(),
@@ -109,8 +119,13 @@ impl CommandHandler for ModelCommandHandler {
                         });
                     }
 
-                    // Write override file
-                    let override_path = jyc_dir.join("model-override");
+                    // Write mode-specific override file
+                    let filename = match current_mode.as_deref() {
+                        Some("plan") => "plan-model-override",
+                        Some("build") => "build-model-override",
+                        _ => "model-override",
+                    };
+                    let override_path = jyc_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
 
                     Ok(CommandResult {

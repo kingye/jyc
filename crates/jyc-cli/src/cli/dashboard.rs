@@ -1224,7 +1224,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area grows with content (up to 5 lines) for multi-line editing.
-    let input_line_count = app.chat_input.lines().count().clamp(1, 5) as u16;
+    // Count lines including trailing empty line (e.g. "abc\n" = 2 lines).
+    // `str::lines()` drops the trailing empty line, so we count manually.
+    let input_line_count = (app.chat_input.matches('\n').count() + 1).clamp(1, 5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])

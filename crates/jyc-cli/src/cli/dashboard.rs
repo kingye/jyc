@@ -278,9 +278,7 @@ impl App {
     fn page_down(&mut self) {
         let page = self.page_size();
         match self.chat_focus {
-            ChatFocus::ChatPane => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(page)
-            }
+            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_sub(page),
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)
             }

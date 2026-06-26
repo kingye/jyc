@@ -856,7 +856,7 @@ impl ThreadManager {
     /// at the next iteration. The worker exits, and the next message will
     /// spawn a new worker automatically. Thread directory and queue are preserved.
     pub async fn cancel_thread(&self, thread_name: &str) {
-        let mut cancels = self.thread_cancels.lock().await;
+        let cancels = self.thread_cancels.lock().await;
         if let Some(token) = cancels.get(thread_name) {
             token.cancel();
             tracing::info!(thread = %thread_name, "Thread AI processing cancelled via cancel_thread");

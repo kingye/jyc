@@ -316,6 +316,25 @@ impl App {
         }
     }
 
+    /// Send a raw command message via WebSocket without echoing to the chat
+    /// view or clearing the input. Used for quick keyboard shortcuts like
+    /// Ctrl+! (cancel) and Ctrl+Tab (mode switch).
+    fn send_raw_message(&mut self, text: &str) {
+        let thread = match &self.chat_thread {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let msg = serde_json::json!({
+            "type": "message",
+            "thread": thread,
+            "text": text,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
     fn handle_ws_event(&mut self, event: WsEvent) {
         match event {
             WsEvent::Connected => {
@@ -649,6 +668,40 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_w && app.chat_phase == ChatPhase::Chatting {
         app.activity_split = (app.activity_split + 1) % 4;
+        return;
+    }
+
+    // Ctrl+! sends /cancel to stop the current AI processing
+    let is_ctrl_bang =
+        key.code == KeyCode::Char('!') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_bang && app.chat_phase == ChatPhase::Chatting {
+        app.send_raw_message("/cancel");
+        app.set_status("⏹ Cancelled".to_string());
+        app.chat_awaiting_response = false;
+        return;
+    }
+
+    // Ctrl+Tab toggles between plan and build mode
+    let is_ctrl_tab = key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_tab && app.chat_phase == ChatPhase::Chatting {
+        let current_mode = app
+            .state
+            .as_ref()
+            .and_then(|s| {
+                let chat_name = app.chat_thread.as_deref()?;
+                s.threads.iter().find(|t| t.name == chat_name)
+            })
+            .and_then(|t| t.mode.clone())
+            .unwrap_or_else(|| "build".to_string());
+
+        if current_mode == "plan" {
+            app.send_raw_message("/build");
+            app.set_status("Switched to build mode".to_string());
+        } else {
+            app.send_raw_message("/plan");
+            app.set_status("Switched to plan mode".to_string());
+        }
+        app.chat_awaiting_response = true;
         return;
     }
 
@@ -1578,7 +1631,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [Ctrl+W]split [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^!]cancel [^Tab]mode [Ctrl+W]split [Esc]back [Ctrl+Q]close"
             }
         }
     } else {

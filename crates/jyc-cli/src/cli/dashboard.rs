@@ -252,6 +252,39 @@ impl App {
         }
     }
 
+    fn page_size(&self) -> usize {
+        let base = crossterm::terminal::size()
+            .map(|(_, h)| h.saturating_sub(7) as usize)
+            .unwrap_or(10);
+        match self.chat_focus {
+            ChatFocus::ChatPane => {
+                let input_lines = (self.chat_input.matches('\n').count() + 1).clamp(1, 5);
+                base.saturating_sub(input_lines).max(1)
+            }
+            ChatFocus::ActivityPane => base.max(1),
+        }
+    }
+
+    fn page_up(&mut self) {
+        let page = self.page_size();
+        match self.chat_focus {
+            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_add(page),
+            ChatFocus::ActivityPane => {
+                self.activity_scroll = self.activity_scroll.saturating_add(page)
+            }
+        }
+    }
+
+    fn page_down(&mut self) {
+        let page = self.page_size();
+        match self.chat_focus {
+            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_sub(page),
+            ChatFocus::ActivityPane => {
+                self.activity_scroll = self.activity_scroll.saturating_sub(page)
+            }
+        }
+    }
+
     fn send_chat_message(&mut self) {
         let text = self.chat_input.trim().to_string();
         if text.is_empty() {
@@ -675,6 +708,18 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                 } else {
                     app.scroll_down();
                 }
+            }
+            KeyCode::PageUp => {
+                app.page_up();
+            }
+            KeyCode::PageDown => {
+                app.page_down();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.page_up();
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.page_down();
             }
             KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
                 app.chat_cursor = app
@@ -1238,6 +1283,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let mut block = Block::default().title(title).borders(Borders::ALL);
     if app.chat_focus == ChatFocus::ChatPane {
         block = block.border_style(Style::default().fg(Color::Cyan));
+    } else if app.chat_scroll > 0 {
+        block = block.border_style(Style::default().fg(Color::Yellow));
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1494,12 +1541,8 @@ fn render_activity_log_inner(
     }
 
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
-    let skip = selected
-        .activity
-        .len()
-        .saturating_sub(inner_height)
-        .saturating_add(scroll_offset);
-    let skip = skip.min(selected.activity.len().saturating_sub(inner_height));
+    let max_skip = selected.activity.len().saturating_sub(inner_height);
+    let skip = max_skip.saturating_sub(scroll_offset);
 
     let activity_lines: Vec<Line> = selected
         .activity
@@ -1539,7 +1582,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
             ChatPhase::Chatting => {
-                "[Tab]focus [←→]cursor [↑↓]scroll [Ctrl+W]split [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [Ctrl+W]split [Esc]back [Ctrl+Q]close"
             }
         }
     } else {

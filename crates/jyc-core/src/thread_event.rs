@@ -83,7 +83,24 @@ pub enum ThreadEvent {
         duration_secs: u64,
         /// Error output preview (only set when tool failed, truncated)
         output: Option<String>,
+        /// Preview of the tool input (truncated), included so the activity
+        /// panel can show what command was run even for fast tools.
+        input: Option<String>,
         /// When the tool completed
+        timestamp: DateTime<Utc>,
+    },
+
+    /// LLM request started event.
+    ///
+    /// Sent when the agent sends a request to the LLM and is waiting
+    /// for the response. Lets the activity panel show "Thinking..." or
+    /// "Sending to LLM..." between tool execution and response.
+    LLMRequestStarted {
+        /// Name of the thread
+        thread_name: String,
+        /// Iteration number within the current agent loop run
+        iteration: usize,
+        /// When the request was sent
         timestamp: DateTime<Utc>,
     },
 
@@ -130,6 +147,7 @@ impl ThreadEvent {
             ThreadEvent::ProcessingCompleted { thread_name, .. } => thread_name,
             ThreadEvent::ToolStarted { thread_name, .. } => thread_name,
             ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
+            ThreadEvent::LLMRequestStarted { thread_name, .. } => thread_name,
             ThreadEvent::Thinking { thread_name, .. } => thread_name,
             ThreadEvent::SessionStatus { thread_name, .. } => thread_name,
         }
@@ -144,6 +162,7 @@ impl ThreadEvent {
             ThreadEvent::ProcessingCompleted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
+            ThreadEvent::LLMRequestStarted { timestamp, .. } => *timestamp,
             ThreadEvent::Thinking { timestamp, .. } => *timestamp,
             ThreadEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
@@ -222,6 +241,19 @@ mod tests {
             success: true,
             duration_secs: 1,
             output: Some("hi".to_string()),
+            input: Some(r#"{"command":"ls"}"#.to_string()),
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn llm_request_started_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::LLMRequestStarted {
+            thread_name: "t1".to_string(),
+            iteration: 3,
             timestamp: ts,
         };
         assert_eq!(ev.thread_name(), "t1");

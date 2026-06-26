@@ -248,6 +248,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     } else {
                         None
                     },
+                    input: Some(truncate_str(&synthetic_args, 200)),
                     timestamp: Utc::now(),
                 },
             )
@@ -287,6 +288,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             raw_context_len = raw_context.len(),
             "Agent loop iteration"
         );
+
+        // Publish LLM request started event so the activity panel shows
+        // "Thinking..." between tool execution and LLM response.
+        publish_event(
+            event_bus,
+            ThreadEvent::LLMRequestStarted {
+                thread_name: thread_name.to_string(),
+                iteration: total_iterations,
+                timestamp: Utc::now(),
+            },
+        )
+        .await;
 
         // 1. Send to LLM using raw context (preserves provider-specific fields)
         // 2. Collect the response
@@ -452,6 +465,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     } else {
                         None
                     },
+                    input: Some(truncate_str(&tool_call.arguments, 200)),
                     timestamp: Utc::now(),
                 },
             )

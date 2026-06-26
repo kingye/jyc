@@ -123,6 +123,7 @@ impl Provider for OpenAiCompatProvider {
         let mut body = serde_json::json!({
             "model": &self.model,
             "stream": true,
+            "stream_options": {"include_usage": true},
             "messages": api_messages,
         });
 
@@ -312,6 +313,7 @@ impl Provider for OpenAiCompatProvider {
         let mut body = serde_json::json!({
             "model": &self.model,
             "stream": true,
+            "stream_options": {"include_usage": true},
             "messages": api_messages,
         });
 

@@ -81,6 +81,10 @@ struct App {
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
+    /// Set locally when user sends a message, cleared when the poll confirms
+    /// the thread is processing or has completed. Bridges the gap between
+    /// sending a message and the inspect server reporting Processing status.
+    chat_awaiting_response: bool,
     /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
     activity_split: u8,
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -107,6 +111,7 @@ impl App {
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
+            chat_awaiting_response: false,
             activity_split: 0,
             ws_tx: None,
             ws_rx,
@@ -265,6 +270,7 @@ impl App {
         self.chat_input.clear();
         self.chat_cursor = 0;
         self.chat_scroll = 0;
+        self.chat_awaiting_response = true;
 
         let msg = serde_json::json!({
             "type": "message",
@@ -356,6 +362,7 @@ impl App {
                             text: text.to_string(),
                         });
                         self.chat_scroll = 0;
+                        self.chat_awaiting_response = false;
                     }
                 }
             }
@@ -476,6 +483,19 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
         if last_poll.elapsed() >= poll_interval {
             match client.get_state().await {
                 Ok(state) => {
+                    // Clear chat_awaiting_response once the server confirms the thread
+                    // is no longer processing (with a small grace period to avoid
+                    // flicker between the local flag and server state).
+                    if app.chat_awaiting_response
+                        && let Some(ref chat_name) = app.chat_thread
+                    {
+                        let ct = state.threads.iter().find(|t| t.name == *chat_name);
+                        if let Some(ct) = ct
+                            && ct.status != ThreadStatus::Processing
+                        {
+                            app.chat_awaiting_response = false;
+                        }
+                    }
                     app.state = Some(state);
                     app.error = None;
                 }
@@ -1224,7 +1244,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area grows with content (up to 5 lines) for multi-line editing.
-    let input_line_count = app.chat_input.lines().count().clamp(1, 5) as u16;
+    // Count lines including trailing empty line (e.g. "abc\n" = 2 lines).
+    // `str::lines()` drops the trailing empty line, so we count manually.
+    let input_line_count = (app.chat_input.matches('\n').count() + 1).clamp(1, 5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -1261,53 +1283,75 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Show progress indicator
-    if let Some(ref state) = app.state
-        && let Some(chat_name) = &app.chat_thread
-    {
-        let chat_thread = state.threads.iter().find(|t| t.name == *chat_name);
-        if let Some(ct) = chat_thread
-            && ct.status == ThreadStatus::Processing
-        {
-            // Show up to 2 most recent activity entries
-            let recent: Vec<_> = ct.activity.iter().rev().take(2).collect();
-            if recent.is_empty() {
+    // Determine if the thread is processing: either the inspect server
+    // reports Processing status, or we've sent a message and haven't yet
+    // seen the server confirm completion (covers the first-message gap
+    // where the poll hasn't caught up yet).
+    let server_processing = app
+        .state
+        .as_ref()
+        .and_then(|s| {
+            let chat_name = app.chat_thread.as_deref()?;
+            s.threads.iter().find(|t| t.name == chat_name)
+        })
+        .is_some_and(|ct| ct.status == ThreadStatus::Processing);
+
+    // Show progress if the server reports processing OR we've sent a message
+    // locally and are still waiting for the server state to catch up.
+    let show_progress = server_processing || app.chat_awaiting_response;
+
+    if show_progress {
+        // Try to get activity entries from the server
+        let activity_entries: Vec<_> = app
+            .state
+            .as_ref()
+            .and_then(|s| {
+                let chat_name = app.chat_thread.as_deref()?;
+                s.threads.iter().find(|t| t.name == chat_name)
+            })
+            .filter(|ct| ct.status == ThreadStatus::Processing)
+            .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if activity_entries.is_empty() {
+            all_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "⏳ AI is thinking...",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        } else {
+            let total = activity_entries.len();
+            for (idx, a) in activity_entries.iter().rev().enumerate() {
+                let is_last = idx == total - 1;
+                let elapsed = if is_last {
+                    format_elapsed(&a.timestamp)
+                } else {
+                    String::new()
+                };
+                let label = if is_last {
+                    if elapsed.is_empty() {
+                        format!("⏳ {}", a.text)
+                    } else {
+                        format!("⏳ {} {}", a.text, elapsed)
+                    }
+                } else {
+                    // Pad with 3 spaces to visually align with "⏳ " on the
+                    // last line (⏳ emoji is double-width in most terminals).
+                    format!("   {}", a.text)
+                };
                 all_lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "⏳ AI is thinking...",
+                        label,
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::ITALIC),
                     ),
                 ]));
-            } else {
-                let total = recent.len();
-                for (idx, a) in recent.iter().rev().enumerate() {
-                    let is_last = idx == total - 1;
-                    let elapsed = if is_last {
-                        format_elapsed(&a.timestamp)
-                    } else {
-                        String::new()
-                    };
-                    let label = if is_last {
-                        if elapsed.is_empty() {
-                            format!("⏳ {}", a.text)
-                        } else {
-                            format!("⏳ {} {}", a.text, elapsed)
-                        }
-                    } else {
-                        format!("  {}", a.text)
-                    };
-                    all_lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            label,
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                    ]));
-                }
             }
         }
     }

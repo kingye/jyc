@@ -34,12 +34,17 @@ impl ChannelMatcher for WebsocketMatcher {
 
     fn derive_thread_name(
         &self,
-        _message: &InboundMessage,
+        message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Each websocket channel has exactly one thread named after the channel.
-        self.channel_name.clone()
+        // Use the thread name specified by the client (e.g. from the WebSocket
+        // protocol's `thread` field). Fall back to the channel name when empty.
+        if message.topic.is_empty() {
+            self.channel_name.clone()
+        } else {
+            message.topic.clone()
+        }
     }
 
     fn match_message(

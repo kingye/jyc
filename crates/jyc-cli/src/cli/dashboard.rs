@@ -668,11 +668,11 @@ fn move_cursor_vertically(input: &str, cursor: &mut usize, down: bool) {
 }
 
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
-    // Ctrl+Q is handled at the top level since it applies in both phases
+    // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 
     if is_ctrl_q {
-        app.close_chat();
+        app.should_quit = true;
         return;
     }
 
@@ -823,8 +823,14 @@ async fn handle_normal_keys(
     last_poll: &mut std::time::Instant,
     addr: &str,
 ) {
+    // ^Q quits the entire dashboard (consistent across all modes)
+    if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.should_quit = true;
+        return;
+    }
+
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Esc => {
             app.should_quit = true;
         }
         KeyCode::Char('c') => {
@@ -1652,13 +1658,13 @@ fn render_activity_log_inner(
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
-            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
+            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [Ctrl+W]split [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [^W]split [Esc]back [^Q]quit"
             }
         }
     } else {
-        "[q]quit [↑↓]select [r]refresh [R]reload [s]reset [c]chat"
+        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new"
     };
 
     let state = match &app.state {

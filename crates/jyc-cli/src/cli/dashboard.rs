@@ -89,6 +89,7 @@ struct App {
     activity_split: u8,
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
+    ws_connected: bool,
 }
 
 impl App {
@@ -115,6 +116,7 @@ impl App {
             activity_split: 0,
             ws_tx: None,
             ws_rx,
+            ws_connected: false,
         }
     }
 
@@ -184,6 +186,7 @@ impl App {
         self.chat_scroll = 0;
         self.activity_scroll = 0;
         self.activity_split = 0;
+        self.ws_connected = false;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -198,6 +201,7 @@ impl App {
     fn close_chat(&mut self) {
         self.chat_visible = false;
         self.chat_phase = ChatPhase::PatternSelect;
+        self.ws_connected = false;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -338,6 +342,7 @@ impl App {
     fn handle_ws_event(&mut self, event: WsEvent) {
         match event {
             WsEvent::Connected => {
+                self.ws_connected = true;
                 // Request pattern list on connect
                 let list_msg = serde_json::json!({"type": "list_patterns"}).to_string();
                 if let Some(tx) = &self.ws_tx {
@@ -358,6 +363,7 @@ impl App {
                 }
             }
             WsEvent::Disconnected => {
+                self.ws_connected = false;
                 self.set_status("WebSocket disconnected".to_string());
             }
             WsEvent::Message(text) => {
@@ -1676,10 +1682,20 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         ))
     };
 
-    let bar = Paragraph::new(Line::from(vec![
-        Span::raw(format!(" {help_text}  ")),
-        status_part,
-    ]))
+    let bar = Paragraph::new(Line::from({
+        let mut spans = vec![Span::raw(" ")];
+        if app.chat_visible {
+            if app.ws_connected {
+                spans.push(Span::styled("●", Style::default().fg(Color::Green)));
+            } else {
+                spans.push(Span::styled("●", Style::default().fg(Color::Red)));
+            }
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::raw(format!("{help_text}  ")));
+        spans.push(status_part);
+        spans
+    }))
     .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     frame.render_widget(bar, area);

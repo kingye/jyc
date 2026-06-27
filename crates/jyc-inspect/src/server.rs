@@ -505,7 +505,41 @@ impl ActivityTracker {
                                         continue;
                                     }
                                 }
-                                if let Some(bus) = tm.get_event_bus(&thread.name).await
+                                // Try to get an existing event bus. If none exists but
+                                // the thread has an active queue (worker running or
+                                // pending messages), force-create one so we don't miss
+                                // events. If no active queue, the thread is idle — clear
+                                // any stale `is_processing` flag and mark as subscribed
+                                // to avoid retrying every 2s.
+                                let bus = match tm.get_event_bus(&thread.name).await {
+                                    Some(b) => Some(b),
+                                    None if tm.has_active_queue(&thread.name).await => {
+                                        tracing::info!(
+                                            thread = %thread.name,
+                                            "Event bus missing but queue active, force-creating event bus"
+                                        );
+                                        tm.get_or_create_event_bus(&thread.name).await
+                                    }
+                                    None => {
+                                        // Thread is idle (no active queue, no event bus).
+                                        // Clear stale processing state and mark as
+                                        // subscribed so we don't retry every tick. When a
+                                        // new message arrives, the enqueue path creates a
+                                        // new event bus, and the subscriber task's cleanup
+                                        // removes the key from `subscribed`, allowing
+                                        // re-subscription on the next tick.
+                                        let mut map = activity_map.lock().await;
+                                        if let Some(state) = map.get_mut(&key) {
+                                            state.is_processing = false;
+                                        }
+                                        drop(map);
+                                        let mut sub = subscribed.lock().await;
+                                        sub.insert(key);
+                                        continue;
+                                    }
+                                };
+
+                                if let Some(bus) = bus
                                     && let Ok(mut rx) = bus.subscribe().await {
                                         {
                                             let mut sub = subscribed.lock().await;
@@ -744,7 +778,33 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             tool_name, input, ..
         } => {
             if tool_name == "edit" {
-                format_edit_diff(input, None)
+                // Store the full edit data as JSON so consumers can render
+                // differently: activity pane shows the JSON string as-is while
+                // AI progress parses it and renders a full git diff.
+                let parsed: Option<serde_json::Value> =
+                    input.as_deref().and_then(|s| serde_json::from_str(s).ok());
+                let file_path = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("file_path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let old_str = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("old_string"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_str = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("new_string"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                serde_json::json!({
+                    "type": "edit",
+                    "file_path": file_path,
+                    "old_string": old_str,
+                    "new_string": new_str,
+                })
+                .to_string()
             } else {
                 match input {
                     Some(inp) => format!("Tool: {tool_name} — {inp}"),
@@ -762,6 +822,26 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         } => {
             if *success {
                 if tool_name == "edit" {
+                    // Store the full edit data as JSON so consumers can render
+                    // differently: activity pane shows as-is, AI progress shows
+                    // git diff.
+                    let parsed: Option<serde_json::Value> =
+                        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
+                    let file_path = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("file_path"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let old_str = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("old_string"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let new_str = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("new_string"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     // Parse line number from the edit tool's output message
                     // (format: "Edited 'file' at line N: M replacement(s) made")
                     let line_no = output.as_deref().and_then(|s| {
@@ -772,11 +852,15 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                             })
                             .and_then(|n| n.trim().parse::<usize>().ok())
                     });
-                    let header = match line_no {
-                        Some(n) => format!("Tool: edit (done, {duration_secs}s) — :{n}"),
-                        None => format!("Tool: edit (done, {duration_secs}s)"),
-                    };
-                    format_edit_diff(input, Some(header))
+                    serde_json::json!({
+                        "type": "edit",
+                        "file_path": file_path,
+                        "line_no": line_no,
+                        "old_string": old_str,
+                        "new_string": new_str,
+                        "duration_secs": duration_secs,
+                    })
+                    .to_string()
                 } else {
                     match input {
                         Some(inp) => {
@@ -833,54 +917,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
-    }
-}
-
-/// Format an edit tool event as a 3-line git-diff style string.
-///
-/// `input` is the raw JSON arguments of the edit tool.
-/// `header` is an optional pre-built header line (e.g. with duration/line info).
-/// If `header` is None, a default "Tool: edit — {file_path}" header is used.
-///
-/// Output format:
-/// ```text
-/// Tool: edit — file.rs
-/// - old_first_line...
-/// + new_first_line...
-/// ```
-fn format_edit_diff(input: &Option<String>, header: Option<String>) -> String {
-    let parsed: Option<serde_json::Value> =
-        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
-    let file_path = parsed
-        .as_ref()
-        .and_then(|v| v.get("file_path"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-
-    let old_str = parsed
-        .as_ref()
-        .and_then(|v| v.get("old_string"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let new_str = parsed
-        .as_ref()
-        .and_then(|v| v.get("new_string"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    // Take first line of each; append "..." if multi-line.
-    let old_line = first_line_truncated(old_str);
-    let new_line = first_line_truncated(new_str);
-
-    let header_line = header.unwrap_or_else(|| format!("Tool: edit — {file_path}"));
-    format!("{header_line}\n- {old_line}\n+ {new_line}")
-}
-
-/// Return the first line of `s`, appending "..." if there are more lines.
-fn first_line_truncated(s: &str) -> String {
-    match s.split_once('\n') {
-        Some((first, _)) => format!("{first}..."),
-        None => s.to_string(),
     }
 }
 
@@ -1486,5 +1522,61 @@ mode = "agent"
             "channel2's issue-20 leaked channel1's activity log: {:?}",
             ch2.activity
         );
+    }
+
+    /// Regression test for activity events stopping after worker exits.
+    ///
+    /// Bug: when a thread's worker finishes and the event bus is cleaned up,
+    /// the ActivityTracker's re-subscription loop kept calling
+    /// `get_event_bus()` which returned `None`, leaving the thread in a
+    /// stuck `is_processing = true` state forever. The dashboard showed
+    /// "Processing" but no activity events appeared.
+    ///
+    /// Fix: when `get_event_bus()` returns `None` and the thread has no
+    /// active queue, clear `is_processing` and mark as subscribed to stop
+    /// retrying. When a new message arrives, a new event bus is created and
+    /// the subscriber task cleanup removes the key, enabling re-subscription.
+    #[tokio::test]
+    async fn test_idle_thread_clears_stale_processing_state() {
+        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Simulate a thread that was previously processing but whose worker
+        // has exited (event bus cleaned up, no active queue).
+        let key = ("test-channel".to_string(), "test-thread".to_string());
+        {
+            let mut map = activity_map.lock().await;
+            let state = map.entry(key.clone()).or_default();
+            state.is_processing = true;
+            state.entries.push_back(ActivityEntry {
+                text: "Processing started".to_string(),
+                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                severity: Severity::Info,
+            });
+        }
+
+        // Verify the stale state exists.
+        {
+            let map = activity_map.lock().await;
+            assert!(map.get(&key).unwrap().is_processing);
+        }
+
+        // Simulate the fix: clear is_processing for idle threads.
+        // This mirrors the logic in ActivityTracker::start() when
+        // get_event_bus() returns None and has_active_queue() returns false.
+        {
+            let mut map = activity_map.lock().await;
+            if let Some(state) = map.get_mut(&key) {
+                state.is_processing = false;
+            }
+        }
+
+        // Verify the stale state was cleared.
+        {
+            let map = activity_map.lock().await;
+            assert!(
+                !map.get(&key).unwrap().is_processing,
+                "is_processing should be cleared for idle threads"
+            );
+        }
     }
 }

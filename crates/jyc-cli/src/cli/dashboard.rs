@@ -92,6 +92,10 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
+    /// Timestamp of the last Enter press, used for paste debounce.
+    /// When Enter is pressed within 300ms of the previous Enter, it's
+    /// treated as a paste event and inserts a newline instead of sending.
+    last_enter_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -120,6 +124,7 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
+            last_enter_at: None,
         }
     }
 
@@ -191,6 +196,7 @@ impl App {
         self.activity_hscroll = 0;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.last_enter_at = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -753,7 +759,21 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                     app.chat_input.insert(app.chat_cursor, '\n');
                     app.chat_cursor += 1;
                 } else if !app.chat_input.trim().is_empty() {
-                    app.send_chat_message();
+                    let now = std::time::Instant::now();
+                    let is_fast_enter = app
+                        .last_enter_at
+                        .map(|t| now.duration_since(t) < std::time::Duration::from_millis(300))
+                        .unwrap_or(false);
+                    app.last_enter_at = Some(now);
+                    if is_fast_enter {
+                        // Rapid consecutive Enter (e.g. pasting multi-line text).
+                        // Insert newline instead of sending to prevent each
+                        // pasted line from being sent as a separate message.
+                        app.chat_input.insert(app.chat_cursor, '\n');
+                        app.chat_cursor += 1;
+                    } else {
+                        app.send_chat_message();
+                    }
                 }
             }
             KeyCode::Esc => {

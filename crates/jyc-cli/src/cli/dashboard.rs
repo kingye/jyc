@@ -836,6 +836,26 @@ async fn handle_normal_keys(
         KeyCode::Char('c') => {
             app.open_chat(addr);
         }
+        KeyCode::Enter => {
+            // Enter chat directly when a websocket thread is selected
+            let thread_name = app.state.as_ref().and_then(|s| {
+                app.table_state
+                    .selected()
+                    .and_then(|i| s.threads.get(i))
+                    .and_then(|t| {
+                        let is_ws = s
+                            .channels
+                            .iter()
+                            .find(|c| c.name == t.channel)
+                            .is_some_and(|c| c.channel_type == "websocket");
+                        if is_ws { Some(t.name.clone()) } else { None }
+                    })
+            });
+            if let Some(name) = thread_name {
+                app.open_chat(addr);
+                app.select_pattern(name);
+            }
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             app.next_thread();
         }

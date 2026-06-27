@@ -1335,7 +1335,11 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     let title = format!(" Chat: {} ", app.chat_thread.as_deref().unwrap_or("-"));
     let mut block = Block::default().title(title).borders(Borders::ALL);
     if app.chat_focus == ChatFocus::ChatPane {
-        block = block.border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        block = block.border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1576,7 +1580,11 @@ fn render_activity_log_inner(
 ) {
     let mut block = Block::default().title(" Activity ").borders(Borders::ALL);
     if focused {
-        block = block.border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        block = block.border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
     }
 
     if selected.activity.is_empty() {

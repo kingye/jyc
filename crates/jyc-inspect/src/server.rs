@@ -485,7 +485,8 @@ impl ActivityTracker {
                 }
             }
 
-            let mut subscribed: HashSet<(String, String)> = HashSet::new();
+            let subscribed: Arc<Mutex<HashSet<(String, String)>>> =
+                Arc::new(Mutex::new(HashSet::new()));
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
             loop {
@@ -498,17 +499,25 @@ impl ActivityTracker {
                             let threads = tm.list_threads().await;
                             for thread in threads {
                                 let key = (channel.clone(), thread.name.clone());
-                                if subscribed.contains(&key) {
-                                    continue;
+                                {
+                                    let sub = subscribed.lock().await;
+                                    if sub.contains(&key) {
+                                        continue;
+                                    }
                                 }
                                 if let Some(bus) = tm.get_event_bus(&thread.name).await
                                     && let Ok(mut rx) = bus.subscribe().await {
-                                        subscribed.insert(key.clone());
+                                        {
+                                            let mut sub = subscribed.lock().await;
+                                            sub.insert(key.clone());
+                                        }
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
                                         let channel_for_task = channel.clone();
                                         let thread_path = workspace_dir.map(|d| d.join(&name));
                                         let cancel_inner = cancel.clone();
+                                        let subscribed_clone = subscribed.clone();
+                                        let key_clone = key.clone();
                                         tokio::spawn(async move {
                                             loop {
                                                 tokio::select! {
@@ -559,7 +568,15 @@ impl ActivityTracker {
                                                                     state.has_error = true;
                                                                 }
                                                             }
-                                                            None => break,
+                                                            None => {
+                                                                // Event bus was replaced (e.g., after /cancel
+                                                                // caused worker restart). Remove from subscribed
+                                                                // so the next interval tick re-subscribes to the
+                                                                // new event bus.
+                                                                let mut sub = subscribed_clone.lock().await;
+                                                                sub.remove(&key_clone);
+                                                                break;
+                                                            }
                                                         }
                                                     }
                                                     _ = cancel_inner.cancelled() => break,

@@ -25,6 +25,23 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`/cancel` command and `Ctrl+!` dashboard shortcut.** New `/cancel` command
+  cancels the current AI processing by triggering the per-thread
+  `CancellationToken`. In the dashboard chat pane, `Ctrl+!` sends `/cancel`
+  without modifying the input buffer. The worker's `select!` loop intercepts
+  `/cancel` messages arriving during AI processing — the cancellation token fires
+  immediately, causing the agent loop to break at the next iteration. Non-cancel
+  messages arriving during processing are buffered and re-enqueued after the
+  agent finishes, preserving FIFO order.
+
+- **`Ctrl+Tab` dashboard shortcut for mode switching.** Toggles between plan
+  and build mode by sending `/plan` or `/build` as a WebSocket message, reusing
+  the existing command system for mode switching.
+
+- **Dashboard focus pane border visibility.** The focused pane's border now uses
+  `Yellow + BOLD` for better visual distinction, replacing the previous `Cyan`
+  color that was difficult to notice.
+
 - **Per-pattern filesystem access whitelist (`access.read` / `access.write`).**
   Patterns can now declare additional paths outside the thread working directory
   that the agent may read from or write to. Write paths are automatically

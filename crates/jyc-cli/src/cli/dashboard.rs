@@ -528,71 +528,78 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
 
-    let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(ws_rx);
-    let poll_interval = Duration::from_millis(500);
-    let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+    // Terminal and its backend are scoped so they drop *before* we restore
+    // the terminal. Otherwise the backend's Drop flushes buffered escape
+    // codes after LeaveAlternateScreen, corrupting line alignment.
+    let result = {
+        let backend = CrosstermBackend::new(stdout());
+        let mut terminal = Terminal::new(backend)?;
 
-    let result = loop {
-        // Poll for new state
-        if last_poll.elapsed() >= poll_interval {
-            match client.get_state().await {
-                Ok(state) => {
-                    // Clear chat_awaiting_response once the server confirms the thread
-                    // is no longer processing (with a small grace period to avoid
-                    // flicker between the local flag and server state).
-                    if app.chat_awaiting_response
-                        && let Some(ref chat_name) = app.chat_thread
-                    {
-                        let ct = state.threads.iter().find(|t| t.name == *chat_name);
-                        if let Some(ct) = ct
-                            && ct.status != ThreadStatus::Processing
+        let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(ws_rx);
+        let poll_interval = Duration::from_millis(500);
+        let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+
+        loop {
+            // Poll for new state
+            if last_poll.elapsed() >= poll_interval {
+                match client.get_state().await {
+                    Ok(state) => {
+                        // Clear chat_awaiting_response once the server confirms the thread
+                        // is no longer processing (with a small grace period to avoid
+                        // flicker between the local flag and server state).
+                        if app.chat_awaiting_response
+                            && let Some(ref chat_name) = app.chat_thread
                         {
-                            app.chat_awaiting_response = false;
+                            let ct = state.threads.iter().find(|t| t.name == *chat_name);
+                            if let Some(ct) = ct
+                                && ct.status != ThreadStatus::Processing
+                            {
+                                app.chat_awaiting_response = false;
+                            }
                         }
+                        app.state = Some(state);
+                        app.error = None;
                     }
-                    app.state = Some(state);
-                    app.error = None;
+                    Err(e) => {
+                        app.error = Some(format!("{e:#}"));
+                    }
                 }
-                Err(e) => {
-                    app.error = Some(format!("{e:#}"));
+                last_poll = std::time::Instant::now();
+            }
+
+            // Check for WebSocket events
+            while let Ok(event) = app.ws_rx.try_recv() {
+                app.handle_ws_event(event);
+            }
+
+            // Clear expired status messages
+            app.tick_status();
+
+            // Draw
+            terminal.draw(|f| ui(f, &mut app))?;
+
+            // Handle input (non-blocking, 50ms timeout)
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                if app.chat_visible {
+                    handle_chat_keys(&mut app, key);
+                } else {
+                    handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr)
+                        .await;
                 }
             }
-            last_poll = std::time::Instant::now();
-        }
 
-        // Check for WebSocket events
-        while let Ok(event) = app.ws_rx.try_recv() {
-            app.handle_ws_event(event);
-        }
-
-        // Clear expired status messages
-        app.tick_status();
-
-        // Draw
-        terminal.draw(|f| ui(f, &mut app))?;
-
-        // Handle input (non-blocking, 50ms timeout)
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            if app.chat_visible {
-                handle_chat_keys(&mut app, key);
-            } else {
-                handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr).await;
+            if app.should_quit {
+                break Ok(());
             }
         }
+    }; // terminal + backend dropped here
 
-        if app.should_quit {
-            break Ok(());
-        }
-    };
-
-    // Restore terminal
+    // Restore terminal — safe now that no buffered escape codes remain
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 
@@ -662,11 +669,11 @@ fn move_cursor_vertically(input: &str, cursor: &mut usize, down: bool) {
 }
 
 fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
-    // Ctrl+Q is handled at the top level since it applies in both phases
+    // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 
     if is_ctrl_q {
-        app.close_chat();
+        app.should_quit = true;
         return;
     }
 
@@ -817,12 +824,38 @@ async fn handle_normal_keys(
     last_poll: &mut std::time::Instant,
     addr: &str,
 ) {
+    // ^Q quits the entire dashboard (consistent across all modes)
+    if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.should_quit = true;
+        return;
+    }
+
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Esc => {
             app.should_quit = true;
         }
         KeyCode::Char('c') => {
             app.open_chat(addr);
+        }
+        KeyCode::Enter => {
+            // Enter chat directly when a websocket thread is selected
+            let thread_name = app.state.as_ref().and_then(|s| {
+                app.table_state
+                    .selected()
+                    .and_then(|i| s.threads.get(i))
+                    .and_then(|t| {
+                        let is_ws = s
+                            .channels
+                            .iter()
+                            .find(|c| c.name == t.channel)
+                            .is_some_and(|c| c.channel_type == "websocket");
+                        if is_ws { Some(t.name.clone()) } else { None }
+                    })
+            });
+            if let Some(name) = thread_name {
+                app.open_chat(addr);
+                app.select_pattern(name);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.next_thread();
@@ -1646,13 +1679,13 @@ fn render_activity_log_inner(
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
-            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
+            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [Ctrl+W]split [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [^W]split [Esc]back [^Q]quit"
             }
         }
     } else {
-        "[q]quit [↑↓]select [r]refresh [R]reload [s]reset [c]chat"
+        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new"
     };
 
     let state = match &app.state {

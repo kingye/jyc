@@ -448,9 +448,18 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name() {
+    fn test_derive_thread_name_uses_topic() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
         let msg = create_test_message();
+        let name = matcher.derive_thread_name(&msg, &[], None);
+        assert_eq!(name, "Test");
+    }
+
+    #[test]
+    fn test_derive_thread_name_empty_topic_fallback() {
+        let matcher = WebsocketMatcher::new("my-ws".to_string());
+        let mut msg = create_test_message();
+        msg.topic = String::new();
         let name = matcher.derive_thread_name(&msg, &[], None);
         assert_eq!(name, "my-ws");
     }

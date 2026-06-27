@@ -318,7 +318,7 @@ impl App {
 
     /// Send a raw command message via WebSocket without echoing to the chat
     /// view or clearing the input. Used for quick keyboard shortcuts like
-    /// Ctrl+! (cancel) and Ctrl+Tab (mode switch).
+    /// Ctrl+C (cancel) and Shift+Tab (mode switch).
     fn send_raw_message(&mut self, text: &str) {
         let thread = match &self.chat_thread {
             Some(t) => t.clone(),
@@ -671,19 +671,18 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
         return;
     }
 
-    // Ctrl+! sends /cancel to stop the current AI processing
-    let is_ctrl_bang =
-        key.code == KeyCode::Char('!') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_bang && app.chat_phase == ChatPhase::Chatting {
+    // Ctrl+C sends /cancel to stop the current AI processing
+    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_c && app.chat_phase == ChatPhase::Chatting {
         app.send_raw_message("/cancel");
         app.set_status("⏹ Cancelled".to_string());
         app.chat_awaiting_response = false;
         return;
     }
 
-    // Ctrl+Tab toggles between plan and build mode
-    let is_ctrl_tab = key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_tab && app.chat_phase == ChatPhase::Chatting {
+    // Shift+Tab toggles between plan and build mode
+    let is_shift_tab = key.code == KeyCode::BackTab;
+    if is_shift_tab && app.chat_phase == ChatPhase::Chatting {
         let current_mode = app
             .state
             .as_ref()
@@ -1639,7 +1638,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc/Ctrl+Q]close",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^!]cancel [^Tab]mode [Ctrl+W]split [Esc]back [Ctrl+Q]close"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [Ctrl+W]split [Esc]back [Ctrl+Q]close"
             }
         }
     } else {

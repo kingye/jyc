@@ -25,16 +25,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **`/cancel` command and `Ctrl+!` dashboard shortcut.** New `/cancel` command
+- **`/cancel` command and `Ctrl+C` dashboard shortcut.** New `/cancel` command
   cancels the current AI processing by triggering the per-thread
-  `CancellationToken`. In the dashboard chat pane, `Ctrl+!` sends `/cancel`
+  `CancellationToken`. In the dashboard chat pane, `Ctrl+C` sends `/cancel`
   without modifying the input buffer. The worker's `select!` loop intercepts
   `/cancel` messages arriving during AI processing — the cancellation token fires
   immediately, causing the agent loop to break at the next iteration. Non-cancel
   messages arriving during processing are buffered and re-enqueued after the
   agent finishes, preserving FIFO order.
 
-- **`Ctrl+Tab` dashboard shortcut for mode switching.** Toggles between plan
+- **`Shift+Tab` dashboard shortcut for mode switching.** Toggles between plan
   and build mode by sending `/plan` or `/build` as a WebSocket message, reusing
   the existing command system for mode switching.
 

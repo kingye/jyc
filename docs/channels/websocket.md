@@ -190,11 +190,14 @@ All connected dashboard clients receive broadcast replies via `tokio::sync::broa
 
 ## Thread Naming
 
-Each websocket channel has exactly one thread per pattern:
+WebSocket thread names are derived from the `thread` field in client messages:
 
+```json
+{"type":"message","thread":"general","text":"hello"}
+{"type":"subscribe","thread":"general"}
 ```
-thread_name = "{channel_name}"   # e.g., "my_ws"
-```
+
+When a message's `thread` field is non-empty, it is used as the thread name. When empty, the thread name falls back to the channel name (e.g., `my_ws`).
 
 Workspace files are stored under:
 
@@ -230,7 +233,7 @@ The full resolution chain for websocket channels (highest to lowest priority):
 | Setup complexity | High | High | Medium | Low |
 | Real-time | Polling | Webhook/WebSocket | WebSocket | Instant |
 | Multi-client | No | No | No | Yes |
-| Workspace isolation | Per-thread | Per-thread | Per-thread | Per-channel |
+| Workspace isolation | Per-thread | Per-thread | Per-thread | Per-thread |
 
 ## Workspace Layout
 

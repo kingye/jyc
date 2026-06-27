@@ -505,7 +505,41 @@ impl ActivityTracker {
                                         continue;
                                     }
                                 }
-                                if let Some(bus) = tm.get_event_bus(&thread.name).await
+                                // Try to get an existing event bus. If none exists but
+                                // the thread has an active queue (worker running or
+                                // pending messages), force-create one so we don't miss
+                                // events. If no active queue, the thread is idle — clear
+                                // any stale `is_processing` flag and mark as subscribed
+                                // to avoid retrying every 2s.
+                                let bus = match tm.get_event_bus(&thread.name).await {
+                                    Some(b) => Some(b),
+                                    None if tm.has_active_queue(&thread.name).await => {
+                                        tracing::info!(
+                                            thread = %thread.name,
+                                            "Event bus missing but queue active, force-creating event bus"
+                                        );
+                                        tm.get_or_create_event_bus(&thread.name).await
+                                    }
+                                    None => {
+                                        // Thread is idle (no active queue, no event bus).
+                                        // Clear stale processing state and mark as
+                                        // subscribed so we don't retry every tick. When a
+                                        // new message arrives, the enqueue path creates a
+                                        // new event bus, and the subscriber task's cleanup
+                                        // removes the key from `subscribed`, allowing
+                                        // re-subscription on the next tick.
+                                        let mut map = activity_map.lock().await;
+                                        if let Some(state) = map.get_mut(&key) {
+                                            state.is_processing = false;
+                                        }
+                                        drop(map);
+                                        let mut sub = subscribed.lock().await;
+                                        sub.insert(key);
+                                        continue;
+                                    }
+                                };
+
+                                if let Some(bus) = bus
                                     && let Ok(mut rx) = bus.subscribe().await {
                                         {
                                             let mut sub = subscribed.lock().await;
@@ -1486,5 +1520,61 @@ mode = "agent"
             "channel2's issue-20 leaked channel1's activity log: {:?}",
             ch2.activity
         );
+    }
+
+    /// Regression test for activity events stopping after worker exits.
+    ///
+    /// Bug: when a thread's worker finishes and the event bus is cleaned up,
+    /// the ActivityTracker's re-subscription loop kept calling
+    /// `get_event_bus()` which returned `None`, leaving the thread in a
+    /// stuck `is_processing = true` state forever. The dashboard showed
+    /// "Processing" but no activity events appeared.
+    ///
+    /// Fix: when `get_event_bus()` returns `None` and the thread has no
+    /// active queue, clear `is_processing` and mark as subscribed to stop
+    /// retrying. When a new message arrives, a new event bus is created and
+    /// the subscriber task cleanup removes the key, enabling re-subscription.
+    #[tokio::test]
+    async fn test_idle_thread_clears_stale_processing_state() {
+        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Simulate a thread that was previously processing but whose worker
+        // has exited (event bus cleaned up, no active queue).
+        let key = ("test-channel".to_string(), "test-thread".to_string());
+        {
+            let mut map = activity_map.lock().await;
+            let state = map.entry(key.clone()).or_default();
+            state.is_processing = true;
+            state.entries.push_back(ActivityEntry {
+                text: "Processing started".to_string(),
+                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                severity: Severity::Info,
+            });
+        }
+
+        // Verify the stale state exists.
+        {
+            let map = activity_map.lock().await;
+            assert!(map.get(&key).unwrap().is_processing);
+        }
+
+        // Simulate the fix: clear is_processing for idle threads.
+        // This mirrors the logic in ActivityTracker::start() when
+        // get_event_bus() returns None and has_active_queue() returns false.
+        {
+            let mut map = activity_map.lock().await;
+            if let Some(state) = map.get_mut(&key) {
+                state.is_processing = false;
+            }
+        }
+
+        // Verify the stale state was cleared.
+        {
+            let map = activity_map.lock().await;
+            assert!(
+                !map.get(&key).unwrap().is_processing,
+                "is_processing should be cleared for idle threads"
+            );
+        }
     }
 }

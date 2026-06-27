@@ -803,10 +803,20 @@ impl ThreadManager {
         event_buses.get(thread_name).cloned()
     }
 
+    /// Check whether a thread has an active (open) message queue.
+    ///
+    /// Used by the ActivityTracker to distinguish between a thread whose
+    /// event bus was cleaned up because the worker exited (no active queue)
+    /// versus a thread that should have an event bus but doesn't yet.
+    pub async fn has_active_queue(&self, thread_name: &str) -> bool {
+        let queues = self.thread_queues.lock().await;
+        queues.get(thread_name).is_some_and(|s| !s.is_closed())
+    }
+
     /// Create a new event bus for a thread if one doesn't exist.
     ///
     /// Returns the event bus for the thread, or None if event support is disabled.
-    async fn get_or_create_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
+    pub async fn get_or_create_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
         if !self.enable_events {
             return None;
         }
@@ -1885,5 +1895,165 @@ async fn write_wecomkf_thread_json(
         } else {
             tracing::info!(thread = %thread_name, "Wrote thread.json");
         }
+    }
+}
+
+#[cfg(test)]
+mod has_active_queue_tests {
+    use super::*;
+    use crate::message_storage::MessageStorage;
+    use crate::metrics::MetricsCollector;
+    use crate::static_agent::StaticAgentService;
+    use tempfile::tempdir;
+
+    /// Minimal outbound adapter that does nothing.
+    struct NoopOutbound;
+
+    #[async_trait::async_trait]
+    impl jyc_types::OutboundAdapter for NoopOutbound {
+        fn channel_type(&self) -> &str {
+            "test"
+        }
+        async fn connect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        fn clean_body(&self, raw_body: &str) -> String {
+            raw_body.to_string()
+        }
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            _reply_text: &str,
+            _thread_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[jyc_types::OutboundAttachment]>,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "test".to_string(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "test".to_string(),
+            })
+        }
+    }
+
+    fn make_test_tm(workspace: &std::path::Path) -> Arc<ThreadManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            )
+            .unwrap(),
+        ));
+
+        Arc::new(ThreadManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test-channel".to_string(),
+            "websocket".to_string(),
+            workspace.to_path_buf(),
+            metrics,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_has_active_queue_false_for_unknown_thread() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+        assert!(!tm.has_active_queue("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_has_active_queue_true_after_enqueue() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Create a thread directory so list_threads finds it
+        let thread_path = workspace.join("test-thread");
+        tokio::fs::create_dir_all(thread_path.join(".jyc"))
+            .await
+            .unwrap();
+
+        // Enqueue a dummy message — this creates an mpsc queue
+        let msg = InboundMessage {
+            id: "test".to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "test".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+        let pattern_match = PatternMatch {
+            pattern_name: "test".to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+        tm.enqueue(msg, "test-thread".to_string(), pattern_match, None, false)
+            .await;
+
+        // Give the worker a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            tm.has_active_queue("test-thread").await,
+            "Thread should have an active queue after enqueue"
+        );
+
+        // Clean up
+        tm.shutdown().await;
     }
 }

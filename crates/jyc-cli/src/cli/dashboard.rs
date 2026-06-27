@@ -528,71 +528,77 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
 
-    let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(ws_rx);
-    let poll_interval = Duration::from_millis(500);
-    let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+    // Terminal and its backend are scoped so they drop *before* we restore
+    // the terminal. Otherwise the backend's Drop flushes buffered escape
+    // codes after LeaveAlternateScreen, corrupting line alignment.
+    let result = {
+        let backend = CrosstermBackend::new(stdout());
+        let mut terminal = Terminal::new(backend)?;
 
-    let result = loop {
-        // Poll for new state
-        if last_poll.elapsed() >= poll_interval {
-            match client.get_state().await {
-                Ok(state) => {
-                    // Clear chat_awaiting_response once the server confirms the thread
-                    // is no longer processing (with a small grace period to avoid
-                    // flicker between the local flag and server state).
-                    if app.chat_awaiting_response
-                        && let Some(ref chat_name) = app.chat_thread
-                    {
-                        let ct = state.threads.iter().find(|t| t.name == *chat_name);
-                        if let Some(ct) = ct
-                            && ct.status != ThreadStatus::Processing
+        let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(ws_rx);
+        let poll_interval = Duration::from_millis(500);
+        let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+
+        loop {
+            // Poll for new state
+            if last_poll.elapsed() >= poll_interval {
+                match client.get_state().await {
+                    Ok(state) => {
+                        // Clear chat_awaiting_response once the server confirms the thread
+                        // is no longer processing (with a small grace period to avoid
+                        // flicker between the local flag and server state).
+                        if app.chat_awaiting_response
+                            && let Some(ref chat_name) = app.chat_thread
                         {
-                            app.chat_awaiting_response = false;
+                            let ct = state.threads.iter().find(|t| t.name == *chat_name);
+                            if let Some(ct) = ct
+                                && ct.status != ThreadStatus::Processing
+                            {
+                                app.chat_awaiting_response = false;
+                            }
                         }
+                        app.state = Some(state);
+                        app.error = None;
                     }
-                    app.state = Some(state);
-                    app.error = None;
+                    Err(e) => {
+                        app.error = Some(format!("{e:#}"));
+                    }
                 }
-                Err(e) => {
-                    app.error = Some(format!("{e:#}"));
+                last_poll = std::time::Instant::now();
+            }
+
+            // Check for WebSocket events
+            while let Ok(event) = app.ws_rx.try_recv() {
+                app.handle_ws_event(event);
+            }
+
+            // Clear expired status messages
+            app.tick_status();
+
+            // Draw
+            terminal.draw(|f| ui(f, &mut app))?;
+
+            // Handle input (non-blocking, 50ms timeout)
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                if app.chat_visible {
+                    handle_chat_keys(&mut app, key);
+                } else {
+                    handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr).await;
                 }
             }
-            last_poll = std::time::Instant::now();
-        }
 
-        // Check for WebSocket events
-        while let Ok(event) = app.ws_rx.try_recv() {
-            app.handle_ws_event(event);
-        }
-
-        // Clear expired status messages
-        app.tick_status();
-
-        // Draw
-        terminal.draw(|f| ui(f, &mut app))?;
-
-        // Handle input (non-blocking, 50ms timeout)
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            if app.chat_visible {
-                handle_chat_keys(&mut app, key);
-            } else {
-                handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr).await;
+            if app.should_quit {
+                break Ok(());
             }
         }
+    }; // terminal + backend dropped here
 
-        if app.should_quit {
-            break Ok(());
-        }
-    };
-
-    // Restore terminal
+    // Restore terminal — safe now that no buffered escape codes remain
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

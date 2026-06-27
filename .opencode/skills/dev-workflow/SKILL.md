@@ -46,9 +46,10 @@ After detection, you have: `{test_command}`, `{build_command}`, `{version_file}`
 3. Run tests: `{test_command}`
 4. Build clean: `{build_command}` (zero warnings)
 5. Commit with `fix:` prefix
-6. Merge to main: `git checkout main && git merge fix/<name> --no-ff`
-7. Push: `git push origin main`
-8. Deploy if needed
+6. Summarize work done and ask for user approval before merging to main
+7. Merge to main: `git checkout main && git merge fix/<name> --no-ff`
+8. Push: `git push origin main`
+9. Deploy if needed
 
 ## For Features
 
@@ -56,8 +57,9 @@ After detection, you have: `{test_command}`, `{build_command}`, `{version_file}`
 2. Develop in small increments, commit frequently
 3. If main has new commits, rebase: `git rebase main`
 4. Run tests and build clean before merge
-5. Merge to main: `git checkout main && git merge feat/<name> --no-ff`
-6. Push
+5. Summarize work done and ask for user approval before merging to main
+6. Merge to main: `git checkout main && git merge feat/<name> --no-ff`
+7. Push
 
 ## For Releases (Version Bump)
 

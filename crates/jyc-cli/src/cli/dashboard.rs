@@ -588,7 +588,8 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
                 if app.chat_visible {
                     handle_chat_keys(&mut app, key);
                 } else {
-                    handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr).await;
+                    handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr)
+                        .await;
                 }
             }
 

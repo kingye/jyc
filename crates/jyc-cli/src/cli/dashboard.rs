@@ -1487,19 +1487,70 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                     .add_modifier(Modifier::ITALIC);
 
                 // Split multi-line entries (e.g. edit diff) into separate lines.
-                let lines: Vec<&str> = a.text.split('\n').collect();
-                for (line_idx, line) in lines.iter().enumerate() {
-                    let label = if line_idx == 0 && is_last {
+                // Try parsing as JSON first — edit events store full data as JSON.
+                let rendered_lines: Vec<String> = if let Ok(json) =
+                    serde_json::from_str::<serde_json::Value>(&a.text)
+                    && json.get("type").and_then(|t| t.as_str()) == Some("edit")
+                {
+                    let file_path = json
+                        .get("file_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let line_no = json.get("line_no").and_then(|v| v.as_u64());
+                    let old_str = json
+                        .get("old_string")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let new_str = json
+                        .get("new_string")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let location = match line_no {
+                        Some(n) => format!("{file_path}:{n}"),
+                        None => file_path.to_string(),
+                    };
+                    let mut out = Vec::new();
+                    // Header line
+                    if is_last {
                         if elapsed.is_empty() {
-                            format!("⏳ {line}")
+                            out.push(format!("⏳ {location}"));
                         } else {
-                            format!("⏳ {line} {elapsed}")
+                            out.push(format!("⏳ {location} {elapsed}"));
                         }
                     } else {
-                        // Pad with 3 spaces to visually align with "⏳ " on the
-                        // last entry (⏳ emoji is double-width in most terminals).
-                        format!("   {line}")
-                    };
+                        out.push(format!("   {location}"));
+                    }
+                    // Old lines
+                    for line in old_str.split('\n') {
+                        out.push(format!("  -{line}"));
+                    }
+                    // New lines
+                    for line in new_str.split('\n') {
+                        out.push(format!("  +{line}"));
+                    }
+                    out
+                } else {
+                    // Plain text — split by newlines for display
+                    let lines: Vec<&str> = a.text.split('\n').collect();
+                    lines
+                        .iter()
+                        .enumerate()
+                        .map(|(line_idx, line)| {
+                            if line_idx == 0 && is_last {
+                                if elapsed.is_empty() {
+                                    format!("⏳ {line}")
+                                } else {
+                                    format!("⏳ {line} {elapsed}")
+                                }
+                            } else {
+                                // Pad with 3 spaces to visually align with "⏳ "
+                                format!("   {line}")
+                            }
+                        })
+                        .collect()
+                };
+
+                for label in rendered_lines {
                     all_lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(label, style),

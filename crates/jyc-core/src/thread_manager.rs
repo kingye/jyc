@@ -61,8 +61,12 @@ pub struct ThreadManager {
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
 
-    // Thread-isolated event buses (optional feature)
-    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    // Thread-isolated event buses (optional feature).
+    // Uses Arc so the worker's ThreadManager clone shares the same map as
+    // the original. Without this, re-enqueuing buffered messages from within
+    // process_message() creates a new event bus on the clone, orphaned from
+    // the ActivityTracker's view, causing activity events to silently stop.
+    event_buses: Arc<Mutex<HashMap<String, ThreadEventBusRef>>>,
     enable_events: bool,
 
     // Per-thread cancellation tokens (used by close_thread to stop workers)
@@ -150,7 +154,7 @@ impl ThreadManager {
             storage,
             outbound,
             agent,
-            event_buses: Mutex::new(HashMap::new()),
+            event_buses: Arc::new(Mutex::new(HashMap::new())),
             enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir,
@@ -280,7 +284,7 @@ impl ThreadManager {
             storage: self.storage.clone(),
             outbound: self.outbound.clone(),
             agent: self.agent.clone(),
-            event_buses: Mutex::new(HashMap::new()),
+            event_buses: self.event_buses.clone(),
             enable_events: self.enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir: self.template_dir.clone(),

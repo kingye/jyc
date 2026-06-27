@@ -81,6 +81,8 @@ struct App {
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
+    /// Horizontal scroll offset for the activity pane (left-right).
+    activity_hscroll: usize,
     /// Set locally when user sends a message, cleared when the poll confirms
     /// the thread is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
@@ -112,6 +114,7 @@ impl App {
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
+            activity_hscroll: 0,
             chat_awaiting_response: false,
             activity_split: 0,
             ws_tx: None,
@@ -185,6 +188,7 @@ impl App {
         self.chat_focus = ChatFocus::ChatPane;
         self.chat_scroll = 0;
         self.activity_scroll = 0;
+        self.activity_hscroll = 0;
         self.activity_split = 0;
         self.ws_connected = false;
 
@@ -791,11 +795,17 @@ fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
                     .chat_input
                     .floor_char_boundary(app.chat_cursor.saturating_sub(1));
             }
+            KeyCode::Left if app.chat_focus == ChatFocus::ActivityPane => {
+                app.activity_hscroll = app.activity_hscroll.saturating_sub(1);
+            }
             KeyCode::Right
                 if app.chat_focus == ChatFocus::ChatPane
                     && app.chat_cursor < app.chat_input.len() =>
             {
                 app.chat_cursor = app.chat_input.ceil_char_boundary(app.chat_cursor + 1);
+            }
+            KeyCode::Right if app.chat_focus == ChatFocus::ActivityPane => {
+                app.activity_hscroll = app.activity_hscroll.saturating_add(1);
             }
             _ => {
                 if app.chat_focus == ChatFocus::ChatPane {
@@ -1250,7 +1260,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(info, detail_chunks[0]);
 
     // Activity log panel
-    render_activity_log_inner(frame, detail_chunks[1], selected, 0, false);
+    render_activity_log_inner(frame, detail_chunks[1], selected, 0, 0, false);
 }
 
 fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
@@ -1472,26 +1482,29 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     String::new()
                 };
-                let label = if is_last {
-                    if elapsed.is_empty() {
-                        format!("⏳ {}", a.text)
+                let style = Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC);
+
+                // Split multi-line entries (e.g. edit diff) into separate lines.
+                let lines: Vec<&str> = a.text.split('\n').collect();
+                for (line_idx, line) in lines.iter().enumerate() {
+                    let label = if line_idx == 0 && is_last {
+                        if elapsed.is_empty() {
+                            format!("⏳ {line}")
+                        } else {
+                            format!("⏳ {line} {elapsed}")
+                        }
                     } else {
-                        format!("⏳ {} {}", a.text, elapsed)
-                    }
-                } else {
-                    // Pad with 3 spaces to visually align with "⏳ " on the
-                    // last line (⏳ emoji is double-width in most terminals).
-                    format!("   {}", a.text)
-                };
-                all_lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        label,
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
+                        // Pad with 3 spaces to visually align with "⏳ " on the
+                        // last entry (⏳ emoji is double-width in most terminals).
+                        format!("   {line}")
+                    };
+                    all_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(label, style),
+                    ]));
+                }
             }
         }
     }
@@ -1610,7 +1623,14 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
     let max_skip = selected.activity.len().saturating_sub(inner_height);
     app.activity_scroll = app.activity_scroll.min(max_skip);
-    render_activity_log_inner(frame, area, selected, app.activity_scroll, focused);
+    render_activity_log_inner(
+        frame,
+        area,
+        selected,
+        app.activity_scroll,
+        app.activity_hscroll,
+        focused,
+    );
 }
 
 fn render_activity_log_inner(
@@ -1618,6 +1638,7 @@ fn render_activity_log_inner(
     area: Rect,
     selected: &jyc_types::ThreadInfo,
     scroll_offset: usize,
+    hscroll: usize,
     focused: bool,
 ) {
     let mut block = Block::default().title(" Activity ").borders(Borders::ALL);
@@ -1672,7 +1693,9 @@ fn render_activity_log_inner(
         })
         .collect();
 
-    let text = Paragraph::new(activity_lines).block(block);
+    let text = Paragraph::new(activity_lines)
+        .block(block)
+        .scroll((0, hscroll as u16));
     frame.render_widget(text, area);
 }
 

@@ -108,14 +108,20 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
+        // Calculate the starting line number of the first replacement.
+        let line_no = content
+            .find(old_string)
+            .map(|pos| content[..pos].lines().count())
+            .unwrap_or(0);
+
         tokio::fs::write(&path, &new_content)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to write file '{}': {e}", file_path))?;
 
         let replacements = if replace_all { count } else { 1 };
         Ok(ToolOutput::success(format!(
-            "Edited '{}': {} replacement(s) made",
-            file_path, replacements
+            "Edited '{}' at line {}: {} replacement(s) made",
+            file_path, line_no, replacements
         )))
     }
 }

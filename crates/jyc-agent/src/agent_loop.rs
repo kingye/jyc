@@ -208,7 +208,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 ThreadEvent::ToolStarted {
                     thread_name: thread_name.to_string(),
                     tool_name: "jyc_reply_reply_message".to_string(),
-                    input: Some(truncate_str(&synthetic_args, 200)),
+                    input: Some(synthetic_args.clone()),
                     timestamp: Utc::now(),
                 },
             )
@@ -244,11 +244,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     success: !synthetic_output.is_error,
                     duration_secs: tool_start.elapsed().as_secs(),
                     output: if synthetic_output.is_error {
-                        Some(truncate_str(&synthetic_output.content, 200))
+                        Some(synthetic_output.content.clone())
                     } else {
                         None
                     },
-                    input: Some(truncate_str(&synthetic_args, 200)),
+                    input: Some(synthetic_args),
                     timestamp: Utc::now(),
                 },
             )
@@ -428,13 +428,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
             // Publish ToolStarted
-            let input_preview = truncate_str(&tool_call.arguments, 200);
             publish_event(
                 event_bus,
                 ThreadEvent::ToolStarted {
                     thread_name: thread_name.to_string(),
                     tool_name: tool_call.name.clone(),
-                    input: Some(input_preview),
+                    input: Some(tool_call.arguments.clone()),
                     timestamp: Utc::now(),
                 },
             )
@@ -460,12 +459,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     tool_name: tool_call.name.clone(),
                     success: !output.is_error,
                     duration_secs: tool_duration.as_secs(),
-                    output: if output.is_error {
-                        Some(truncate_str(&output.content, 200))
+                    output: if output.is_error || tool_call.name == "edit" {
+                        Some(output.content.clone())
                     } else {
                         None
                     },
-                    input: Some(truncate_str(&tool_call.arguments, 200)),
+                    input: Some(tool_call.arguments.clone()),
                     timestamp: Utc::now(),
                 },
             )

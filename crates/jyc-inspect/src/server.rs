@@ -31,7 +31,7 @@ pub trait WebsocketHandler: Send + Sync {
 }
 
 /// Max activity entries kept per thread.
-const MAX_ACTIVITY_ENTRIES: usize = 60;
+const MAX_ACTIVITY_ENTRIES: usize = 180;
 
 /// Per-thread activity buffer, shared between the activity tracker and the server.
 ///
@@ -742,10 +742,16 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         }
         ThreadEvent::ToolStarted {
             tool_name, input, ..
-        } => match input {
-            Some(inp) => format!("Tool: {tool_name} — {inp}"),
-            None => format!("Tool: {tool_name} (running)"),
-        },
+        } => {
+            if tool_name == "edit" {
+                format_edit_diff(input, None)
+            } else {
+                match input {
+                    Some(inp) => format!("Tool: {tool_name} — {inp}"),
+                    None => format!("Tool: {tool_name} (running)"),
+                }
+            }
+        }
         ThreadEvent::ToolCompleted {
             tool_name,
             success,
@@ -755,11 +761,29 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             ..
         } => {
             if *success {
-                match input {
-                    Some(inp) => {
-                        format!("Tool: {tool_name} (done, {duration_secs}s) — {inp}")
+                if tool_name == "edit" {
+                    // Parse line number from the edit tool's output message
+                    // (format: "Edited 'file' at line N: M replacement(s) made")
+                    let line_no = output.as_deref().and_then(|s| {
+                        s.find("at line ")
+                            .and_then(|pos| {
+                                let rest = &s[pos + 8..];
+                                rest.find(':').map(|end| &rest[..end])
+                            })
+                            .and_then(|n| n.trim().parse::<usize>().ok())
+                    });
+                    let header = match line_no {
+                        Some(n) => format!("Tool: edit (done, {duration_secs}s) — :{n}"),
+                        None => format!("Tool: edit (done, {duration_secs}s)"),
+                    };
+                    format_edit_diff(input, Some(header))
+                } else {
+                    match input {
+                        Some(inp) => {
+                            format!("Tool: {tool_name} (done, {duration_secs}s) — {inp}")
+                        }
+                        None => format!("Tool: {tool_name} (done, {duration_secs}s)"),
                     }
-                    None => format!("Tool: {tool_name} (done, {duration_secs}s)"),
                 }
             } else {
                 match output {
@@ -809,6 +833,54 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
+    }
+}
+
+/// Format an edit tool event as a 3-line git-diff style string.
+///
+/// `input` is the raw JSON arguments of the edit tool.
+/// `header` is an optional pre-built header line (e.g. with duration/line info).
+/// If `header` is None, a default "Tool: edit — {file_path}" header is used.
+///
+/// Output format:
+/// ```text
+/// Tool: edit — file.rs
+/// - old_first_line...
+/// + new_first_line...
+/// ```
+fn format_edit_diff(input: &Option<String>, header: Option<String>) -> String {
+    let parsed: Option<serde_json::Value> =
+        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let file_path = parsed
+        .as_ref()
+        .and_then(|v| v.get("file_path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+
+    let old_str = parsed
+        .as_ref()
+        .and_then(|v| v.get("old_string"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new_str = parsed
+        .as_ref()
+        .and_then(|v| v.get("new_string"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Take first line of each; append "..." if multi-line.
+    let old_line = first_line_truncated(old_str);
+    let new_line = first_line_truncated(new_str);
+
+    let header_line = header.unwrap_or_else(|| format!("Tool: edit — {file_path}"));
+    format!("{header_line}\n- {old_line}\n+ {new_line}")
+}
+
+/// Return the first line of `s`, appending "..." if there are more lines.
+fn first_line_truncated(s: &str) -> String {
+    match s.split_once('\n') {
+        Some((first, _)) => format!("{first}..."),
+        None => s.to_string(),
     }
 }
 

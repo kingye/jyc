@@ -61,12 +61,8 @@ pub struct ThreadManager {
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
 
-    // Thread-isolated event buses (optional feature).
-    // Uses Arc so the worker's ThreadManager clone shares the same map as
-    // the original. Without this, re-enqueuing buffered messages from within
-    // process_message() creates a new event bus on the clone, orphaned from
-    // the ActivityTracker's view, causing activity events to silently stop.
-    event_buses: Arc<Mutex<HashMap<String, ThreadEventBusRef>>>,
+    // Thread-isolated event buses (optional feature)
+    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
     enable_events: bool,
 
     // Per-thread cancellation tokens (used by close_thread to stop workers)
@@ -154,7 +150,7 @@ impl ThreadManager {
             storage,
             outbound,
             agent,
-            event_buses: Arc::new(Mutex::new(HashMap::new())),
+            event_buses: Mutex::new(HashMap::new()),
             enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir,
@@ -261,6 +257,11 @@ impl ThreadManager {
     ) {
         let (tx, rx) = mpsc::channel(self.max_queue_size);
         let _ = tx.try_send(item);
+        // Clone the sender for re-enqueuing buffered messages within
+        // process_message(). Direct try_send bypasses the clone's enqueue()
+        // path entirely, avoiding creation of orphaned event buses or stale
+        // sender entries in the clone's thread_queues.
+        let tx_for_reenqueue = tx.clone();
         queues.insert(thread_name.clone(), tx);
 
         // Create event bus for this thread if events are enabled
@@ -284,7 +285,7 @@ impl ThreadManager {
             storage: self.storage.clone(),
             outbound: self.outbound.clone(),
             agent: self.agent.clone(),
-            event_buses: self.event_buses.clone(),
+            event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
             template_dir: self.template_dir.clone(),
@@ -297,7 +298,14 @@ impl ThreadManager {
             worker_handles: Mutex::new(vec![]),
             repo_group_locks: self.repo_group_locks.clone(),
         });
-        let handle = ThreadManager::spawn_worker(tm, thread_name, rx, event_bus, thread_cancel);
+        let handle = ThreadManager::spawn_worker(
+            tm,
+            thread_name,
+            rx,
+            tx_for_reenqueue,
+            event_bus,
+            thread_cancel,
+        );
 
         // Drain completed worker handles to prevent unbounded Vec growth.
         let mut handles = self.worker_handles.lock().await;
@@ -315,6 +323,7 @@ impl ThreadManager {
         thread_manager: Arc<ThreadManager>,
         thread_name: String,
         mut rx: mpsc::Receiver<QueueItem>,
+        tx_for_reenqueue: mpsc::Sender<QueueItem>,
         event_bus: Option<ThreadEventBusRef>,
         thread_cancel: CancellationToken,
     ) -> JoinHandle<()> {
@@ -507,6 +516,7 @@ impl ThreadManager {
                     &mut rx,
                     &template_dir,
                     &config,
+                    &tx_for_reenqueue,
                     tm.clone(),
                     thread_cancel.clone(),
                 ).await {
@@ -1032,6 +1042,7 @@ async fn process_message(
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dir: &Path,
     config: &Arc<ArcSwap<jyc_types::AppConfig>>,
+    tx_for_reenqueue: &mpsc::Sender<QueueItem>,
     thread_manager: Arc<ThreadManager>,
     thread_cancel: CancellationToken,
 ) -> Result<()> {
@@ -1322,17 +1333,14 @@ async fn process_message(
         }
     };
 
-    // Re-enqueue buffered messages so they are processed after the current AI call
+    // Re-enqueue buffered messages so they are processed after the current AI call.
+    // Uses direct try_send to the original mpsc channel rather than going
+    // through enqueue(), which would create a new worker with an orphaned
+    // event bus on the ThreadManager clone.
     for qi in buffered {
-        thread_manager
-            .enqueue(
-                qi.message,
-                qi.thread_name,
-                qi.pattern_match,
-                qi.attachment_config,
-                qi.live_injection,
-            )
-            .await;
+        if let Err(e) = tx_for_reenqueue.try_send(qi) {
+            tracing::warn!(thread = %thread_name, error = %e, "Failed to re-enqueue buffered message");
+        }
     }
 
     // Stop the delivery watcher

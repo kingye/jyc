@@ -1330,7 +1330,7 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
+fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     let title = format!(" Chat: {} ", app.chat_thread.as_deref().unwrap_or("-"));
     let mut block = Block::default().title(title).borders(Borders::ALL);
     if app.chat_focus == ChatFocus::ChatPane {
@@ -1459,6 +1459,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
 
     let inner_height = chunks[0].height as usize;
     let max_skip = all_lines.len().saturating_sub(inner_height);
+    app.chat_scroll = app.chat_scroll.min(max_skip);
     let skip = max_skip.saturating_sub(app.chat_scroll);
     let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
 
@@ -1537,7 +1538,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(input_para, chunks[1]);
 }
 
-fn render_activity_log(frame: &mut Frame, area: Rect, app: &App) {
+fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
@@ -1567,6 +1568,9 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let focused = app.chat_visible && app.chat_focus == ChatFocus::ActivityPane;
+    let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
+    let max_skip = selected.activity.len().saturating_sub(inner_height);
+    app.activity_scroll = app.activity_scroll.min(max_skip);
     render_activity_log_inner(frame, area, selected, app.activity_scroll, focused);
 }
 

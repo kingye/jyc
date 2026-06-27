@@ -519,68 +519,81 @@ impl ActivityTracker {
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
                                         tokio::spawn(async move {
-                                            loop {
-                                                tokio::select! {
-                                                    event = rx.recv() => {
-                                                        match event {
-                                                            Some(event) => {
-                                                                let is_processing = matches!(
-                                                                    &event,
-                                                                    ThreadEvent::ProcessingStarted { .. }
-                                                                    | ThreadEvent::ProcessingProgress { .. }
-                                                                    | ThreadEvent::ToolStarted { .. }
-                                                                    | ThreadEvent::LLMRequestStarted { .. }
-                                                                );
-                                                                let is_completed = matches!(
-                                                                    &event,
-                                                                    ThreadEvent::ProcessingCompleted { .. }
-                                                                );
-                                                                let entry = event_to_activity(&event);
-                                                                let is_error = entry.severity == Severity::Error;
-                                                                let is_progress =
-                                                                    matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                if let Some(ref path) = thread_path
-                                                                    && let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                        tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                            use futures_util::FutureExt;
+                                            use std::panic::AssertUnwindSafe;
+
+                                            let result = AssertUnwindSafe(async {
+                                                loop {
+                                                    tokio::select! {
+                                                        event = rx.recv() => {
+                                                            match event {
+                                                                Some(event) => {
+                                                                    let is_processing = matches!(
+                                                                        &event,
+                                                                        ThreadEvent::ProcessingStarted { .. }
+                                                                        | ThreadEvent::ProcessingProgress { .. }
+                                                                        | ThreadEvent::ToolStarted { .. }
+                                                                        | ThreadEvent::LLMRequestStarted { .. }
+                                                                    );
+                                                                    let is_completed = matches!(
+                                                                        &event,
+                                                                        ThreadEvent::ProcessingCompleted { .. }
+                                                                    );
+                                                                    let entry = event_to_activity(&event);
+                                                                    let is_error = entry.severity == Severity::Error;
+                                                                    let is_progress =
+                                                                        matches!(&event, ThreadEvent::ProcessingProgress { .. });
+                                                                    if let Some(ref path) = thread_path
+                                                                        && let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                            tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                        }
+                                                                    let mut map = map.lock().await;
+                                                                    let state = map
+                                                                        .entry((channel_for_task.clone(), name.clone()))
+                                                                        .or_default();
+                                                                    // ProcessingProgress is a heartbeat, not a discrete
+                                                                    // activity. Persist it to disk but skip the in-memory
+                                                                    // activity log so it doesn't crowd out ToolStarted /
+                                                                    // ToolCompleted entries that show the actual tool name.
+                                                                    if !is_progress {
+                                                                        state.entries.push_back(entry);
+                                                                        if state.entries.len() > MAX_ACTIVITY_ENTRIES {
+                                                                            state.entries.pop_front();
+                                                                        }
                                                                     }
-                                                                let mut map = map.lock().await;
-                                                                let state = map
-                                                                    .entry((channel_for_task.clone(), name.clone()))
-                                                                    .or_default();
-                                                                // ProcessingProgress is a heartbeat, not a discrete
-                                                                // activity. Persist it to disk but skip the in-memory
-                                                                // activity log so it doesn't crowd out ToolStarted /
-                                                                // ToolCompleted entries that show the actual tool name.
-                                                                if !is_progress {
-                                                                    state.entries.push_back(entry);
-                                                                    if state.entries.len() > MAX_ACTIVITY_ENTRIES {
-                                                                        state.entries.pop_front();
+                                                                    state.last_active_at = Some(event.timestamp());
+                                                                    if is_processing {
+                                                                        state.is_processing = true;
+                                                                        state.has_error = false;
+                                                                    } else if is_completed {
+                                                                        state.is_processing = false;
+                                                                    }
+                                                                    if is_error {
+                                                                        state.has_error = true;
                                                                     }
                                                                 }
-                                                                state.last_active_at = Some(event.timestamp());
-                                                                if is_processing {
-                                                                    state.is_processing = true;
-                                                                    state.has_error = false;
-                                                                } else if is_completed {
-                                                                    state.is_processing = false;
-                                                                }
-                                                                if is_error {
-                                                                    state.has_error = true;
-                                                                }
-                                                            }
-                                                            None => {
-                                                                // Event bus was replaced (e.g., after /cancel
-                                                                // caused worker restart). Remove from subscribed
-                                                                // so the next interval tick re-subscribes to the
-                                                                // new event bus.
-                                                                let mut sub = subscribed_clone.lock().await;
-                                                                sub.remove(&key_clone);
-                                                                break;
+                                                                None => break,
                                                             }
                                                         }
+                                                        _ = cancel_inner.cancelled() => break,
                                                     }
-                                                    _ = cancel_inner.cancelled() => break,
                                                 }
+                                            }).catch_unwind().await;
+
+                                            // Always clean up subscribed on exit — whether normal
+                                            // (event bus replaced, cancel) or panic. Without this,
+                                            // the key stays in `subscribed` forever and the thread
+                                            // is never re-subscribed, causing activity events to
+                                            // silently stop appearing in the dashboard.
+                                            let mut sub = subscribed_clone.lock().await;
+                                            sub.remove(&key_clone);
+
+                                            if let Err(panic) = result {
+                                                tracing::error!(
+                                                    thread = %name,
+                                                    panic = ?panic,
+                                                    "Activity tracker task panicked; will re-subscribe on next interval"
+                                                );
                                             }
                                         });
                                     }

@@ -522,19 +522,18 @@ impl ActivityTracker {
                                     }
                                     None => {
                                         // Thread is idle (no active queue, no event bus).
-                                        // Clear stale processing state and mark as
-                                        // subscribed so we don't retry every tick. When a
-                                        // new message arrives, the enqueue path creates a
-                                        // new event bus, and the subscriber task's cleanup
-                                        // removes the key from `subscribed`, allowing
-                                        // re-subscription on the next tick.
+                                        // Clear any stale processing state so the dashboard
+                                        // doesn't get stuck showing "Processing" forever.
+                                        // Do NOT insert into `subscribed` — that would
+                                        // permanently exclude this thread from future checks,
+                                        // so if the event bus is created just after this tick
+                                        // (race with create_and_enqueue), the ActivityTracker
+                                        // would never subscribe.
                                         let mut map = activity_map.lock().await;
                                         if let Some(state) = map.get_mut(&key) {
                                             state.is_processing = false;
                                         }
                                         drop(map);
-                                        let mut sub = subscribed.lock().await;
-                                        sub.insert(key);
                                         continue;
                                     }
                                 };

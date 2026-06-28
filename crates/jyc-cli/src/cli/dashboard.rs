@@ -1604,7 +1604,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
                 for label in rendered_lines {
                     let label_style = if label.starts_with("  -") {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(Color::Gray)
                     } else {
                         style
                     };

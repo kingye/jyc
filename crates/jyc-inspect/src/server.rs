@@ -826,6 +826,26 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                     "new_string": new_str,
                 })
                 .to_string()
+            } else if tool_name == "write" {
+                // Store write data as JSON for multi-line rendering in AI progress.
+                let parsed: Option<serde_json::Value> =
+                    input.as_deref().and_then(|s| serde_json::from_str(s).ok());
+                let file_path = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("file_path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let content = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                serde_json::json!({
+                    "type": "write",
+                    "file_path": file_path,
+                    "content": content,
+                })
+                .to_string()
             } else {
                 match input {
                     Some(inp) => format!("Tool: {tool_name} — {inp}"),
@@ -879,6 +899,27 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                         "line_no": line_no,
                         "old_string": old_str,
                         "new_string": new_str,
+                        "duration_secs": duration_secs,
+                    })
+                    .to_string()
+                } else if tool_name == "write" {
+                    // Store write data as JSON for multi-line rendering in AI progress.
+                    let parsed: Option<serde_json::Value> =
+                        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
+                    let file_path = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("file_path"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let content = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("content"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    serde_json::json!({
+                        "type": "write",
+                        "file_path": file_path,
+                        "content": content,
                         "duration_secs": duration_secs,
                     })
                     .to_string()

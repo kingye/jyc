@@ -155,7 +155,9 @@ async fn test_dynamic_pattern_reload() {
     let config_swap = Arc::new(ArcSwap::from_pointee(config1));
 
     // Create MessageStorage
-    let storage = Arc::new(jyc_core::message_storage::MessageStorage::new(tmpdir.path()));
+    let storage = Arc::new(jyc_core::message_storage::MessageStorage::new(
+        tmpdir.path(),
+    ));
 
     // Create ThreadManager with mocks
     let thread_manager = Arc::new(jyc_core::thread_manager::ThreadManager::new(
@@ -245,7 +247,9 @@ async fn test_channel_orchestrator_register_and_remove() {
     let metrics_collector = jyc_core::metrics::MetricsCollector::new(cancel.clone());
     let (metrics_handle, _shared_stats, _metrics_task) = metrics_collector.start();
 
-    let storage = Arc::new(jyc_core::message_storage::MessageStorage::new(tmpdir.path()));
+    let storage = Arc::new(jyc_core::message_storage::MessageStorage::new(
+        tmpdir.path(),
+    ));
     let thread_manager = Arc::new(jyc_core::thread_manager::ThreadManager::new(
         1,
         10,

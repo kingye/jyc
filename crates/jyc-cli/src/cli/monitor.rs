@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use clap::Args;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -1222,12 +1224,10 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let orch = orchestrator.clone();
                 Some(Arc::new(move || {
                     let orch = orch.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = orch.reload().await {
-                            tracing::error!(error = %e, "ChannelOrchestrator reload failed");
-                        }
-                    });
-                }) as Arc<dyn Fn() + Send + Sync>)
+                    let fut: Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> =
+                        Box::pin(async move { orch.reload().await });
+                    fut
+                }) as jyc_inspect::server::ReloadCallback)
             },
         });
 

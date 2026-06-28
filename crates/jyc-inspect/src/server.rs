@@ -1,6 +1,8 @@
 use arc_swap::ArcSwap;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -48,6 +50,12 @@ pub struct ThreadActivityState {
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Callback invoked after config is swapped atomically during reload.
+/// Returns a Future so the caller can await the result and report errors
+/// to the user.
+pub type ReloadCallback =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
+
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
     /// Per-channel thread managers (dynamic — updated on reload)
@@ -70,8 +78,8 @@ pub struct InspectContext {
     /// `GET /ws/my_channel` routes to `handlers["my_channel"]`.
     /// `GET /ws` (no channel) routes to the first available handler.
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
-    /// Optional reload callback — invoked when config is reloaded.
-    pub reload_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Optional reload callback — invoked after config is swapped atomically.
+    pub reload_callback: Option<ReloadCallback>,
 }
 
 /// TCP-based inspect server.
@@ -293,7 +301,14 @@ impl InspectServer {
         // Notify orchestrator if a reload callback is registered
         if let Some(ref callback) = context.reload_callback {
             tracing::debug!("Invoking reload callback");
-            callback();
+            if let Err(e) = callback().await {
+                let msg = format!("config reloaded, but channel reload failed: {e:#}");
+                tracing::error!(error = %e, "Channel reload failed after config swap");
+                return InspectResponse::ReloadResult {
+                    success: false,
+                    message: msg,
+                };
+            }
         }
 
         InspectResponse::ReloadResult {

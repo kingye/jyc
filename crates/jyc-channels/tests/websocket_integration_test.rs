@@ -149,6 +149,27 @@ async fn test_websocket_adapter_start_and_handle() {
     assert_eq!(received.content.text.as_ref().unwrap(), message_text);
     assert_eq!(received.sender, "user");
 
+    // Send a second message to a different thread to verify multi-thread routing
+    let second_text = "Hello to coding thread";
+    let second_msg = format!(
+        r#"{{"type":"message","thread":"coding","text":"{}"}}"#,
+        second_text
+    );
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(second_msg))
+        .await
+        .unwrap();
+
+    let received2 = tokio::time::timeout(tokio::time::Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(received2.channel, "test-ws");
+    assert_eq!(received2.topic, "coding");
+    assert_eq!(received2.content.text.as_ref().unwrap(), second_text);
+    assert_eq!(received2.sender, "user");
+
     // Close connection
     let _ = write
         .send(tokio_tungstenite::tungstenite::Message::Close(None))

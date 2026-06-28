@@ -78,6 +78,16 @@ All notable changes to JYC will be documented in this file.
   messaging, and multi-client broadcast via `tokio::sync::broadcast`. (#284,
   #285)
 
+### Changed
+
+- **WebSocket channel now supports multiple threads per channel.** Thread names
+  are derived from the client's `thread` field in WebSocket messages (e.g.,
+  `{"type":"message","thread":"general","text":"hello"}`). When `thread` is
+  non-empty, it is used as the thread name; when empty, it falls back to the
+  channel name for backward compatibility. This enables separate conversation
+  contexts and workspace directories for different threads within the same
+  websocket channel.
+
 ### Removed
 
 - **Local TUI channel and `jyc local` CLI command.** The standalone `local`

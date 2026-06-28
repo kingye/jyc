@@ -84,7 +84,7 @@ All notable changes to JYC will be documented in this file.
 
 - **Unified config hot-reload for patterns and channel lifecycle.** `MessageRouter` now reads patterns dynamically from live `ArcSwap<AppConfig>` on every `route()` call instead of caching a static snapshot at startup. New `ChannelOrchestrator` component manages channel lifecycle: deleted channels are gracefully cancelled on reload, new channels are detected with a warning. Pattern additions/modifications take effect immediately without restart. `InspectContext` fields (`thread_managers`, `channels`, `workspace_dirs`) use `ArcSwap` for dynamic updates. (#338, #339)
 
-- **Chat pane edit diff coloring and write tool multi-line display.** Edit diffs in the AI progress area now use distinct colors: old string lines in gray (`DarkGray`), new string lines in yellow with italic. Write tool output renders as multi-line content (with `+` prefix, capped at 20 lines) for better readability. Activity pane display remains unchanged. (#340)
+- **Chat pane edit diff coloring and write tool multi-line display.** Edit diffs in the AI progress area now use distinct colors: old string lines in gray (`Color::Gray`), new string lines in yellow with italic. Write tool output renders as multi-line content (with `+` prefix, capped at 20 lines) for better readability. Activity pane display remains unchanged. (#340)
 
 - **WebSocket channel now supports multiple threads per channel.** Thread names
   are derived from the client's `thread` field in WebSocket messages (e.g.,

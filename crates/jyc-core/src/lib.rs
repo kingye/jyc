@@ -1,6 +1,7 @@
 pub mod activity_log_store;
 pub mod agent;
 pub mod attachment_storage;
+pub mod channel_orchestrator;
 pub mod chat_log_store;
 pub mod command;
 pub mod email_parser;

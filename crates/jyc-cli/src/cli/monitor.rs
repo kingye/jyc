@@ -402,7 +402,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         });
         all_workspace_dirs.push(workspace_dir);
 
-        let router = Arc::new(MessageRouter::new(thread_manager.clone(), storage.clone()));
+        let router = Arc::new(MessageRouter::new(
+            thread_manager.clone(),
+            storage.clone(),
+            config.clone(),
+            channel_name.clone(),
+        ));
 
         let mut state_manager = StateManager::for_channel(workdir, channel_name);
         state_manager.initialize().await?;
@@ -455,7 +460,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                             channel_name_owned.clone(),
                             inbound_config,
                             monitor_config,
-                            patterns,
                             router,
                             state_manager,
                             cancel_child,
@@ -486,7 +490,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
 
                 let task = tokio::spawn(async move {
@@ -503,12 +506,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
                             tokio::spawn(async move {
                                 // Attachments are saved inside process_message()
                                 // after template initialization, so there's no
                                 // need for a pre-route save here.
-                                router.route(&FeishuMatcher, message, &patterns).await;
+                                router.route(&FeishuMatcher, message).await;
                             });
                             Ok(())
                         }),
@@ -549,7 +551,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_callback = patterns.clone();
                 let patterns_for_adapter = patterns.clone();
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
@@ -565,10 +566,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&GiteeMatcher, message, &patterns).await;
+                                router.route(&GiteeMatcher, message).await;
                             });
 
                             Ok(())
@@ -606,7 +606,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_callback = patterns.clone();
                 let patterns_for_adapter = patterns.clone();
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
@@ -622,10 +621,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&GithubMatcher, message, &patterns).await;
+                                router.route(&GithubMatcher, message).await;
                             });
 
                             Ok(())
@@ -667,7 +665,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
 
@@ -687,10 +684,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&WechatMatcher, message, &patterns).await;
+                                router.route(&WechatMatcher, message).await;
                             });
 
                             Ok(())
@@ -732,7 +728,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let wecom_bot_handle_arc_clone = wecom_bot_handle_arc.clone().unwrap();
 
@@ -749,10 +744,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&WecomBotMatcher, message, &patterns).await;
+                                router.route(&WecomBotMatcher, message).await;
                             });
 
                             Ok(())
@@ -796,7 +790,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let wecom_server = wecom_server
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let channel_name_owned = channel_name.clone();
 
@@ -814,10 +807,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&WecomMatcher, message, &patterns).await;
+                                router.route(&WecomMatcher, message).await;
                             });
 
                             Ok(())
@@ -862,7 +854,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let wecom_server = wecom_server
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let channel_name_owned = channel_name.clone();
 
@@ -894,10 +885,9 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
-                            let patterns = patterns_for_callback.clone();
 
                             tokio::spawn(async move {
-                                router.route(&WecomKfMatcher, message, &patterns).await;
+                                router.route(&WecomKfMatcher, message).await;
                             });
 
                             Ok(())
@@ -931,7 +921,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 tasks.push(task);
             }
             "websocket" => {
-                let patterns_for_callback = patterns.clone();
                 let router_for_callback = router.clone();
                 let channel_name_for_matcher = channel_name_owned.clone();
 
@@ -945,12 +934,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
-                        let patterns = patterns_for_callback.clone();
                         let channel_name = channel_name_for_matcher.clone();
 
                         tokio::spawn(async move {
                             router
-                                .route(&WebsocketMatcher::new(channel_name), message, &patterns)
+                                .route(&WebsocketMatcher::new(channel_name), message)
                                 .await;
                         });
 

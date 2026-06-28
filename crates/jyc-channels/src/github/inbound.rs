@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::client::{GithubClient, GithubComment};
@@ -244,31 +246,52 @@ pub struct GithubInboundAdapter {
     state_dir: PathBuf,
     /// Workdir for workspace resolution: <workdir>/
     workdir: PathBuf,
-    /// Configured patterns for this channel. Used to derive the set of
-    /// pull-request thread prefixes when scanning the workspace for active PR
-    /// threads. May be empty (e.g., in unit tests), in which case the default
-    /// `pr` prefix is used.
-    patterns: Vec<ChannelPattern>,
+    /// Live application config for dynamic pattern reading.
+    app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
+    /// Test-only override for patterns. When set, takes priority over app_config.
+    test_patterns: Option<Vec<ChannelPattern>>,
 }
 
 impl GithubInboundAdapter {
-    pub fn new(config: &GithubConfig, channel_name: String, workdir: &Path) -> Self {
+    pub fn new(
+        config: &GithubConfig,
+        channel_name: String,
+        workdir: &Path,
+        app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
+    ) -> Self {
         let state_dir = workdir.join(&channel_name).join(".github");
         Self {
             config: config.clone(),
             channel_name,
             state_dir,
             workdir: workdir.to_path_buf(),
-            patterns: Vec::new(),
+            app_config,
+            test_patterns: None,
         }
     }
 
-    /// Inject the configured patterns. Used so disk scans can recognize all
-    /// pull-request thread directory prefixes (e.g. `pr-`, `review-pr-`, plus
-    /// any user-defined `thread_prefix` for PR-typed patterns).
+    /// Set test patterns (for unit tests only).
+    #[cfg(test)]
     pub fn with_patterns(mut self, patterns: Vec<ChannelPattern>) -> Self {
-        self.patterns = patterns;
+        self.test_patterns = Some(patterns);
         self
+    }
+
+    /// Read the current patterns for this channel.
+    fn patterns(&self) -> Vec<ChannelPattern> {
+        if let Some(ref patterns) = self.test_patterns {
+            return patterns.clone();
+        }
+        match &self.app_config {
+            Some(cfg) => {
+                let cfg = cfg.load();
+                cfg.channels
+                    .get(&self.channel_name)
+                    .and_then(|c| c.patterns.clone())
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        }
     }
 
     /// Load processed comment keys from persistent storage.
@@ -557,7 +580,7 @@ impl GithubInboundAdapter {
         let mut prefixes: HashSet<String> = HashSet::new();
         prefixes.insert("pr".to_string());
 
-        for pattern in &self.patterns {
+        for pattern in self.patterns() {
             // Only consider patterns that can match pull_request events.
             let matches_pr = match pattern.rules.github_type.as_ref() {
                 Some(types) => types.iter().any(|t| t == "pull_request"),
@@ -2464,7 +2487,8 @@ mod tests {
             poll_interval_secs: 60,
             poll_ci_status: true,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let comments = adapter.load_processed_comments().await;
@@ -2482,7 +2506,8 @@ mod tests {
             poll_interval_secs: 60,
             poll_ci_status: true,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut processed = HashSet::new();
@@ -2520,7 +2545,8 @@ mod tests {
             poll_interval_secs: 60,
             poll_ci_status: true,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut processed = HashSet::new();
@@ -2556,7 +2582,8 @@ mod tests {
             poll_interval_secs: 60,
             poll_ci_status: true,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         // Create a set with 3000 entries (key format: "id:timestamp")
@@ -2592,7 +2619,8 @@ mod tests {
             poll_interval_secs: 60,
             poll_ci_status: true,
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         // Set with fewer than 2000 entries — compact should be a no-op
@@ -2616,7 +2644,8 @@ mod tests {
             poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
-        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
 
         let msg = adapter.build_trigger_message(
             "issue_comment",
@@ -2655,7 +2684,8 @@ mod tests {
             poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
-        let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
 
         let msg = adapter.build_trigger_message(
             "pull_request",
@@ -2686,7 +2716,8 @@ mod tests {
             poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
-        let adapter = GithubInboundAdapter::new(&config, "networkcalc".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "networkcalc".to_string(), tmpdir.path(), None);
 
         let msg = adapter.build_trigger_message(
             "pull_request",
@@ -3297,7 +3328,8 @@ mod tests {
     async fn test_ci_status_load_and_track() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3335,7 +3367,8 @@ mod tests {
     async fn test_ci_status_transition_triggers_message() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3372,7 +3405,8 @@ mod tests {
     async fn test_ci_status_no_retrigger_on_same_failure() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3392,7 +3426,8 @@ mod tests {
     async fn test_ci_status_resets_on_new_commit() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3433,7 +3468,8 @@ mod tests {
     async fn test_ci_status_empty_load() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let ci_status = adapter.load_ci_status().await;
@@ -3444,7 +3480,8 @@ mod tests {
     async fn test_ci_status_compact() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3497,7 +3534,8 @@ mod tests {
     async fn test_ci_status_no_file_growth_on_unchanged() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
         let mut ci_status: HashMap<u64, (String, String)> = HashMap::new();
@@ -3580,7 +3618,8 @@ mod tests {
     fn test_scan_active_pr_threads_empty_workspace() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
         let result = adapter.scan_active_pr_threads();
         assert!(
@@ -3605,8 +3644,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
-            .with_patterns(vec![reviewer_pattern]);
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
+                .with_patterns(vec![reviewer_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
@@ -3637,8 +3677,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
-            .with_patterns(vec![reviewer_pattern]);
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
+                .with_patterns(vec![reviewer_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
@@ -3665,8 +3706,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
-            .with_patterns(vec![qa_pattern]);
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
+                .with_patterns(vec![qa_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
@@ -3682,7 +3724,8 @@ mod tests {
     fn test_scan_active_pr_threads_non_numeric_suffix() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("pr-abc")).unwrap();
@@ -3705,8 +3748,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path())
-            .with_patterns(vec![reviewer_pattern]);
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
+                .with_patterns(vec![reviewer_pattern]);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
@@ -3735,7 +3779,8 @@ mod tests {
     fn test_ci_polling_no_active_threads_skips_all() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
         let active_pr_threads = adapter.scan_active_pr_threads();
 
@@ -3763,7 +3808,8 @@ mod tests {
         // GitHub close path.
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
@@ -3783,7 +3829,8 @@ mod tests {
     fn test_scan_threads_for_number_empty_workspace() {
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
         let result = adapter.scan_threads_for_number(42);
         assert!(result.is_empty());
     }
@@ -3793,7 +3840,8 @@ mod tests {
         // A directory ending in -420 must NOT match number 42.
         let tmpdir = tempfile::tempdir().unwrap();
         let config = make_ci_test_config();
-        let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
+        let adapter =
+            GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
         let workspace = tmpdir.path().join("test_ch").join("workspace");
         std::fs::create_dir_all(workspace.join("issue-420")).unwrap();

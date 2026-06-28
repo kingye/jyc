@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use crate::message_storage::MessageStorage;
 use crate::thread_manager::ThreadManager;
 use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
@@ -8,33 +10,52 @@ use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 ///
 /// Channel-agnostic: delegates pattern matching and thread name derivation
 /// to the `ChannelMatcher` provided by the caller.
+///
+/// Patterns are read dynamically from the live config on each route call,
+/// so changes to config.toml are effective immediately after reload.
 pub struct MessageRouter {
     thread_manager: Arc<ThreadManager>,
     storage: Arc<MessageStorage>,
+    config: Arc<ArcSwap<jyc_types::AppConfig>>,
+    channel_name: String,
 }
 
 impl MessageRouter {
-    pub fn new(thread_manager: Arc<ThreadManager>, storage: Arc<MessageStorage>) -> Self {
+    pub fn new(
+        thread_manager: Arc<ThreadManager>,
+        storage: Arc<MessageStorage>,
+        config: Arc<ArcSwap<jyc_types::AppConfig>>,
+        channel_name: String,
+    ) -> Self {
         Self {
             thread_manager,
             storage,
+            config,
+            channel_name,
         }
+    }
+
+    /// Read the current patterns for this channel from the live config.
+    pub fn patterns(&self) -> Vec<ChannelPattern> {
+        let cfg = self.config.load();
+        cfg.channels
+            .get(&self.channel_name)
+            .and_then(|c| c.patterns.clone())
+            .unwrap_or_default()
     }
 
     /// Route a message from any channel type.
     ///
     /// Pattern matching and thread name derivation are delegated to
     /// the channel-specific `ChannelMatcher` implementation.
-    pub async fn route(
-        &self,
-        matcher: &dyn ChannelMatcher,
-        mut message: InboundMessage,
-        patterns: &[ChannelPattern],
-    ) {
+    /// Patterns are read dynamically from the live config.
+    pub async fn route(&self, matcher: &dyn ChannelMatcher, mut message: InboundMessage) {
         let ch = &message.channel;
+        let patterns = self.patterns();
+        let patterns_ref: &[ChannelPattern] = &patterns;
 
         // 1. Pattern matching (channel-specific)
-        let pattern_match = match matcher.match_message(&message, patterns) {
+        let pattern_match = match matcher.match_message(&message, patterns_ref) {
             Some(m) => {
                 tracing::info!(
                     channel = %ch,
@@ -57,8 +78,7 @@ impl MessageRouter {
                         "No pattern matched, but storing for channel context"
                     );
                     // Store the message but don't process it
-                    self.store_unmatched_message(matcher, &message, patterns)
-                        .await;
+                    self.store_unmatched_message(matcher, &message).await;
                 } else {
                     tracing::debug!(
                         channel = %ch,
@@ -80,12 +100,12 @@ impl MessageRouter {
             .pattern_name
             .clone();
 
-        let thread_name = patterns
+        let thread_name = patterns_ref
             .iter()
             .find(|p| p.name == pattern_name)
             .and_then(|p| p.thread_name.clone())
             .unwrap_or_else(|| {
-                matcher.derive_thread_name(&message, patterns, pattern_match.as_ref())
+                matcher.derive_thread_name(&message, patterns_ref, pattern_match.as_ref())
             });
 
         tracing::info!(
@@ -97,7 +117,7 @@ impl MessageRouter {
 
         // 3. Get attachment config, template, and live_injection from the matched pattern
         let matched_pattern_name = pattern_name;
-        let matched_pattern = patterns.iter().find(|p| p.name == matched_pattern_name);
+        let matched_pattern = patterns_ref.iter().find(|p| p.name == matched_pattern_name);
         let attachment_config = matched_pattern.and_then(|p| p.attachments.clone());
         let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
 
@@ -157,10 +177,12 @@ impl MessageRouter {
         &self,
         matcher: &dyn ChannelMatcher,
         message: &InboundMessage,
-        patterns: &[ChannelPattern],
     ) {
+        let patterns = self.patterns();
+        let patterns_ref: &[ChannelPattern] = &patterns;
+
         // Derive thread name even for unmatched messages
-        let thread_name = matcher.derive_thread_name(message, patterns, None);
+        let thread_name = matcher.derive_thread_name(message, patterns_ref, None);
 
         tracing::info!(
             channel = %message.channel,

@@ -1,6 +1,8 @@
 use arc_swap::ArcSwap;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -48,12 +50,18 @@ pub struct ThreadActivityState {
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Callback invoked after config is swapped atomically during reload.
+/// Returns a Future so the caller can await the result and report errors
+/// to the user.
+pub type ReloadCallback =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
+
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
-    /// Per-channel thread managers
-    pub thread_managers: Vec<Arc<ThreadManager>>,
-    /// Channel info (name, type)
-    pub channels: Vec<ChannelInfo>,
+    /// Per-channel thread managers (dynamic — updated on reload)
+    pub thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+    /// Channel info (name, type) (dynamic — updated on reload)
+    pub channels: Arc<ArcSwap<Vec<ChannelInfo>>>,
     /// Shared health stats from MetricsCollector
     pub health_stats: SharedHealthStats,
     /// Per-thread activity logs from SSE events
@@ -64,12 +72,14 @@ pub struct InspectContext {
     pub config_path: Option<PathBuf>,
     /// Swappable application config (for live reload)
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
-    /// Per-channel workspace directories (parallel to channels)
-    pub workspace_dirs: Vec<PathBuf>,
+    /// Per-channel workspace directories (dynamic — updated on reload)
+    pub workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
     /// WebSocket handlers keyed by channel name.
     /// `GET /ws/my_channel` routes to `handlers["my_channel"]`.
     /// `GET /ws` (no channel) routes to the first available handler.
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
+    /// Optional reload callback — invoked after config is swapped atomically.
+    pub reload_callback: Option<ReloadCallback>,
 }
 
 /// TCP-based inspect server.
@@ -288,6 +298,19 @@ impl InspectServer {
         config_swap.store(Arc::new(new_config));
         tracing::info!("Configuration reloaded successfully");
 
+        // Notify orchestrator if a reload callback is registered
+        if let Some(ref callback) = context.reload_callback {
+            tracing::debug!("Invoking reload callback");
+            if let Err(e) = callback().await {
+                let msg = format!("config reloaded, but channel reload failed: {e:#}");
+                tracing::error!(error = %e, "Channel reload failed after config swap");
+                return InspectResponse::ReloadResult {
+                    success: false,
+                    message: msg,
+                };
+            }
+        }
+
         InspectResponse::ReloadResult {
             success: true,
             message: "configuration reloaded".to_string(),
@@ -324,14 +347,13 @@ impl InspectServer {
             };
         }
 
-        let agent_session_path = context
-            .workspace_dirs
+        let dirs = context.workspace_dirs.load();
+        let agent_session_path = dirs
             .iter()
             .map(|d| d.join(&thread_name).join(".jyc").join("agent-session.json"))
             .find(|p| p.exists());
 
-        let agent_context_path = context
-            .workspace_dirs
+        let agent_context_path = dirs
             .iter()
             .map(|d| d.join(&thread_name).join(".jyc").join("agent-context.json"))
             .find(|p| p.exists());
@@ -371,7 +393,8 @@ impl InspectServer {
         let mut active_workers = 0;
         let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
 
-        for tm in &context.thread_managers {
+        let tms = context.thread_managers.load();
+        for tm in tms.iter() {
             let tm_threads = tm.list_threads().await;
             total_threads += tm_threads.len();
             let stats = tm.get_stats().await;
@@ -403,11 +426,7 @@ impl InspectServer {
 
         // Read metrics
         let health = context.health_stats.lock().await;
-        let max_concurrent: usize = context
-            .thread_managers
-            .iter()
-            .map(|tm| tm.max_concurrent())
-            .sum();
+        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
         let stats = GlobalStats {
             active_workers,
             total_threads,
@@ -419,7 +438,8 @@ impl InspectServer {
         };
         drop(health);
 
-        let mut channels = context.channels.clone();
+        let channels = context.channels.load();
+        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
         for ch in &mut channels {
             if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
                 ch.active_workers = *aw;
@@ -447,26 +467,28 @@ impl ActivityTracker {
     /// Persists activity entries to `.jyc/activity.jsonl` per thread.
     /// On startup, loads historical activity from disk.
     pub fn start(
-        thread_managers: Vec<Arc<ThreadManager>>,
+        thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
         activity_map: SharedActivityMap,
-        workspace_dirs: Vec<PathBuf>,
+        workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
-        assert_eq!(
-            thread_managers.len(),
-            workspace_dirs.len(),
-            "thread_managers and workspace_dirs must have the same length"
-        );
         tokio::spawn(async move {
+            let subscribed: Arc<Mutex<HashSet<(String, String)>>> =
+                Arc::new(Mutex::new(HashSet::new()));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
             // Load historical activity from disk for all existing threads
-            for (tm_index, tm) in thread_managers.iter().enumerate() {
-                let workspace_dir = &workspace_dirs[tm_index];
+            let tms = thread_managers.load();
+            let dirs = workspace_dirs.load();
+            for (tm_index, tm) in tms.iter().enumerate() {
+                let workspace_dir = dirs.get(tm_index);
                 let channel = tm.channel_name().to_string();
                 let threads = tm.list_threads().await;
                 for thread in &threads {
-                    let thread_path = workspace_dir.join(&thread.name);
-                    if let Ok(entries) =
-                        ActivityLogStore::load_recent(&thread_path, MAX_ACTIVITY_ENTRIES)
+                    let thread_path = workspace_dir.map(|d| d.join(&thread.name));
+                    if let Some(ref path) = thread_path
+                        && let Ok(entries) =
+                            ActivityLogStore::load_recent(path, MAX_ACTIVITY_ENTRIES)
                         && !entries.is_empty()
                     {
                         let mut map = activity_map.lock().await;
@@ -484,17 +506,17 @@ impl ActivityTracker {
                     }
                 }
             }
-
-            let subscribed: Arc<Mutex<HashSet<(String, String)>>> =
-                Arc::new(Mutex::new(HashSet::new()));
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            drop(tms);
+            drop(dirs);
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Discover new threads and subscribe to their event buses
-                        for (tm_index, tm) in thread_managers.iter().enumerate() {
-                            let workspace_dir = workspace_dirs.get(tm_index);
+                        let tms = thread_managers.load();
+                        let dirs = workspace_dirs.load();
+                        for (tm_index, tm) in tms.iter().enumerate() {
+                            let workspace_dir = dirs.get(tm_index);
                             let channel = tm.channel_name().to_string();
                             let threads = tm.list_threads().await;
                             for thread in threads {
@@ -929,20 +951,21 @@ mod tests {
 
     fn test_context() -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![ChannelInfo {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
                 name: "emf".to_string(),
                 channel_type: "github".to_string(),
                 active_workers: 0,
                 max_concurrent: 0,
-            }],
+            }])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
             config: None,
-            workspace_dirs: vec![],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
+            reload_callback: None,
         })
     }
 
@@ -1170,15 +1193,16 @@ mode = "agent"
         let config_swap = Arc::new(ArcSwap::from_pointee(initial_config));
 
         let ctx = Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![],
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: Some(config_path.clone()),
             config: Some(config_swap.clone()),
-            workspace_dirs: vec![],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
+            reload_callback: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1257,15 +1281,16 @@ mode = "agent"
         .unwrap();
 
         let ctx = Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![],
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
             config: None,
-            workspace_dirs: vec![workspace_dir],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
+            reload_callback: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1352,15 +1377,16 @@ mode = "agent"
         let workspace_dir = tmp.path().to_path_buf();
 
         let ctx = Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![],
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
             config: None,
-            workspace_dirs: vec![workspace_dir],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
+            reload_callback: None,
         });
 
         let cancel = CancellationToken::new();

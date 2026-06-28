@@ -192,24 +192,26 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::server::{InspectContext, InspectServer};
+    use arc_swap::ArcSwap;
     use jyc_types::ChannelInfo;
 
     fn test_context() -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![ChannelInfo {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
                 name: "test-ch".to_string(),
                 channel_type: "email".to_string(),
                 active_workers: 0,
                 max_concurrent: 0,
-            }],
+            }])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
             config: None,
-            workspace_dirs: vec![],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
+            reload_callback: None,
         })
     }
 
@@ -323,20 +325,21 @@ mod tests {
         .unwrap();
 
         let context = Arc::new(InspectContext {
-            thread_managers: vec![],
-            channels: vec![ChannelInfo {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
                 name: "test-ch".to_string(),
                 channel_type: "email".to_string(),
                 active_workers: 0,
                 max_concurrent: 0,
-            }],
+            }])),
             health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
             config: None,
-            workspace_dirs: vec![workspace_dir],
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
+            reload_callback: None,
         });
 
         let cancel = CancellationToken::new();

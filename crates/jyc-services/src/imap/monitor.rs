@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::imap::client::ImapClient;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::state_manager::StateManager;
-use jyc_types::{ChannelMatcher, ChannelPattern};
+use jyc_types::ChannelMatcher;
 use jyc_types::{ImapConfig, MonitorConfig};
 
 /// IMAP email monitor — connects to IMAP, fetches new emails, dispatches them.
@@ -19,7 +19,6 @@ pub struct ImapMonitor {
     channel_name: String,
     imap_config: ImapConfig,
     monitor_config: MonitorConfig,
-    patterns: Vec<ChannelPattern>,
     router: Arc<MessageRouter>,
     state_manager: StateManager,
     cancel: CancellationToken,
@@ -32,7 +31,6 @@ impl ImapMonitor {
         channel_name: String,
         imap_config: ImapConfig,
         monitor_config: MonitorConfig,
-        patterns: Vec<ChannelPattern>,
         router: Arc<MessageRouter>,
         state_manager: StateManager,
         cancel: CancellationToken,
@@ -42,7 +40,6 @@ impl ImapMonitor {
             channel_name,
             imap_config,
             monitor_config,
-            patterns,
             router,
             state_manager,
             cancel,
@@ -293,9 +290,7 @@ impl ImapMonitor {
         // thread_name override is configured on the pattern.
 
         // Route through the message router (pattern match → thread queue)
-        self.router
-            .route(&*self.matcher, message, &self.patterns)
-            .await;
+        self.router.route(&*self.matcher, message).await;
 
         Ok(())
     }

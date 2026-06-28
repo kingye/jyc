@@ -290,9 +290,7 @@ impl ImapMonitor {
         // thread_name override is configured on the pattern.
 
         // Route through the message router (pattern match → thread queue)
-        self.router
-            .route(&*self.matcher, message)
-            .await;
+        self.router.route(&*self.matcher, message).await;
 
         Ok(())
     }

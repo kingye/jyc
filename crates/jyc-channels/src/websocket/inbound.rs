@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
@@ -103,7 +105,8 @@ type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>
 /// upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
-    patterns: Vec<ChannelPattern>,
+    /// Live application config for dynamic pattern reading.
+    app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.
     broadcast_tx: broadcast::Sender<String>,
     /// Message callback — set during `start()`, used by the WebSocket handler.
@@ -116,15 +119,35 @@ impl WebsocketInboundAdapter {
     /// Create a new websocket inbound adapter.
     pub fn new(
         channel_name: String,
-        patterns: Vec<ChannelPattern>,
+        app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
         broadcast_tx: broadcast::Sender<String>,
     ) -> Self {
         Self {
             channel_name,
-            patterns,
+            app_config,
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
+        }
+    }
+
+    /// Read the current enabled pattern names for this channel from the live config.
+    fn pattern_names(&self) -> Vec<String> {
+        match &self.app_config {
+            Some(cfg) => {
+                let cfg = cfg.load();
+                cfg.channels
+                    .get(&self.channel_name)
+                    .and_then(|c| c.patterns.as_ref())
+                    .map(|p| {
+                        p.iter()
+                            .filter(|pat| pat.enabled)
+                            .map(|pat| pat.name.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
         }
     }
 
@@ -147,12 +170,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
         addr: SocketAddr,
     ) -> anyhow::Result<()> {
-        let pattern_names: Vec<String> = self
-            .patterns
-            .iter()
-            .filter(|p| p.enabled)
-            .map(|p| p.name.clone())
-            .collect();
+        let pattern_names: Vec<String> = self.pattern_names();
 
         let broadcast_rx = self.broadcast_tx.subscribe();
         let channel_name = self.channel_name.clone();

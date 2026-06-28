@@ -116,15 +116,19 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // 4. Process each configured channel
     let mut tasks = Vec::new();
-    let mut all_thread_managers: Vec<Arc<ThreadManager>> = Vec::new();
-    let mut all_channels: Vec<jyc_types::ChannelInfo> = Vec::new();
-    let mut all_workspace_dirs: Vec<std::path::PathBuf> = Vec::new();
     // Collect JycAgentService instances for wiring cross-channel thread managers
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
     // Collect outbound adapters keyed by channel name for cross-channel messaging
     let mut all_outbounds: Vec<(String, Arc<dyn OutboundAdapter>)> = Vec::new();
+
+    let orchestrator = Arc::new(jyc_core::channel_orchestrator::ChannelOrchestrator::new(
+        config.clone(),
+        workdir,
+    ));
+
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.agent.clone());
+    let config_for_spawn = Arc::clone(&config);
 
     // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)
     let has_wecom = config_snapshot
@@ -330,7 +334,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 // Store the inbound adapter for later registration with the inspect server
                 let mut handler = WebsocketInboundAdapter::new(
                     channel_name.to_string(),
-                    patterns.clone(),
+                    Some(config.clone()),
                     broadcast_tx,
                 );
                 handler.set_workspace_dir(workspace_dir.clone());
@@ -393,14 +397,12 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         ));
 
         // Collect for inspect server
-        all_thread_managers.push(thread_manager.clone());
-        all_channels.push(jyc_types::ChannelInfo {
+        let channel_info = jyc_types::ChannelInfo {
             name: channel_name.clone(),
             channel_type: channel_type.to_string(),
             active_workers: 0,
             max_concurrent: 0,
-        });
-        all_workspace_dirs.push(workspace_dir);
+        };
 
         let router = Arc::new(MessageRouter::new(
             thread_manager.clone(),
@@ -479,6 +481,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .instrument(channel_span),
                 );
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "feishu" => {
@@ -492,6 +509,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                 let router_for_callback = router.clone();
 
+                let thread_manager_for_task = thread_manager.clone();
+
                 let task = tokio::spawn(async move {
                     // Clone configs before moving into closures
                     let feishu_config_cloned = feishu_config.clone();
@@ -502,7 +521,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
                     use jyc_types::InboundAdapter;
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -540,6 +559,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "gitee" => {
@@ -551,18 +585,18 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_adapter = patterns.clone();
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
+
+                let thread_manager_for_task = thread_manager.clone();
 
                 let task = tokio::spawn(async move {
                     use jyc_channels::gitee::inbound::GiteeInboundAdapter;
                     use jyc_types::InboundAdapter;
 
-                    let adapter = GiteeInboundAdapter::new(&gitee_config, channel_name_owned.clone(), &workdir_owned)
-                        .with_patterns(patterns_for_adapter);
+                    let adapter = GiteeInboundAdapter::new(&gitee_config, channel_name_owned.clone(), &workdir_owned);
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -595,6 +629,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "github" => {
@@ -606,18 +655,19 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     })?
                     .clone();
 
-                let patterns_for_adapter = patterns.clone();
+                let config_for_adapter = config_for_spawn.clone();
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
+
+                let thread_manager_for_task = thread_manager.clone();
 
                 let task = tokio::spawn(async move {
                     use jyc_channels::github::inbound::GithubInboundAdapter;
                     use jyc_types::InboundAdapter;
 
-                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned)
-                        .with_patterns(patterns_for_adapter);
+                    let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned, Some(config_for_adapter));
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -654,6 +704,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "wechat" => {
@@ -668,6 +733,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let router_for_callback = router.clone();
                 let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
 
+                let thread_manager_for_task = thread_manager.clone();
+
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
                     use jyc_channels::wechat::inbound::WechatMatcher;
@@ -680,7 +747,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         wechat_sender_arc_clone,
                     );
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -717,6 +784,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "wecom_bot" => {
@@ -731,6 +813,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let router_for_callback = router.clone();
                 let wecom_bot_handle_arc_clone = wecom_bot_handle_arc.clone().unwrap();
 
+                let thread_manager_for_task = thread_manager.clone();
+
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
 
@@ -740,7 +824,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         wecom_bot_handle_arc_clone,
                     );
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -776,6 +860,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "wecom" => {
@@ -793,6 +892,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 let router_for_callback = router.clone();
                 let channel_name_owned = channel_name.clone();
 
+                let thread_manager_for_task = thread_manager.clone();
+
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
                     use jyc_channels::wecom::inbound::WecomMatcher;
@@ -803,7 +904,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         wecom_server,
                     );
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -840,6 +941,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     tm.shutdown().await;
                 }.instrument(channel_span));
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             "wecomkf" => {
@@ -869,6 +985,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 ));
                 let dedup_store = Arc::new(KfDedupStore::new());
 
+                let thread_manager_for_task = thread_manager.clone();
+
                 let task = tokio::spawn(async move {
                     use jyc_types::InboundAdapter;
 
@@ -881,7 +999,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                         dedup_store,
                     );
 
-                    let thread_manager_clone = thread_manager.clone();
+                    let thread_manager_clone = thread_manager_for_task.clone();
                     let options = jyc_types::InboundAdapterOptions {
                         on_message: Box::new(move |message| {
                             let router = router_for_callback.clone();
@@ -917,6 +1035,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     // Shutdown thread manager for this channel
                     tm.shutdown().await;
                 }.instrument(channel_span));
+
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
 
                 tasks.push(task);
             }
@@ -978,6 +1111,21 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     .instrument(channel_span),
                 );
 
+                orchestrator
+                    .register_channel(
+                        channel_name.to_string(),
+                        jyc_core::channel_orchestrator::ChannelHandle {
+                            cancel: cancel.clone(),
+
+                            thread_manager: thread_manager.clone(),
+
+                            channel_info: channel_info.clone(),
+
+                            workspace_dir: workspace_dir.clone(),
+                        },
+                    )
+                    .await;
+
                 tasks.push(task);
             }
             _ => continue, // Gracefully skip unknown channel types
@@ -990,7 +1138,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // 4.5. Wire cross-channel thread managers and outbound adapters into agent services
     {
-        let tm_map: HashMap<String, Arc<ThreadManager>> = all_thread_managers
+        let tms = orchestrator.thread_managers().load();
+        let tm_map: HashMap<String, Arc<ThreadManager>> = tms
             .iter()
             .map(|tm| (tm.channel_name().to_string(), tm.clone()))
             .collect();
@@ -1018,9 +1167,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
         // Start JobScheduler (if scheduler is enabled in config)
         let scheduler_config = config_snapshot.scheduler.clone();
         if scheduler_config.enabled {
+            let workspace_dirs = orchestrator.workspace_dirs().load();
+            let workspace_dirs: Vec<std::path::PathBuf> = workspace_dirs.iter().cloned().collect();
             let scheduler = JobScheduler::new(
                 tm_map,
-                all_workspace_dirs.clone(),
+                workspace_dirs,
                 scheduler_config.scan_interval_secs,
                 scheduler_config.max_jobs_per_thread,
                 true,
@@ -1042,14 +1193,14 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
         let context = Arc::new(jyc_inspect::server::InspectContext {
-            thread_managers: all_thread_managers.clone(),
-            channels: all_channels,
+            thread_managers: orchestrator.thread_managers(),
+            channels: orchestrator.channel_infos(),
             health_stats: shared_stats,
             activity_map: activity_map.clone(),
             start_time: std::time::Instant::now(),
             config_path: Some(config_path.clone()),
-            config: Some(config.clone()),
-            workspace_dirs: all_workspace_dirs.clone(),
+            config: Some(Arc::clone(&config)),
+            workspace_dirs: orchestrator.workspace_dirs(),
             websocket_handlers: {
                 let handlers: HashMap<String, Arc<dyn jyc_inspect::server::WebsocketHandler>> =
                     websocket_handlers
@@ -1067,13 +1218,24 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                     Some(handlers)
                 }
             },
+            reload_callback: {
+                let orch = orchestrator.clone();
+                Some(Arc::new(move || {
+                    let orch = orch.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = orch.reload().await {
+                            tracing::error!(error = %e, "ChannelOrchestrator reload failed");
+                        }
+                    });
+                }) as Arc<dyn Fn() + Send + Sync>)
+            },
         });
 
         // Start activity tracker (subscribes to thread event buses)
         let _activity_task = jyc_inspect::server::ActivityTracker::start(
-            all_thread_managers,
+            context.thread_managers.clone(),
             activity_map,
-            all_workspace_dirs,
+            context.workspace_dirs.clone(),
             cancel.clone(),
         );
 

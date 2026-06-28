@@ -186,7 +186,6 @@ pub struct GiteeInboundAdapter {
     channel_name: String,
     state_dir: PathBuf,
     workdir: PathBuf,
-    patterns: Vec<ChannelPattern>,
 }
 
 impl GiteeInboundAdapter {
@@ -197,13 +196,7 @@ impl GiteeInboundAdapter {
             channel_name,
             state_dir,
             workdir: workdir.to_path_buf(),
-            patterns: Vec::new(),
         }
-    }
-
-    pub fn with_patterns(mut self, patterns: Vec<ChannelPattern>) -> Self {
-        self.patterns = patterns;
-        self
     }
 
     async fn load_processed_comments(&self) -> HashSet<String> {

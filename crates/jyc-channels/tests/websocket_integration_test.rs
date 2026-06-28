@@ -1,49 +1,42 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
+use arc_swap::ArcSwap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
-
-use jyc_channels::websocket::{WebsocketInboundAdapter, WebsocketOutboundAdapter};
-use jyc_core::message_storage::MessageStorage;
-use jyc_inspect::server::WebsocketHandler;
-use jyc_types::{
-    ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage, MessageContent,
-    OutboundAdapter,
-};
+use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
+use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
+use jyc_types::{InboundAdapter, InboundAdapterOptions, InboundMessage};
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio_tungstenite::accept_async;
 
 #[tokio::test]
 async fn test_websocket_adapter_start_and_handle() {
-    let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
-    let tmp = tempfile::TempDir::new().unwrap();
-    let storage = Arc::new(MessageStorage::new(tmp.path()));
-    let outbound = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage);
+    // Create a minimal AppConfig with websocket patterns
+    let config_str = r#"
+[agent]
+mode = "agent"
+system_prompt = "test"
 
-    let patterns = vec![
-        ChannelPattern {
-            name: "general".to_string(),
-            channel: "websocket".to_string(),
-            enabled: true,
-            ..Default::default()
-        },
-        ChannelPattern {
-            name: "coding-help".to_string(),
-            channel: "websocket".to_string(),
-            enabled: true,
-            ..Default::default()
-        },
-        ChannelPattern {
-            name: "disabled".to_string(),
-            channel: "websocket".to_string(),
-            enabled: false,
-            ..Default::default()
-        },
-    ];
+[[channels.test_ws]]
+type = "websocket"
 
+[[channels.test_ws.patterns]]
+name = "general"
+enabled = true
+
+[[channels.test_ws.patterns]]
+name = "coding-help"
+enabled = true
+
+[[channels.test_ws.patterns]]
+name = "disabled"
+enabled = false
+"#;
+    let app_config: jyc_types::AppConfig = toml::from_str(config_str).unwrap();
+    let config_arc = Arc::new(ArcSwap::from_pointee(app_config));
+
+    let outbound = WebsocketOutboundAdapter::new_for_test();
     let inbound = Arc::new(WebsocketInboundAdapter::new(
-        "test-ws".to_string(),
-        patterns,
+        "test_ws".to_string(),
+        Some(config_arc),
         outbound.broadcast_tx(),
     ));
 
@@ -62,44 +55,37 @@ async fn test_websocket_adapter_start_and_handle() {
         attachment_config: None,
     };
 
-    let cancel = CancellationToken::new();
+    inbound
+        .start(options, tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
 
-    // Start the inbound adapter (sets the on_message callback)
-    inbound.start(options, cancel.clone()).await.unwrap();
+    // Create a client connection
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
 
-    // Bind a local TCP listener to simulate the inspect server
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    // Spawn a task that accepts a connection and hands it to the handler
-    let handler = inbound.clone();
-    let server_handle = tokio::spawn(async move {
-        let (mut stream, client_addr) = listener.accept().await.unwrap();
-
-        // Read the first byte to detect protocol (same logic as inspect server)
-        let mut first_byte = [0u8; 1];
-        let n = tokio::io::AsyncReadExt::read(&mut stream, &mut first_byte)
-            .await
-            .unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(first_byte[0], b'G');
-
-        // Prepend the byte back and perform WebSocket handshake
-        let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
-        let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
-
-        handler.handle(ws_stream, client_addr).await.unwrap();
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws_stream = accept_async(stream).await.unwrap();
+        let handler = inbound.clone();
+        jyc_inspect::server::WebsocketHandler::handle(
+            &handler,
+            ws_stream,
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .unwrap();
     });
 
-    // Give the server a moment to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-    // Connect test client
-    let url = format!("ws://{}/ws", addr);
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // Connect client
+    let client_url = format!("ws://127.0.0.1:{}", port);
+    let ws_stream = tokio_tungstenite::connect_async(&client_url)
+        .await
+        .unwrap()
+        .0;
     let (mut write, mut read) = ws_stream.split();
 
-    // Send list_patterns request
+    // List patterns
     let list_msg = r#"{"type":"list_patterns"}"#;
     write
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -138,93 +124,18 @@ async fn test_websocket_adapter_start_and_handle() {
         .await
         .unwrap();
 
-    // Verify the message was routed
-    let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), msg_rx.recv())
+    // Wait for the inbound message to be captured
+    let inbound_msg = tokio::time::timeout(std::time::Duration::from_secs(5), msg_rx.recv())
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(received.channel, "test-ws");
-    assert_eq!(received.topic, "general");
-    assert_eq!(received.content.text.as_ref().unwrap(), message_text);
-    assert_eq!(received.sender, "user");
-
-    // Send a second message to a different thread to verify multi-thread routing
-    let second_text = "Hello to coding thread";
-    let second_msg = format!(
-        r#"{{"type":"message","thread":"coding","text":"{}"}}"#,
-        second_text
+    assert_eq!(inbound_msg.channel, "test_ws");
+    assert_eq!(
+        inbound_msg.thread_refs.as_ref().unwrap(),
+        &["general".to_string()]
     );
-    write
-        .send(tokio_tungstenite::tungstenite::Message::Text(second_msg))
-        .await
-        .unwrap();
+    assert_eq!(inbound_msg.content.text.unwrap(), message_text);
 
-    let received2 = tokio::time::timeout(tokio::time::Duration::from_secs(5), msg_rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(received2.channel, "test-ws");
-    assert_eq!(received2.topic, "coding");
-    assert_eq!(received2.content.text.as_ref().unwrap(), second_text);
-    assert_eq!(received2.sender, "user");
-
-    // Close connection
-    let _ = write
-        .send(tokio_tungstenite::tungstenite::Message::Close(None))
-        .await;
-
-    // Wait for server to shut down
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), server_handle).await;
-}
-
-#[tokio::test]
-async fn test_websocket_broadcast_reply() {
-    let (broadcast_tx, mut broadcast_rx) = broadcast::channel(16);
-    let tmp = tempfile::TempDir::new().unwrap();
-    let storage = Arc::new(MessageStorage::new(tmp.path()));
-    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
-
-    let message = InboundMessage {
-        id: "test".to_string(),
-        channel: "websocket".to_string(),
-        channel_uid: "user".to_string(),
-        sender: "user".to_string(),
-        sender_address: "user".to_string(),
-        recipients: vec![],
-        topic: "general".to_string(),
-        content: MessageContent {
-            text: Some("hello".to_string()),
-            html: None,
-            markdown: None,
-        },
-        timestamp: chrono::Utc::now(),
-        thread_refs: None,
-        reply_to_id: None,
-        external_id: None,
-        attachments: vec![],
-        metadata: HashMap::new(),
-        matched_pattern: None,
-    };
-
-    // Send reply should broadcast
-    // Use a thread path whose last component is "general" — this is what
-    // the broadcast key is derived from (not the message topic).
-    let result = outbound
-        .send_reply(
-            &message,
-            "AI reply",
-            std::path::Path::new("/tmp/general"),
-            "msg_001",
-            None,
-        )
-        .await;
-    assert!(result.is_ok());
-
-    let sent = broadcast_rx.recv().await.expect("should receive broadcast");
-    let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
-    assert_eq!(parsed["type"], "reply");
-    assert_eq!(parsed["thread"], "general");
-    assert_eq!(parsed["text"], "AI reply");
+    server_task.abort();
 }

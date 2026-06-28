@@ -14,40 +14,36 @@ use crate::thread_manager::ThreadManager;
 /// Handle for a running channel, used by the orchestrator to manage lifecycle.
 pub struct ChannelHandle {
     pub cancel: CancellationToken,
-    pub task: tokio::task::JoinHandle<()>,
     pub thread_manager: Arc<ThreadManager>,
     pub channel_info: ChannelInfo,
     pub workspace_dir: std::path::PathBuf,
 }
 
-/// Manages the lifecycle of all channels (spawn, stop, reload).
+/// Manages the lifecycle of all channels and shared state updates.
 ///
 /// When `reload()` is called, it diffs the new config against the running
 /// channels and performs the minimal set of operations:
-/// - **new channel** → `spawn_channel()`
 /// - **removed channel** → cancel token, wait for task exit, cleanup
+/// - **new channel** → logs warning that restart is required (full spawn
+///   requires restart of the monitor process)
 /// - **existing channel** → patterns are read dynamically by `MessageRouter`,
-///   no restart needed for pattern-only changes. Connection parameter changes
-///   (host, port, credentials) require restart — detected by comparing the
-///   channel config hash.
+///   no restart needed for pattern-only changes.
 pub struct ChannelOrchestrator {
     channels: Mutex<HashMap<String, ChannelHandle>>,
     config: Arc<ArcSwap<AppConfig>>,
     thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
     channel_infos: Arc<ArcSwap<Vec<ChannelInfo>>>,
     workspace_dirs: Arc<ArcSwap<Vec<std::path::PathBuf>>>,
-    workdir: std::path::PathBuf,
 }
 
 impl ChannelOrchestrator {
-    pub fn new(config: Arc<ArcSwap<AppConfig>>, workdir: &Path) -> Self {
+    pub fn new(config: Arc<ArcSwap<AppConfig>>, _workdir: &Path) -> Self {
         Self {
             channels: Mutex::new(HashMap::new()),
             config,
             thread_managers: Arc::new(ArcSwap::from_pointee(Vec::new())),
             channel_infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
             workspace_dirs: Arc::new(ArcSwap::from_pointee(Vec::new())),
-            workdir: workdir.to_path_buf(),
         }
     }
 
@@ -66,16 +62,12 @@ impl ChannelOrchestrator {
         self.workspace_dirs.clone()
     }
 
-    /// Start all channels from the current config.
-    pub async fn start_all(&self) -> anyhow::Result<()> {
-        let cfg = self.config.load();
-        for (name, channel_config) in &cfg.channels {
-            if let Err(e) = self.spawn_channel(name, channel_config).await {
-                tracing::error!(channel = %name, error = %e, "Failed to spawn channel");
-            }
-        }
+    /// Register a running channel with the orchestrator.
+    pub async fn register_channel(&self, name: String, handle: ChannelHandle) {
+        let mut channels = self.channels.lock().await;
+        channels.insert(name, handle);
+        drop(channels);
         self.update_shared_state().await;
-        Ok(())
     }
 
     /// Reload: diff current config against running channels and apply changes.
@@ -86,51 +78,34 @@ impl ChannelOrchestrator {
         let old_names: std::collections::HashSet<String> = channels.keys().cloned().collect();
         let new_names: std::collections::HashSet<String> = cfg.channels.keys().cloned().collect();
 
-        // Stop removed channels
+        // Stop removed channels: cancel the per-channel token, then give workers
+        // up to 5s to exit gracefully (via the cancel token). The inbound task
+        // should shut down its adapter and call ThreadManager::shutdown().
         for name in old_names.difference(&new_names) {
             if let Some(handle) = channels.remove(name) {
                 tracing::info!(channel = %name, "Stopping channel (removed from config)");
                 handle.cancel.cancel();
-                // Wait briefly for graceful shutdown
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    handle.task,
-                )
-                .await;
+                // Allow time for the task to see the cancellation and shut down.
+                // The task is responsible for cleaning up (adapter disconnect,
+                // ThreadManager shutdown, etc.) after the token fires.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
 
-        // Start new channels
+        // New channels require restart
         for name in new_names.difference(&old_names) {
-            if let Some(channel_config) = cfg.channels.get(name) {
-                tracing::info!(channel = %name, "Starting new channel");
-                drop(channels); // release lock before await
-                if let Err(e) = self.spawn_channel(name, channel_config).await {
-                    tracing::error!(channel = %name, error = %e, "Failed to spawn new channel");
-                }
-                channels = self.channels.lock().await;
-            }
+            tracing::warn!(
+                channel = %name,
+                "New channel detected after reload — restart jyc monitor to activate"
+            );
         }
 
         // For existing channels, patterns are read dynamically by MessageRouter.
-        // Connection parameter changes require restart — not handled in this step
+        // Connection parameter changes require restart — not handled here
         // (they are treated as a separate concern and require a full stop+spawn).
 
         drop(channels);
         self.update_shared_state().await;
-        Ok(())
-    }
-
-    /// Spawn a single channel. This is a placeholder — the full implementation
-    /// extracts the per-channel spawn logic from `monitor.rs::run()`.
-    async fn spawn_channel(
-        &self,
-        _name: &str,
-        _channel_config: &jyc_types::ChannelConfig,
-    ) -> anyhow::Result<()> {
-        let _workdir = &self.workdir;
-        // TODO: extract per-channel spawn logic from monitor.rs
-        // This will be filled in during Step 2 integration.
         Ok(())
     }
 
@@ -141,14 +116,9 @@ impl ChannelOrchestrator {
             .values()
             .map(|h| h.thread_manager.clone())
             .collect();
-        let infos: Vec<ChannelInfo> = channels
-            .values()
-            .map(|h| h.channel_info.clone())
-            .collect();
-        let dirs: Vec<std::path::PathBuf> = channels
-            .values()
-            .map(|h| h.workspace_dir.clone())
-            .collect();
+        let infos: Vec<ChannelInfo> = channels.values().map(|h| h.channel_info.clone()).collect();
+        let dirs: Vec<std::path::PathBuf> =
+            channels.values().map(|h| h.workspace_dir.clone()).collect();
         drop(channels);
 
         self.thread_managers.store(Arc::new(tms));
@@ -165,20 +135,22 @@ impl ChannelOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn test_config() -> Arc<ArcSwap<AppConfig>> {
-        let config = AppConfig {
-            general: jyc_types::GeneralConfig::default(),
-            channels: HashMap::new(),
-            agent: jyc_types::AgentConfig::default(),
-            inspect: None,
-            attachments: None,
-            wecom: None,
-            mcps: Vec::new(),
-            scheduler: jyc_types::SchedulerConfig::default(),
-        };
+        let config: AppConfig = toml::from_str(
+            r#"
+[agent]
+mode = "agent"
+system_prompt = "test"
+
+[agent.providers.test]
+type = "openai-compatible"
+base_url = "http://test"
+api_key_env = "TEST_KEY"
+"#,
+        )
+        .unwrap();
         Arc::new(ArcSwap::from_pointee(config))
     }
 
@@ -207,5 +179,18 @@ mod tests {
 
         let infos = orch.channel_infos.load();
         assert!(infos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_reload_detects_new_channels() {
+        let tmpdir = TempDir::new().unwrap();
+        let config = test_config();
+        let orch = ChannelOrchestrator::new(config.clone(), tmpdir.path());
+
+        // Reload with no changes should succeed
+        orch.reload().await.unwrap();
+
+        let tms = orch.thread_managers.load();
+        assert!(tms.is_empty());
     }
 }

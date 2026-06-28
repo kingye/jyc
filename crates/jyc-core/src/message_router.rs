@@ -36,7 +36,7 @@ impl MessageRouter {
     }
 
     /// Read the current patterns for this channel from the live config.
-    fn patterns(&self) -> Vec<ChannelPattern> {
+    pub fn patterns(&self) -> Vec<ChannelPattern> {
         let cfg = self.config.load();
         cfg.channels
             .get(&self.channel_name)

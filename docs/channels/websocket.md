@@ -205,6 +205,24 @@ Workspace files are stored under:
 {workdir}/workspace/{channel_name}/
 ```
 
+### Multi-Thread Workspace Isolation
+
+Each unique `thread` value creates a separate workspace directory:
+
+```
+{workdir}/workspace/{channel_name}/
+├── general/                 # thread="general"
+│   ├── message_001/
+│   └── .jyc/
+├── coding/                  # thread="coding"
+│   ├── message_001/
+│   └── .jyc/
+└── review/                  # thread="review"
+    └── ...
+```
+
+This enables completely isolated conversation contexts, skills, and file systems per thread — different threads within the same websocket channel behave like independent channels. When no `thread` is specified, the channel name is used as fallback (backward compatible).
+
 ## Pattern Matching
 
 WebSocket input bypasses complex pattern rules. The matcher always selects the **first enabled pattern** from the channel's pattern list. Patterns serve as entry points for the chat pane — the user explicitly selects which pattern (and thus which configuration) to use.

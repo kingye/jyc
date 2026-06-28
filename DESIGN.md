@@ -52,6 +52,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  - Receives ALL messages from all channels via mpsc::Sender              │
 │  - Delegates matching to adapter.match_message()                         │
 │  - Delegates thread naming to adapter.derive_thread_name()               │
+│  - Reads patterns from live ArcSwap<AppConfig> (supports hot-reload)     │
 │  - Sends to ThreadManager via mpsc channel (fire-and-forget)             │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │ send (non-blocking)
@@ -184,6 +185,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 20. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
 21. **Template System** — Initialize new threads with predefined files from `templates/` directory
 22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
+23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (thread manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`thread_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
 
 ### Design Principles: Component Responsibilities
 
@@ -817,6 +819,48 @@ Comprehensive unit tests (14 tests for rule filtering alone) cover:
 - Persistent comment tracking (track, reload, edit detection, compaction)
 - Label change detection (new label triggers routing)
 - Trigger message building (issue and PR variants)
+
+## Config Hot-Reload Architecture
+
+JYC supports live configuration reload via the Dashboard `R` key without restarting the monitor process. The architecture uses a layered approach based on the "thermal volatility" of each config type:
+
+```
+config.toml (disk)
+    │
+    ▼
+[Reload] → handle_reload_config()
+    │
+    ├── ArcSwap<AppConfig>  ← Config atomically replaced
+    │       │
+    │       ▼
+    │   MessageRouter::route()  ← reads patterns from live config
+    │   (pattern changes take effect immediately)
+    │
+    └── reload_callback
+            │
+            ▼
+        ChannelOrchestrator::reload()
+            │
+            ├── removed channels → cancel + graceful shutdown
+            ├── new channels → warn (requires monitor restart)
+            └── InspectContext updated via ArcSwap
+```
+
+### What Reload Covers
+
+| Change | Effect |
+|--------|--------|
+| Add/modify pattern | ✅ Takes effect immediately |
+| Delete channel | ✅ Channel cancelled gracefully |
+| Add new channel | ⚠️ Requires monitor restart |
+| Change connection params (host/port) | ⚠️ Requires monitor restart |
+| Change `general.max_concurrent_threads` | ⚠️ Requires process restart |
+
+### Components
+
+- **ChannelOrchestrator** — Manages channel task lifecycle. Holds per-channel `ChannelHandle` (cancel token, thread manager ref). On reload, computes diff between old and new config section names, cancels removed channels with a 5-second grace period for cleanup. New channels are detected and logged with a warning (the monitor must be restarted to spawn new channel tasks).
+- **InspectContext (ArcSwap)** — `thread_managers`, `channels`, and `workspace_dirs` are wrapped in `Arc<ArcSwap<Vec<...>>>`, allowing the orchestrator to atomically swap updated lists after reload. The dashboard reads the latest snapshot on each poll cycle.
+- **MessageRouter** — Holds `Arc<ArcSwap<AppConfig>>` and the channel name. On each `route()` call, reads `config.load().channels[name].patterns` dynamically. No cached pattern snapshot — pattern changes take effect on the next message after reload.
 
 ## Core Types & Traits
 

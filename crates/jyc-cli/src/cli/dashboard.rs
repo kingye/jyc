@@ -1549,6 +1549,38 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                         out.push(format!("  +{line}"));
                     }
                     out
+                } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&a.text)
+                    && json.get("type").and_then(|t| t.as_str()) == Some("write")
+                {
+                    let file_path = json
+                        .get("file_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let content = json.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut out = Vec::new();
+                    // Header line
+                    if is_last {
+                        if elapsed.is_empty() {
+                            out.push(format!("⏳ {file_path}"));
+                        } else {
+                            out.push(format!("⏳ {file_path} {elapsed}"));
+                        }
+                    } else {
+                        out.push(format!("   {file_path}"));
+                    }
+                    // Content lines (truncated to avoid flooding the pane)
+                    let content_lines: Vec<&str> = content.split('\n').collect();
+                    let max_lines = 20;
+                    for line in content_lines.iter().take(max_lines) {
+                        out.push(format!("  +{line}"));
+                    }
+                    if content_lines.len() > max_lines {
+                        out.push(format!(
+                            "  … ({} more lines)",
+                            content_lines.len() - max_lines
+                        ));
+                    }
+                    out
                 } else {
                     // Plain text — split by newlines for display
                     let lines: Vec<&str> = a.text.split('\n').collect();
@@ -1571,9 +1603,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                 };
 
                 for label in rendered_lines {
+                    let label_style = if label.starts_with("  -") {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        style
+                    };
                     all_lines.push(Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(label, style),
+                        Span::styled(label, label_style),
                     ]));
                 }
             }

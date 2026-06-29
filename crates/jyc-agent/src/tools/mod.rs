@@ -237,14 +237,33 @@ pub struct ToolOutput {
     pub content: String,
     /// Whether the execution resulted in an error.
     pub is_error: bool,
+    /// Whether the agent loop should stop after this tool call.
+    ///
+    /// Defaults to `true` for backward compatibility. Tools that want the
+    /// agent to continue (e.g. progress-update replies with `stop_after:
+    /// false`) set this to `false` via [`ToolOutput::success_continue`].
+    pub stop_after: bool,
 }
 
 impl ToolOutput {
-    /// Create a successful output.
+    /// Create a successful output. The agent loop will stop after this
+    /// tool call (unless the caller overrides based on tool-specific logic).
     pub fn success(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             is_error: false,
+            stop_after: true,
+        }
+    }
+
+    /// Create a successful output that signals the agent loop to **continue**
+    /// working. Used by tools like `jyc_reply_message` with `stop_after: false`
+    /// (progress updates).
+    pub fn success_continue(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            stop_after: false,
         }
     }
 
@@ -253,6 +272,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            stop_after: true,
         }
     }
 }

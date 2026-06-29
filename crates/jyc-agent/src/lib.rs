@@ -106,6 +106,7 @@ mod integration_tests {
             prior_history: Vec::new(),
             prior_raw_context: Vec::new(),
             max_iterations: None,
+            sse_read_timeout: std::time::Duration::from_secs(120),
             additional_read_roots: Vec::new(),
             additional_write_roots: Vec::new(),
             pattern_inject_images: false,

@@ -22,13 +22,15 @@ pub struct ReplyMessageTool;
 #[async_trait]
 impl Tool for ReplyMessageTool {
     fn name(&self) -> &str {
-        "jyc_reply_reply_message"
+        "jyc_reply_message"
     }
 
     fn description(&self) -> &str {
         "Send a reply message back through the originating channel. \
          The reply will be delivered by the monitor process. \
-         After a successful reply, STOP immediately."
+         Use `stop_after: false` for progress/status updates where you intend to \
+         continue working. Use `stop_after: true` (or omit it) for the final reply \
+         — after a successful reply with stop_after=true, STOP immediately."
     }
 
     fn input_schema(&self) -> Value {
@@ -43,6 +45,12 @@ impl Tool for ReplyMessageTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional list of filenames within the thread directory to attach"
+                },
+                "stop_after": {
+                    "type": "boolean",
+                    "description": "Whether to stop working after this reply. Set to false for \
+                     progress/status updates where you will continue working. \
+                     Default: true (final reply, stop immediately)."
                 }
             },
             "required": ["message"]
@@ -54,6 +62,11 @@ impl Tool for ReplyMessageTool {
             .get("message")
             .and_then(|m| m.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
+
+        let stop_after = input
+            .get("stop_after")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let attachments: Option<Vec<String>> = input
             .get("attachments")
@@ -122,10 +135,17 @@ impl Tool for ReplyMessageTool {
             "Reply signal written"
         );
 
-        Ok(ToolOutput::success(format!(
-            "Reply sent ({} chars). The monitor will deliver it.",
-            message.len()
-        )))
+        if stop_after {
+            Ok(ToolOutput::success(format!(
+                "Reply sent ({} chars). STOP NOW — do not call any more tools.",
+                message.len()
+            )))
+        } else {
+            Ok(ToolOutput::success_continue(format!(
+                "Progress update sent ({} chars). Continue working.",
+                message.len()
+            )))
+        }
     }
 }
 

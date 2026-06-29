@@ -397,13 +397,16 @@ impl JycAgentService {
         // Reply instructions
         prompt.push_str(
             "## Reply Instructions\n\
-             When you have your answer ready, use the jyc_reply_reply_message tool:\n\
+             When you have your answer ready, use the jyc_reply_message tool:\n\
              - `message`: Your reply text\n\
              - `attachments`: Optional filenames to attach from the working directory\n\
-             After a successful reply, STOP immediately. Do NOT call any other tools.\n\
-             CRITICAL: Always use the jyc_reply_reply_message tool to send your reply.\n\n\
-             For long-running tasks, send periodic progress replies so the user knows you're\n\
-             still working. Each reply marks a checkpoint; you can continue working after sending one.\n\n"
+             - `stop_after` (boolean, default true): Whether to stop working after this reply\n\
+             CRITICAL: Always use the jyc_reply_message tool to send your reply.\n\n\
+             **Final reply**: Set `stop_after: true` (or omit it). After a successful reply with\n\
+             stop_after=true, STOP immediately. Do NOT call any other tools.\n\
+             **Progress update**: For long-running tasks, send periodic progress replies with\n\
+             `stop_after: false`. Each reply is a checkpoint — you will continue working\n\
+             afterward. Use this when you have substantive progress to report.\n\n",
         );
 
         // Chat history access instructions
@@ -1255,6 +1258,7 @@ impl AgentService for JycAgentService {
             prior_history,
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
+            sse_read_timeout: std::time::Duration::from_secs(self.config.sse_read_timeout_secs),
             additional_read_roots,
             additional_write_roots,
             pattern_inject_images: pattern_inject,
@@ -1567,7 +1571,7 @@ mod tests {
         );
         assert!(names.contains(&"read"), "read should still be available");
         assert!(
-            names.contains(&"jyc_reply_reply_message"),
+            names.contains(&"jyc_reply_message"),
             "reply_message should still be available"
         );
     }
@@ -1637,7 +1641,7 @@ mod tests {
 
         // Registry should still contain built-in tools
         assert!(registry.has_tool("bash"));
-        assert!(registry.has_tool("jyc_reply_reply_message"));
+        assert!(registry.has_tool("jyc_reply_message"));
     }
 
     #[tokio::test]
@@ -1669,7 +1673,7 @@ mod tests {
             .await;
 
         assert!(registry.has_tool("bash"), "bash should still be available");
-        assert!(registry.has_tool("jyc_reply_reply_message"));
+        assert!(registry.has_tool("jyc_reply_message"));
     }
 
     #[tokio::test]
@@ -1714,7 +1718,7 @@ mod tests {
 
         // Registry should contain built-in tools (no panic from MCP loading)
         assert!(registry.has_tool("bash"));
-        assert!(registry.has_tool("jyc_reply_reply_message"));
+        assert!(registry.has_tool("jyc_reply_message"));
     }
 
     #[tokio::test]

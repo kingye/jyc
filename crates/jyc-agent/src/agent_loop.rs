@@ -49,6 +49,9 @@ pub struct AgentLoopConfig<'a> {
     pub prior_raw_context: Vec<serde_json::Value>,
     /// Maximum loop iterations. Defaults to DEFAULT_MAX_ITERATIONS.
     pub max_iterations: Option<usize>,
+    /// SSE read timeout — maximum gap between SSE events before the stream
+    /// is considered hung. Defaults to 120 seconds.
+    pub sse_read_timeout: std::time::Duration,
     /// Additional absolute paths permitted for tools that enforce a path
     /// boundary (currently: `read_image`). Used to allow access to a
     /// configured absolute `[attachments.inbound].save_path` outside
@@ -97,6 +100,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         prior_history,
         prior_raw_context,
         max_iterations,
+        sse_read_timeout,
         additional_read_roots,
         additional_write_roots,
         pattern_inject_images,
@@ -186,6 +190,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 total_iterations,
                 thread_name,
                 event_bus,
+                sse_read_timeout,
             ).await.unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to generate progress summary, using fallback");
                 format!(
@@ -201,13 +206,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             //    (and thus has no reasoning_content), violating DeepSeek's
             //    thinking-mode contract on the next request.
             let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
-            let synthetic_args = serde_json::json!({"message": &progress_text}).to_string();
+            let synthetic_args =
+                serde_json::json!({"message": &progress_text, "stop_after": false}).to_string();
 
             publish_event(
                 event_bus,
                 ThreadEvent::ToolStarted {
                     thread_name: thread_name.to_string(),
-                    tool_name: "jyc_reply_reply_message".to_string(),
+                    tool_name: "jyc_reply_message".to_string(),
                     input: Some(synthetic_args.clone()),
                     timestamp: Utc::now(),
                 },
@@ -226,7 +232,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
-                .execute("jyc_reply_reply_message", synthetic_input, &ctx)
+                .execute("jyc_reply_message", synthetic_input, &ctx)
                 .await
             {
                 Ok(output) => output,
@@ -240,7 +246,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 event_bus,
                 ThreadEvent::ToolCompleted {
                     thread_name: thread_name.to_string(),
-                    tool_name: "jyc_reply_reply_message".to_string(),
+                    tool_name: "jyc_reply_message".to_string(),
                     success: !synthetic_output.is_error,
                     duration_secs: tool_start.elapsed().as_secs(),
                     output: if synthetic_output.is_error {
@@ -261,8 +267,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
                     id: synthetic_call_id.clone(),
-                    name: "jyc_reply_reply_message".to_string(),
-                    input: serde_json::json!({"message": &progress_text}),
+                    name: "jyc_reply_message".to_string(),
+                    input: serde_json::json!({"message": &progress_text, "stop_after": false}),
                 }],
             });
             history.push(Message::tool_result(
@@ -315,6 +321,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             system_prompt,
             thread_name,
             event_bus,
+            sse_read_timeout,
         )
         .await?;
 
@@ -482,10 +489,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             if (tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply"))
                 && !output.is_error
             {
-                reply_sent_by_tool = true;
-                // Extract the message text from the tool input
-                if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
-                    reply_text_from_tool = Some(msg.to_string());
+                if output.stop_after {
+                    reply_sent_by_tool = true;
+                    // Extract the message text from the tool input
+                    if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
+                        reply_text_from_tool = Some(msg.to_string());
+                    }
+                } else {
+                    tracing::info!(
+                        tool = %tool_call.name,
+                        "Progress reply sent by tool (stop_after=false), continuing loop"
+                    );
                 }
             }
 
@@ -661,6 +675,7 @@ async fn generate_summary_from_joined_history(
     total_iterations: usize,
     thread_name: &str,
     event_bus: Option<&ThreadEventBusRef>,
+    sse_read_timeout: std::time::Duration,
 ) -> Result<String> {
     let summary_system = format!(
         "You are summarizing in-progress work for the user. Based on the transcript below, \
@@ -684,6 +699,7 @@ async fn generate_summary_from_joined_history(
         &summary_system,
         thread_name,
         event_bus,
+        sse_read_timeout,
     )
     .await?;
 
@@ -867,13 +883,6 @@ const SSE_MAX_ATTEMPTS: u32 = 3;
 /// Length must be `SSE_MAX_ATTEMPTS - 1`.
 const SSE_RETRY_BACKOFF_MS: &[u64] = &[1000, 2000];
 
-/// Maximum gap (seconds) between SSE events before the stream is considered
-/// hung. The reqwest client-level timeout is 300s, but a hung stream where
-/// the server opened the connection but never sends data (or stops mid-stream)
-/// would block for the full 300s. This per-read timeout catches it in 120s
-/// and triggers a retry via the transient-error classifier.
-const SSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// Issue one LLM call and collect its streaming response, retrying on
 /// transient SSE / network failures.
 ///
@@ -894,6 +903,7 @@ async fn complete_with_retry(
     system_prompt: &str,
     thread_name: &str,
     event_bus: Option<&ThreadEventBusRef>,
+    sse_read_timeout: std::time::Duration,
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
@@ -903,7 +913,7 @@ async fn complete_with_retry(
             let stream = provider
                 .complete_raw(raw_context, tools, system_prompt)
                 .await?;
-            collect_response(stream).await
+            collect_response(stream, sse_read_timeout).await
         }
         .await;
 
@@ -954,7 +964,10 @@ async fn complete_with_retry(
 }
 
 /// Collect a streaming response into a complete response.
-async fn collect_response(stream: crate::provider::EventStream) -> Result<CollectedResponse> {
+async fn collect_response(
+    stream: crate::provider::EventStream,
+    sse_read_timeout: std::time::Duration,
+) -> Result<CollectedResponse> {
     let mut response = CollectedResponse::default();
     let mut current_tool_id: Option<String> = None;
     let mut current_tool_name: Option<String> = None;
@@ -963,13 +976,13 @@ async fn collect_response(stream: crate::provider::EventStream) -> Result<Collec
     tokio::pin!(stream);
 
     loop {
-        let event = match tokio::time::timeout(SSE_READ_TIMEOUT, stream.next()).await {
+        let event = match tokio::time::timeout(sse_read_timeout, stream.next()).await {
             Ok(Some(event)) => event,
             Ok(None) => break,
             Err(_) => {
                 return Err(anyhow::anyhow!(
                     "SSE stream timed out: no events for {}s",
-                    SSE_READ_TIMEOUT.as_secs()
+                    sse_read_timeout.as_secs()
                 ));
             }
         };
@@ -1198,8 +1211,16 @@ mod retry_tests {
         // backoff (1s + 2s = 3s). That's fine for a unit test but let's
         // verify the path works regardless. (Fast timers would require
         // tokio's pause/advance which complicates this minimal test.)
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
         let response = result.unwrap();
@@ -1241,8 +1262,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_err(), "expected Err after exhausting retries");
         assert_eq!(
@@ -1276,8 +1305,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -1321,8 +1358,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(
             result.is_ok(),

@@ -75,6 +75,7 @@ fn make_config() -> jyc_types::AppConfig {
             small_model: None,
             system_prompt: None,
             max_iterations: 200,
+            sse_read_timeout_secs: 120,
             text: None,
             attachments: None,
             providers: HashMap::new(),

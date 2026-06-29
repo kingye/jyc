@@ -260,6 +260,10 @@ pub struct AgentConfig {
     /// When exceeded, agent sends progress reply, resets counter, and continues.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    /// Maximum gap (seconds) between SSE events before the stream is
+    /// considered hung and triggers a retry. Default: 120.
+    #[serde(default = "default_sse_read_timeout")]
+    pub sse_read_timeout_secs: u64,
     /// Vision fallback configuration for text-only models to use an external
     /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
     pub vision: Option<VisionConfig>,
@@ -274,6 +278,7 @@ impl Default for AgentConfig {
             small_model: None,
             providers: std::collections::HashMap::new(),
             max_iterations: default_max_iterations(),
+            sse_read_timeout_secs: default_sse_read_timeout(),
             vision: None,
         }
     }
@@ -281,6 +286,10 @@ impl Default for AgentConfig {
 
 fn default_max_iterations() -> usize {
     500
+}
+
+fn default_sse_read_timeout() -> u64 {
+    120
 }
 
 #[cfg(test)]

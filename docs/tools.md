@@ -174,21 +174,29 @@ Load an image for analysis. Dual-mode operation:
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.
 
-### `jyc_reply_reply_message`
+### `jyc_reply_message`
 
 Send a reply back through the originating channel. This is the standard way for the agent to respond to the user.
 
 **Parameters:**
 - `message` (string, required): The reply text to send
 - `attachments` (string[], optional): List of filenames within the thread directory to attach
+- `stop_after` (boolean, optional, default true): Whether to stop working after this reply
 
 **Behavior:** Writes `reply.md` and `reply-sent.flag` signal files; the monitor process detects the signal and delivers the message via the pre-warmed outbound adapter.
 
-**Constraints:** The agent must use this tool for in-thread replies and stop immediately after calling it.
+**Usage modes:**
+- **Final reply** (`stop_after: true` or omitted): Agent stops immediately after sending. Use for the definitive response to the user.
+- **Progress update** (`stop_after: false`): Agent sends the message as a checkpoint and continues working. Use for long-running tasks to keep the user informed.
 
-**Example:**
+**Constraints:** The agent must use this tool for in-thread replies.
+
+**Examples:**
 ```json
 {"message": "The fix has been applied. Let me know if you see any issues."}
+```
+```json
+{"message": "Still working — 3 of 5 tests passing. Will continue.", "stop_after": false}
 ```
 
 ---
@@ -209,7 +217,7 @@ Send a proactive out-of-thread message to an arbitrary recipient.
 
 **Constraints:**
 - Use ONLY for alerts and notifications
-- NEVER use for in-thread replies (use `jyc_reply_reply_message` instead)
+- NEVER use for in-thread replies (use `jyc_reply_message` instead)
 - Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
 
 **Example:**
@@ -342,7 +350,7 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + read_roots + write_roots | URL mode requires http(s) |
-| `jyc_reply_reply_message` | Attachment path validation | Must be within thread directory |
+| `jyc_reply_message` | Attachment path validation | Must be within thread directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
 
 Read/write roots are configured per-pattern via the `access` sub-table:
@@ -361,7 +369,7 @@ write = ["/tmp/jyc-builds"]         # writable + readable (write implies read)
 build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch
   ├─ Register read_image (when model supports images OR vision_client configured)
-  ├─ Register MCP bridge tools: jyc_reply_reply_message, jyc_send_message
+  ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
   ├─ Load external MCP tools (filtered by disabled_mcp_servers)
   └─ Apply exclusions: remove tools matching disabled_tools
 ```

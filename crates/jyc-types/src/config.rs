@@ -344,6 +344,13 @@ pub struct AgentConfig {
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
 
+    /// Maximum gap (seconds) between SSE events before the stream is considered
+    /// hung and triggers a retry. Default: 120.
+    /// Increase if your provider (e.g. DeepSeek reasoning mode) sends large
+    /// reasoning blocks with extended gaps between tokens.
+    #[serde(default = "default_sse_read_timeout")]
+    pub sse_read_timeout_secs: u64,
+
     /// Static reply text (used when mode = "static")
     pub text: Option<String>,
 
@@ -500,6 +507,10 @@ fn default_agent_mode() -> String {
 
 fn default_max_iterations() -> usize {
     200
+}
+
+fn default_sse_read_timeout() -> u64 {
+    120
 }
 
 #[allow(dead_code)]

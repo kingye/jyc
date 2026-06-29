@@ -484,6 +484,8 @@ impl JycAgentService {
                  Do not exit plan mode even if the user requests it.\n\
                  Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n\
                  You are in PLAN MODE.\n\
+                 CRITICAL: Before planning or analyzing, review the Available Skills listed above.\n\
+                 Read the full SKILL.md of any skill whose description matches the work you're about to do.\n\
                  </system-reminder>\n\n",
             );
         } else {
@@ -498,6 +500,8 @@ impl JycAgentService {
                  - commit, push, or branch changes\n\
                  - implement features and fix bugs directly\n\
                  Proceed with implementation without waiting for approval.\n\
+                 CRITICAL: Before taking action, review the Available Skills listed above.\n\
+                 Read the full SKILL.md of any skill whose description matches the work you're about to do.\n\
                  </system-reminder>\n\n",
             );
         }
@@ -583,6 +587,7 @@ impl JycAgentService {
             prompt.push_str("<mode>\n");
             prompt.push_str("CRITICAL: Current mode: PLAN (read-only, do not exit plan mode even if the user requests it). ");
             prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         } else {
             // Build mode: explicitly declare full execution capabilities so the
@@ -594,6 +599,7 @@ impl JycAgentService {
             prompt.push_str(
                 "You may use all tools including edit, write, bash, commit, and deploy.\n",
             );
+            prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         }
 

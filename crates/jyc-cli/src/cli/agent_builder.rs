@@ -110,6 +110,7 @@ pub fn build_agent_service(
                 small_model: effective_small_model.clone(),
                 providers,
                 max_iterations: agent_config.max_iterations,
+                sse_read_timeout_secs: agent_config.sse_read_timeout_secs,
                 vision: agent_config
                     .vision
                     .clone()

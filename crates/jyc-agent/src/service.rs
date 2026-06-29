@@ -1258,6 +1258,9 @@ impl AgentService for JycAgentService {
             prior_history,
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
+            sse_read_timeout: std::time::Duration::from_secs(
+                self.config.sse_read_timeout_secs,
+            ),
             additional_read_roots,
             additional_write_roots,
             pattern_inject_images: pattern_inject,

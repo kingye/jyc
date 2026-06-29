@@ -222,6 +222,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # Maximum iterations per cycle (default: 500)
 # max_iterations = 500
 
+# SSE read timeout in seconds (default: 120).
+# Maximum gap between SSE stream events before the stream is considered hung
+# and triggers a retry. Increase if your provider (e.g. DeepSeek reasoning mode)
+# sends large reasoning blocks with extended gaps between tokens.
+# sse_read_timeout_secs = 120
+
 # --- Agent providers ---
 #
 # Define one entry per provider. The `model` and `small_model` keys above

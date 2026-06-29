@@ -688,7 +688,7 @@ fn format_group_elapsed(start: &Option<String>, end: &Option<String>) -> String 
     };
     let elapsed = end_dt.signed_duration_since(start_dt);
     let secs = elapsed.num_seconds();
-    if secs < 0 {
+    if secs <= 0 {
         return String::new();
     }
     if secs < 60 {

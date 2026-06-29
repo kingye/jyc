@@ -1529,11 +1529,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                 .get(idx - 1)
                 .and_then(|m| m.timestamp.clone());
             let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+            let width = chunks[0].width as usize;
             let close_spans = if elapsed.is_empty() {
-                vec![Span::styled("╰─", dim_style)]
+                let dashes = "─".repeat(width.saturating_sub(1));
+                vec![Span::styled(format!("╰{dashes}"), dim_style)]
             } else {
+                let dash_count = width.saturating_sub(2 + elapsed.len());
                 vec![
-                    Span::styled("╰─ ", dim_style),
+                    Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
                     Span::styled(elapsed, dim_style),
                 ]
             };
@@ -1590,11 +1593,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
         let last_ts = app.chat_messages.last().and_then(|m| m.timestamp.clone());
         let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+        let width = chunks[0].width as usize;
         let close_spans = if elapsed.is_empty() {
-            vec![Span::styled("╰─", dim_style)]
+            let dashes = "─".repeat(width.saturating_sub(1));
+            vec![Span::styled(format!("╰{dashes}"), dim_style)]
         } else {
+            let dash_count = width.saturating_sub(2 + elapsed.len());
             vec![
-                Span::styled("╰─ ", dim_style),
+                Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
                 Span::styled(elapsed, dim_style),
             ]
         };

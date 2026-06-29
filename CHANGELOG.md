@@ -32,6 +32,14 @@ All notable changes to JYC will be documented in this file.
   (`contains("reply_message") || contains("jyc_reply")`) matches the new name.
   (#341)
 
+### Fixed
+
+- **Dashboard chat pane input not wrapping.** When typing in the chat pane
+  input area, text exceeding the pane width was not automatically wrapped to
+  the next line. The input paragraph now uses `Wrap { trim: true }` and the
+  height/scroll calculations account for visual (wrapped) line counts using
+  `unicode-width` for accurate CJK character width. (#343)
+
 ## [0.3.12] - 2026-06-28
 
 ### Fixed

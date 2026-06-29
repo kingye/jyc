@@ -16,6 +16,8 @@ use ratatui::{
 use std::io::stdout;
 use std::time::Duration;
 
+use unicode_width::UnicodeWidthStr;
+
 use jyc_inspect::client::InspectClient;
 use jyc_types::{InspectState, Severity, ThreadStatus};
 
@@ -272,7 +274,8 @@ impl App {
             .unwrap_or(10);
         match self.chat_focus {
             ChatFocus::ChatPane => {
-                let input_lines = (self.chat_input.matches('\n').count() + 1).clamp(1, 5);
+                let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
+                let input_lines = count_wrapped_lines(&self.chat_input, term_width).clamp(1, 5);
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),
@@ -637,6 +640,27 @@ fn format_elapsed(timestamp: &Option<String>) -> String {
     } else {
         format!("{}m", secs / 60)
     }
+}
+
+/// Count the number of visual lines when `text` is wrapped within
+/// `available_width`, accounting for the 4-character prefix ("▶ > " or
+/// "    ") that each logical line starts with.
+fn count_wrapped_lines(text: &str, available_width: u16) -> usize {
+    let width = available_width as usize;
+    let prefix_width = 4usize;
+    let first_row_content = width.saturating_sub(prefix_width).max(1);
+
+    text.split('\n')
+        .map(|line| {
+            let w = line.width();
+            if w <= first_row_content {
+                1
+            } else {
+                1 + (w - first_row_content).div_ceil(width)
+            }
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 /// Move the cursor up or down one line within a multi-line string.
@@ -1414,9 +1438,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area grows with content (up to 5 lines) for multi-line editing.
-    // Count lines including trailing empty line (e.g. "abc\n" = 2 lines).
-    // `str::lines()` drops the trailing empty line, so we count manually.
-    let input_line_count = (app.chat_input.matches('\n').count() + 1).clamp(1, 5) as u16;
+    // Count visual lines including wrapped lines (not just explicit newlines).
+    let input_line_count = count_wrapped_lines(&app.chat_input, inner.width).clamp(1, 5) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -1680,21 +1703,51 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         input_lines.push(Line::from(spans));
     }
 
-    // When input exceeds the visible area, scroll to keep the cursor line visible.
-    let cursor_line = before_lines.len() - 1; // 0-indexed line where cursor is
+    // When input exceeds the visible area, scroll to keep the cursor visible.
+    // Calculate using visual (wrapped) lines rather than logical lines.
+    let width = inner.width;
     let visible_input_lines = input_line_count as usize;
-    let input_scroll = if total_lines > visible_input_lines {
-        // Keep cursor visible: scroll so cursor_line is within the visible window
-        if cursor_line < visible_input_lines {
+    let total_visual_lines = count_wrapped_lines(&app.chat_input, width);
+
+    // Determine the cursor's visual line (0-indexed)
+    // Visual lines from logical lines before the cursor's line
+    let visual_before: usize = before_lines[..before_lines.len() - 1]
+        .iter()
+        .map(|l| {
+            let lw = (*l).width();
+            let w = width as usize;
+            let first_row = w.saturating_sub(4).max(1);
+            if lw <= first_row {
+                1
+            } else {
+                1 + (lw - first_row).div_ceil(w)
+            }
+        })
+        .sum();
+    // Cursor's visual row within its logical line
+    let w = width as usize;
+    let first_row_content = w.saturating_sub(4).max(1);
+    let cursor_col_w = before_lines.last().unwrap_or(&"").width();
+    let cursor_row_within = if cursor_col_w > first_row_content {
+        1 + (cursor_col_w - first_row_content) / w
+    } else {
+        0
+    };
+    let cursor_visual_line = visual_before + cursor_row_within;
+
+    let input_scroll = if total_visual_lines > visible_input_lines {
+        if cursor_visual_line < visible_input_lines {
             0
         } else {
-            cursor_line - visible_input_lines + 1
+            cursor_visual_line - visible_input_lines + 1
         }
     } else {
         0
     };
 
-    let input_para = Paragraph::new(input_lines).scroll((input_scroll as u16, 0));
+    let input_para = Paragraph::new(input_lines)
+        .wrap(Wrap { trim: true })
+        .scroll((input_scroll as u16, 0));
     frame.render_widget(input_para, chunks[1]);
 }
 

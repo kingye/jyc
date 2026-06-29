@@ -1534,10 +1534,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
                 let dashes = "─".repeat(width.saturating_sub(1));
                 vec![Span::styled(format!("╰{dashes}"), dim_style)]
             } else {
-                let dash_count = width.saturating_sub(2 + elapsed.len());
+                // ╰─── 12s ──
+                let dash_count = width.saturating_sub(2 + elapsed.len() + 4); // ╰ + " " + elapsed + " " + "──"
                 vec![
                     Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
                     Span::styled(elapsed, dim_style),
+                    Span::styled(" ──", dim_style),
                 ]
             };
             all_lines.push(Line::from(close_spans));
@@ -1598,10 +1600,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
             let dashes = "─".repeat(width.saturating_sub(1));
             vec![Span::styled(format!("╰{dashes}"), dim_style)]
         } else {
-            let dash_count = width.saturating_sub(2 + elapsed.len());
+            // ╰─── 12s ──
+            let dash_count = width.saturating_sub(2 + elapsed.len() + 4);
             vec![
                 Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
                 Span::styled(elapsed, dim_style),
+                Span::styled(" ──", dim_style),
             ]
         };
         all_lines.push(Line::from(close_spans));

@@ -1507,7 +1507,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut all_lines: Vec<Line> = Vec::new();
 
-    let dim_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
+    let dim_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
     let mut box_open = false;
     let mut group_start_ts: Option<String> = None;
 
@@ -1547,12 +1547,17 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         if is_user && !box_open {
             group_start_ts = msg.timestamp.clone();
             let time_str = format_msg_time(&msg.timestamp);
+            let width = chunks[0].width as usize;
             let open_spans = if time_str.is_empty() {
-                vec![Span::styled("╭─", dim_style)]
+                let dashes = "─".repeat(width.saturating_sub(2));
+                vec![Span::styled(format!("╭─{}", dashes), dim_style)]
             } else {
+                let used = 3 + time_str.len() + 1; // "╭─ " + time_str + " "
+                let dash_count = width.saturating_sub(used);
                 vec![
                     Span::styled("╭─ ", dim_style),
                     Span::styled(time_str, dim_style),
+                    Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
                 ]
             };
             all_lines.push(Line::from(open_spans));
@@ -1563,7 +1568,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         if !is_user && prev_sender == Some("user") {
             let width = chunks[0].width as usize;
             let sep = format!("├{}", "─".repeat(width.saturating_sub(1)));
-            all_lines.push(Line::from(vec![Span::styled(sep, dim_style)]));
+            let sep_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+            all_lines.push(Line::from(vec![Span::styled(sep, sep_style)]));
         }
 
         // Render message: all bars use the same dim style

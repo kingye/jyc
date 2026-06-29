@@ -201,13 +201,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             //    (and thus has no reasoning_content), violating DeepSeek's
             //    thinking-mode contract on the next request.
             let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
-            let synthetic_args = serde_json::json!({"message": &progress_text}).to_string();
+            let synthetic_args =
+                serde_json::json!({"message": &progress_text, "stop_after": false}).to_string();
 
             publish_event(
                 event_bus,
                 ThreadEvent::ToolStarted {
                     thread_name: thread_name.to_string(),
-                    tool_name: "jyc_reply_reply_message".to_string(),
+                    tool_name: "jyc_reply_message".to_string(),
                     input: Some(synthetic_args.clone()),
                     timestamp: Utc::now(),
                 },
@@ -226,7 +227,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
-                .execute("jyc_reply_reply_message", synthetic_input, &ctx)
+                .execute("jyc_reply_message", synthetic_input, &ctx)
                 .await
             {
                 Ok(output) => output,
@@ -240,7 +241,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 event_bus,
                 ThreadEvent::ToolCompleted {
                     thread_name: thread_name.to_string(),
-                    tool_name: "jyc_reply_reply_message".to_string(),
+                    tool_name: "jyc_reply_message".to_string(),
                     success: !synthetic_output.is_error,
                     duration_secs: tool_start.elapsed().as_secs(),
                     output: if synthetic_output.is_error {
@@ -261,8 +262,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
                     id: synthetic_call_id.clone(),
-                    name: "jyc_reply_reply_message".to_string(),
-                    input: serde_json::json!({"message": &progress_text}),
+                    name: "jyc_reply_message".to_string(),
+                    input: serde_json::json!({"message": &progress_text, "stop_after": false}),
                 }],
             });
             history.push(Message::tool_result(
@@ -482,10 +483,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             if (tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply"))
                 && !output.is_error
             {
-                reply_sent_by_tool = true;
-                // Extract the message text from the tool input
-                if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
-                    reply_text_from_tool = Some(msg.to_string());
+                if output.stop_after {
+                    reply_sent_by_tool = true;
+                    // Extract the message text from the tool input
+                    if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
+                        reply_text_from_tool = Some(msg.to_string());
+                    }
+                } else {
+                    tracing::info!(
+                        tool = %tool_call.name,
+                        "Progress reply sent by tool (stop_after=false), continuing loop"
+                    );
                 }
             }
 

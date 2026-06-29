@@ -118,7 +118,7 @@ GitHub API (polling)
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ GitHub OutboundAdapter                                          │
-│   └─ jyc_reply_reply_message → POST comment on issue/PR       │
+│   └─ jyc_reply_message → POST comment on issue/PR       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -473,7 +473,7 @@ PR #43 merged
 
 ### jyc_reply → GitHub Comment
 
-When an agent uses `jyc_reply_reply_message`, the OutboundAdapter posts a
+When an agent uses `jyc_reply_message`, the OutboundAdapter posts a
 comment on the corresponding issue/PR.
 
 ```rust

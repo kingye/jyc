@@ -81,6 +81,8 @@ enum ServerMessage {
 struct HistoryEntry {
     sender: String,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
 }
 
 /// Inbound JSON protocol messages from clients.
@@ -422,6 +424,10 @@ fn load_chat_history(workspace_dir: &Path, thread: &str, max_messages: usize) ->
                 Some(HistoryEntry {
                     sender: sender.to_string(),
                     text: content.to_string(),
+                    timestamp: parsed
+                        .get("ts")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 })
             })
             .collect();

@@ -51,6 +51,7 @@ enum ChatFocus {
 struct ChatMessage {
     sender: String,
     text: String,
+    timestamp: Option<String>,
 }
 
 /// Events from the WebSocket client task.
@@ -316,6 +317,7 @@ impl App {
         self.chat_messages.push(ChatMessage {
             sender: "user".to_string(),
             text: text.clone(),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
         });
         self.chat_input.clear();
         self.chat_cursor = 0;
@@ -416,6 +418,10 @@ impl App {
                             Some(ChatMessage {
                                 sender: m.get("sender")?.as_str()?.to_string(),
                                 text: m.get("text")?.as_str()?.to_string(),
+                                timestamp: m
+                                    .get("timestamp")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
                             })
                         })
                         .collect();
@@ -431,6 +437,7 @@ impl App {
                         self.chat_messages.push(ChatMessage {
                             sender: "ai".to_string(),
                             text: text.to_string(),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
                         });
                         self.chat_scroll = 0;
                         self.chat_awaiting_response = false;
@@ -631,6 +638,55 @@ fn format_elapsed(timestamp: &Option<String>) -> String {
         Err(_) => return String::new(),
     };
     let elapsed = chrono::Utc::now().signed_duration_since(parsed);
+    let secs = elapsed.num_seconds();
+    if secs < 0 {
+        return String::new();
+    }
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", secs / 60)
+    }
+}
+
+/// Format a message timestamp for the chat group header (╭─ line).
+/// Shows "HH:MM" for today, "MM-DD HH:MM" for other dates.
+fn format_msg_time(ts: &Option<String>) -> String {
+    let ts = match ts {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let parsed = match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => dt.with_timezone(&chrono::Local),
+        Err(_) => return String::new(),
+    };
+    let now = chrono::Local::now();
+    if parsed.date_naive() == now.date_naive() {
+        parsed.format("%H:%M").to_string()
+    } else {
+        parsed.format("%m-%d %H:%M").to_string()
+    }
+}
+
+/// Format elapsed time between two RFC 3339 timestamps for the chat group
+/// footer (╰─ line). Falls back to now if `end` is None.
+fn format_group_elapsed(start: &Option<String>, end: &Option<String>) -> String {
+    let start_ts = match start {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let start_dt = match chrono::DateTime::parse_from_rfc3339(start_ts) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return String::new(),
+    };
+    let end_dt = match end {
+        Some(t) => match chrono::DateTime::parse_from_rfc3339(t) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => return String::new(),
+        },
+        None => chrono::Utc::now(),
+    };
+    let elapsed = end_dt.signed_duration_since(start_dt);
     let secs = elapsed.num_seconds();
     if secs < 0 {
         return String::new();
@@ -1453,6 +1509,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let dim_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
     let mut box_open = false;
+    let mut group_start_ts: Option<String> = None;
 
     for (idx, msg) in app.chat_messages.iter().enumerate() {
         let is_user = msg.sender == "user";
@@ -1467,14 +1524,38 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         // Close previous group box on AI → user transition
         if is_user && prev_sender == Some("ai") && box_open {
             all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-            all_lines.push(Line::from(vec![Span::styled("╰─", dim_style)]));
+            let last_ts = app
+                .chat_messages
+                .get(idx - 1)
+                .and_then(|m| m.timestamp.clone());
+            let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+            let close_spans = if elapsed.is_empty() {
+                vec![Span::styled("╰─", dim_style)]
+            } else {
+                vec![
+                    Span::styled("╰─ ", dim_style),
+                    Span::styled(elapsed, dim_style),
+                ]
+            };
+            all_lines.push(Line::from(close_spans));
             all_lines.push(Line::from(""));
             box_open = false;
+            group_start_ts = None;
         }
 
         // Open new group box at the start of a user turn
         if is_user && !box_open {
-            all_lines.push(Line::from(vec![Span::styled("╭─", dim_style)]));
+            group_start_ts = msg.timestamp.clone();
+            let time_str = format_msg_time(&msg.timestamp);
+            let open_spans = if time_str.is_empty() {
+                vec![Span::styled("╭─", dim_style)]
+            } else {
+                vec![
+                    Span::styled("╭─ ", dim_style),
+                    Span::styled(time_str, dim_style),
+                ]
+            };
+            all_lines.push(Line::from(open_spans));
             box_open = true;
         }
 
@@ -1499,7 +1580,17 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Close any open box at the end
     if box_open {
         all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-        all_lines.push(Line::from(vec![Span::styled("╰─", dim_style)]));
+        let last_ts = app.chat_messages.last().and_then(|m| m.timestamp.clone());
+        let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+        let close_spans = if elapsed.is_empty() {
+            vec![Span::styled("╰─", dim_style)]
+        } else {
+            vec![
+                Span::styled("╰─ ", dim_style),
+                Span::styled(elapsed, dim_style),
+            ]
+        };
+        all_lines.push(Line::from(close_spans));
         all_lines.push(Line::from(""));
     }
 

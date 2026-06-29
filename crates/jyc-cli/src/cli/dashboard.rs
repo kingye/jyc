@@ -1483,8 +1483,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
             all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
         }
 
-        // Render message: user bar is bright, AI bar is dim
-        let bar_style = if is_user { Style::default() } else { dim_style };
+        // Render message: all bars use the same dim style
+        let bar_style = dim_style;
         let md_text = format!("{prefix}{}\n", msg.text);
         let blocks = renderer.parse(&md_text);
         let msg_lines = renderer.render(&blocks, &theme);

@@ -1561,7 +1561,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
         // Separator line between user and AI within a group
         if !is_user && prev_sender == Some("user") {
-            all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+            let width = chunks[0].width as usize;
+            let sep = format!("├{}", "─".repeat(width.saturating_sub(1)));
+            all_lines.push(Line::from(vec![Span::styled(sep, dim_style)]));
         }
 
         // Render message: all bars use the same dim style

@@ -1211,8 +1211,16 @@ mod retry_tests {
         // backoff (1s + 2s = 3s). That's fine for a unit test but let's
         // verify the path works regardless. (Fast timers would require
         // tokio's pause/advance which complicates this minimal test.)
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus), std::time::Duration::from_secs(120)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
         let response = result.unwrap();
@@ -1254,8 +1262,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus), std::time::Duration::from_secs(120)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_err(), "expected Err after exhausting retries");
         assert_eq!(
@@ -1289,8 +1305,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus), std::time::Duration::from_secs(120)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -1334,8 +1358,16 @@ mod retry_tests {
         let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        let result =
-            complete_with_retry(&provider, &[], &[], "system", "thread-x", Some(&bus), std::time::Duration::from_secs(120)).await;
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "thread-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+        )
+        .await;
 
         assert!(
             result.is_ok(),

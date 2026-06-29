@@ -406,7 +406,7 @@ impl JycAgentService {
              stop_after=true, STOP immediately. Do NOT call any other tools.\n\
              **Progress update**: For long-running tasks, send periodic progress replies with\n\
              `stop_after: false`. Each reply is a checkpoint — you will continue working\n\
-             afterward. Use this when you have substantive progress to report.\n\n"
+             afterward. Use this when you have substantive progress to report.\n\n",
         );
 
         // Chat history access instructions
@@ -1258,9 +1258,7 @@ impl AgentService for JycAgentService {
             prior_history,
             prior_raw_context,
             max_iterations: Some(self.config.max_iterations),
-            sse_read_timeout: std::time::Duration::from_secs(
-                self.config.sse_read_timeout_secs,
-            ),
+            sse_read_timeout: std::time::Duration::from_secs(self.config.sse_read_timeout_secs),
             additional_read_roots,
             additional_write_roots,
             pattern_inject_images: pattern_inject,

@@ -1451,27 +1451,55 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut all_lines: Vec<Line> = Vec::new();
 
-    for msg in &app.chat_messages {
-        let (prefix, bar) = match msg.sender.as_str() {
-            "user" => ("**You:** ", "│ "),
-            "ai" => ("**AI:** ", ""),
-            _ => ("", ""),
+    let dim_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
+    let mut box_open = false;
+
+    for (idx, msg) in app.chat_messages.iter().enumerate() {
+        let is_user = msg.sender == "user";
+        let prefix = if is_user { "**You:** " } else { "**AI:** " };
+
+        let prev_sender = if idx > 0 {
+            Some(app.chat_messages[idx - 1].sender.as_str())
+        } else {
+            None
         };
 
+        // Close previous group box on AI → user transition
+        if is_user && prev_sender == Some("ai") && box_open {
+            all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+            all_lines.push(Line::from(vec![Span::styled("╰─", dim_style)]));
+            all_lines.push(Line::from(""));
+            box_open = false;
+        }
+
+        // Open new group box at the start of a user turn
+        if is_user && !box_open {
+            all_lines.push(Line::from(vec![Span::styled("╭─", dim_style)]));
+            box_open = true;
+        }
+
+        // Separator line between user and AI within a group
+        if !is_user && prev_sender == Some("user") {
+            all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+        }
+
+        // Render message: user bar is bright, AI bar is dim
+        let bar_style = if is_user { Style::default() } else { dim_style };
         let md_text = format!("{prefix}{}\n", msg.text);
         let blocks = renderer.parse(&md_text);
         let msg_lines = renderer.render(&blocks, &theme);
 
         for line in msg_lines {
-            if bar.is_empty() {
-                all_lines.push(line);
-            } else {
-                let bar_span = Span::raw(bar);
-                let spans: Vec<Span> = std::iter::once(bar_span).chain(line).collect();
-                all_lines.push(Line::from(spans));
-            }
+            let bar_span = Span::styled("│ ", bar_style);
+            let spans: Vec<Span> = std::iter::once(bar_span).chain(line).collect();
+            all_lines.push(Line::from(spans));
         }
-        // Blank line between messages
+    }
+
+    // Close any open box at the end
+    if box_open {
+        all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+        all_lines.push(Line::from(vec![Span::styled("╰─", dim_style)]));
         all_lines.push(Line::from(""));
     }
 

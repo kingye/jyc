@@ -1507,7 +1507,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut all_lines: Vec<Line> = Vec::new();
 
-    let dim_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let dim_style = Style::default().fg(Color::DarkGray);
     let mut box_open = false;
     let mut group_start_ts: Option<String> = None;
 
@@ -1573,7 +1573,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         if !is_user && prev_sender == Some("user") {
             let width = chunks[0].width as usize;
             let sep = format!("├{}", "─".repeat(width.saturating_sub(1)));
-            let sep_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+            let sep_style = Style::default().fg(Color::DarkGray);
             all_lines.push(Line::from(vec![Span::styled(sep, sep_style)]));
         }
 

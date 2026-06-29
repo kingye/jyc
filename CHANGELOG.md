@@ -4,6 +4,34 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`stop_after` parameter for reply tool.** The `jyc_reply_message` tool now
+  accepts an optional `stop_after` boolean parameter (default `true` for backward
+  compatibility). When `false`, the agent sends a progress update and continues
+  working instead of terminating the agent loop. This enables mid-task progress
+  reporting without stopping. The `ToolOutput` struct gains a `stop_after` field
+  and `success_continue()` constructor; the agent loop only sets
+  `reply_sent_by_tool = true` when `stop_after` is `true`. Synthetic cycle-progress
+  calls now pass `stop_after: false` explicitly. LLM understanding is reinforced
+  at three levels: tool schema, tool description, and system prompt "Reply
+  Instructions" section. (#341)
+
+- **Configurable `sse_read_timeout_secs` for `[agent]` config.** New optional
+  field `sse_read_timeout_secs` (default: 300) controls the maximum idle time
+  between SSE events before the stream is considered stalled. Useful for models
+  with long thinking phases that exceed the previous hardcoded timeout. (#341)
+
+### Changed
+
+- **Renamed `jyc_reply_reply_message` → `jyc_reply_message`.** The old tool name
+  was redundant and awkward. Updated in tool registration (`mcp_bridge.rs`),
+  agent loop synthetic cycle-progress calls, system prompt, all 7 GitHub/Gitee
+  template `AGENTS.md` files, tool documentation (`docs/tools.md`), and
+  `GITHUB_CHANNEL.md` architecture diagram. The agent loop's tool-name detection
+  (`contains("reply_message") || contains("jyc_reply")`) matches the new name.
+  (#341)
+
 ## [0.3.12] - 2026-06-28
 
 ### Fixed

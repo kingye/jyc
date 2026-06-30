@@ -317,6 +317,16 @@ pub struct ChannelPattern {
     /// regardless of message identity.
     #[serde(default)]
     pub thread_prefix: Option<String>,
+    /// Custom filesystem path for the thread directory.
+    ///
+    /// When set, the thread's working directory is this path instead of the
+    /// default `<workspace>/<thread_name>/`. Supports `~` expansion to
+    /// `$HOME`. Absolute paths are used as-is.
+    ///
+    /// The `thread_name` (or `thread_prefix`) still controls the logical
+    /// routing key — this field only changes where files are stored on disk.
+    #[serde(default)]
+    pub thread_path: Option<String>,
     /// Agent role name for this pattern (e.g., "Planner", "Developer", "Reviewer").
     /// Used by GitHub OutboundAdapter to prefix comments with `[Role]`.
     /// Also used to filter out the agent's own comments during polling.
@@ -459,6 +469,7 @@ impl Default for ChannelPattern {
             template: None,
             thread_name: None,
             thread_prefix: None,
+            thread_path: None,
             role: None,
             live_injection: true,
             repo_group: None,

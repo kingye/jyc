@@ -514,6 +514,11 @@ impl ActivityTracker {
                         for tm in tms.iter() {
                             let channel = tm.channel_name().to_string();
                             let threads = tm.list_threads().await;
+                            tracing::info!(
+                                channel = %channel,
+                                thread_count = threads.len(),
+                                "ActivityTracker: discovered threads"
+                            );
                             for thread in threads {
                                 let key = (channel.clone(), thread.name.clone());
                                 {
@@ -551,6 +556,11 @@ impl ActivityTracker {
                                             state.is_processing = false;
                                         }
                                         drop(map);
+                                        tracing::debug!(
+                                            thread = %thread.name,
+                                            channel = %channel,
+                                            "ActivityTracker: thread idle, skipping"
+                                        );
                                         continue;
                                     }
                                 };

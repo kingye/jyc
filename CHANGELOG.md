@@ -43,6 +43,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Dashboard chat pane shows stale content when switching threads.** When
+  switching from thread A to thread B, if thread B had no chat history the
+  server skipped sending a `history` message, leaving thread A's messages
+  visible in the chat pane. `select_pattern()` now clears `chat_messages`
+  before subscribing to the new thread. (#349)
+
 - **Dashboard chat pane input not wrapping.** When typing in the chat pane
   input area, text exceeding the pane width was not automatically wrapped to
   the next line. The input paragraph now uses `Wrap { trim: true }` and the

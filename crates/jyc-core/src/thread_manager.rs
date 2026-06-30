@@ -173,6 +173,7 @@ impl ThreadManager {
         pattern_match: PatternMatch,
         attachment_config: Option<InboundAttachmentConfig>,
         live_injection: bool,
+        thread_path_override: Option<PathBuf>,
     ) {
         let mut queues = self.thread_queues.lock().await;
 
@@ -215,6 +216,7 @@ impl ThreadManager {
             attachment_config,
             template,
             live_injection,
+            thread_path_override,
         };
 
         self.metrics.message_received(&thread_name);
@@ -379,7 +381,10 @@ impl ThreadManager {
                 // Initialize thread from template if needed
                 if let Some(ref template_name) = item.template {
                     let workspace = storage.workspace();
-                    let thread_path = workspace.join(&thread_name);
+                    let thread_path = item
+                        .thread_path_override
+                        .clone()
+                        .unwrap_or_else(|| workspace.join(&thread_name));
 
                     match initialize_thread_from_template(
                         &thread_path,
@@ -547,7 +552,10 @@ impl ThreadManager {
 
                 // Check symlink integrity after AI processing completes
                 if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                    let thread_path = storage.workspace().join(&thread_name);
+                    let thread_path = item
+                        .thread_path_override
+                        .clone()
+                        .unwrap_or_else(|| storage.workspace().join(&thread_name));
                     let symlink_path = thread_path.join("repo");
                     match tokio::fs::symlink_metadata(&symlink_path).await {
                         Ok(meta) if meta.file_type().is_symlink() => {
@@ -1048,14 +1056,23 @@ async fn process_message(
 ) -> Result<()> {
     // ── 1. STORE ──────────────────────────────────────────────────────
     let is_matched = !item.pattern_match.pattern_name.is_empty();
-    let store_result: StoreResult = storage
-        .store_with_match(
-            &item.message,
-            thread_name,
-            is_matched,
-            item.attachment_config.as_ref(),
-        )
-        .await?;
+    let store_result: StoreResult = match &item.thread_path_override {
+        Some(path) => {
+            storage
+                .store_at_path(&item.message, path, is_matched)
+                .await?
+        }
+        None => {
+            storage
+                .store_with_match(
+                    &item.message,
+                    thread_name,
+                    is_matched,
+                    item.attachment_config.as_ref(),
+                )
+                .await?
+        }
+    };
 
     tracing::info!(
         sender = %item.message.sender_address,
@@ -2054,8 +2071,15 @@ mode = "agent"
             channel: "websocket".to_string(),
             matches: HashMap::new(),
         };
-        tm.enqueue(msg, "test-thread".to_string(), pattern_match, None, false)
-            .await;
+        tm.enqueue(
+            msg,
+            "test-thread".to_string(),
+            pattern_match,
+            None,
+            false,
+            None,
+        )
+        .await;
 
         // Give the worker a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

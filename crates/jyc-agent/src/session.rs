@@ -551,25 +551,13 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 }
 
 /// Fallback: Load context from chat_history_*.jsonl files (text-only).
+/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
 #[allow(dead_code)]
 async fn load_from_chat_history(
     thread_path: &Path,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
 ) -> Vec<Message> {
-    let mut history_files: Vec<_> = match std::fs::read_dir(thread_path) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".jsonl"))
-            })
-            .map(|e| e.path())
-            .collect(),
-        Err(_) => return Vec::new(),
-    };
-
-    history_files.sort();
+    let (history_files, _dir) = jyc_core::chat_log_store::list_chat_history_files(thread_path);
 
     let mut messages: Vec<Message> = Vec::new();
 

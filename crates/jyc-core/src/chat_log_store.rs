@@ -29,6 +29,38 @@ pub struct ChatLogStore {
     max_file_size: u64,
 }
 
+/// List chat history JSONL files in a thread directory.
+///
+/// Tries `.jyc/` first (new location), falls back to thread root (legacy).
+/// Returns sorted paths (oldest first) and the directory they were found in.
+pub fn list_chat_history_files(thread_path: &Path) -> (Vec<PathBuf>, PathBuf) {
+    let new_dir = thread_path.join(".jyc");
+    let files = read_chat_history_dir(&new_dir);
+    if !files.is_empty() {
+        return (files, new_dir);
+    }
+    // Fallback: legacy location (thread root)
+    let files = read_chat_history_dir(thread_path);
+    (files, thread_path.to_path_buf())
+}
+
+fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".jsonl"))
+        })
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    files
+}
+
 impl ChatLogStore {
     /// Create a new chat log store for the given thread.
     pub fn new(thread_path: &Path) -> Self {
@@ -43,8 +75,10 @@ impl ChatLogStore {
     }
 
     /// Get the path for today's chat history file.
+    /// New location: `.jyc/chat_history_YYYY-MM-DD.jsonl`
     fn get_today_file_path(&self) -> PathBuf {
         self.thread_path
+            .join(".jyc")
             .join(format!("chat_history_{}.jsonl", self.current_date))
     }
 

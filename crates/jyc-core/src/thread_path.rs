@@ -19,6 +19,25 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
     workspace.join("repos").join(group_key)
 }
 
+/// Resolve a custom thread path from a pattern's `thread_path` config.
+///
+/// Expands `~` to `$HOME`. Absolute paths are used as-is.
+pub fn resolve_thread_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join(rest)
+        } else {
+            PathBuf::from(path)
+        }
+    } else if path == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 /// Compute the repo group key from a `repo_group` config value and issue/PR number.
 ///
 /// Returns `"{repo_group}-{number}"`.
@@ -66,6 +85,23 @@ mod tests {
     }
 
     // === resolve_workspace (used by cli/monitor.rs) ===
+
+    #[test]
+    fn test_resolve_thread_path_absolute() {
+        let p = resolve_thread_path("/home/jiny/my-project");
+        assert_eq!(p, PathBuf::from("/home/jiny/my-project"));
+    }
+
+    #[test]
+    fn test_resolve_thread_path_tilde() {
+        let p = resolve_thread_path("~/my-project");
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(p, PathBuf::from(home).join("my-project"));
+        } else {
+            // No HOME set — falls back to literal
+            assert_eq!(p, PathBuf::from("~/my-project"));
+        }
+    }
 
     #[test]
     fn test_resolve_workspace_email() {
@@ -305,21 +341,109 @@ mod tests {
         assert!(msg.attachments[0].saved_path.as_ref().unwrap().exists());
     }
 
-    // === .jyc path (real production pattern) ===
+    // === store_at_path (custom thread_path override) ===
 
     #[tokio::test]
-    async fn test_jyc_dir_created_in_correct_location() {
+    async fn test_store_at_path_writes_to_custom_directory() {
+        let tmp = tempdir().unwrap();
+        let ws = resolve_workspace(tmp.path(), "jiny283a");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+
+        let storage = MessageStorage::new(&ws);
+
+        // Custom thread path OUTSIDE the workspace
+        let custom_path = tmp.path().join("custom-projects").join("my-project");
+        tokio::fs::create_dir_all(&custom_path).await.unwrap();
+
+        let msg = make_message("jiny283a", "Test Subject");
+        let result = storage
+            .store_at_path(&msg, &custom_path, true)
+            .await
+            .unwrap();
+
+        // Thread path should be the custom path, not workspace-joined
+        assert_eq!(result.thread_path, custom_path);
+        assert!(result.thread_path.exists());
+
+        // Chat log should be inside the custom path .jyc/ directory
+        let jyc_dir = custom_path.join(".jyc");
+        let entries: Vec<_> = std::fs::read_dir(&jyc_dir).unwrap().collect();
+        let has_chat_log = entries.iter().any(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("chat_history_")
+        });
+        assert!(has_chat_log, "chat log file should exist in .jyc/");
+
+        // Should NOT be under workspace
+        assert!(
+            !result.thread_path.starts_with(&ws),
+            "custom thread path should not be under workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_at_path_creates_thread_dir_if_missing() {
+        let tmp = tempdir().unwrap();
+        let ws = resolve_workspace(tmp.path(), "jiny283a");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+
+        let storage = MessageStorage::new(&ws);
+
+        // Custom path that doesn't exist yet
+        let custom_path = tmp.path().join("new-external-dir").join("thread-1");
+
+        let msg = make_message("jiny283a", "Test Subject");
+        let result = storage
+            .store_at_path(&msg, &custom_path, true)
+            .await
+            .unwrap();
+
+        assert_eq!(result.thread_path, custom_path);
+        assert!(result.thread_path.exists());
+        assert!(result.thread_path.is_dir());
+    }
+
+    // === resolve_thread_path edge cases ===
+
+    #[test]
+    fn test_resolve_thread_path_home_only() {
+        let p = resolve_thread_path("~");
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(p, PathBuf::from(home));
+        } else {
+            assert_eq!(p, PathBuf::from("~"));
+        }
+    }
+
+    #[test]
+    fn test_resolve_thread_path_relative() {
+        // Relative paths are used as-is (no workspace resolution)
+        let p = resolve_thread_path("my-project");
+        assert_eq!(p, PathBuf::from("my-project"));
+    }
+
+    #[tokio::test]
+    async fn test_thread_path_override_not_under_workspace() {
+        // Verify that store_at_path produces a path completely outside
+        // the standard workspace hierarchy.
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "feishu_bot");
-        let thread_path = ws.join("self-hosting-jyc");
-        let jyc_dir = thread_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
-        // Verify path structure
-        assert!(jyc_dir.exists());
-        assert!(jyc_dir.starts_with(&ws));
-        let path_str = jyc_dir.to_string_lossy();
-        assert!(path_str.ends_with("self-hosting-jyc/.jyc"));
-        assert_eq!(path_str.matches("workspace").count(), 1);
+        let custom = tmp.path().join("elsewhere");
+        tokio::fs::create_dir_all(&custom).await.unwrap();
+
+        let storage = MessageStorage::new(&ws);
+        let msg = make_feishu_message("发票群", "group");
+        let result = storage.store_at_path(&msg, &custom, true).await.unwrap();
+
+        assert_eq!(result.thread_path, custom);
+        // Ensure path doesn't contain "workspace" segment at all
+        assert!(
+            !result.thread_path.to_string_lossy().contains("workspace"),
+            "custom path should not contain 'workspace'"
+        );
     }
 }

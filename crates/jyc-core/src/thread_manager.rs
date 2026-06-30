@@ -722,6 +722,18 @@ impl ThreadManager {
                 }
             }
         }
+
+        // Also include threads with custom `thread_path` overrides that live
+        // outside the workspace directory (e.g. `~/projects/jyc`).
+        {
+            let paths = self.thread_paths.lock().await;
+            for name in paths.keys() {
+                if !thread_names.contains(name) {
+                    thread_names.push(name.clone());
+                }
+            }
+        }
+
         thread_names.sort();
 
         let mut threads = Vec::with_capacity(thread_names.len());

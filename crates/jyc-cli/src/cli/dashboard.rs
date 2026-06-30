@@ -227,6 +227,8 @@ impl App {
         self.chat_input.clear();
         self.chat_cursor = 0;
         self.chat_scroll = 0;
+        self.chat_messages.clear();
+        self.chat_messages.clear();
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",

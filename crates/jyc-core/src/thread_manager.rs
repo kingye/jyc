@@ -90,8 +90,9 @@ pub struct ThreadManager {
 
     repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 
-    // Custom thread paths (from pattern thread_path override)
-    pub(crate) thread_paths: Mutex<HashMap<String, PathBuf>>,
+    // Custom thread paths (from pattern thread_path override), shared with
+    // worker clones so list_threads() on the main TM sees paths from workers.
+    pub(crate) thread_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 #[allow(dead_code)]
@@ -165,7 +166,7 @@ impl ThreadManager {
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
             repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
-            thread_paths: Mutex::new(HashMap::new()),
+            thread_paths: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -303,7 +304,7 @@ impl ThreadManager {
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
             repo_group_locks: self.repo_group_locks.clone(),
-            thread_paths: Mutex::new(HashMap::new()),
+            thread_paths: self.thread_paths.clone(),
         });
         let handle = ThreadManager::spawn_worker(
             tm,

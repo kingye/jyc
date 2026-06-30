@@ -22,6 +22,15 @@ All notable changes to JYC will be documented in this file.
   between SSE events before the stream is considered stalled. Useful for models
   with long thinking phases that exceed the previous hardcoded timeout. (#341)
 
+- **Per-pattern `thread_path` config for custom thread directories.** Patterns
+  can now declare `thread_path = "~/my-project"` to override the thread's
+  working directory location on disk. Supports `~` expansion to `$HOME`.
+  Absolute paths are used as-is. The logical routing key (`thread_name` /
+  `thread_prefix`) is unaffected — this field only changes where files are
+  stored on disk. `ThreadManager` tracks custom paths and resolves them
+  correctly for chat history, activity logs, close/cleanup, and the
+  `JobScheduler`. (#348)
+
 ### Changed
 
 - **Renamed `jyc_reply_reply_message` → `jyc_reply_message`.** The old tool name

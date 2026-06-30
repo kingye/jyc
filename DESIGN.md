@@ -1011,9 +1011,18 @@ pub struct ChannelPattern {
     pub attachments: Option<AttachmentConfig>,
     pub template: Option<String>,             // Thread template name
     pub thread_name: Option<String>,          // Fixed thread name override
+    pub thread_prefix: Option<String>,        // Thread name prefix (e.g. "issue", "pr")
+    pub thread_path: Option<String>,          // Custom filesystem path for thread dir
     pub role: Option<String>,                 // Agent role (e.g., "Planner", "Developer", "Reviewer")
+    pub repo_group: Option<String>,           // Shared repo directory group key
     #[serde(default = "default_true")]
     pub live_injection: bool,                 // Inject into active AI session (default: true)
+    pub inject_inbound_images: bool,          // Auto-inject image attachments (default: false)
+    pub model: Option<String>,                // Per-pattern model override
+    pub plan_model: Option<String>,           // Model override for plan mode
+    pub build_model: Option<String>,          // Model override for build mode
+    pub small_model: Option<String>,          // Per-pattern small_model override
+    pub mcps: Option<Vec<McpServerConfig>>,   // Per-pattern MCP server configs
 }
 
 /// Channel-agnostic pattern matching rules.

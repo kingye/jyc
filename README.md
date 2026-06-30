@@ -242,6 +242,11 @@ Key sections:
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 
+Per-pattern options such as `thread_path` (custom thread directory), `model`
+(per-pattern model override), `access` (filesystem whitelist), and `mcps`
+(per-pattern MCP tools) are configured under `[[channels.<name>.patterns]]`.
+See `config.example.toml` for annotated examples.
+
 See [DESIGN.md](DESIGN.md) for full configuration reference and architecture details.
 
 ## Troubleshooting

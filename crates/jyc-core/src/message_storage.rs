@@ -67,6 +67,25 @@ impl MessageStorage {
         })
     }
 
+    /// Store an inbound message at a specific thread path.
+    ///
+    /// Used when a pattern's `thread_path` override places the thread
+    /// outside the default workspace directory.
+    pub async fn store_at_path(
+        &self,
+        message: &InboundMessage,
+        thread_path: &Path,
+        is_matched: bool,
+    ) -> Result<StoreResult> {
+        let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        self.append_to_chat_log(thread_path, message, is_matched)
+            .await?;
+        Ok(StoreResult {
+            thread_path: thread_path.to_path_buf(),
+            message_dir,
+        })
+    }
+
     /// Store an inbound message (backward compatibility).
     ///
     /// Calls store_with_match with is_matched = true.

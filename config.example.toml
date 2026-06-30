@@ -79,6 +79,14 @@ enabled = true
 # tool to load them on demand.
 # inject_inbound_images = true
 
+# Custom filesystem path for the thread directory.
+# When set, the thread's working directory is this path instead of the
+# default <workspace>/<thread_name>/. Supports ~ expansion to $HOME.
+# Absolute paths are used as-is. The thread_name (or thread_prefix) still
+# controls the logical routing key — this field only changes where files
+# are stored on disk.
+# thread_path = "~/my-project"
+
 # Per-pattern skills whitelist: overrides channel-level `skills`.
 # When both are unset, all discovered skills are loaded.
 # skills = ["invoice-processing"]

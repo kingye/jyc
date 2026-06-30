@@ -19,6 +19,25 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
     workspace.join("repos").join(group_key)
 }
 
+/// Resolve a custom thread path from a pattern's `thread_path` config.
+///
+/// Expands `~` to `$HOME`. Absolute paths are used as-is.
+pub fn resolve_thread_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join(rest)
+        } else {
+            PathBuf::from(path)
+        }
+    } else if path == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 /// Compute the repo group key from a `repo_group` config value and issue/PR number.
 ///
 /// Returns `"{repo_group}-{number}"`.
@@ -66,6 +85,23 @@ mod tests {
     }
 
     // === resolve_workspace (used by cli/monitor.rs) ===
+
+    #[test]
+    fn test_resolve_thread_path_absolute() {
+        let p = resolve_thread_path("/home/jiny/my-project");
+        assert_eq!(p, PathBuf::from("/home/jiny/my-project"));
+    }
+
+    #[test]
+    fn test_resolve_thread_path_tilde() {
+        let p = resolve_thread_path("~/my-project");
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(p, PathBuf::from(home).join("my-project"));
+        } else {
+            // No HOME set — falls back to literal
+            assert_eq!(p, PathBuf::from("~/my-project"));
+        }
+    }
 
     #[test]
     fn test_resolve_workspace_email() {

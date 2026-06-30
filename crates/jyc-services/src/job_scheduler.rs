@@ -229,6 +229,45 @@ impl JobScheduler {
             }
         }
 
+        // Also scan custom thread paths from pattern `thread_path` overrides.
+        // These are not under any workspace_dir so the standard scan misses them.
+        let tms = self.thread_managers.lock().await;
+        for (channel_name, tm) in tms.iter() {
+            let custom_paths = tm.custom_thread_paths().await;
+            for (thread_name, thread_path) in &custom_paths {
+                let jobs_dir = thread_path.join(".jyc").join("jobs");
+                if !jobs_dir.exists() {
+                    continue;
+                }
+                let store = match JobStore::new(thread_path, self.max_jobs_per_thread).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(thread = %thread_name, error = %e, "Failed to open job store for custom-path thread");
+                        continue;
+                    }
+                };
+                let jobs = match store.list().await {
+                    Ok(jobs) => jobs,
+                    Err(e) => {
+                        tracing::warn!(thread = %thread_name, error = %e, "Failed to list jobs for custom-path thread");
+                        continue;
+                    }
+                };
+                for job in jobs {
+                    if !job.enabled || job.next_fire_at.is_none_or(|t| t > now) {
+                        continue;
+                    }
+                    due.push(DueJob {
+                        job: job.clone(),
+                        store: store.clone(),
+                        thread_name: thread_name.clone(),
+                        channel_name: channel_name.clone(),
+                    });
+                }
+            }
+        }
+        drop(tms);
+
         due
     }
 

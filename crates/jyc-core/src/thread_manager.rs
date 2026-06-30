@@ -670,6 +670,28 @@ impl ThreadManager {
             .saturating_sub(self.semaphore.available_permits())
     }
 
+    /// Get the resolved filesystem path for a thread.
+    ///
+    /// Returns the custom path if a pattern's `thread_path` override is active,
+    /// otherwise falls back to `<workspace>/<thread_name>/`.
+    pub async fn thread_path(&self, thread_name: &str) -> Option<PathBuf> {
+        let paths = self.thread_paths.lock().await;
+        if let Some(path) = paths.get(thread_name) {
+            return Some(path.clone());
+        }
+        // Fallback: try the default workspace path
+        let default_path = self.workspace_dir.join(thread_name);
+        if tokio::fs::metadata(&default_path).await.is_ok() {
+            return Some(default_path);
+        }
+        None
+    }
+
+    /// Get all custom thread paths (from pattern `thread_path` overrides).
+    pub async fn custom_thread_paths(&self) -> HashMap<String, PathBuf> {
+        self.thread_paths.lock().await.clone()
+    }
+
     /// List all open threads with their info, reading state from disk.
     ///
     /// Scans the workspace directory for thread directories containing `.jyc/pattern`.
@@ -920,7 +942,10 @@ impl ThreadManager {
     /// This is channel-agnostic — all threads use the same cleanup logic.
     /// Removes the thread directory from disk and cleans up in-memory state.
     pub async fn close_thread(&self, thread_name: &str) -> Result<()> {
-        let thread_path = self.storage.workspace().join(thread_name);
+        let thread_path = self
+            .thread_path(thread_name)
+            .await
+            .unwrap_or_else(|| self.storage.workspace().join(thread_name));
 
         if thread_path.exists() {
             // Check for symlinks (e.g., repo/) and remove them before remove_dir_all

@@ -169,13 +169,6 @@ impl MessageRouter {
         let thread_path_override = matched_pattern
             .and_then(|p| p.thread_path.as_ref())
             .map(|tp| crate::thread_path::resolve_thread_path(tp));
-        tracing::info!(
-            pattern = %matched_pattern_name,
-            config_value = ?matched_pattern.and_then(|p| p.thread_path.as_ref()),
-            resolved = ?thread_path_override,
-            "MessageRouter: thread_path override"
-        );
-
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager

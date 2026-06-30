@@ -165,10 +165,22 @@ impl MessageRouter {
                 .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
-        // 4. Enqueue (channel-agnostic)
+        // 4. Resolve thread_path override (if pattern sets a custom filesystem path)
+        let thread_path_override = matched_pattern
+            .and_then(|p| p.thread_path.as_ref())
+            .map(|tp| crate::thread_path::resolve_thread_path(tp));
+
+        // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager
-            .enqueue(message, thread_name, pm, attachment_config, live_injection)
+            .enqueue(
+                message,
+                thread_name,
+                pm,
+                attachment_config,
+                live_injection,
+                thread_path_override,
+            )
             .await;
     }
 

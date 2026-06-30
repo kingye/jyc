@@ -280,7 +280,7 @@ impl JobScheduler {
             matches: std::collections::HashMap::new(),
         };
 
-        tm.enqueue(message, job.thread_name.clone(), pattern_match, None, true)
+        tm.enqueue(message, job.thread_name.clone(), pattern_match, None, true, None)
             .await;
 
         tracing::info!(

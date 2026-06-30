@@ -91,6 +91,10 @@ pub struct ThreadInfo {
     /// Skills loaded for this thread
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Filesystem path for this thread (may differ from workspace/name when
+    /// a pattern's `thread_path` override is active).
+    #[serde(skip)]
+    pub thread_path: Option<std::path::PathBuf>,
 }
 
 /// Severity level for an activity entry.
@@ -220,6 +224,7 @@ mod tests {
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
+                thread_path: None,
             }],
             stats: GlobalStats {
                 active_workers: 2,

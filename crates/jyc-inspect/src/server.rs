@@ -469,7 +469,7 @@ impl ActivityTracker {
     pub fn start(
         thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
         activity_map: SharedActivityMap,
-        workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
+        _workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
@@ -479,13 +479,11 @@ impl ActivityTracker {
 
             // Load historical activity from disk for all existing threads
             let tms = thread_managers.load();
-            let dirs = workspace_dirs.load();
-            for (tm_index, tm) in tms.iter().enumerate() {
-                let workspace_dir = dirs.get(tm_index);
+            for tm in tms.iter() {
                 let channel = tm.channel_name().to_string();
                 let threads = tm.list_threads().await;
                 for thread in &threads {
-                    let thread_path = workspace_dir.map(|d| d.join(&thread.name));
+                    let thread_path = thread.thread_path.clone();
                     if let Some(ref path) = thread_path
                         && let Ok(entries) =
                             ActivityLogStore::load_recent(path, MAX_ACTIVITY_ENTRIES)
@@ -507,16 +505,13 @@ impl ActivityTracker {
                 }
             }
             drop(tms);
-            drop(dirs);
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Discover new threads and subscribe to their event buses
                         let tms = thread_managers.load();
-                        let dirs = workspace_dirs.load();
-                        for (tm_index, tm) in tms.iter().enumerate() {
-                            let workspace_dir = dirs.get(tm_index);
+                        for tm in tms.iter() {
                             let channel = tm.channel_name().to_string();
                             let threads = tm.list_threads().await;
                             for thread in threads {
@@ -569,7 +564,7 @@ impl ActivityTracker {
                                         let map = activity_map.clone();
                                         let name = thread.name.clone();
                                         let channel_for_task = channel.clone();
-                                        let thread_path = workspace_dir.map(|d| d.join(&name));
+                                        let thread_path = thread.thread_path.clone();
                                         let cancel_inner = cancel.clone();
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
@@ -1537,6 +1532,7 @@ mode = "agent"
             activity: vec![],
             last_active_at: None,
             skills: vec![],
+            thread_path: None,
         };
 
         let mut threads = vec![make_thread("channel1"), make_thread("channel2")];

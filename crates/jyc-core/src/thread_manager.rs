@@ -89,6 +89,9 @@ pub struct ThreadManager {
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 
     repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+
+    // Custom thread paths (from pattern thread_path override)
+    thread_paths: Mutex<HashMap<String, PathBuf>>,
 }
 
 #[allow(dead_code)]
@@ -162,6 +165,7 @@ impl ThreadManager {
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
             repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
+            thread_paths: Mutex::new(HashMap::new()),
         }
     }
 
@@ -299,6 +303,7 @@ impl ThreadManager {
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
             repo_group_locks: self.repo_group_locks.clone(),
+            thread_paths: Mutex::new(HashMap::new()),
         });
         let handle = ThreadManager::spawn_worker(
             tm,
@@ -453,6 +458,12 @@ impl ThreadManager {
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
+
+                    // Store the resolved thread path so it can be returned by
+                    // list_threads() and used by the ActivityTracker.
+                    let mut paths = tm.thread_paths.lock().await;
+                    paths.insert(thread_name.clone(), thread_path.clone());
+                    drop(paths);
                 }
 
                 // Acquire repo group lock to prevent concurrent initialization
@@ -690,7 +701,13 @@ impl ThreadManager {
         let mut threads = Vec::with_capacity(thread_names.len());
 
         for name in thread_names {
-            let thread_path = self.workspace_dir.join(&name);
+            // Check for custom thread_path from pattern override first
+            let paths = self.thread_paths.lock().await;
+            let thread_path = paths
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            drop(paths);
 
             // Read pattern from .jyc/pattern
             let pattern = tokio::fs::read_to_string(thread_path.join(".jyc").join("pattern"))
@@ -807,6 +824,7 @@ impl ThreadManager {
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
+                thread_path: Some(thread_path.clone()),
             });
         }
 

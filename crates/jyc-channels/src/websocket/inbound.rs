@@ -623,4 +623,30 @@ mod tests {
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_none());
     }
+
+    #[tokio::test]
+    async fn test_load_chat_history_with_workspace_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let thread_dir = tmp.path().join("my-thread");
+        tokio::fs::create_dir_all(thread_dir.join(".jyc"))
+            .await
+            .unwrap();
+        // Write a chat history file in the new .jyc location
+        tokio::fs::write(
+            thread_dir.join(".jyc").join("chat_history_2026-06-30.jsonl"),
+            r#"{"ts":"2026-06-30T10:00:00Z","type":"received","matched":true,"sender":"user","channel":"test","topic":"test","from":"user","content":"hello"}"#,
+        )
+        .await
+        .unwrap();
+
+        let history = load_chat_history("my-thread", &Some(tmp.path().to_path_buf()), &None).await;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_load_chat_history_returns_empty_when_no_dir() {
+        let history = load_chat_history("nonexistent", &None, &None).await;
+        assert!(history.is_empty());
+    }
 }

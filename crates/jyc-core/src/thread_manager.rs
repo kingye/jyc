@@ -91,7 +91,7 @@ pub struct ThreadManager {
     repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 
     // Custom thread paths (from pattern thread_path override)
-    thread_paths: Mutex<HashMap<String, PathBuf>>,
+    pub(crate) thread_paths: Mutex<HashMap<String, PathBuf>>,
 }
 
 #[allow(dead_code)]
@@ -383,13 +383,23 @@ impl ThreadManager {
                     },
                 };
 
+                // Compute the effective thread path (custom override or default)
+                let workspace = storage.workspace();
+                let thread_path = item
+                    .thread_path_override
+                    .clone()
+                    .unwrap_or_else(|| workspace.join(&thread_name));
+
+                // Store the resolved thread path so it can be returned by
+                // list_threads() and used by the ActivityTracker.
+                {
+                    let mut paths = tm.thread_paths.lock().await;
+                    paths.insert(thread_name.clone(), thread_path.clone());
+                }
+
                 // Initialize thread from template if needed
                 if let Some(ref template_name) = item.template {
-                    let workspace = storage.workspace();
-                    let thread_path = item
-                        .thread_path_override
-                        .clone()
-                        .unwrap_or_else(|| workspace.join(&thread_name));
+                    let thread_path = thread_path.clone();
 
                     match initialize_thread_from_template(
                         &thread_path,
@@ -458,12 +468,6 @@ impl ThreadManager {
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
-
-                    // Store the resolved thread path so it can be returned by
-                    // list_threads() and used by the ActivityTracker.
-                    let mut paths = tm.thread_paths.lock().await;
-                    paths.insert(thread_name.clone(), thread_path.clone());
-                    drop(paths);
                 }
 
                 // Acquire repo group lock to prevent concurrent initialization
@@ -2133,6 +2137,69 @@ mode = "agent"
         );
 
         // Clean up
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_path_returns_custom_override() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let custom_path = tmp.path().join("custom-threads").join("my-thread");
+        tm.thread_paths
+            .lock()
+            .await
+            .insert("my-thread".to_string(), custom_path.clone());
+
+        let resolved = tm.thread_path("my-thread").await;
+        assert_eq!(resolved, Some(custom_path));
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_path_falls_back_to_default() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Create thread dir at default location
+        let default_path = workspace.join("default-thread");
+        tokio::fs::create_dir_all(&default_path).await.unwrap();
+
+        // No custom path stored — should fall back to workspace/thread_name
+        let resolved = tm.thread_path("default-thread").await;
+        assert_eq!(resolved, Some(default_path));
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_path_returns_none_for_nonexistent() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let resolved = tm.thread_path("nonexistent").await;
+        assert_eq!(resolved, None);
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_custom_thread_paths_empty_initially() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let paths = tm.custom_thread_paths().await;
+        assert!(paths.is_empty());
+
         tm.shutdown().await;
     }
 }

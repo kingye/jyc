@@ -76,21 +76,24 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
 
     async fn send_reply(
         &self,
-        _original: &InboundMessage,
+        original: &InboundMessage,
         reply_text: &str,
         thread_path: &Path,
         _message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
-        // Use the thread directory name (last path component) as the
-        // broadcast key. This matches what WebSocket clients subscribe to
-        // (the thread name derived by the matcher). Using `_original.topic`
-        // would fail for scheduled jobs, where `topic` is a descriptive
-        // string ("Scheduled job: ...") rather than the thread name.
-        let thread = thread_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(_original.topic.as_str());
+        // Use the original message topic as the broadcast key for normal
+        // messages (topic = thread name from the WebSocket protocol).
+        // Fall back to the thread directory name for scheduled jobs, where
+        // `topic` is a descriptive string like "Scheduled job: ...".
+        let thread = if original.topic.starts_with("Scheduled job:") {
+            thread_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(original.topic.as_str())
+        } else {
+            original.topic.as_str()
+        };
         self.broadcast_reply(thread, reply_text).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
 

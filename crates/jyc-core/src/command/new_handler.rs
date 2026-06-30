@@ -76,7 +76,10 @@ impl CommandHandler for NewCommandHandler {
         let mut deleted_history = 0u64;
 
         // New location: .jyc/
-        let new_pattern = context.thread_path.join(".jyc").join("chat_history_*.jsonl");
+        let new_pattern = context
+            .thread_path
+            .join(".jyc")
+            .join("chat_history_*.jsonl");
         deleted_history += delete_glob_files(&new_pattern).await;
 
         // Legacy location: thread root

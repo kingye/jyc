@@ -51,12 +51,24 @@ impl ChannelMatcher for WebsocketMatcher {
 
     fn match_message(
         &self,
-        _message: &InboundMessage,
+        message: &InboundMessage,
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
-        // Websocket input is always for this channel — match the first enabled pattern.
-        patterns.iter().find(|p| p.enabled).map(|p| PatternMatch {
-            pattern_name: p.name.clone(),
+        // Prefer the pattern whose name matches the client's thread name.
+        // This allows per-thread config like `thread_path` to take effect.
+        // Fall back to the first enabled pattern if no name match.
+        let topic = &message.topic;
+        let pattern = if !topic.is_empty() {
+            patterns
+                .iter()
+                .find(|p| p.enabled && p.name == *topic)
+                .or_else(|| patterns.iter().find(|p| p.enabled))
+        } else {
+            patterns.iter().find(|p| p.enabled)
+        }?;
+
+        Some(PatternMatch {
+            pattern_name: pattern.name.clone(),
             channel: "websocket".to_string(),
             matches: HashMap::new(),
         })
@@ -479,40 +491,69 @@ mod tests {
     }
 
     #[test]
-    fn test_match_message_first_enabled() {
+    fn test_match_message_by_topic_name() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
-        let msg = create_test_message();
+        let mut msg = create_test_message();
+        msg.topic = "my-project".to_string();
 
         let patterns = vec![
             ChannelPattern {
-                name: "p1".to_string(),
+                name: "default".to_string(),
                 channel: "websocket".to_string(),
                 enabled: true,
                 ..Default::default()
             },
             ChannelPattern {
-                name: "p2".to_string(),
+                name: "my-project".to_string(),
                 channel: "websocket".to_string(),
-                enabled: false,
+                enabled: true,
                 ..Default::default()
             },
         ];
 
+        // Should match "my-project" by name, not "default" (first enabled)
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "p1");
+        assert_eq!(result.unwrap().pattern_name, "my-project");
     }
 
     #[test]
-    fn test_match_message_skips_disabled() {
+    fn test_match_message_by_topic_name_skips_disabled() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
-        let msg = create_test_message();
+        let mut msg = create_test_message();
+        msg.topic = "my-project".to_string();
+
+        let patterns = vec![
+            ChannelPattern {
+                name: "my-project".to_string(),
+                channel: "websocket".to_string(),
+                enabled: false,
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "fallback".to_string(),
+                channel: "websocket".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+
+        // Name match is disabled, so fall back to first enabled
+        let result = matcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "fallback");
+    }
+
+    #[test]
+    fn test_match_message_fallback_when_no_name_match() {
+        let matcher = WebsocketMatcher::new("my-ws".to_string());
+        let msg = create_test_message(); // topic = "Test", no pattern named "Test"
 
         let patterns = vec![
             ChannelPattern {
                 name: "p1".to_string(),
                 channel: "websocket".to_string(),
-                enabled: false,
+                enabled: true,
                 ..Default::default()
             },
             ChannelPattern {
@@ -523,9 +564,10 @@ mod tests {
             },
         ];
 
+        // No name match, falls back to first enabled
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "p2");
+        assert_eq!(result.unwrap().pattern_name, "p1");
     }
 
     #[test]

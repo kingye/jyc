@@ -591,3 +591,24 @@ impl LabelRule {
 fn default_true() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thread_path_deserialization() {
+        let toml_str = r#"
+name = "jyc"
+enabled = true
+thread_path = "~/projects/jyc"
+[rules]
+"#;
+        let p: ChannelPattern = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            p.thread_path.as_deref(),
+            Some("~/projects/jyc"),
+            "thread_path should deserialize correctly"
+        );
+    }
+}

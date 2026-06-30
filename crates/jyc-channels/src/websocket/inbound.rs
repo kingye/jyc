@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -16,6 +16,7 @@ use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
     MessageContent, PatternMatch,
 };
+use std::sync::Mutex as StdMutex;
 
 /// WebSocket channel-specific pattern matching and thread name derivation.
 pub struct WebsocketMatcher {
@@ -125,8 +126,10 @@ pub struct WebsocketInboundAdapter {
     broadcast_tx: broadcast::Sender<String>,
     /// Message callback — set during `start()`, used by the WebSocket handler.
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
-    /// Workspace directory for loading chat history.
+    /// Workspace directory for loading chat history (default location).
     workspace_dir: Option<PathBuf>,
+    /// ThreadManager reference for resolving custom thread_path overrides.
+    thread_manager: Arc<StdMutex<Option<Arc<jyc_core::thread_manager::ThreadManager>>>>,
 }
 
 impl WebsocketInboundAdapter {
@@ -142,7 +145,18 @@ impl WebsocketInboundAdapter {
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
+            thread_manager: Arc::new(StdMutex::new(None)),
         }
+    }
+
+    /// Set the workspace directory for loading chat history.
+    pub fn set_workspace_dir(&mut self, dir: PathBuf) {
+        self.workspace_dir = Some(dir);
+    }
+
+    /// Set the ThreadManager for resolving custom `thread_path` overrides.
+    pub fn set_thread_manager(&self, tm: Arc<jyc_core::thread_manager::ThreadManager>) {
+        *self.thread_manager.lock().unwrap() = Some(tm);
     }
 
     /// Read the current enabled pattern names for this channel from the live config.
@@ -165,11 +179,6 @@ impl WebsocketInboundAdapter {
         }
     }
 
-    /// Set the workspace directory for loading chat history.
-    pub fn set_workspace_dir(&mut self, dir: PathBuf) {
-        self.workspace_dir = Some(dir);
-    }
-
     /// Return the channel name for this adapter.
     /// Used by the inspect server for path-based handler routing.
     pub fn channel_name(&self) -> &str {
@@ -190,6 +199,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
         let workspace_dir = self.workspace_dir.clone();
+        let thread_manager = self.thread_manager.lock().unwrap().clone();
 
         handle_connection_impl(
             ws_stream,
@@ -199,6 +209,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             broadcast_rx,
             on_message,
             workspace_dir,
+            thread_manager,
         )
         .await
     }
@@ -246,6 +257,7 @@ impl InboundAdapter for WebsocketInboundAdapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection_impl<S>(
     ws_stream: tokio_tungstenite::WebSocketStream<S>,
     addr: SocketAddr,
@@ -254,6 +266,7 @@ async fn handle_connection_impl<S>(
     mut broadcast_rx: broadcast::Receiver<String>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     workspace_dir: Option<PathBuf>,
+    thread_manager: Option<Arc<jyc_core::thread_manager::ThreadManager>>,
 ) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
@@ -310,18 +323,19 @@ where
                         tracing::info!(addr = %addr, thread = %thread, "Client subscribed to thread");
 
                         // Load and send chat history
-                        if let Some(ref dir) = workspace_dir {
-                            let history = load_chat_history(dir, &thread, 100);
-                            if !history.is_empty() {
-                                let response = ServerMessage::History {
-                                    thread: thread.clone(),
-                                    messages: history,
-                                };
-                                let json = serde_json::to_string(&response)?;
-                                if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
-                                    tracing::warn!(error = %e, addr = %addr, "Failed to send history");
-                                    break;
-                                }
+                        let history = load_chat_history(&thread, &workspace_dir, &thread_manager).await;
+                        if !history.is_empty() {
+                            let response = ServerMessage::History {
+                                thread: thread.clone(),
+                                messages: history,
+                            };
+                            let json = serde_json::to_string(&response)?;
+                            if let Err(e) = ws_tx
+                                .send(tokio_tungstenite::tungstenite::Message::Text(json))
+                                .await
+                            {
+                                tracing::warn!(error = %e, addr = %addr, "Failed to send history");
+                                break;
                             }
                         }
                     }
@@ -391,8 +405,32 @@ where
 /// Reads `chat_history_*.jsonl` files in the thread directory, parses each
 /// line, and returns up to `max_messages` most recent entries.
 /// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
-fn load_chat_history(workspace_dir: &Path, thread: &str, max_messages: usize) -> Vec<HistoryEntry> {
-    let thread_dir = workspace_dir.join(thread);
+///
+/// Resolves the actual thread directory via ThreadManager for custom
+/// `thread_path` configurations. Falls back to `workspace_dir.join(thread)`
+/// when no ThreadManager is available or no custom path is configured.
+async fn load_chat_history(
+    thread: &str,
+    workspace_dir: &Option<PathBuf>,
+    thread_manager: &Option<Arc<jyc_core::thread_manager::ThreadManager>>,
+) -> Vec<HistoryEntry> {
+    let max_messages = 100;
+
+    // Resolve the actual thread directory path
+    let thread_dir = if let Some(tm) = thread_manager {
+        tm.thread_path(thread).await.unwrap_or_else(|| {
+            workspace_dir
+                .as_ref()
+                .map(|d| d.join(thread))
+                .unwrap_or_default()
+        })
+    } else {
+        match workspace_dir {
+            Some(dir) => dir.join(thread),
+            None => return vec![],
+        }
+    };
+
     if !thread_dir.exists() {
         return vec![];
     }

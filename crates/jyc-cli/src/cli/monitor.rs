@@ -182,6 +182,8 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     // Collect websocket inbound adapters to register with the inspect server later
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
+    // Map for setting ThreadManager on websocket handlers after creation
+    let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -341,6 +343,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
                 );
                 handler.set_workspace_dir(workspace_dir.clone());
                 let handler = Arc::new(handler);
+                ws_handler_for_channel.insert(channel_name.clone(), handler.clone());
                 websocket_handlers.push(handler);
                 Arc::new(adapter)
             }
@@ -397,6 +400,11 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             workspace_dir.clone(),
             metrics_handle.clone(),
         ));
+
+        // Wire thread_manager to websocket handler for custom thread_path resolution
+        if let Some(ws_handler) = ws_handler_for_channel.get(channel_name) {
+            ws_handler.set_thread_manager(thread_manager.clone());
+        }
 
         // Collect for inspect server
         let channel_info = jyc_types::ChannelInfo {

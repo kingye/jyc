@@ -173,6 +173,7 @@ impl ThreadManager {
         pattern_match: PatternMatch,
         attachment_config: Option<InboundAttachmentConfig>,
         live_injection: bool,
+        thread_path_override: Option<PathBuf>,
     ) {
         let mut queues = self.thread_queues.lock().await;
 
@@ -215,6 +216,7 @@ impl ThreadManager {
             attachment_config,
             template,
             live_injection,
+            thread_path_override,
         };
 
         self.metrics.message_received(&thread_name);
@@ -2054,7 +2056,7 @@ mode = "agent"
             channel: "websocket".to_string(),
             matches: HashMap::new(),
         };
-        tm.enqueue(msg, "test-thread".to_string(), pattern_match, None, false)
+        tm.enqueue(msg, "test-thread".to_string(), pattern_match, None, false, None)
             .await;
 
         // Give the worker a moment to start

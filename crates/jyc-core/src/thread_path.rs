@@ -19,6 +19,21 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
     workspace.join("repos").join(group_key)
 }
 
+/// Resolve a custom thread path from a pattern's `thread_path` config.
+///
+/// Expands `~` to `$HOME`. Absolute paths are used as-is.
+pub fn resolve_thread_path(path: &str) -> PathBuf {
+    if path.starts_with("~") {
+        if let Some(home) = std::env::var_os("HOME") {
+            PathBuf::from(home).join(path.strip_prefix("~").unwrap())
+        } else {
+            PathBuf::from(path)
+        }
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 /// Compute the repo group key from a `repo_group` config value and issue/PR number.
 ///
 /// Returns `"{repo_group}-{number}"`.

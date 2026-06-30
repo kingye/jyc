@@ -366,7 +366,6 @@ mod tests {
         assert!(result.thread_path.exists());
 
         // Chat log should be inside the custom path
-        let chat_log = custom_path.join("chat_history_");
         let entries: Vec<_> = std::fs::read_dir(&custom_path).unwrap().collect();
         let has_chat_log = entries.iter().any(|e| {
             e.as_ref()

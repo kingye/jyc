@@ -378,25 +378,15 @@ where
 ///
 /// Reads `chat_history_*.jsonl` files in the thread directory, parses each
 /// line, and returns up to `max_messages` most recent entries.
+/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
 fn load_chat_history(workspace_dir: &Path, thread: &str, max_messages: usize) -> Vec<HistoryEntry> {
     let thread_dir = workspace_dir.join(thread);
     if !thread_dir.exists() {
         return vec![];
     }
 
-    // Collect and sort chat history files by name (descending = newest first)
-    let mut files: Vec<PathBuf> = match std::fs::read_dir(&thread_dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("chat_history_") && n.ends_with(".jsonl"))
-            })
-            .collect(),
-        Err(_) => return vec![],
-    };
+    // Use the centralized helper that tries .jyc/ first, then root
+    let (mut files, _dir) = jyc_core::chat_log_store::list_chat_history_files(&thread_dir);
     files.sort_by(|a, b| b.cmp(a)); // newest first
 
     let mut entries = Vec::new();

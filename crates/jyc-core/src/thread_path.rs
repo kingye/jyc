@@ -365,8 +365,9 @@ mod tests {
         assert_eq!(result.thread_path, custom_path);
         assert!(result.thread_path.exists());
 
-        // Chat log should be inside the custom path
-        let entries: Vec<_> = std::fs::read_dir(&custom_path).unwrap().collect();
+        // Chat log should be inside the custom path .jyc/ directory
+        let jyc_dir = custom_path.join(".jyc");
+        let entries: Vec<_> = std::fs::read_dir(&jyc_dir).unwrap().collect();
         let has_chat_log = entries.iter().any(|e| {
             e.as_ref()
                 .unwrap()
@@ -374,7 +375,7 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("chat_history_")
         });
-        assert!(has_chat_log, "chat log file should exist in custom path");
+        assert!(has_chat_log, "chat log file should exist in .jyc/");
 
         // Should NOT be under workspace
         assert!(

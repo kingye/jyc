@@ -7,6 +7,40 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///
 /// Usage:
 ///   /new    Delete session state files and chat history; next AI prompt will start completely fresh
+/// Delete all files matching a glob pattern. Returns count of deleted files.
+async fn delete_glob_files(pattern: &std::path::Path) -> u64 {
+    let pattern_str = pattern.to_string_lossy().to_string();
+    let mut count = 0u64;
+    match glob::glob(&pattern_str) {
+        Ok(paths) => {
+            for entry in paths {
+                match entry {
+                    Ok(path) => {
+                        if tokio::fs::remove_file(&path).await.is_ok() {
+                            count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pattern = %pattern.display(),
+                            error = %e,
+                            "Failed to read path during /new glob"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                pattern = %pattern.display(),
+                error = %e,
+                "Failed to glob files during /new"
+            );
+        }
+    }
+    count
+}
+
 pub struct NewCommandHandler;
 
 #[async_trait]
@@ -38,37 +72,16 @@ impl CommandHandler for NewCommandHandler {
             deleted_session = true;
         }
 
-        // Delete all chat_history_*.jsonl files in the thread directory
+        // Delete all chat_history_*.jsonl files in the thread directory (both locations)
         let mut deleted_history = 0u64;
-        let pattern = context.thread_path.join("chat_history_*.jsonl");
-        let pattern_str = pattern.to_string_lossy().to_string();
 
-        match glob::glob(&pattern_str) {
-            Ok(paths) => {
-                for entry in paths {
-                    match entry {
-                        Ok(path) => {
-                            tokio::fs::remove_file(&path).await?;
-                            deleted_history += 1;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                thread = %context.thread_path.display(),
-                                error = %e,
-                                "Failed to read chat history path during /new"
-                            );
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    thread = %context.thread_path.display(),
-                    error = %e,
-                    "Failed to glob chat history files during /new"
-                );
-            }
-        }
+        // New location: .jyc/
+        let new_pattern = context.thread_path.join(".jyc").join("chat_history_*.jsonl");
+        deleted_history += delete_glob_files(&new_pattern).await;
+
+        // Legacy location: thread root
+        let root_pattern = context.thread_path.join("chat_history_*.jsonl");
+        deleted_history += delete_glob_files(&root_pattern).await;
 
         let msg = if deleted_session || deleted_history > 0 {
             format!(

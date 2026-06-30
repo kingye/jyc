@@ -212,7 +212,14 @@ impl Tool for SendToThreadTool {
         };
 
         target_tm
-            .enqueue(inbound, thread_name.to_string(), pattern_match, None, true, None)
+            .enqueue(
+                inbound,
+                thread_name.to_string(),
+                pattern_match,
+                None,
+                true,
+                None,
+            )
             .await;
 
         let attachment_info = if validated_attachments.is_empty() {

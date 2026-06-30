@@ -379,9 +379,7 @@ mod tests {
 
         // Should NOT be under workspace
         assert!(
-            !result
-                .thread_path
-                .starts_with(&ws),
+            !result.thread_path.starts_with(&ws),
             "custom thread path should not be under workspace"
         );
     }
@@ -444,10 +442,7 @@ mod tests {
         assert_eq!(result.thread_path, custom);
         // Ensure path doesn't contain "workspace" segment at all
         assert!(
-            !result
-                .thread_path
-                .to_string_lossy()
-                .contains("workspace"),
+            !result.thread_path.to_string_lossy().contains("workspace"),
             "custom path should not contain 'workspace'"
         );
     }

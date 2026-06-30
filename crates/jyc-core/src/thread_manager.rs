@@ -1057,7 +1057,11 @@ async fn process_message(
     // ── 1. STORE ──────────────────────────────────────────────────────
     let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = match &item.thread_path_override {
-        Some(path) => storage.store_at_path(&item.message, path, is_matched).await?,
+        Some(path) => {
+            storage
+                .store_at_path(&item.message, path, is_matched)
+                .await?
+        }
         None => {
             storage
                 .store_with_match(
@@ -2067,8 +2071,15 @@ mode = "agent"
             channel: "websocket".to_string(),
             matches: HashMap::new(),
         };
-        tm.enqueue(msg, "test-thread".to_string(), pattern_match, None, false, None)
-            .await;
+        tm.enqueue(
+            msg,
+            "test-thread".to_string(),
+            pattern_match,
+            None,
+            false,
+            None,
+        )
+        .await;
 
         // Give the worker a moment to start
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

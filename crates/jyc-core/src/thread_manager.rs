@@ -710,50 +710,54 @@ impl ThreadManager {
 
     /// Restore custom `thread_path` mappings from disk.
     ///
-    /// Scans all config patterns for `thread_path` overrides. For each, checks
-    /// if the directory exists and contains a `.jyc/thread-name` file. If so,
-    /// restores the mapping into the in-memory `thread_paths` map.
+    /// Scans this ThreadManager's channel patterns for `thread_path` overrides.
+    /// For each, checks if the directory exists and contains a `.jyc/thread-name`
+    /// file. If so, restores the mapping into the in-memory `thread_paths` map.
+    ///
+    /// Only patterns belonging to this TM's channel are scanned — each TM only
+    /// restores its own threads to avoid cross-channel contamination.
     ///
     /// This is called at startup so that threads with custom paths survive
     /// process restarts (e.g. Docker container restart).
     pub async fn restore_custom_thread_paths(&self) {
         let config = self.config.load();
-        for channel_cfg in config.channels.values() {
-            let Some(patterns) = &channel_cfg.patterns else {
+        let Some(channel_cfg) = config.channels.get(&self.channel_name) else {
+            return;
+        };
+        let Some(patterns) = &channel_cfg.patterns else {
+            return;
+        };
+        for pattern in patterns {
+            let Some(tp) = &pattern.thread_path else {
                 continue;
             };
-            for pattern in patterns {
-                let Some(tp) = &pattern.thread_path else {
-                    continue;
-                };
-                let resolved = crate::thread_path::resolve_thread_path(tp);
-                let thread_name_file = resolved.join(".jyc").join("thread-name");
-                match tokio::fs::read_to_string(&thread_name_file).await {
-                    Ok(name) => {
-                        let name = name.trim().to_string();
-                        if name.is_empty() {
-                            continue;
-                        }
-                        let mut paths = self.thread_paths.lock().await;
-                        paths.entry(name).or_insert_with(|| {
-                            tracing::info!(
-                                path = %resolved.display(),
-                                "Restored custom thread_path from disk"
-                            );
-                            resolved
-                        });
+            let resolved = crate::thread_path::resolve_thread_path(tp);
+            let thread_name_file = resolved.join(".jyc").join("thread-name");
+            match tokio::fs::read_to_string(&thread_name_file).await {
+                Ok(name) => {
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        continue;
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // Directory exists but no thread-name file — not yet
-                        // initialized, or pre-this-feature thread. Skip.
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            path = %thread_name_file.display(),
-                            "Failed to read thread-name file during restore"
+                    let mut paths = self.thread_paths.lock().await;
+                    paths.entry(name).or_insert_with(|| {
+                        tracing::info!(
+                            path = %resolved.display(),
+                            "Restored custom thread_path from disk"
                         );
-                    }
+                        resolved
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Directory exists but no thread-name file — not yet
+                    // initialized, or pre-this-feature thread. Skip.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %thread_name_file.display(),
+                        "Failed to read thread-name file during restore"
+                    );
                 }
             }
         }
@@ -2297,26 +2301,26 @@ mode = "agent"
         .await
         .unwrap();
 
-        // Config with thread_path override
+        // Config with thread_path override — channel name must match TM's channel_name
         let config_str = format!(
             r#"
 [general]
-[channels.test]
+[channels.test-channel]
 type = "email"
-[channels.test.inbound]
+[channels.test-channel.inbound]
 host = "h"
 port = 998
 username = "u"
 password = "p"
-[channels.test.outbound]
+[channels.test-channel.outbound]
 host = "h"
 port = 465
 username = "u"
 password = "p"
-[[channels.test.patterns]]
+[[channels.test-channel.patterns]]
 name = "test-pattern"
 thread_path = "{}"
-[channels.test.patterns.rules]
+[channels.test-channel.patterns.rules]
 [agent]
 enabled = true
 mode = "agent"
@@ -2388,22 +2392,22 @@ mode = "agent"
         let config_str = format!(
             r#"
 [general]
-[channels.test]
+[channels.test-channel]
 type = "email"
-[channels.test.inbound]
+[channels.test-channel.inbound]
 host = "h"
 port = 998
 username = "u"
 password = "p"
-[channels.test.outbound]
+[channels.test-channel.outbound]
 host = "h"
 port = 465
 username = "u"
 password = "p"
-[[channels.test.patterns]]
+[[channels.test-channel.patterns]]
 name = "test-pattern"
 thread_path = "{}"
-[channels.test.patterns.rules]
+[channels.test-channel.patterns.rules]
 [agent]
 enabled = true
 mode = "agent"

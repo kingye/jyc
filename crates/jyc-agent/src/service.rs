@@ -340,6 +340,10 @@ impl JycAgentService {
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let mode_override =
+            mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
+
         let include_list: Option<&[String]> = pattern
             .and_then(|p| p.skills.as_deref())
             .or(self.channel_skills.as_deref());
@@ -1126,6 +1130,9 @@ impl AgentService for JycAgentService {
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name));
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let mode_override =
+            mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
         // Pattern: try mode-specific field first, then generic model
         let pattern_override = pattern
             .and_then(|p| match mode_override.as_deref() {
@@ -1215,6 +1222,9 @@ impl AgentService for JycAgentService {
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
         let current_mode = jyc_core::session_state::read_mode_override(thread_path).await;
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let current_mode =
+            current_mode.or_else(|| pattern.and_then(|p| p.mode.clone()));
         let user_blocks =
             self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 

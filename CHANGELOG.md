@@ -6,6 +6,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Per-pattern `mode` config for initial agent mode.** New optional field
+  `mode` on `ChannelPattern` allows setting a default agent mode (`"plan"` or
+  `"build"`) per pattern. Resolution chain: `.jyc/mode-override` runtime file >
+  pattern `mode` > default `"build"`. (#356)
+
 - **`stop_after` parameter for reply tool.** The `jyc_reply_message` tool now
   accepts an optional `stop_after` boolean parameter (default `true` for backward
   compatibility). When `false`, the agent sends a progress update and continues

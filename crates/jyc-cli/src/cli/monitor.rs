@@ -1239,6 +1239,15 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
             },
         });
 
+        // Restore custom thread_path mappings from disk so threads with
+        // non-default paths survive process restarts.
+        {
+            let tms = orchestrator.thread_managers().load();
+            for tm in tms.iter() {
+                tm.restore_custom_thread_paths().await;
+            }
+        }
+
         // Start activity tracker (subscribes to thread event buses)
         let _activity_task = jyc_inspect::server::ActivityTracker::start(
             context.thread_managers.clone(),

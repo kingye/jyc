@@ -43,6 +43,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Stale custom `thread_path` threads linger in dashboard after close.** When a
+  thread directory was deleted (e.g. GitHub issue closed), the in-memory
+  `thread_paths` mapping was never cleaned up. `list_threads()` now prunes
+  entries whose `.jyc/` directory no longer exists, so closed threads disappear
+  from the dashboard immediately. (#354)
+
 - **Custom `thread_path` threads lost after restart.** Threads with a custom
   `thread_path` override disappeared from the thread list after process restart
   (e.g. Docker container restart). The in-memory `thread_paths` map was only

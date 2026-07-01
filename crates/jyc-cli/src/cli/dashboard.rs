@@ -227,6 +227,8 @@ impl App {
         self.chat_input.clear();
         self.chat_cursor = 0;
         self.chat_scroll = 0;
+        self.chat_messages.clear();
+        self.chat_messages.clear();
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
@@ -2085,4 +2087,35 @@ fn format_last_active(value: Option<&str>) -> String {
         return dt_utc;
     }
     dt.format("%b %d").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_pattern_clears_chat_messages() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Simulate messages from a previous thread
+        app.chat_messages.push(ChatMessage {
+            sender: "user".to_string(),
+            text: "hello from thread A".to_string(),
+            timestamp: None,
+        });
+        app.chat_messages.push(ChatMessage {
+            sender: "ai".to_string(),
+            text: "reply from thread A".to_string(),
+            timestamp: None,
+        });
+        assert_eq!(app.chat_messages.len(), 2);
+
+        // Switch to a new thread
+        app.select_pattern("thread-b".to_string());
+
+        // Messages must be cleared so stale content doesn't leak across threads
+        assert!(app.chat_messages.is_empty());
+        assert_eq!(app.chat_thread.as_deref(), Some("thread-b"));
+    }
 }

@@ -368,6 +368,12 @@ pub struct ChannelPattern {
     /// but below the runtime `.jyc/model-override` file.
     #[serde(default)]
     pub small_model: Option<String>,
+    /// Initial agent mode for threads matching this pattern.
+    /// Valid values: "plan" or "build".
+    /// Takes priority over the default "build" but below the runtime
+    /// `.jyc/mode-override` file.
+    #[serde(default)]
+    pub mode: Option<String>,
     /// Per-pattern MCP server configurations.
     ///
     /// When set to `Some(list)`, only these MCP servers are loaded for threads
@@ -478,6 +484,7 @@ impl Default for ChannelPattern {
             plan_model: None,
             build_model: None,
             small_model: None,
+            mode: None,
             mcps: None,
             disabled_tools: None,
             disabled_builtin_tools: None,

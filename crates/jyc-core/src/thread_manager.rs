@@ -712,7 +712,9 @@ impl ThreadManager {
     ///
     /// Scans this ThreadManager's channel patterns for `thread_path` overrides.
     /// For each, checks if the directory exists and contains a `.jyc/thread-name`
-    /// file. If so, restores the mapping into the in-memory `thread_paths` map.
+    /// file. If so, restores the mapping into the in-memory `thread_paths` map
+    /// and pre-creates an event bus so the ActivityTracker can subscribe before
+    /// any messages arrive.
     ///
     /// Only patterns belonging to this TM's channel are scanned — each TM only
     /// restores its own threads to avoid cross-channel contamination.
@@ -740,13 +742,21 @@ impl ThreadManager {
                         continue;
                     }
                     let mut paths = self.thread_paths.lock().await;
-                    paths.entry(name).or_insert_with(|| {
+                    paths.entry(name.clone()).or_insert_with(|| {
                         tracing::info!(
                             path = %resolved.display(),
                             "Restored custom thread_path from disk"
                         );
                         resolved
                     });
+                    drop(paths);
+                    // Pre-create the event bus so the ActivityTracker can
+                    // subscribe before the first message arrives. Without this,
+                    // events from the first message are lost because the
+                    // ActivityTracker's 2s poll hasn't discovered the bus yet.
+                    if self.enable_events {
+                        self.get_or_create_event_bus(&name).await;
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Directory exists but no thread-name file — not yet
@@ -2374,6 +2384,14 @@ mode = "agent"
         assert!(
             names.contains(&"my-custom-thread"),
             "list_threads should include restored custom-path thread"
+        );
+
+        // Event bus should be pre-created so ActivityTracker can subscribe
+        // before the first message arrives (avoids lost first-message events).
+        let bus = tm.get_event_bus("my-custom-thread").await;
+        assert!(
+            bus.is_some(),
+            "restore_custom_thread_paths should pre-create event bus"
         );
 
         tm.shutdown().await;

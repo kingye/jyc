@@ -50,7 +50,10 @@ All notable changes to JYC will be documented in this file.
   first processed, its logical name is persisted to `.jyc/thread-name`. On
   startup, `restore_custom_thread_paths()` scans **only this TM's channel**
   patterns for `thread_path` overrides and reads `.jyc/thread-name` to rebuild
-  the mapping before `ActivityTracker` loads historical activity. (#350, #352)
+  the mapping before `ActivityTracker` loads historical activity. Restored
+  threads also get a pre-created event bus so the first message's activity
+  events are not lost to the ActivityTracker's 2-second subscription delay.
+  (#350, #352, #353)
 
 - **Dashboard chat pane shows stale content when switching threads.** When
   switching from thread A to thread B, if thread B had no chat history the

@@ -802,8 +802,20 @@ impl ThreadManager {
 
         // Also include threads with custom `thread_path` overrides that live
         // outside the workspace directory (e.g. `~/projects/jyc`).
+        // Clean up entries whose directory has been deleted (e.g. thread closed).
         {
-            let paths = self.thread_paths.lock().await;
+            let mut paths = self.thread_paths.lock().await;
+            paths.retain(|name, path| {
+                let exists = path.join(".jyc").is_dir();
+                if !exists {
+                    tracing::info!(
+                        thread = %name,
+                        path = %path.display(),
+                        "Removed stale thread_path entry (directory no longer exists)"
+                    );
+                }
+                exists
+            });
             for name in paths.keys() {
                 if !thread_names.contains(name) {
                     thread_names.push(name.clone());
@@ -2465,6 +2477,50 @@ mode = "agent"
         assert!(
             paths.is_empty(),
             "Should skip paths without thread-name file"
+        );
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_list_threads_cleans_stale_custom_path() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Insert a custom path that doesn't exist on disk
+        let ghost_path = tmp.path().join("deleted-thread");
+        tokio::fs::create_dir_all(ghost_path.join(".jyc"))
+            .await
+            .unwrap();
+        tm.thread_paths
+            .lock()
+            .await
+            .insert("ghost".to_string(), ghost_path.clone());
+
+        // list_threads should include it while dir exists
+        let threads = tm.list_threads().await;
+        assert!(
+            threads.iter().any(|t| t.name == "ghost"),
+            "Should list thread while directory exists"
+        );
+
+        // Delete the directory
+        tokio::fs::remove_dir_all(&ghost_path).await.unwrap();
+
+        // list_threads should now clean it up
+        let threads = tm.list_threads().await;
+        assert!(
+            !threads.iter().any(|t| t.name == "ghost"),
+            "Should not list thread after directory deleted"
+        );
+
+        // thread_paths map should no longer contain the entry
+        let paths = tm.custom_thread_paths().await;
+        assert!(
+            !paths.contains_key("ghost"),
+            "Stale entry should be removed from thread_paths"
         );
 
         tm.shutdown().await;

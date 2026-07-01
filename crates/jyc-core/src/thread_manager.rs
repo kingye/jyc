@@ -462,12 +462,19 @@ impl ThreadManager {
                         }
                     }
 
-                    let pattern_file = thread_path.join(".jyc").join("pattern");
-                    if let Err(e) = tokio::fs::create_dir_all(thread_path.join(".jyc")).await {
+                    let jyc_dir = thread_path.join(".jyc");
+                    if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                         tracing::warn!(error = %e, "Failed to create .jyc directory");
                     }
+                    let pattern_file = jyc_dir.join("pattern");
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
+                    }
+                    // Persist the logical thread name so custom thread_path
+                    // directories can be rediscovered after restart.
+                    let thread_name_file = jyc_dir.join("thread-name");
+                    if let Err(e) = tokio::fs::write(&thread_name_file, &thread_name).await {
+                        tracing::warn!(error = %e, "Failed to write thread-name file");
                     }
                 }
 
@@ -695,6 +702,57 @@ impl ThreadManager {
     /// Get all custom thread paths (from pattern `thread_path` overrides).
     pub async fn custom_thread_paths(&self) -> HashMap<String, PathBuf> {
         self.thread_paths.lock().await.clone()
+    }
+
+    /// Restore custom `thread_path` mappings from disk.
+    ///
+    /// Scans all config patterns for `thread_path` overrides. For each, checks
+    /// if the directory exists and contains a `.jyc/thread-name` file. If so,
+    /// restores the mapping into the in-memory `thread_paths` map.
+    ///
+    /// This is called at startup so that threads with custom paths survive
+    /// process restarts (e.g. Docker container restart).
+    pub async fn restore_custom_thread_paths(&self) {
+        let config = self.config.load();
+        for channel_cfg in config.channels.values() {
+            let Some(patterns) = &channel_cfg.patterns else {
+                continue;
+            };
+            for pattern in patterns {
+                let Some(tp) = &pattern.thread_path else {
+                    continue;
+                };
+                let resolved = crate::thread_path::resolve_thread_path(tp);
+                let thread_name_file = resolved.join(".jyc").join("thread-name");
+                match tokio::fs::read_to_string(&thread_name_file).await {
+                    Ok(name) => {
+                        let name = name.trim().to_string();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let mut paths = self.thread_paths.lock().await;
+                        paths.entry(name).or_insert_with(|| {
+                            tracing::info!(
+                                path = %resolved.display(),
+                                "Restored custom thread_path from disk"
+                            );
+                            resolved
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Directory exists but no thread-name file — not yet
+                        // initialized, or pre-this-feature thread. Skip.
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %thread_name_file.display(),
+                            "Failed to read thread-name file during restore"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// List all open threads with their info, reading state from disk.
@@ -2212,6 +2270,176 @@ mode = "agent"
 
         let paths = tm.custom_thread_paths().await;
         assert!(paths.is_empty());
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_restore_custom_thread_paths_from_disk() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Custom thread path outside workspace
+        let custom_path = tmp.path().join("external-project");
+        tokio::fs::create_dir_all(custom_path.join(".jyc"))
+            .await
+            .unwrap();
+        // Simulate a previously initialized thread
+        tokio::fs::write(
+            custom_path.join(".jyc").join("thread-name"),
+            "my-custom-thread",
+        )
+        .await
+        .unwrap();
+
+        // Config with thread_path override
+        let config_str = format!(
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 998
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.test.patterns]]
+name = "test-pattern"
+thread_path = "{}"
+[channels.test.patterns.rules]
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            custom_path.display()
+        );
+
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(&config_str).unwrap(),
+        ));
+
+        let storage = Arc::new(MessageStorage::new(&workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+
+        let tm = Arc::new(ThreadManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test-channel".to_string(),
+            "websocket".to_string(),
+            workspace.to_path_buf(),
+            metrics,
+        ));
+
+        // Before restore: empty
+        let paths = tm.custom_thread_paths().await;
+        assert!(paths.is_empty());
+
+        // Restore from disk
+        tm.restore_custom_thread_paths().await;
+
+        // After restore: mapping exists
+        let paths = tm.custom_thread_paths().await;
+        assert_eq!(
+            paths.get("my-custom-thread"),
+            Some(&custom_path),
+            "restore_custom_thread_paths should rediscover the thread"
+        );
+
+        // list_threads should now include the restored thread
+        let threads = tm.list_threads().await;
+        let names: Vec<&str> = threads.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"my-custom-thread"),
+            "list_threads should include restored custom-path thread"
+        );
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_restore_skips_missing_thread_name_file() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Custom path exists but has no .jyc/thread-name file
+        let custom_path = tmp.path().join("uninitialized");
+        tokio::fs::create_dir_all(&custom_path).await.unwrap();
+
+        let config_str = format!(
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 998
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.test.patterns]]
+name = "test-pattern"
+thread_path = "{}"
+[channels.test.patterns.rules]
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            custom_path.display()
+        );
+
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(&config_str).unwrap(),
+        ));
+
+        let storage = Arc::new(MessageStorage::new(&workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+
+        let tm = Arc::new(ThreadManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test-channel".to_string(),
+            "websocket".to_string(),
+            workspace.to_path_buf(),
+            metrics,
+        ));
+
+        tm.restore_custom_thread_paths().await;
+
+        // Should be empty — no thread-name file
+        let paths = tm.custom_thread_paths().await;
+        assert!(
+            paths.is_empty(),
+            "Should skip paths without thread-name file"
+        );
 
         tm.shutdown().await;
     }

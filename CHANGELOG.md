@@ -43,6 +43,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Custom `thread_path` threads lost after restart.** Threads with a custom
+  `thread_path` override disappeared from the thread list after process restart
+  (e.g. Docker container restart). The in-memory `thread_paths` map was only
+  populated on `enqueue()` and never restored from disk. Now, when a thread is
+  first processed, its logical name is persisted to `.jyc/thread-name`. On
+  startup, `restore_custom_thread_paths()` scans config patterns for
+  `thread_path` overrides and reads `.jyc/thread-name` to rebuild the mapping
+  before `ActivityTracker` loads historical activity. (#350)
+
 - **Dashboard chat pane shows stale content when switching threads.** When
   switching from thread A to thread B, if thread B had no chat history the
   server skipped sending a `history` message, leaving thread A's messages

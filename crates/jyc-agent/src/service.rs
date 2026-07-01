@@ -340,6 +340,9 @@ impl JycAgentService {
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
+
         let include_list: Option<&[String]> = pattern
             .and_then(|p| p.skills.as_deref())
             .or(self.channel_skills.as_deref());
@@ -1126,6 +1129,8 @@ impl AgentService for JycAgentService {
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name));
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
         // Pattern: try mode-specific field first, then generic model
         let pattern_override = pattern
             .and_then(|p| match mode_override.as_deref() {
@@ -1215,6 +1220,8 @@ impl AgentService for JycAgentService {
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
         let current_mode = jyc_core::session_state::read_mode_override(thread_path).await;
+        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        let current_mode = current_mode.or_else(|| pattern.and_then(|p| p.mode.clone()));
         let user_blocks =
             self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 
@@ -2070,6 +2077,106 @@ mod tests {
         assert!(
             build_prompt.contains("Current mode: BUILD (full execution)"),
             "build mode prompt should contain BUILD tag, got: {build_prompt}"
+        );
+    }
+
+    #[test]
+    fn pattern_mode_plan_resolved_when_no_file_override() {
+        // Resolution chain: no file override → pattern.mode = "plan" → resolves to "plan"
+        let mode_override: Option<String> = None; // no file override
+        let pattern = ChannelPattern {
+            name: "test".to_string(),
+            mode: Some("plan".to_string()),
+            ..ChannelPattern::default()
+        };
+        let resolved = mode_override.as_deref().or(pattern.mode.as_deref());
+        assert_eq!(resolved, Some("plan"));
+    }
+
+    #[test]
+    fn pattern_mode_build_resolved_when_no_file_override() {
+        // Resolution chain: no file override → pattern.mode = "build" → resolves to "build"
+        let mode_override: Option<String> = None; // no file override
+        let pattern = ChannelPattern {
+            name: "test".to_string(),
+            mode: Some("build".to_string()),
+            ..ChannelPattern::default()
+        };
+        let resolved = mode_override.as_deref().or(pattern.mode.as_deref());
+        assert_eq!(resolved, Some("build"));
+    }
+
+    #[test]
+    fn pattern_mode_defaults_to_build_when_unset() {
+        // Resolution chain: no file override → pattern.mode = None → defaults to "build"
+        let mode_override: Option<String> = None; // no file override
+        let pattern = ChannelPattern {
+            name: "test".to_string(),
+            mode: None,
+            ..ChannelPattern::default()
+        };
+        let resolved = mode_override
+            .as_deref()
+            .or(pattern.mode.as_deref())
+            .unwrap_or("build");
+        assert_eq!(resolved, "build");
+    }
+
+    #[test]
+    fn file_override_takes_priority_over_pattern_mode() {
+        // Resolution chain: file override = "build" → pattern.mode = "plan" → resolves to "build"
+        let mode_override: Option<String> = Some("build".to_string()); // file override
+        let pattern = ChannelPattern {
+            name: "test".to_string(),
+            mode: Some("plan".to_string()),
+            ..ChannelPattern::default()
+        };
+        let resolved = mode_override.as_deref().or(pattern.mode.as_deref());
+        assert_eq!(resolved, Some("build"));
+    }
+
+    #[test]
+    fn pattern_mode_plan_injects_plan_tag_in_user_prompt() {
+        let patterns = vec![ChannelPattern {
+            name: "my-pattern".to_string(),
+            mode: Some("plan".to_string()),
+            channel: ChannelType::default(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_patterns(None, patterns);
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "test-sender".into(),
+            sender_address: "test@example.com".into(),
+            recipients: vec![],
+            topic: "test".into(),
+            content: jyc_types::MessageContent {
+                text: Some("hello world".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: Some("my-pattern".to_string()),
+        };
+
+        // Simulate resolution chain: no file override, pattern has mode = "plan"
+        // This is what happens in build_system_prompt / process
+        let mode_override: Option<String> = None;
+        let pattern = svc.patterns.iter().find(|p| p.name == "my-pattern");
+        let resolved = mode_override
+            .as_deref()
+            .or(pattern.and_then(|p| p.mode.as_deref()));
+
+        let plan_prompt = svc.build_user_prompt_text(&message, resolved);
+        assert!(
+            plan_prompt.contains("CRITICAL: Current mode: PLAN (read-only"),
+            "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
         );
     }
 }

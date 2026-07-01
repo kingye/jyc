@@ -62,6 +62,11 @@ folder = "INBOX"
 name = "xxx"
 enabled = true
 
+# Initial agent mode for threads matching this pattern. Valid values: "plan", "build".
+# When set, threads matching this pattern start in the specified mode, unless the
+# runtime `.jyc/mode-override` file takes priority. Default: "build".
+# mode = "plan"
+
 # Per-pattern model override: takes priority over channel-level and global
 # [agent].model, but below the runtime .jyc/model-override file.
 # model = "anthropic/claude-opus-4-6"

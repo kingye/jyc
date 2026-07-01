@@ -154,9 +154,6 @@ Please address the issues above.
 EOF
 )"
 gh pr comment <number> --body "[Reviewer] Please address the review feedback."
-gh pr edit <number> --remove-label ready-for-review
-gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
-gh pr edit <number> --add-label "ready-for-dev"
 ```
 
 If approved:
@@ -172,10 +169,29 @@ Code looks good. Approved.
 - <any minor notes>
 EOF
 )"
-gh pr edit <number> --remove-label ready-for-review
 ```
 
 > **⚠️ After approval, do NOT post any additional `gh pr comment` — the approval review body above is the only output needed. A separate summary comment after approval is redundant and forbidden.**
+
+### 6. Cleanup (NON-NEGOTIABLE)
+
+After submitting your review, you MUST perform label cleanup to hand off to the next agent.
+
+**This step is NON-NEGOTIABLE.** The `ready-for-review` label MUST be removed in ALL cases — failing to do so prevents the next agent from being triggered by the label.
+
+**If changes were requested** — remove `ready-for-review` and add `ready-for-dev`:
+```bash
+cd repo
+gh pr edit <number> --remove-label ready-for-review
+gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
+gh pr edit <number> --add-label ready-for-dev
+```
+
+**If approved** — remove `ready-for-review`:
+```bash
+cd repo
+gh pr edit <number> --remove-label ready-for-review
+```
 
 ## Rules
 - ALWAYS prefix every comment or review body with `[Reviewer]` — this is how the system identifies your comments and prevents self-loops
@@ -188,7 +204,7 @@ gh pr edit <number> --remove-label ready-for-review
 - Do NOT modify code yourself — only review and comment
 - Do NOT merge the PR — that's the user's decision
 - Do NOT run `cargo build` or `npm run build` — use `cargo check` or `npm run lint` for lightweight verification. Full builds are the developer's responsibility, not the reviewer's.
-- ALWAYS remove the `ready-for-review` label after completing your review: `gh pr edit <number> --remove-label ready-for-review`
+- **⚠️ NON-NEGOTIABLE: ALWAYS remove the `ready-for-review` label after completing your review: `gh pr edit <number> --remove-label ready-for-review`. Failure to do so prevents the next agent from being triggered.**
 - Do NOT use the `jyc_question_ask_user` tool
 - Be constructive and objective in feedback
 - **Do NOT post a separate `gh pr comment` after approving — the approval review body is the only output needed. A redundant summary comment after approval is forbidden.**

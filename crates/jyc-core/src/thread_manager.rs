@@ -461,21 +461,25 @@ impl ThreadManager {
                             }
                         }
                     }
+                }
 
-                    let jyc_dir = thread_path.join(".jyc");
-                    if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
-                        tracing::warn!(error = %e, "Failed to create .jyc directory");
-                    }
-                    let pattern_file = jyc_dir.join("pattern");
-                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
-                        tracing::warn!(error = %e, "Failed to write pattern file");
-                    }
-                    // Persist the logical thread name so custom thread_path
-                    // directories can be rediscovered after restart.
-                    let thread_name_file = jyc_dir.join("thread-name");
-                    if let Err(e) = tokio::fs::write(&thread_name_file, &thread_name).await {
-                        tracing::warn!(error = %e, "Failed to write thread-name file");
-                    }
+                // Always ensure .jyc/ directory and metadata files exist,
+                // even when no template is configured. This is critical for
+                // custom thread_path directories to be rediscovered after
+                // restart (via .jyc/thread-name).
+                let jyc_dir = thread_path.join(".jyc");
+                if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
+                    tracing::warn!(error = %e, "Failed to create .jyc directory");
+                }
+                let pattern_file = jyc_dir.join("pattern");
+                if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                    tracing::warn!(error = %e, "Failed to write pattern file");
+                }
+                // Persist the logical thread name so custom thread_path
+                // directories can be rediscovered after restart.
+                let thread_name_file = jyc_dir.join("thread-name");
+                if let Err(e) = tokio::fs::write(&thread_name_file, &thread_name).await {
+                    tracing::warn!(error = %e, "Failed to write thread-name file");
                 }
 
                 // Acquire repo group lock to prevent concurrent initialization

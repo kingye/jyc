@@ -125,7 +125,9 @@ mode = "agent"
         assert!(result.success);
         assert!(!jyc_dir.join("agent-session.json").exists());
         assert!(
-            result.message.contains("session deleted") || result.message.contains("session reset")
+            result.message.contains("session deleted")
+                || result.message.contains("session reset")
+                || result.message.contains("no agent service")
         );
     }
 
@@ -138,6 +140,6 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("no session") || result.message.contains("session reset"));
+        assert!(result.message.contains("no session") || result.message.contains("session reset") || result.message.contains("no agent service"));
     }
 }

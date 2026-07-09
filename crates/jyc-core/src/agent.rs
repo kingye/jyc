@@ -73,6 +73,7 @@ pub trait AgentService: Send + Sync {
     async fn reset_session(
         &self,
         thread_path: &Path,
+        thread_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()>;
 }

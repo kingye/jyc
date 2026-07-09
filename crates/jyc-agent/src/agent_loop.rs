@@ -352,7 +352,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // Apply heuristic compaction: keep last 3 user+assistant pairs
             raw_context = compact_raw_context_heuristic(&raw_context, 3);
             // Also compact internal history to match raw_context
-            history = compact_history_heuristic(&history);
+            history = compact_history_heuristic(&history, 3);
 
             // Reset token counter after compression
             total_input_tokens = 0;
@@ -1149,7 +1149,7 @@ fn compact_raw_context_heuristic(
 
 /// Heuristic compaction of internal history: keep only the last N user+assistant
 /// text pairs. Synced with `compact_raw_context_heuristic`.
-fn compact_history_heuristic(history: &[Message]) -> Vec<Message> {
+fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Message> {
     let mut pairs: Vec<(Message, Message)> = Vec::new();
     let mut last_user: Option<Message> = None;
 
@@ -1170,11 +1170,11 @@ fn compact_history_heuristic(history: &[Message]) -> Vec<Message> {
         }
     }
 
-    // Keep only the last 3 pairs
+    // Keep only the last N pairs
     pairs
         .into_iter()
         .rev()
-        .take(3)
+        .take(keep_pairs)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()

@@ -1326,6 +1326,7 @@ impl AgentService for JycAgentService {
             result.output_tokens,
             context_window,
             summary_provider,
+            self.config.auto_reset_threshold,
         )
         .await;
 
@@ -1362,6 +1363,7 @@ impl AgentService for JycAgentService {
     async fn reset_session(
         &self,
         thread_path: &Path,
+        thread_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
         // Use the agent config's small_model as the compression provider if available
@@ -1378,6 +1380,25 @@ impl AgentService for JycAgentService {
             provider.as_deref().map(|p| p as &dyn provider::Provider),
         )
         .await;
+
+        // Publish SessionStatus event for dashboard visibility
+        let mode_str = match config.mode {
+            jyc_types::channel::CompressionMode::None => "none",
+            jyc_types::channel::CompressionMode::Heuristic => "heuristic",
+            jyc_types::channel::CompressionMode::Llm => "llm",
+        };
+        let event_bus = self.get_event_bus(thread_name).await;
+        if let Some(bus) = event_bus {
+            let _ = bus
+                .publish(jyc_core::thread_event::ThreadEvent::SessionStatus {
+                    thread_name: thread_name.to_string(),
+                    status_type: "session_reset".to_string(),
+                    attempt: None,
+                    message: Some(format!("mode={mode_str}")),
+                    timestamp: chrono::Utc::now(),
+                })
+                .await;
+        }
 
         Ok(())
     }

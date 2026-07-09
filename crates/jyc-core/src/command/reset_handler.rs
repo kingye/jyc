@@ -36,8 +36,13 @@ impl CommandHandler for ResetCommandHandler {
         let reset_config = pattern_reset.or(global_reset).unwrap_or_default();
 
         if let Some(ref agent) = context.agent {
+            let thread_name = context
+                .thread_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
             agent
-                .reset_session(&context.thread_path, &reset_config)
+                .reset_session(&context.thread_path, thread_name, &reset_config)
                 .await?;
             Ok(CommandResult {
                 success: true,

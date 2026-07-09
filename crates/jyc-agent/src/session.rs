@@ -157,12 +157,16 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
 /// the auto-reset threshold is crossed. Callers should pass the small model's
 /// provider when configured (`[agent].small_model`), otherwise the main
 /// provider — falling back is the caller's responsibility.
+///
+/// `auto_reset_threshold` is the fraction of context window at which to trigger
+/// auto-reset (0.0~1.0, default 0.95).
 pub async fn update_tokens(
     thread_path: &Path,
     input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
+    auto_reset_threshold: f64,
 ) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -172,8 +176,9 @@ pub async fn update_tokens(
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {
-        // Use 95% of context window as max input tokens (reserve 5% for output)
-        state.max_input_tokens = (cw as f64 * 0.95) as u64;
+        // Use configurable percentage of context window as max input tokens
+        // (reserve (1 - threshold) * 100% for output)
+        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
     }
 
     // Set created_at on first creation

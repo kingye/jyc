@@ -60,6 +60,7 @@ impl AgentService for StaticAgentService {
     async fn reset_session(
         &self,
         thread_path: &Path,
+        _thread_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
         use jyc_types::channel::CompressionMode;

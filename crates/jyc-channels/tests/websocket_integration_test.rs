@@ -80,6 +80,8 @@ fn make_config() -> jyc_types::AppConfig {
             attachments: None,
             providers: HashMap::new(),
             vision: None,
+            reset_compression: None,
+            auto_reset_threshold: 0.95,
         },
         inspect: None,
         attachments: None,

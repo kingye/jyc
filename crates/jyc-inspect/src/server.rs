@@ -358,6 +358,7 @@ impl InspectServer {
             .unwrap_or_default();
 
         let tms = context.thread_managers.load();
+        let mut found = false;
         for tm in tms.iter() {
             if let Err(e) = tm.reset_session(&thread_name, &config).await {
                 tracing::warn!(
@@ -366,13 +367,46 @@ impl InspectServer {
                     "Failed to reset session via thread manager"
                 );
             }
+            found = true;
         }
         drop(tms);
 
-        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
-        InspectResponse::ResetSessionResult {
-            success: true,
-            message: format!("session reset for {thread_name}"),
+        // Fallback: if no thread managers handled the reset, delete files directly
+        // (needed during testing and when thread manager is not yet available)
+        if !found {
+            let dirs = context.workspace_dirs.load();
+            let mut deleted = false;
+            for dir in dirs.iter() {
+                let session_path = dir.join(&thread_name).join(".jyc").join("agent-session.json");
+                if session_path.exists() {
+                    tokio::fs::remove_file(&session_path).await.ok();
+                    deleted = true;
+                }
+                let context_path = dir.join(&thread_name).join(".jyc").join("agent-context.json");
+                if context_path.exists() {
+                    tokio::fs::remove_file(&context_path).await.ok();
+                    deleted = true;
+                }
+            }
+
+            if deleted {
+                tracing::info!(thread = %thread_name, "Session reset via inspect protocol (filesystem fallback)");
+                InspectResponse::ResetSessionResult {
+                    success: true,
+                    message: format!("session deleted for {thread_name}"),
+                }
+            } else {
+                InspectResponse::ResetSessionResult {
+                    success: true,
+                    message: format!("no session exists for {thread_name}"),
+                }
+            }
+        } else {
+            tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+            InspectResponse::ResetSessionResult {
+                success: true,
+                message: format!("session reset for {thread_name}"),
+            }
         }
     }
 

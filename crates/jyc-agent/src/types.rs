@@ -2,6 +2,7 @@
 //!
 //! Inspired by jcode's clean architecture but minimal — only what JYC needs.
 
+use jyc_types::channel::ResetCompressionConfig;
 use serde::{Deserialize, Serialize};
 
 /// Role in a conversation.
@@ -267,6 +268,19 @@ pub struct AgentConfig {
     /// Vision fallback configuration for text-only models to use an external
     /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
     pub vision: Option<VisionConfig>,
+
+    /// Compression configuration for session reset (global fallback).
+    /// Per-pattern `reset_compression` takes priority when set.
+    #[serde(default)]
+    pub reset_compression: Option<ResetCompressionConfig>,
+
+    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
+    /// When `total_input_tokens >= context_window * auto_reset_threshold`,
+    /// auto-reset is triggered.
+    /// Per-pattern `auto_reset_threshold` takes priority when set.
+    /// Default: 0.95.
+    #[serde(default = "default_auto_reset_threshold")]
+    pub auto_reset_threshold: f64,
 }
 
 impl Default for AgentConfig {
@@ -280,6 +294,8 @@ impl Default for AgentConfig {
             max_iterations: default_max_iterations(),
             sse_read_timeout_secs: default_sse_read_timeout(),
             vision: None,
+            reset_compression: None,
+            auto_reset_threshold: default_auto_reset_threshold(),
         }
     }
 }
@@ -290,6 +306,10 @@ fn default_max_iterations() -> usize {
 
 fn default_sse_read_timeout() -> u64 {
     120
+}
+
+fn default_auto_reset_threshold() -> f64 {
+    0.95
 }
 
 #[cfg(test)]

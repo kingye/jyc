@@ -140,6 +140,10 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("no session") || result.message.contains("session reset") || result.message.contains("no agent service"));
+        assert!(
+            result.message.contains("no session")
+                || result.message.contains("session reset")
+                || result.message.contains("no agent service")
+        );
     }
 }

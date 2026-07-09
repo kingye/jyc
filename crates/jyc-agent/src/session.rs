@@ -477,37 +477,19 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     out
 }
 
-/// Heuristic context compaction: keep only the last N user+assistant text
-/// pairs.
+/// Extract user+assistant text pairs from raw context, cleaning assistant
+/// messages to only keep role + content (strip reasoning_content, tool_calls).
+/// Returns the last `keep_pairs` pairs flattened into a single Vec.
 ///
-/// Removes tool calls, tool results, and reasoning_content. Used as a
-/// fallback when the LLM-based summarizer is unavailable or fails, and as
-/// the primary path for user-triggered `reset_session` (which has no
-/// provider context).
-///
-/// `keep_pairs` controls how many user+assistant pairs to retain.
-async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
-    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
-
-    if !context_path.exists() {
-        return;
-    }
-
-    let content = match tokio::fs::read_to_string(&context_path).await {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-
-    // Extract user+assistant text pairs (skip tool messages)
+/// Shared between session heuristic compaction and mid-loop compression.
+pub(crate) fn extract_user_assistant_pairs(
+    raw_context: &[serde_json::Value],
+    keep_pairs: usize,
+) -> Vec<serde_json::Value> {
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     let mut last_user: Option<serde_json::Value> = None;
 
-    for msg in &raw_context {
+    for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
@@ -540,6 +522,50 @@ async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
         .rev()
         .flat_map(|(user, assistant)| vec![user, assistant])
         .collect();
+
+    if summary.is_empty() {
+        // Fallback: keep the first user message if no pairs found
+        if let Some(first_user) = raw_context
+            .iter()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        {
+            vec![first_user.clone()]
+        } else {
+            Vec::new()
+        }
+    } else {
+        summary
+    }
+}
+
+/// Heuristic context compaction: keep only the last N user+assistant text
+/// pairs.
+///
+/// Removes tool calls, tool results, and reasoning_content. Used as a
+/// fallback when the LLM-based summarizer is unavailable or fails, and as
+/// the primary path for user-triggered `reset_session` (which has no
+/// provider context).
+///
+/// `keep_pairs` controls how many user+assistant pairs to retain.
+async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
+    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
+
+    if !context_path.exists() {
+        return;
+    }
+
+    let content = match tokio::fs::read_to_string(&context_path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    // Extract user+assistant text pairs using shared logic
+    let summary = extract_user_assistant_pairs(&raw_context, keep_pairs);
 
     tracing::debug!(
         original_messages = raw_context.len(),

@@ -1171,6 +1171,14 @@ impl AgentService for JycAgentService {
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.small_model.as_deref());
         let small_model_resolved = pattern_small_model.or(self.config.small_model.as_deref());
+
+        // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
+        let pattern_threshold = message
+            .matched_pattern
+            .as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.auto_reset_threshold);
+        let auto_reset_threshold = pattern_threshold.unwrap_or(self.config.auto_reset_threshold);
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
                 match provider::create_provider(m, &self.config.providers) {
@@ -1296,7 +1304,7 @@ impl AgentService for JycAgentService {
             current_channel: Some(self.channel_name.clone()),
             outbounds,
             context_window,
-            auto_reset_threshold: self.config.auto_reset_threshold,
+            auto_reset_threshold,
         })
         .await?;
 
@@ -1326,7 +1334,7 @@ impl AgentService for JycAgentService {
             result.output_tokens,
             context_window,
             summary_provider,
-            self.config.auto_reset_threshold,
+            auto_reset_threshold,
         )
         .await;
 

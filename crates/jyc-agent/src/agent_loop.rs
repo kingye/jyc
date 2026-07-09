@@ -349,7 +349,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let before_count = raw_context.len();
             let before_tokens = total_input_tokens;
 
-            // Apply heuristic compaction: keep last 3 user+assistant pairs
+            // Apply heuristic compaction: keep last 3 user+assistant pairs.
+            // Uses a fixed keep_pairs=3 because mid-loop compression is a
+            // safety mechanism to prevent API 400 on the next LLM call — it is
+            // NOT equivalent to the user-configured compression strategy
+            // (ResetCompressionConfig.keep_pairs), which is used on explicit
+            // session resets (/reset, dashboard, between-message auto-reset).
             raw_context = compact_raw_context_heuristic(&raw_context, 3);
             // Also compact internal history to match raw_context
             history = compact_history_heuristic(&history, 3);
@@ -1096,55 +1101,7 @@ fn compact_raw_context_heuristic(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
 ) -> Vec<serde_json::Value> {
-    let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
-    let mut last_user: Option<serde_json::Value> = None;
-
-    for msg in raw_context {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        match role {
-            "user" => {
-                last_user = Some(msg.clone());
-            }
-            "assistant" => {
-                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !content.is_empty()
-                    && let Some(user_msg) = last_user.take()
-                {
-                    let clean_assistant = serde_json::json!({
-                        "role": "assistant",
-                        "content": content,
-                    });
-                    pairs.push((user_msg, clean_assistant));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Keep only the last N pairs
-    let summary: Vec<serde_json::Value> = pairs
-        .into_iter()
-        .rev()
-        .take(keep_pairs)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .flat_map(|(user, assistant)| vec![user, assistant])
-        .collect();
-
-    if summary.is_empty() {
-        // Fallback: keep the first user message if no pairs found
-        if let Some(first_user) = raw_context
-            .iter()
-            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        {
-            vec![first_user.clone()]
-        } else {
-            Vec::new()
-        }
-    } else {
-        summary
-    }
+    crate::session::extract_user_assistant_pairs(raw_context, keep_pairs)
 }
 
 /// Heuristic compaction of internal history: keep only the last N user+assistant

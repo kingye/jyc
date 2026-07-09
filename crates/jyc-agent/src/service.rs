@@ -1294,7 +1294,8 @@ impl AgentService for JycAgentService {
         session::save_raw_context(thread_path, &result.raw_context).await;
 
         // 9. Update session token tracking
-        // Resolve context_window: per-model override > provider default
+        // Resolve context_window: per-model override > provider default > 128000 fallback
+        const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
         let model_str = model_override.as_deref().unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
             self.config.providers.get(provider_name).and_then(|p| {
@@ -1306,7 +1307,8 @@ impl AgentService for JycAgentService {
             })
         } else {
             None
-        };
+        }
+        .or(Some(DEFAULT_CONTEXT_WINDOW));
         // Provider used for the between-message context-reset summary (when
         // input_tokens crosses the 95 % auto-reset threshold). Same fallback
         // rule as the cycle-boundary summary: small_model if configured,

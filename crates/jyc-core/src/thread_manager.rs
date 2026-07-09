@@ -1102,7 +1102,9 @@ impl ThreadManager {
             .thread_path(thread_name)
             .await
             .unwrap_or_else(|| self.storage.workspace().join(thread_name));
-        self.agent.reset_session(&thread_path, thread_name, config).await?;
+        self.agent
+            .reset_session(&thread_path, thread_name, config)
+            .await?;
 
         // Publish SessionStatus event for dashboard visibility
         if self.enable_events {

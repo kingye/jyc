@@ -30,9 +30,7 @@ impl CommandHandler for ResetCommandHandler {
             .and_then(|patterns| {
                 // Use the first pattern's reset_compression as fallback
                 // (pattern matching is done at router level, not available here)
-                patterns
-                    .first()
-                    .and_then(|p| p.reset_compression.clone())
+                patterns.first().and_then(|p| p.reset_compression.clone())
             });
         let global_reset = context.config.agent.reset_compression.clone();
         let reset_config = pattern_reset.or(global_reset).unwrap_or_default();
@@ -121,7 +119,9 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!jyc_dir.join("agent-session.json").exists());
-        assert!(result.message.contains("session deleted") || result.message.contains("session reset"));
+        assert!(
+            result.message.contains("session deleted") || result.message.contains("session reset")
+        );
     }
 
     #[tokio::test]

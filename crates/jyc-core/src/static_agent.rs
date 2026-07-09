@@ -67,13 +67,21 @@ impl AgentService for StaticAgentService {
         let jyc_dir = thread_path.join(".jyc");
         match config.mode {
             CompressionMode::None => {
-                tokio::fs::remove_file(jyc_dir.join("agent-context.json")).await.ok();
-                tokio::fs::remove_file(jyc_dir.join("agent-session.json")).await.ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                    .await
+                    .ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                    .await
+                    .ok();
             }
             CompressionMode::Heuristic | CompressionMode::Llm => {
                 // For static agent, heuristic and LLM are equivalent: just delete
-                tokio::fs::remove_file(jyc_dir.join("agent-context.json")).await.ok();
-                tokio::fs::remove_file(jyc_dir.join("agent-session.json")).await.ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                    .await
+                    .ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                    .await
+                    .ok();
             }
         }
         Ok(())

@@ -465,7 +465,7 @@ pub struct ChannelPattern {
 ///
 /// Controls how the context is compressed when a session reset is triggered
 /// (either manually via `/reset` or automatically when tokens exceed the threshold).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMode {
     /// No compression — delete all context on reset.
@@ -474,13 +474,8 @@ pub enum CompressionMode {
     Heuristic,
     /// LLM-based summarization: use a separate LLM call to generate a summary.
     #[serde(alias = "llm")]
+    #[default]
     Llm,
-}
-
-impl Default for CompressionMode {
-    fn default() -> Self {
-        Self::Llm
-    }
 }
 
 /// Configuration for compression behavior on session reset.

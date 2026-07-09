@@ -1366,9 +1366,8 @@ impl AgentService for JycAgentService {
     ) -> Result<()> {
         // Use the agent config's small_model as the compression provider if available
         let small_model = self.config.small_model.as_deref();
-        let provider: Option<Box<dyn provider::Provider>> = small_model.and_then(|m| {
-            provider::create_provider(m, &self.config.providers).ok()
-        });
+        let provider: Option<Box<dyn provider::Provider>> =
+            small_model.and_then(|m| provider::create_provider(m, &self.config.providers).ok());
 
         // Resolve compression config: pattern (not available here) -> agent config
         let resolved_config = config.clone();

@@ -377,12 +377,18 @@ impl InspectServer {
             let dirs = context.workspace_dirs.load();
             let mut deleted = false;
             for dir in dirs.iter() {
-                let session_path = dir.join(&thread_name).join(".jyc").join("agent-session.json");
+                let session_path = dir
+                    .join(&thread_name)
+                    .join(".jyc")
+                    .join("agent-session.json");
                 if session_path.exists() {
                     tokio::fs::remove_file(&session_path).await.ok();
                     deleted = true;
                 }
-                let context_path = dir.join(&thread_name).join(".jyc").join("agent-context.json");
+                let context_path = dir
+                    .join(&thread_name)
+                    .join(".jyc")
+                    .join("agent-context.json");
                 if context_path.exists() {
                     tokio::fs::remove_file(&context_path).await.ok();
                     deleted = true;

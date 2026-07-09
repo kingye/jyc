@@ -7,14 +7,12 @@
 //!
 //! On reset: session state is cleared, conversation is summarized (last few turns kept).
 
+use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing;
 
 use crate::types::{ContentBlock, Message, Role};
-
-/// Number of recent user+assistant pairs to keep as summary on reset.
-const SUMMARY_KEEP_PAIRS: usize = 3;
 
 const CONTEXT_FILE: &str = "agent-context.json";
 const SESSION_FILE: &str = "agent-session.json";
@@ -207,27 +205,57 @@ pub async fn update_tokens(
 
 // ─── Reset ───────────────────────────────────────────────────────────
 
-/// Reset the session with summary.
+/// Reset the session with configurable compression.
 ///
 /// Called when user triggers a session reset (e.g., from dashboard or /reset command).
-/// - Deletes `agent-session.json` (resets token tracking)
-/// - Summarizes `agent-context.json` (keeps last few user+reply pairs, removes tool calls)
 ///
-/// Uses the heuristic compaction (no LLM call) because the inspect server's
-/// `reset_session` handler doesn't have a provider context to pass through.
-/// The auto-reset path in `update_tokens` uses the LLM-based summarizer when
-/// a provider is configured.
-pub async fn reset_session(thread_path: &Path) {
+/// Compression behavior depends on `config.mode`:
+/// - `None` → delete both `agent-session.json` and `agent-context.json`
+/// - `Heuristic` → `summarize_context_heuristic()` then delete `agent-session.json`
+/// - `Llm` → if `provider` is available, `summarize_context()` (LLM) then delete
+///   `agent-session.json`; fallback to heuristic if no provider
+///
+/// `config.keep_pairs` controls how many user+assistant pairs to retain in heuristic mode.
+pub async fn reset_session(
+    thread_path: &Path,
+    config: &ResetCompressionConfig,
+    provider: Option<&dyn crate::provider::Provider>,
+) {
     let jyc_dir = thread_path.join(".jyc");
 
-    // Summarize context before deleting session (heuristic; no provider).
-    summarize_context_heuristic(thread_path).await;
-
-    // Delete session state (triggers fresh start on next invocation)
-    let session_path = jyc_dir.join(SESSION_FILE);
-    tokio::fs::remove_file(&session_path).await.ok();
-
-    tracing::info!("Agent session reset (context summarized)");
+    match config.mode {
+        CompressionMode::None => {
+            // Delete everything — no summary
+            let context_path = jyc_dir.join(CONTEXT_FILE);
+            tokio::fs::remove_file(&context_path).await.ok();
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (no compression)");
+        }
+        CompressionMode::Heuristic => {
+            // Heuristic compaction: keep last N pairs, then delete session
+            summarize_context_heuristic(thread_path, config.keep_pairs).await;
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (heuristic compression)");
+        }
+        CompressionMode::Llm => {
+            if let Some(p) = provider {
+                // LLM summary, then delete session
+                summarize_context(thread_path, p).await;
+            } else {
+                // No provider available — fallback to heuristic
+                tracing::warn!(
+                    "LLM compression mode selected but no provider available, \
+                     falling back to heuristic"
+                );
+                summarize_context_heuristic(thread_path, config.keep_pairs).await;
+            }
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (LLM compression)");
+        }
+    }
 }
 
 /// Summarize the raw context using an LLM call, then replace
@@ -280,7 +308,7 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
                 error = %e,
                 "LLM context summary failed, falling back to heuristic compaction"
             );
-            summarize_context_heuristic(thread_path).await;
+            summarize_context_heuristic(thread_path, 3).await;
             return;
         }
     };
@@ -451,7 +479,9 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
 /// fallback when the LLM-based summarizer is unavailable or fails, and as
 /// the primary path for user-triggered `reset_session` (which has no
 /// provider context).
-async fn summarize_context_heuristic(thread_path: &Path) {
+///
+/// `keep_pairs` controls how many user+assistant pairs to retain.
+async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
     let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
 
     if !context_path.exists() {
@@ -499,7 +529,7 @@ async fn summarize_context_heuristic(thread_path: &Path) {
     let summary: Vec<serde_json::Value> = pairs
         .into_iter()
         .rev()
-        .take(SUMMARY_KEEP_PAIRS)
+        .take(keep_pairs)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()

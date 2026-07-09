@@ -414,7 +414,12 @@ mod session {
             .await
             .unwrap();
 
-        session::reset_session(tmp.path()).await;
+        use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
+        let config = ResetCompressionConfig {
+            mode: CompressionMode::Heuristic,
+            keep_pairs: 3,
+        };
+        session::reset_session(tmp.path(), &config, None).await;
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)

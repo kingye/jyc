@@ -66,4 +66,13 @@ pub trait AgentService: Send + Sync {
         _event_bus: Option<ThreadEventBusRef>,
     ) {
     }
+
+    /// Reset session for a thread with configurable compression.
+    ///
+    /// Default: delete session and context files (no compression).
+    async fn reset_session(
+        &self,
+        thread_path: &Path,
+        config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()>;
 }

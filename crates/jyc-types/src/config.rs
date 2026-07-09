@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::WecomGlobalConfig;
 
 use crate::channel::ChannelPattern;
+use crate::channel::ResetCompressionConfig;
 use crate::feishu_config::FeishuConfig;
 use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
@@ -364,6 +365,17 @@ pub struct AgentConfig {
     /// Vision fallback configuration for text-only models to use an external
     /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
     pub vision: Option<VisionConfig>,
+
+    /// Compression configuration for session reset (global fallback).
+    /// Per-pattern `reset_compression` takes priority when set.
+    #[serde(default)]
+    pub reset_compression: Option<ResetCompressionConfig>,
+
+    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
+    /// Per-pattern `auto_reset_threshold` takes priority when set.
+    /// Default: 0.95.
+    #[serde(default = "default_auto_reset_threshold")]
+    pub auto_reset_threshold: f64,
 }
 
 /// Provider definition for the in-process agent.
@@ -521,6 +533,10 @@ fn default_1_0() -> f64 {
 #[allow(dead_code)]
 fn default_120_0() -> f64 {
     120.0
+}
+
+fn default_auto_reset_threshold() -> f64 {
+    0.95
 }
 
 /// Unified attachment configuration with inbound and outbound sections.

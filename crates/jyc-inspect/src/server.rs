@@ -347,41 +347,32 @@ impl InspectServer {
             };
         }
 
-        let dirs = context.workspace_dirs.load();
-        let agent_session_path = dirs
-            .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("agent-session.json"))
-            .find(|p| p.exists());
+        // Resolve compression config: check agent config for fallback
+        let config = context
+            .config
+            .as_ref()
+            .and_then(|c| {
+                let cfg = c.load();
+                cfg.agent.reset_compression.clone()
+            })
+            .unwrap_or_default();
 
-        let agent_context_path = dirs
-            .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("agent-context.json"))
-            .find(|p| p.exists());
-
-        // Delete all session files that exist
-        let mut deleted = false;
-
-        if let Some(path) = agent_session_path {
-            tokio::fs::remove_file(&path).await.ok();
-            deleted = true;
-        }
-
-        if let Some(path) = agent_context_path {
-            tokio::fs::remove_file(&path).await.ok();
-            deleted = true;
-        }
-
-        if deleted {
-            tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
-            InspectResponse::ResetSessionResult {
-                success: true,
-                message: format!("session deleted for {thread_name}"),
+        let tms = context.thread_managers.load();
+        for tm in tms.iter() {
+            if let Err(e) = tm.reset_session(&thread_name, &config).await {
+                tracing::warn!(
+                    thread = %thread_name,
+                    error = %e,
+                    "Failed to reset session via thread manager"
+                );
             }
-        } else {
-            InspectResponse::ResetSessionResult {
-                success: true,
-                message: format!("no session exists for {thread_name}"),
-            }
+        }
+        drop(tms);
+
+        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+        InspectResponse::ResetSessionResult {
+            success: true,
+            message: format!("session reset for {thread_name}"),
         }
     }
 

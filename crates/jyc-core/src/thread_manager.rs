@@ -1090,6 +1090,21 @@ impl ThreadManager {
         Ok(())
     }
 
+    /// Reset the session for a thread with configurable compression.
+    ///
+    /// Delegates to the agent service's `reset_session` method.
+    pub async fn reset_session(
+        &self,
+        thread_name: &str,
+        config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        let thread_path = self
+            .thread_path(thread_name)
+            .await
+            .unwrap_or_else(|| self.storage.workspace().join(thread_name));
+        self.agent.reset_session(&thread_path, config).await
+    }
+
     /// Clean up in-memory state (queues, event buses) for a closed thread.
     async fn cleanup_thread_state(&self, thread_name: &str) {
         // Cancel the per-thread token so the worker + event listener exit promptly

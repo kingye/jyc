@@ -1353,6 +1353,30 @@ impl AgentService for JycAgentService {
             }
         }
     }
+
+    async fn reset_session(
+        &self,
+        thread_path: &Path,
+        config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        // Use the agent config's small_model as the compression provider if available
+        let small_model = self.config.small_model.as_deref();
+        let provider: Option<Box<dyn provider::Provider>> = small_model.and_then(|m| {
+            provider::create_provider(m, &self.config.providers).ok()
+        });
+
+        // Resolve compression config: pattern (not available here) -> agent config
+        let resolved_config = config.clone();
+
+        session::reset_session(
+            thread_path,
+            &resolved_config,
+            provider.as_deref().map(|p| p as &dyn provider::Provider),
+        )
+        .await;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

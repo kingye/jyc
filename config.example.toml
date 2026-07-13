@@ -84,6 +84,16 @@ enabled = true
 # tool to load them on demand.
 # inject_inbound_images = true
 
+# Per-pattern session reset compression: overrides [agent].reset_compression.
+# mode: "llm" | "heuristic" | "none" (default: "llm")
+# keep_pairs: heuristic mode pairs to retain (default: 3)
+# reset_compression = { mode = "llm", keep_pairs = 3 }
+
+# Per-pattern auto-reset threshold (0.0~1.0): overrides [agent].auto_reset_threshold.
+# When total_input_tokens >= context_window * threshold, auto-reset triggers.
+# Default: 0.95
+# auto_reset_threshold = 0.9
+
 # Custom filesystem path for the thread directory.
 # When set, the thread's working directory is this path instead of the
 # default <workspace>/<thread_name>/. Supports ~ expansion to $HOME.
@@ -288,6 +298,22 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # model = "deepseek-ocr"
 # # Optional: custom prompt sent to the vision model alongside each image
 # # prompt = "请仔细识别并提取图片中的所有文字内容"
+
+# --- Session Reset Compression ---
+#
+# Compression behavior when `/reset` or auto-reset triggers.
+# Per-pattern `reset_compression` takes priority over [agent].reset_compression.
+#
+# mode: "llm" | "heuristic" | "none" (default: "llm")
+#   - "llm": use the small_model to generate an LLM summary of the conversation
+#   - "heuristic": keep the last N user+assistant text pairs (no LLM call)
+#   - "none": delete all context on reset (no summary)
+# keep_pairs: number of user+assistant pairs to retain in heuristic mode (default: 3)
+# auto_reset_threshold: fraction of context window (0.0~1.0, default: 0.95)
+#   When total_input_tokens >= context_window * auto_reset_threshold, auto-reset triggers.
+#   Per-pattern `auto_reset_threshold` takes priority.
+# reset_compression = { mode = "llm", keep_pairs = 3 }
+# auto_reset_threshold = 0.95
 
 
 [agent.attachments]

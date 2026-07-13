@@ -1171,6 +1171,14 @@ impl AgentService for JycAgentService {
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.small_model.as_deref());
         let small_model_resolved = pattern_small_model.or(self.config.small_model.as_deref());
+
+        // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
+        let pattern_threshold = message
+            .matched_pattern
+            .as_deref()
+            .and_then(|name| self.patterns.iter().find(|p| p.name == name))
+            .and_then(|p| p.auto_reset_threshold);
+        let auto_reset_threshold = pattern_threshold.unwrap_or(self.config.auto_reset_threshold);
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
                 match provider::create_provider(m, &self.config.providers) {
@@ -1248,6 +1256,22 @@ impl AgentService for JycAgentService {
             .unwrap_or(false);
 
         // 7. Run agent loop
+        // Resolve context_window: per-model override > provider default > 128000 fallback
+        // Used for both session token tracking and mid-loop token check
+        const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
+        let model_str = model_override.as_deref().unwrap_or("");
+        let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
+            self.config.providers.get(provider_name).and_then(|p| {
+                // Check per-model override first, then provider default
+                p.models
+                    .get(model_id)
+                    .and_then(|m| m.context_window)
+                    .or(p.context_window)
+            })
+        } else {
+            None
+        }
+        .or(Some(DEFAULT_CONTEXT_WINDOW));
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let additional_write_roots = self.resolve_additional_write_roots(message);
         let thread_managers = self
@@ -1279,6 +1303,8 @@ impl AgentService for JycAgentService {
             thread_managers: thread_managers.clone(),
             current_channel: Some(self.channel_name.clone()),
             outbounds,
+            context_window,
+            auto_reset_threshold,
         })
         .await?;
 
@@ -1294,19 +1320,6 @@ impl AgentService for JycAgentService {
         session::save_raw_context(thread_path, &result.raw_context).await;
 
         // 9. Update session token tracking
-        // Resolve context_window: per-model override > provider default
-        let model_str = model_override.as_deref().unwrap_or("");
-        let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
-            self.config.providers.get(provider_name).and_then(|p| {
-                // Check per-model override first, then provider default
-                p.models
-                    .get(model_id)
-                    .and_then(|m| m.context_window)
-                    .or(p.context_window)
-            })
-        } else {
-            None
-        };
         // Provider used for the between-message context-reset summary (when
         // input_tokens crosses the 95 % auto-reset threshold). Same fallback
         // rule as the cycle-boundary summary: small_model if configured,
@@ -1321,6 +1334,7 @@ impl AgentService for JycAgentService {
             result.output_tokens,
             context_window,
             summary_provider,
+            auto_reset_threshold,
         )
         .await;
 
@@ -1352,6 +1366,49 @@ impl AgentService for JycAgentService {
                 buses.remove(thread_name);
             }
         }
+    }
+
+    async fn reset_session(
+        &self,
+        thread_path: &Path,
+        thread_name: &str,
+        config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        // Use the agent config's small_model as the compression provider if available
+        let small_model = self.config.small_model.as_deref();
+        let provider: Option<Box<dyn provider::Provider>> =
+            small_model.and_then(|m| provider::create_provider(m, &self.config.providers).ok());
+
+        // Resolve compression config: pattern (not available here) -> agent config
+        let resolved_config = config.clone();
+
+        session::reset_session(
+            thread_path,
+            &resolved_config,
+            provider.as_deref().map(|p| p as &dyn provider::Provider),
+        )
+        .await;
+
+        // Publish SessionStatus event for dashboard visibility
+        let mode_str = match config.mode {
+            jyc_types::channel::CompressionMode::None => "none",
+            jyc_types::channel::CompressionMode::Heuristic => "heuristic",
+            jyc_types::channel::CompressionMode::Llm => "llm",
+        };
+        let event_bus = self.get_event_bus(thread_name).await;
+        if let Some(bus) = event_bus {
+            let _ = bus
+                .publish(jyc_core::thread_event::ThreadEvent::SessionStatus {
+                    thread_name: thread_name.to_string(),
+                    status_type: "session_reset".to_string(),
+                    attempt: None,
+                    message: Some(format!("mode={mode_str}")),
+                    timestamp: chrono::Utc::now(),
+                })
+                .await;
+        }
+
+        Ok(())
     }
 }
 

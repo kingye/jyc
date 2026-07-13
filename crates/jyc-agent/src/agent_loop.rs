@@ -81,6 +81,13 @@ pub struct AgentLoopConfig<'a> {
     /// Passed through to `ToolContext` so the `jyc_send_message` tool can
     /// send proactive messages through any channel's outbound adapter.
     pub outbounds: Option<OutboundsMap>,
+    /// Context window size in tokens for mid-loop token check.
+    /// When the total input tokens exceed `context_window * auto_reset_threshold`,
+    /// the raw context is compressed in-memory before the next LLM call.
+    pub context_window: Option<u64>,
+    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
+    /// Default: 0.95.
+    pub auto_reset_threshold: f64,
 }
 
 /// Run the agent loop to completion.
@@ -108,6 +115,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         thread_managers,
         current_channel,
         outbounds,
+        context_window,
+        auto_reset_threshold,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -331,6 +340,52 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_input_tokens = response.input_tokens;
         }
         total_output_tokens += response.output_tokens;
+
+        // Mid-loop token check: if total input tokens exceed the threshold,
+        // compress raw_context in-memory to prevent API 400 on next call.
+        if let Some(cw) = context_window
+            && total_input_tokens >= (cw as f64 * auto_reset_threshold) as u64
+        {
+            let before_count = raw_context.len();
+            let before_tokens = total_input_tokens;
+
+            // Apply heuristic compaction: keep last 3 user+assistant pairs.
+            // Uses a fixed keep_pairs=3 because mid-loop compression is a
+            // safety mechanism to prevent API 400 on the next LLM call — it is
+            // NOT equivalent to the user-configured compression strategy
+            // (ResetCompressionConfig.keep_pairs), which is used on explicit
+            // session resets (/reset, dashboard, between-message auto-reset).
+            raw_context = compact_raw_context_heuristic(&raw_context, 3);
+            // Also compact internal history to match raw_context
+            history = compact_history_heuristic(&history, 3);
+
+            // Reset token counter after compression
+            total_input_tokens = 0;
+
+            tracing::info!(
+                before_messages = before_count,
+                after_messages = raw_context.len(),
+                before_tokens,
+                context_window = cw,
+                threshold = auto_reset_threshold,
+                "Mid-loop context compressed to prevent token overflow"
+            );
+
+            publish_event(
+                event_bus,
+                ThreadEvent::SessionStatus {
+                    thread_name: thread_name.to_string(),
+                    status_type: "session_reset".to_string(),
+                    attempt: None,
+                    message: Some(format!(
+                        "mid-loop compression: {before_count}→{} msgs, {before_tokens}→0 tokens",
+                        raw_context.len()
+                    )),
+                    timestamp: Utc::now(),
+                },
+            )
+            .await;
+        }
 
         // 3. Check for empty response (likely an API error we didn't catch)
         if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0
@@ -1037,6 +1092,51 @@ async fn collect_response(
     }
 
     Ok(response)
+}
+
+/// Heuristic compaction of raw_context: keep only the last N user+assistant
+/// text pairs. Removes tool calls, tool results, and reasoning_content.
+/// Used for mid-loop compression to prevent token overflow.
+fn compact_raw_context_heuristic(
+    raw_context: &[serde_json::Value],
+    keep_pairs: usize,
+) -> Vec<serde_json::Value> {
+    crate::session::extract_user_assistant_pairs(raw_context, keep_pairs)
+}
+
+/// Heuristic compaction of internal history: keep only the last N user+assistant
+/// text pairs. Synced with `compact_raw_context_heuristic`.
+fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Message> {
+    let mut pairs: Vec<(Message, Message)> = Vec::new();
+    let mut last_user: Option<Message> = None;
+
+    for msg in history {
+        match msg.role {
+            Role::User => {
+                last_user = Some(msg.clone());
+            }
+            Role::Assistant => {
+                let text = msg.text();
+                if !text.is_empty()
+                    && let Some(user_msg) = last_user.take()
+                {
+                    pairs.push((user_msg, Message::assistant(text)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Keep only the last N pairs
+    pairs
+        .into_iter()
+        .rev()
+        .take(keep_pairs)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .flat_map(|(user, assistant)| vec![user, assistant])
+        .collect()
 }
 
 #[cfg(test)]

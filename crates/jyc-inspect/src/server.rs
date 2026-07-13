@@ -347,40 +347,71 @@ impl InspectServer {
             };
         }
 
-        let dirs = context.workspace_dirs.load();
-        let agent_session_path = dirs
-            .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("agent-session.json"))
-            .find(|p| p.exists());
+        // Resolve compression config: check agent config for fallback
+        let config = context
+            .config
+            .as_ref()
+            .and_then(|c| {
+                let cfg = c.load();
+                cfg.agent.reset_compression.clone()
+            })
+            .unwrap_or_default();
 
-        let agent_context_path = dirs
-            .iter()
-            .map(|d| d.join(&thread_name).join(".jyc").join("agent-context.json"))
-            .find(|p| p.exists());
-
-        // Delete all session files that exist
-        let mut deleted = false;
-
-        if let Some(path) = agent_session_path {
-            tokio::fs::remove_file(&path).await.ok();
-            deleted = true;
+        let tms = context.thread_managers.load();
+        let mut found = false;
+        for tm in tms.iter() {
+            if let Err(e) = tm.reset_session(&thread_name, &config).await {
+                tracing::warn!(
+                    thread = %thread_name,
+                    error = %e,
+                    "Failed to reset session via thread manager"
+                );
+            }
+            found = true;
         }
+        drop(tms);
 
-        if let Some(path) = agent_context_path {
-            tokio::fs::remove_file(&path).await.ok();
-            deleted = true;
-        }
+        // Fallback: if no thread managers handled the reset, delete files directly
+        // (needed during testing and when thread manager is not yet available)
+        if !found {
+            let dirs = context.workspace_dirs.load();
+            let mut deleted = false;
+            for dir in dirs.iter() {
+                let session_path = dir
+                    .join(&thread_name)
+                    .join(".jyc")
+                    .join("agent-session.json");
+                if session_path.exists() {
+                    tokio::fs::remove_file(&session_path).await.ok();
+                    deleted = true;
+                }
+                let context_path = dir
+                    .join(&thread_name)
+                    .join(".jyc")
+                    .join("agent-context.json");
+                if context_path.exists() {
+                    tokio::fs::remove_file(&context_path).await.ok();
+                    deleted = true;
+                }
+            }
 
-        if deleted {
+            if deleted {
+                tracing::info!(thread = %thread_name, "Session reset via inspect protocol (filesystem fallback)");
+                InspectResponse::ResetSessionResult {
+                    success: true,
+                    message: format!("session deleted for {thread_name}"),
+                }
+            } else {
+                InspectResponse::ResetSessionResult {
+                    success: true,
+                    message: format!("no session exists for {thread_name}"),
+                }
+            }
+        } else {
             tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
             InspectResponse::ResetSessionResult {
                 success: true,
-                message: format!("session deleted for {thread_name}"),
-            }
-        } else {
-            InspectResponse::ResetSessionResult {
-                success: true,
-                message: format!("no session exists for {thread_name}"),
+                message: format!("session reset for {thread_name}"),
             }
         }
     }

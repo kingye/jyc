@@ -370,7 +370,7 @@ mod session {
         let jyc_dir = tmp.path().join(".jyc");
 
         assert!(!jyc_dir.join("agent-session.json").exists());
-        session::update_tokens(tmp.path(), 1000, 200, Some(100000), &StubProvider).await;
+        session::update_tokens(tmp.path(), 1000, 200, Some(100000), &StubProvider, 0.95).await;
         assert!(jyc_dir.join("agent-session.json").exists());
 
         // Verify content
@@ -388,9 +388,9 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
 
         // First call
-        session::update_tokens(tmp.path(), 1000, 100, Some(100000), &StubProvider).await;
+        session::update_tokens(tmp.path(), 1000, 100, Some(100000), &StubProvider, 0.95).await;
         // Second call — input_tokens should be latest, not accumulated
-        session::update_tokens(tmp.path(), 2000, 150, Some(100000), &StubProvider).await;
+        session::update_tokens(tmp.path(), 2000, 150, Some(100000), &StubProvider, 0.95).await;
 
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -414,7 +414,12 @@ mod session {
             .await
             .unwrap();
 
-        session::reset_session(tmp.path()).await;
+        use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
+        let config = ResetCompressionConfig {
+            mode: CompressionMode::Heuristic,
+            keep_pairs: 3,
+        };
+        session::reset_session(tmp.path(), &config, None).await;
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)

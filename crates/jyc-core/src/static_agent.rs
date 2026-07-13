@@ -56,6 +56,37 @@ impl AgentService for StaticAgentService {
     ) {
         // Static agent doesn't use event bus
     }
+
+    async fn reset_session(
+        &self,
+        thread_path: &Path,
+        _thread_name: &str,
+        config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        use jyc_types::channel::CompressionMode;
+
+        let jyc_dir = thread_path.join(".jyc");
+        match config.mode {
+            CompressionMode::None => {
+                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                    .await
+                    .ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                    .await
+                    .ok();
+            }
+            CompressionMode::Heuristic | CompressionMode::Llm => {
+                // For static agent, heuristic and LLM are equivalent: just delete
+                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                    .await
+                    .ok();
+                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                    .await
+                    .ok();
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

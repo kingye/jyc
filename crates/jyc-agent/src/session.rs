@@ -7,14 +7,12 @@
 //!
 //! On reset: session state is cleared, conversation is summarized (last few turns kept).
 
+use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing;
 
 use crate::types::{ContentBlock, Message, Role};
-
-/// Number of recent user+assistant pairs to keep as summary on reset.
-const SUMMARY_KEEP_PAIRS: usize = 3;
 
 const CONTEXT_FILE: &str = "agent-context.json";
 const SESSION_FILE: &str = "agent-session.json";
@@ -159,12 +157,16 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
 /// the auto-reset threshold is crossed. Callers should pass the small model's
 /// provider when configured (`[agent].small_model`), otherwise the main
 /// provider — falling back is the caller's responsibility.
+///
+/// `auto_reset_threshold` is the fraction of context window at which to trigger
+/// auto-reset (0.0~1.0, default 0.95).
 pub async fn update_tokens(
     thread_path: &Path,
     input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
+    auto_reset_threshold: f64,
 ) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -174,8 +176,9 @@ pub async fn update_tokens(
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {
-        // Use 95% of context window as max input tokens (reserve 5% for output)
-        state.max_input_tokens = (cw as f64 * 0.95) as u64;
+        // Use configurable percentage of context window as max input tokens
+        // (reserve (1 - threshold) * 100% for output)
+        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
     }
 
     // Set created_at on first creation
@@ -207,27 +210,57 @@ pub async fn update_tokens(
 
 // ─── Reset ───────────────────────────────────────────────────────────
 
-/// Reset the session with summary.
+/// Reset the session with configurable compression.
 ///
 /// Called when user triggers a session reset (e.g., from dashboard or /reset command).
-/// - Deletes `agent-session.json` (resets token tracking)
-/// - Summarizes `agent-context.json` (keeps last few user+reply pairs, removes tool calls)
 ///
-/// Uses the heuristic compaction (no LLM call) because the inspect server's
-/// `reset_session` handler doesn't have a provider context to pass through.
-/// The auto-reset path in `update_tokens` uses the LLM-based summarizer when
-/// a provider is configured.
-pub async fn reset_session(thread_path: &Path) {
+/// Compression behavior depends on `config.mode`:
+/// - `None` → delete both `agent-session.json` and `agent-context.json`
+/// - `Heuristic` → `summarize_context_heuristic()` then delete `agent-session.json`
+/// - `Llm` → if `provider` is available, `summarize_context()` (LLM) then delete
+///   `agent-session.json`; fallback to heuristic if no provider
+///
+/// `config.keep_pairs` controls how many user+assistant pairs to retain in heuristic mode.
+pub async fn reset_session(
+    thread_path: &Path,
+    config: &ResetCompressionConfig,
+    provider: Option<&dyn crate::provider::Provider>,
+) {
     let jyc_dir = thread_path.join(".jyc");
 
-    // Summarize context before deleting session (heuristic; no provider).
-    summarize_context_heuristic(thread_path).await;
-
-    // Delete session state (triggers fresh start on next invocation)
-    let session_path = jyc_dir.join(SESSION_FILE);
-    tokio::fs::remove_file(&session_path).await.ok();
-
-    tracing::info!("Agent session reset (context summarized)");
+    match config.mode {
+        CompressionMode::None => {
+            // Delete everything — no summary
+            let context_path = jyc_dir.join(CONTEXT_FILE);
+            tokio::fs::remove_file(&context_path).await.ok();
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (no compression)");
+        }
+        CompressionMode::Heuristic => {
+            // Heuristic compaction: keep last N pairs, then delete session
+            summarize_context_heuristic(thread_path, config.keep_pairs).await;
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (heuristic compression)");
+        }
+        CompressionMode::Llm => {
+            if let Some(p) = provider {
+                // LLM summary, then delete session
+                summarize_context(thread_path, p).await;
+            } else {
+                // No provider available — fallback to heuristic
+                tracing::warn!(
+                    "LLM compression mode selected but no provider available, \
+                     falling back to heuristic"
+                );
+                summarize_context_heuristic(thread_path, config.keep_pairs).await;
+            }
+            let session_path = jyc_dir.join(SESSION_FILE);
+            tokio::fs::remove_file(&session_path).await.ok();
+            tracing::info!("Agent session reset (LLM compression)");
+        }
+    }
 }
 
 /// Summarize the raw context using an LLM call, then replace
@@ -280,7 +313,7 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
                 error = %e,
                 "LLM context summary failed, falling back to heuristic compaction"
             );
-            summarize_context_heuristic(thread_path).await;
+            summarize_context_heuristic(thread_path, 3).await;
             return;
         }
     };
@@ -444,35 +477,19 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     out
 }
 
-/// Heuristic context compaction: keep only the last N user+assistant text
-/// pairs.
+/// Extract user+assistant text pairs from raw context, cleaning assistant
+/// messages to only keep role + content (strip reasoning_content, tool_calls).
+/// Returns the last `keep_pairs` pairs flattened into a single Vec.
 ///
-/// Removes tool calls, tool results, and reasoning_content. Used as a
-/// fallback when the LLM-based summarizer is unavailable or fails, and as
-/// the primary path for user-triggered `reset_session` (which has no
-/// provider context).
-async fn summarize_context_heuristic(thread_path: &Path) {
-    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
-
-    if !context_path.exists() {
-        return;
-    }
-
-    let content = match tokio::fs::read_to_string(&context_path).await {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-
-    // Extract user+assistant text pairs (skip tool messages)
+/// Shared between session heuristic compaction and mid-loop compression.
+pub(crate) fn extract_user_assistant_pairs(
+    raw_context: &[serde_json::Value],
+    keep_pairs: usize,
+) -> Vec<serde_json::Value> {
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     let mut last_user: Option<serde_json::Value> = None;
 
-    for msg in &raw_context {
+    for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
@@ -499,12 +516,56 @@ async fn summarize_context_heuristic(thread_path: &Path) {
     let summary: Vec<serde_json::Value> = pairs
         .into_iter()
         .rev()
-        .take(SUMMARY_KEEP_PAIRS)
+        .take(keep_pairs)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .flat_map(|(user, assistant)| vec![user, assistant])
         .collect();
+
+    if summary.is_empty() {
+        // Fallback: keep the first user message if no pairs found
+        if let Some(first_user) = raw_context
+            .iter()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        {
+            vec![first_user.clone()]
+        } else {
+            Vec::new()
+        }
+    } else {
+        summary
+    }
+}
+
+/// Heuristic context compaction: keep only the last N user+assistant text
+/// pairs.
+///
+/// Removes tool calls, tool results, and reasoning_content. Used as a
+/// fallback when the LLM-based summarizer is unavailable or fails, and as
+/// the primary path for user-triggered `reset_session` (which has no
+/// provider context).
+///
+/// `keep_pairs` controls how many user+assistant pairs to retain.
+async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
+    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
+
+    if !context_path.exists() {
+        return;
+    }
+
+    let content = match tokio::fs::read_to_string(&context_path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    // Extract user+assistant text pairs using shared logic
+    let summary = extract_user_assistant_pairs(&raw_context, keep_pairs);
 
     tracing::debug!(
         original_messages = raw_context.len(),

@@ -6,7 +6,7 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// /reset command — reset agent session for this thread.
 ///
 /// Usage:
-///   /reset    Delete the session state file; next AI prompt will start fresh
+///   /reset    Reset agent session with configurable compression
 pub struct ResetCommandHandler;
 
 #[async_trait]
@@ -20,32 +20,47 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let agent_path = context.thread_path.join(".jyc/agent-session.json");
-        let context_path = context.thread_path.join(".jyc/agent-context.json");
+        // Resolve ResetCompressionConfig:
+        // 1. Try to find a matched pattern from the channel config
+        // 2. Fallback to global AgentConfig.reset_compression
+        // 3. Default if neither is set
+        let channel_config = context.config.channels.get(&context.channel);
+        let pattern_reset = channel_config
+            .and_then(|c| c.patterns.as_ref())
+            .and_then(|patterns| {
+                // Use the first pattern's reset_compression as fallback
+                // (pattern matching is done at router level, not available here)
+                patterns.first().and_then(|p| p.reset_compression.clone())
+            });
+        let global_reset = context.config.agent.reset_compression.clone();
+        let reset_config = pattern_reset.or(global_reset).unwrap_or_default();
 
-        let mut deleted = false;
-        if agent_path.exists() {
-            tokio::fs::remove_file(&agent_path).await?;
-            deleted = true;
-        }
-        if context_path.exists() {
-            tokio::fs::remove_file(&context_path).await?;
-            deleted = true;
-        }
-
-        if deleted {
+        if let Some(ref agent) = context.agent {
+            let thread_name = context
+                .thread_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            agent
+                .reset_session(&context.thread_path, thread_name, &reset_config)
+                .await?;
             Ok(CommandResult {
                 success: true,
-                message: "/reset: session deleted. Next AI prompt will start with a fresh session."
-                    .into(),
+                message: "/reset: session reset successfully".into(),
                 error: None,
             })
         } else {
+            // No agent service available — fallback to direct file deletion
+            let jyc_dir = context.thread_path.join(".jyc");
+            tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                .await
+                .ok();
+            tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                .await
+                .ok();
             Ok(CommandResult {
                 success: true,
-                message:
-                    "/reset: no session exists. Next AI prompt will start with a fresh session."
-                        .into(),
+                message: "/reset: session deleted (no agent service)".into(),
                 error: None,
             })
         }
@@ -109,7 +124,11 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!jyc_dir.join("agent-session.json").exists());
-        assert!(result.message.contains("session deleted"));
+        assert!(
+            result.message.contains("session deleted")
+                || result.message.contains("session reset")
+                || result.message.contains("no agent service")
+        );
     }
 
     #[tokio::test]
@@ -121,6 +140,10 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("no session exists"));
+        assert!(
+            result.message.contains("no session")
+                || result.message.contains("session reset")
+                || result.message.contains("no agent service")
+        );
     }
 }

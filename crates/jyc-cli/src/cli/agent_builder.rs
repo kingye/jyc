@@ -120,6 +120,8 @@ pub fn build_agent_service(
                         model: v.model,
                         prompt: v.prompt,
                     }),
+                reset_compression: agent_config.reset_compression.clone(),
+                auto_reset_threshold: agent_config.auto_reset_threshold,
             };
 
             let channel_patterns = patterns;

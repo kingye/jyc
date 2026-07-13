@@ -114,6 +114,8 @@ mod integration_tests {
             thread_managers: None,
             current_channel: None,
             outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
         })
         .await
         .unwrap();

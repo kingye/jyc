@@ -430,6 +430,20 @@ pub struct ChannelPattern {
     #[serde(default)]
     pub disabled_skills: Option<Vec<String>>,
 
+    /// Per-pattern compression configuration for session reset.
+    ///
+    /// Controls how context is compressed when `/reset` or auto-reset triggers.
+    /// Falls back to `[agent].reset_compression` when unset.
+    #[serde(default)]
+    pub reset_compression: Option<ResetCompressionConfig>,
+
+    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
+    /// When `total_input_tokens >= context_window * auto_reset_threshold`,
+    /// auto-reset is triggered.
+    /// Falls back to `[agent].auto_reset_threshold` (default 0.95) when unset.
+    #[serde(default)]
+    pub auto_reset_threshold: Option<f64>,
+
     /// Per-pattern filesystem access whitelist.
     ///
     /// Extends the agent's read/write boundary beyond the thread working
@@ -445,6 +459,50 @@ pub struct ChannelPattern {
     /// ```
     #[serde(default)]
     pub access: Option<AccessConfig>,
+}
+
+/// Compression strategy for session reset.
+///
+/// Controls how the context is compressed when a session reset is triggered
+/// (either manually via `/reset` or automatically when tokens exceed the threshold).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionMode {
+    /// No compression — delete all context on reset.
+    None,
+    /// Heuristic compaction: keep the last N user+assistant text pairs.
+    Heuristic,
+    /// LLM-based summarization: use a separate LLM call to generate a summary.
+    #[serde(alias = "llm")]
+    #[default]
+    Llm,
+}
+
+/// Configuration for compression behavior on session reset.
+///
+/// Can be set per-pattern (`ChannelPattern.reset_compression`) or globally
+/// (`AgentConfig.reset_compression`). Pattern-level config takes priority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetCompressionConfig {
+    /// Compression mode: "llm" | "heuristic" | "none". Default: "llm".
+    #[serde(default)]
+    pub mode: CompressionMode,
+    /// Number of user+assistant pairs to keep in heuristic mode. Default: 3.
+    #[serde(default = "default_keep_pairs")]
+    pub keep_pairs: usize,
+}
+
+impl Default for ResetCompressionConfig {
+    fn default() -> Self {
+        Self {
+            mode: CompressionMode::default(),
+            keep_pairs: default_keep_pairs(),
+        }
+    }
+}
+
+fn default_keep_pairs() -> usize {
+    3
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -491,6 +549,8 @@ impl Default for ChannelPattern {
             disabled_mcp_servers: None,
             skills: None,
             disabled_skills: None,
+            reset_compression: None,
+            auto_reset_threshold: None,
             access: None,
         }
     }

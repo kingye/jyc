@@ -56,6 +56,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply not visible in WebSocket chat pane.** The
+  `jyc_send_to_thread` tool set `InboundMessage.topic` to a hardcoded string
+  `"Message from cross-thread tool"` instead of the target thread name. The
+  WebSocket outbound adapter uses `topic` as the broadcast key, so replies
+  from cross-thread sessions were broadcast to the wrong topic and never
+  appeared in the chat pane. Fixed by setting `topic` to the target thread
+  name. (#362)
+
 - **Stale custom `thread_path` threads linger in dashboard after close.** When a
   thread directory was deleted (e.g. GitHub issue closed), the in-memory
   `thread_paths` mapping was never cleaned up. `list_threads()` now prunes

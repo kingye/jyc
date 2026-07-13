@@ -169,7 +169,7 @@ impl Tool for SendToThreadTool {
             sender: "Agent".to_string(),
             sender_address: recipient.unwrap_or("agent@jyc").to_string(),
             recipients: vec![],
-            topic: "Message from cross-thread tool".to_string(),
+            topic: thread_name.to_string(),
             content: MessageContent {
                 text: Some(message.to_string()),
                 html: None,

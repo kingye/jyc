@@ -433,8 +433,9 @@ impl JycAgentService {
                  You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another thread. \
-                 If it includes \"⚠️ Reply requested\", you MUST use `jyc_send_to_thread` to send your \
-                 results back to the source channel/thread when your work is done.\n",
+                 Process the content normally and use `jyc_reply_message` to display results in the \
+                 current thread. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
+                 `jyc_send_to_thread` to send your results back to the source channel/thread.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message

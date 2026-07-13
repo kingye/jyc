@@ -56,6 +56,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply not visible after new fix.** The system prompt instructed
+  agents receiving cross-thread messages with `"⚠️ Reply requested"` to reply
+  via `jyc_send_to_thread` but omitted the standard `jyc_reply_message` call
+  for the current thread. Agents processed cross-thread results but never
+  displayed them in the current thread's chat pane. Fixed by telling agents to
+  always use `jyc_reply_message` for cross-thread messages, and additionally
+  use `jyc_send_to_thread` for the ⚠️ case. (#364)
+
 - **Session context deleted after auto-reset summarization.** The
   `summarize_context` function wrote the LLM-generated summary as a `"user"`
   role message instead of `"assistant"`. When `load_context` read the

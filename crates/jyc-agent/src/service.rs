@@ -2173,6 +2173,127 @@ mod tests {
     }
 
     #[test]
+    fn build_user_prompt_shows_source_with_require_reply() {
+        let svc = service_with_skills(vec![], None, None);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "source_channel".to_string(),
+            serde_json::Value::String("feishu_bot".into()),
+        );
+        metadata.insert(
+            "source_thread".to_string(),
+            serde_json::Value::String("greenfield".into()),
+        );
+        metadata.insert("require_reply".to_string(), serde_json::Value::Bool(true));
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "Agent".into(),
+            sender_address: "agent@jyc".into(),
+            recipients: vec![],
+            topic: "cross-thread".into(),
+            content: jyc_types::MessageContent {
+                text: Some("do work".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+            "prompt should contain Source header, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("⚠️ Reply requested"),
+            "prompt should contain reply-requested indicator, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_user_prompt_shows_source_without_require_reply() {
+        let svc = service_with_skills(vec![], None, None);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "source_channel".to_string(),
+            serde_json::Value::String("feishu_bot".into()),
+        );
+        metadata.insert(
+            "source_thread".to_string(),
+            serde_json::Value::String("greenfield".into()),
+        );
+        metadata.insert("require_reply".to_string(), serde_json::Value::Bool(false));
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "Agent".into(),
+            sender_address: "agent@jyc".into(),
+            recipients: vec![],
+            topic: "cross-thread".into(),
+            content: jyc_types::MessageContent {
+                text: Some("do work".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+            "prompt should contain Source header, got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("⚠️ Reply requested"),
+            "prompt should NOT contain reply-requested indicator, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_user_prompt_no_source_without_metadata() {
+        let svc = service_with_skills(vec![], None, None);
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "user".into(),
+            sender_address: "user@example.com".into(),
+            recipients: vec![],
+            topic: "normal".into(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            !prompt.contains("**Source:**"),
+            "prompt should NOT contain Source header for normal messages, got: {prompt}"
+        );
+    }
+
+    #[test]
     fn pattern_mode_plan_resolved_when_no_file_override() {
         // Resolution chain: no file override → pattern.mode = "plan" → resolves to "plan"
         let mode_override: Option<String> = None; // no file override

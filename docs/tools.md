@@ -12,6 +12,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 |----------|-------------|---------------|
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
 | **MCP Bridge** | In-process wrappers for JYC-specific MCP tools (reply, send message). | Always registered |
+| **Cross-Thread** | Cross-channel thread communication tool. | Registered when cross-channel `thread_managers` available |
 | **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
 
 ---
@@ -226,6 +227,8 @@ Send a proactive out-of-thread message to an arbitrary recipient.
 ```
 
 ---
+
+## Cross-Thread Communication Tools
 
 ### `jyc_send_to_thread`
 

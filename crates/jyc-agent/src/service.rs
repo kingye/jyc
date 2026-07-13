@@ -526,7 +526,32 @@ impl JycAgentService {
             message.sender, message.sender_address
         ));
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
-        prompt.push_str(&format!("**Date:** {}\n\n", message.timestamp.to_rfc3339()));
+        prompt.push_str(&format!("**Date:** {}\n", message.timestamp.to_rfc3339()));
+
+        // Display cross-thread source info if present
+        if let Some(src_ch) = message.metadata.get("source_channel").and_then(|v| v.as_str()) {
+            if let Some(src_th) = message.metadata.get("source_thread").and_then(|v| v.as_str()) {
+                let require_reply = message
+                    .metadata
+                    .get("require_reply")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if require_reply {
+                    prompt.push_str(&format!(
+                        "**Source:** channel \"{}\", thread \"{}\" \
+                         (⚠️ Reply requested - use `jyc_send_to_thread` to send results back)\n",
+                        src_ch, src_th
+                    ));
+                } else {
+                    prompt.push_str(&format!(
+                        "**Source:** channel \"{}\", thread \"{}\"\n",
+                        src_ch, src_th
+                    ));
+                }
+            }
+        }
+
+        prompt.push('\n');
 
         // Body — fall back to a content-aware placeholder when both text and
         // markdown are missing. Image-only messages on multimodal channels

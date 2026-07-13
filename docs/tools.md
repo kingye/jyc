@@ -12,6 +12,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 |----------|-------------|---------------|
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
 | **MCP Bridge** | In-process wrappers for JYC-specific MCP tools (reply, send message). | Always registered |
+| **Cross-Thread** | Cross-channel thread communication tool. | Registered when cross-channel `thread_managers` available |
 | **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
 
 ---
@@ -227,6 +228,49 @@ Send a proactive out-of-thread message to an arbitrary recipient.
 
 ---
 
+## Cross-Thread Communication Tools
+
+### `jyc_send_to_thread`
+
+Send a message to a thread in another channel for agent processing. The target thread will be auto-created if it doesn't exist.
+
+Unlike `jyc_send_message` (which bypasses agent processing for direct outbound delivery), `jyc_send_to_thread` injects the message into the target thread's queue so the target thread's agent picks it up and processes it.
+
+**Parameters:**
+- `channel` (string, required): Target channel name (e.g. `"jin283"`, `"feishu_bot"`)
+- `thread` (string, required): Target thread name (e.g. `"invoice-processing"`)
+- `message` (string, required): Message body to inject into the target thread
+- `attachments` (string[], optional): List of filenames within the current thread directory to attach
+- `recipient` (string, optional): Recipient address/ID. Sets the sender_address on the injected message for channel-appropriate reply routing
+- `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send results back to the source channel/thread via `jyc_send_to_thread`
+
+**Behavior:**
+- Looks up the target channel's `ThreadManager` from the shared cross-channel map
+- Builds an `InboundMessage` with source metadata (`source_channel`, `source_thread`, `require_reply`)
+- Enqueues the message into the target thread's queue
+- The target agent sees a `**Source:**` header in its incoming message prompt
+
+**`require_reply` flow:**
+- When `true`, the target agent's prompt includes: `⚠️ Reply requested - use jyc_send_to_thread to send results back`
+- The target agent should call `jyc_send_to_thread` back to the source channel/thread when done
+
+**Constraints:**
+- Requires cross-channel thread managers (`ToolContext.thread_managers`)
+- Attachments must be within the current thread's working directory
+
+**Example:**
+```json
+{
+  "channel": "jin283",
+  "thread": "invoice-processing",
+  "message": "Please process the attached invoice.",
+  "attachments": ["invoice.pdf"],
+  "require_reply": true
+}
+```
+
+---
+
 ## External MCP Tools
 
 JYC supports loading additional tools from external MCP (Model Context Protocol) servers. These are configured in `config.toml` under `[[mcps]]` sections.
@@ -352,6 +396,7 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | `read_image` | `check_path_boundary()` working_dir + read_roots + write_roots | URL mode requires http(s) |
 | `jyc_reply_message` | Attachment path validation | Must be within thread directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
+| `jyc_send_to_thread` | Attachment path validation | Must be within thread directory; target channel must exist |
 
 Read/write roots are configured per-pattern via the `access` sub-table:
 
@@ -370,6 +415,7 @@ build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
+  ├─ Register jyc_send_to_thread (when cross-channel thread_managers available)
   ├─ Load external MCP tools (filtered by disabled_mcp_servers)
   └─ Apply exclusions: remove tools matching disabled_tools
 ```

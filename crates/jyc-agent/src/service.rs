@@ -430,7 +430,11 @@ impl JycAgentService {
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
-                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n",
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\
+                 Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
+                 When you receive a message with a **Source:** header, it came from another thread. \
+                 If it includes \"⚠️ Reply requested\", you MUST use `jyc_send_to_thread` to send your \
+                 results back to the source channel/thread when your work is done.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message
@@ -526,7 +530,38 @@ impl JycAgentService {
             message.sender, message.sender_address
         ));
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
-        prompt.push_str(&format!("**Date:** {}\n\n", message.timestamp.to_rfc3339()));
+        prompt.push_str(&format!("**Date:** {}\n", message.timestamp.to_rfc3339()));
+
+        // Display cross-thread source info if present
+        if let Some(src_ch) = message
+            .metadata
+            .get("source_channel")
+            .and_then(|v| v.as_str())
+            && let Some(src_th) = message
+                .metadata
+                .get("source_thread")
+                .and_then(|v| v.as_str())
+        {
+            let require_reply = message
+                .metadata
+                .get("require_reply")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if require_reply {
+                prompt.push_str(&format!(
+                    "**Source:** channel \"{}\", thread \"{}\" \
+                     (⚠️ Reply requested - use `jyc_send_to_thread` to send results back)\n",
+                    src_ch, src_th
+                ));
+            } else {
+                prompt.push_str(&format!(
+                    "**Source:** channel \"{}\", thread \"{}\"\n",
+                    src_ch, src_th
+                ));
+            }
+        }
+
+        prompt.push('\n');
 
         // Body — fall back to a content-aware placeholder when both text and
         // markdown are missing. Image-only messages on multimodal channels
@@ -2134,6 +2169,127 @@ mod tests {
         assert!(
             build_prompt.contains("Current mode: BUILD (full execution)"),
             "build mode prompt should contain BUILD tag, got: {build_prompt}"
+        );
+    }
+
+    #[test]
+    fn build_user_prompt_shows_source_with_require_reply() {
+        let svc = service_with_skills(vec![], None, None);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "source_channel".to_string(),
+            serde_json::Value::String("feishu_bot".into()),
+        );
+        metadata.insert(
+            "source_thread".to_string(),
+            serde_json::Value::String("greenfield".into()),
+        );
+        metadata.insert("require_reply".to_string(), serde_json::Value::Bool(true));
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "Agent".into(),
+            sender_address: "agent@jyc".into(),
+            recipients: vec![],
+            topic: "cross-thread".into(),
+            content: jyc_types::MessageContent {
+                text: Some("do work".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+            "prompt should contain Source header, got: {prompt}"
+        );
+        assert!(
+            prompt.contains("⚠️ Reply requested"),
+            "prompt should contain reply-requested indicator, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_user_prompt_shows_source_without_require_reply() {
+        let svc = service_with_skills(vec![], None, None);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "source_channel".to_string(),
+            serde_json::Value::String("feishu_bot".into()),
+        );
+        metadata.insert(
+            "source_thread".to_string(),
+            serde_json::Value::String("greenfield".into()),
+        );
+        metadata.insert("require_reply".to_string(), serde_json::Value::Bool(false));
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "Agent".into(),
+            sender_address: "agent@jyc".into(),
+            recipients: vec![],
+            topic: "cross-thread".into(),
+            content: jyc_types::MessageContent {
+                text: Some("do work".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+            "prompt should contain Source header, got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("⚠️ Reply requested"),
+            "prompt should NOT contain reply-requested indicator, got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_user_prompt_no_source_without_metadata() {
+        let svc = service_with_skills(vec![], None, None);
+        let message = InboundMessage {
+            id: "test-id".into(),
+            channel: "test".into(),
+            channel_uid: "uid".into(),
+            sender: "user".into(),
+            sender_address: "user@example.com".into(),
+            recipients: vec![],
+            topic: "normal".into(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".into()),
+                ..Default::default()
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        };
+
+        let prompt = svc.build_user_prompt_text(&message, None);
+        assert!(
+            !prompt.contains("**Source:**"),
+            "prompt should NOT contain Source header for normal messages, got: {prompt}"
         );
     }
 

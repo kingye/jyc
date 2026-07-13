@@ -26,7 +26,9 @@ impl Tool for SendToThreadTool {
         "Send a message to a thread in another channel. \
          Use this for cross-thread/channel communication, e.g. sending a \
          generated PDF to an invoice processing thread in another channel. \
-         The target thread will be auto-created if it doesn't exist yet."
+         The target thread will be auto-created if it doesn't exist yet. \
+         Set require_reply=true to request the target agent to send results \
+         back to the source thread."
     }
 
     fn input_schema(&self) -> Value {
@@ -53,6 +55,10 @@ impl Tool for SendToThreadTool {
                 "recipient": {
                     "type": "string",
                     "description": "Optional recipient address/ID. Sets the sender_address on the injected message, enabling channel-appropriate reply routing"
+                },
+                "require_reply": {
+                    "type": "boolean",
+                    "description": "Whether to request the target agent to reply back with results. When true, the target agent will be instructed to use jyc_send_to_thread to send results back to the source channel/thread. Default: false."
                 }
             },
             "required": ["channel", "thread", "message"]
@@ -80,6 +86,11 @@ impl Tool for SendToThreadTool {
             .and_then(|a| serde_json::from_value(a.clone()).ok());
 
         let recipient = input.get("recipient").and_then(|r| r.as_str());
+
+        let require_reply = input
+            .get("require_reply")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Validate required fields are non-empty
         if channel.trim().is_empty() {
@@ -199,6 +210,10 @@ impl Tool for SendToThreadTool {
                         serde_json::Value::String(src_th.clone()),
                     );
                 }
+                m.insert(
+                    "require_reply".to_string(),
+                    serde_json::Value::Bool(require_reply),
+                );
                 m
             },
             matched_pattern: None,
@@ -232,12 +247,19 @@ impl Tool for SendToThreadTool {
             target_channel = %channel,
             target_thread = %thread_name,
             attachment_count = validated_attachments.len(),
+            require_reply,
             "Cross-thread message sent"
         );
 
+        let reply_info = if require_reply {
+            " (reply requested)"
+        } else {
+            ""
+        };
+
         Ok(ToolOutput::success(format!(
-            "Message sent to channel '{}', thread '{}'{}. The target thread will process it.",
-            channel, thread_name, attachment_info
+            "Message sent to channel '{}', thread '{}'{}{}. The target thread will process it.",
+            channel, thread_name, attachment_info, reply_info
         )))
     }
 }

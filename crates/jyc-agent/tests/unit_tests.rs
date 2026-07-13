@@ -662,6 +662,27 @@ mod tools {
         );
         assert_eq!(attachment.content.as_deref().unwrap(), test_data);
     }
+
+    #[test]
+    fn send_to_thread_schema_includes_require_reply() {
+        let tool = builtin::send_to_thread::SendToThreadTool;
+        let schema = tool.input_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("require_reply"),
+            "schema should include require_reply parameter"
+        );
+        assert_eq!(props["require_reply"]["type"], "boolean");
+    }
+
+    #[test]
+    fn send_to_thread_description_mentions_require_reply() {
+        let tool = builtin::send_to_thread::SendToThreadTool;
+        assert!(
+            tool.description().contains("require_reply"),
+            "description should mention require_reply"
+        );
+    }
 }
 
 mod mcp_bridge {

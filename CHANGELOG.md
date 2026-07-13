@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`require_reply` flag for `jyc_send_to_thread`.** New optional boolean
+  parameter `require_reply` (default: `false`) on the `jyc_send_to_thread`
+  tool. When `true`, the target agent is instructed to send results back to
+  the source channel/thread. The source metadata (`source_channel`,
+  `source_thread`, `require_reply`) is now displayed in the target agent's
+  incoming message prompt, enabling cross-thread request-response patterns.
+  System prompt updated with reply guidance. (#361)
+
 - **Per-pattern `mode` config for initial agent mode.** New optional field
   `mode` on `ChannelPattern` allows setting a default agent mode (`"plan"` or
   `"build"`) per pattern. Resolution chain: `.jyc/mode-override` runtime file >

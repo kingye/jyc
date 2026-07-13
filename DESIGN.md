@@ -2147,6 +2147,50 @@ MCP Server (rmcp, stdio transport):
 - Must NOT be used to spam users (limit to alerts and notifications)
 - Recipient format is channel-specific; the tool validates format before attempting delivery
 
+### Built-in Tool: `jyc_send_to_thread`
+
+Injects a message into another channel's thread queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_thread` enqueues an `InboundMessage` into the target thread's `ThreadManager`, so the target thread's agent picks it up and processes it.
+
+```
+Thread A (feishu_bot / "greenfield 下单")
+  │
+  │  jyc_send_to_thread(
+  │    channel="jin283",
+  │    thread="invoice-processing",
+  │    message="Please process this invoice...",
+  │    attachments=["invoice.pdf"],
+  │    require_reply=true
+  │  )
+  │
+  ▼
+Thread B (jiny283 / "invoice-processing")
+  │
+  │  InboundMessage enqueued with metadata:
+  │    source_channel: "feishu_bot"
+  │    source_thread: "greenfield 下单"
+  │    require_reply: true
+  │
+  │  Agent sees in incoming message prompt:
+  │    **Source:** channel "feishu_bot", thread "greenfield 下单"
+  │      (⚠️ Reply requested - use jyc_send_to_thread to send results back)
+  │
+  │  Agent processes task, then calls:
+  │    jyc_send_to_thread(
+  │      channel="feishu_bot",
+  │      thread="greenfield 下单",
+  │      message="Done: invoice processed..."
+  │    )
+  │
+  ▼
+Thread A receives results
+```
+
+**`require_reply` flag** (default: `false`): When `true`, the target agent's incoming message prompt includes a "⚠️ Reply requested" indicator, instructing it to send results back to the source channel/thread via `jyc_send_to_thread` when done.
+
+**Source metadata**: The tool sets `source_channel`, `source_thread`, and `require_reply` in the `InboundMessage.metadata` HashMap. The `build_user_prompt_text()` function reads these fields and renders a `**Source:**` header in the target agent's prompt.
+
+**ToolContext injection**: `ToolContext` carries `thread_managers: Option<ThreadManagersMap>` (cross-channel thread managers keyed by channel name) and `current_channel` / `current_thread` (source context). These are injected by `JycAgentService` when building the tool registry.
+
 ### Historical Message Quoting (Thread Trail)
 
 `build_full_reply_text()` builds the reply with quoted history from the thread's `chat_history_*.jsonl` files.

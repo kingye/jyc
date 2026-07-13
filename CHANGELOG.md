@@ -56,6 +56,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Session context deleted after auto-reset summarization.** The
+  `summarize_context` function wrote the LLM-generated summary as a `"user"`
+  role message instead of `"assistant"`. When `load_context` read the
+  compacted context, it found no assistant messages, treated the file as
+  corrupted, and deleted `agent-context.json` — causing the next session to
+  start with no prior context. Fixed by using `"role": "assistant"` for the
+  summary message. Also upgraded the deletion log to `error!` level with
+  diagnostic details (message count, role list) for future troubleshooting.
+  (#363)
+
 - **Cross-thread reply not visible in WebSocket chat pane.** The
   `jyc_send_to_thread` tool set `InboundMessage.topic` to a hardcoded string
   `"Message from cross-thread tool"` instead of the target thread name. The

@@ -92,7 +92,15 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
                 let internal = raw_context_to_messages(&raw_context);
                 return (internal, raw_context);
             } else {
-                tracing::warn!("Context file has no assistant messages (corrupted), ignoring");
+                tracing::error!(
+                    context_messages = raw_context.len(),
+                    roles = ?raw_context.iter()
+                        .map(|m| m.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
+                        .collect::<Vec<_>>(),
+                    "Context file has no assistant messages after filtering, deleting. \
+                     This indicates context corruption (e.g. summarization produced \
+                     user-only context)."
+                );
                 tokio::fs::remove_file(&context_path).await.ok();
             }
         }
@@ -318,11 +326,13 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
         }
     };
 
-    // Build the compacted context: [task_anchor, synthetic_user_with_summary].
-    // The synthetic user message uses a tagged delimiter so the model can
-    // recognize it as machine-generated context.
-    let summary_user = serde_json::json!({
-        "role": "user",
+    // Build the compacted context: [task_anchor, synthetic_assistant_with_summary].
+    // The synthetic assistant message uses a tagged delimiter so the model can
+    // recognize it as machine-generated context. Using "assistant" role is
+    // critical: `load_context` rejects context files with no assistant messages
+    // (treating them as corrupted and deleting them).
+    let summary_assistant = serde_json::json!({
+        "role": "assistant",
         "content": format!(
             "<jyc-context-summary>\nPrior conversation summary (auto-generated when token budget was exceeded):\n\n{}\n</jyc-context-summary>",
             summary_text
@@ -333,7 +343,7 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
     if let Some(fu) = first_user {
         compacted.push(fu);
     }
-    compacted.push(summary_user);
+    compacted.push(summary_assistant);
 
     tracing::info!(
         original_messages = raw_context.len(),

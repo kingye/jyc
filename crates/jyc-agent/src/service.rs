@@ -430,7 +430,11 @@ impl JycAgentService {
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
                 "\n## Cross-Thread Communication\n\n\
-                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n",
+                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\
+                 Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
+                 When you receive a message with a **Source:** header, it came from another thread. \
+                 If it includes \"⚠️ Reply requested\", you MUST use `jyc_send_to_thread` to send your \
+                 results back to the source channel/thread when your work is done.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message

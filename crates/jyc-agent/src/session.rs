@@ -268,7 +268,16 @@ pub async fn update_tokens(
     }
 
     // Auto-reset if tokens exceed max context window
-    if state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens {
+    let will_reset =
+        state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens;
+    tracing::debug!(
+        total_input_tokens = state.total_input_tokens,
+        max_input_tokens = state.max_input_tokens,
+        will_reset,
+        context_window = ?context_window,
+        "update_tokens: checking auto-reset"
+    );
+    if will_reset {
         tracing::info!(
             total_input_tokens = state.total_input_tokens,
             max_input_tokens = state.max_input_tokens,

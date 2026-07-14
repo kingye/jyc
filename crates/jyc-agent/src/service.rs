@@ -1356,10 +1356,16 @@ impl AgentService for JycAgentService {
             text_len = result.text.len(),
             input_tokens = result.input_tokens,
             output_tokens = result.output_tokens,
+            raw_context_messages = result.raw_context.len(),
             "Agent loop completed"
         );
 
         // 8. Save raw context (preserves provider-specific fields for round-tripping)
+        tracing::info!(
+            message_count = result.raw_context.len(),
+            thread = %thread_name,
+            "save_raw_context: saving after agent loop"
+        );
         session::save_raw_context(thread_path, &result.raw_context).await;
 
         // 9. Update session token tracking

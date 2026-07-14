@@ -56,6 +56,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply loses prior context with Anthropic provider.** The
+  `raw_context_to_messages` function only handled OpenAI's string content format
+  (`"content": "text"`) but not Anthropic's array block format
+  (`"content": [{"type": "text", "text": "..."}]`). When using Anthropic models,
+  all prior context messages were silently dropped during `load_context`,
+  leaving the agent with no conversation history. Added `extract_text_content()`
+  helper that handles both formats, and fixed the tool_calls detection to also
+  check for Anthropic `tool_use` blocks in content arrays. (#365)
+
 - **Cross-thread reply not visible after new fix.** The system prompt instructed
   agents receiving cross-thread messages with `"⚠️ Reply requested"` to reply
   via `jyc_send_to_thread` but omitted the standard `jyc_reply_message` call

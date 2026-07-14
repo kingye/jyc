@@ -2,7 +2,7 @@
 FROM debian:bookworm-slim AS builder
 
 # Build dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
     ca-certificates curl pkg-config libssl-dev build-essential \
     protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM debian:bookworm-slim AS slim
 
 # Runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     jq \
@@ -50,7 +50,7 @@ CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]
 FROM --platform=linux/amd64 ccr.ccs.tencentyun.com/jiny/jyc:slim AS full
 
 # Install all dev tools in a single layer to minimize export time
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
         git build-essential pkg-config libssl-dev \
         protobuf-compiler pandoc inotify-tools xz-utils unzip procps \
     && rm -rf /var/lib/apt/lists/* \
@@ -60,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /root/.config/gh \
     && curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /root/.fnm \

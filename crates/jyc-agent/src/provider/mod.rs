@@ -39,68 +39,43 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 /// - OpenAI: `"content": "text"` + `"tool_calls": [...]`
 /// - Anthropic: `"content": [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]`
 pub fn filter_valid_messages(raw_messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    let before = raw_messages.len();
-    let assistant_before = raw_messages
-        .iter()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .count();
-
     let filtered: Vec<serde_json::Value> = raw_messages
         .iter()
         .filter(|m| {
             if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
                 return true;
             }
-            // ... filter logic unchanged ...
-            // collapsed for brevity - the actual filter body is preserved
-            m.get("role").and_then(|r| r.as_str()) != Some("assistant")
-                || ({
-                    let has_string_content = m
-                        .get("content")
-                        .and_then(|c| c.as_str())
-                        .is_some_and(|s| !s.is_empty());
-                    let has_array_content = m
-                        .get("content")
-                        .and_then(|c| c.as_array())
-                        .is_some_and(|blocks| {
-                            blocks.iter().any(|b| {
-                                let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                t == "tool_use"
-                                    || (t == "text"
-                                        && b.get("text")
-                                            .and_then(|x| x.as_str())
-                                            .is_some_and(|s| !s.is_empty()))
-                            })
-                        });
-                    let has_tool_calls = m
-                        .get("tool_calls")
-                        .and_then(|t| t.as_array())
-                        .is_some_and(|a| !a.is_empty());
-                    has_string_content || has_array_content || has_tool_calls
-                })
+            // OpenAI format: content as non-empty string
+            let has_string_content = m
+                .get("content")
+                .and_then(|c| c.as_str())
+                .is_some_and(|s| !s.is_empty());
+            // Anthropic format: content as array with meaningful blocks
+            let has_array_content =
+                m.get("content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|b| {
+                            let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            t == "tool_use"
+                                || (t == "text"
+                                    && b.get("text")
+                                        .and_then(|x| x.as_str())
+                                        .is_some_and(|s| !s.is_empty()))
+                        })
+                    });
+            // OpenAI format: tool_calls array
+            let has_tool_calls = m
+                .get("tool_calls")
+                .and_then(|t| t.as_array())
+                .is_some_and(|a| !a.is_empty());
+
+            has_string_content || has_array_content || has_tool_calls
         })
         .cloned()
         .collect();
 
-    let result = repair_dangling_tool_calls(filtered);
-
-    let after = result.len();
-    let assistant_after = result
-        .iter()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .count();
-    if after < before {
-        tracing::warn!(
-            before,
-            after,
-            removed = before - after,
-            assistant_before,
-            assistant_removed = assistant_before - assistant_after,
-            "filter_valid_messages: messages were filtered out"
-        );
-    }
-
-    result
+    repair_dangling_tool_calls(filtered)
 }
 
 /// Remove assistant messages whose `tool_calls` lack matching `tool` result

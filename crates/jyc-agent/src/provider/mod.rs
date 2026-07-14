@@ -138,7 +138,11 @@ fn repair_dangling_tool_calls(messages: Vec<serde_json::Value>) -> Vec<serde_jso
                         })
                         .collect();
                     tracing::warn!(
+                        position = i,
+                        total_before = messages.len(),
+                        remaining = remaining.len(),
                         missing_ids = ?missing,
+                        tool_call_ids = ?tool_call_ids,
                         "Dropping assistant message with dangling tool_calls and all subsequent messages"
                     );
                     // Drop this message and everything after it.

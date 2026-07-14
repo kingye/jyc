@@ -551,11 +551,14 @@ impl JycAgentService {
             if require_reply {
                 prompt.push_str(&format!(
                     "**Source:** channel \"{}\", thread \"{}\" \
-                     (⚠️ Reply requested)\n\
-                     ⚠️ ACTION REQUIRED: After you process this message, you MUST call \
-                     `jyc_send_to_thread` with channel=\"{}\", thread=\"{}\" to send \
-                     your results back to the source thread. Use `jyc_reply_message` \
-                     to reply in this thread and `jyc_send_to_thread` to reply back.\n",
+                     (⚠️ Reply requested)\n\n\
+                     ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
+                     1. Call `jyc_send_to_thread` with channel=\"{}\", thread=\"{}\" \
+                     to send your results back to the source thread.\n\
+                     2. Then call `jyc_reply_message` with `stop_after=true` to \
+                     display results in this thread.\n\
+                     CRITICAL: Do NOT miss step 1. The source thread is waiting for \
+                     your reply.\n",
                     src_ch, src_th, src_ch, src_th
                 ));
             } else {

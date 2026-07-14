@@ -14,7 +14,6 @@ services:
     volumes:
       # Sync timezone with host
       - /etc/localtime:/etc/localtime:ro
-      - /Users/D032459/Documents/work/projects/climate-21:/root/climate-21
 
       # JYC data directory (config.toml, .env, channels, workspace)
       - ${JYC_DATA_DIR:-./}:/opt/jyc

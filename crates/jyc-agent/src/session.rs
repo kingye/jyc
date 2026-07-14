@@ -41,6 +41,12 @@ pub async fn save_raw_context(thread_path: &Path, raw_context: &[serde_json::Val
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let path = jyc_dir.join(CONTEXT_FILE);
 
+    tracing::info!(
+        message_count = raw_context.len(),
+        file = %path.display(),
+        "save_raw_context: saving context"
+    );
+
     match serde_json::to_string(raw_context) {
         Ok(json) => {
             if let Err(e) = tokio::fs::write(&path, json).await {
@@ -67,42 +73,73 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
 
     // No session file = fresh start. No prior context.
     if !session_path.exists() {
+        tracing::warn!(
+            session_path = %session_path.display(),
+            context_path = %context_path.display(),
+            "load_context: no session file, returning empty context"
+        );
         return (Vec::new(), Vec::new());
     }
 
     // Load raw context (provider-formatted JSON)
-    if context_path.exists()
-        && let Ok(content) = tokio::fs::read_to_string(&context_path).await
-        && let Ok(raw_context) = serde_json::from_str::<Vec<serde_json::Value>>(&content)
-    {
-        // Filter out invalid assistant messages (no content, no tool_calls)
-        let raw_context = crate::provider::filter_valid_messages(&raw_context);
+    if !context_path.exists() {
+        tracing::warn!(
+            context_path = %context_path.display(),
+            "load_context: session file exists but no context file"
+        );
+        return (Vec::new(), Vec::new());
+    }
 
-        if !raw_context.is_empty() {
-            // Validate: must contain at least one assistant message
-            let has_assistant = raw_context
-                .iter()
-                .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
-            if has_assistant {
-                tracing::debug!(
-                    context_messages = raw_context.len(),
-                    "Loaded raw context from agent-context.json"
-                );
-                // Build internal messages from raw context (for reply detection logic)
-                let internal = raw_context_to_messages(&raw_context);
-                return (internal, raw_context);
-            } else {
-                tracing::error!(
-                    context_messages = raw_context.len(),
-                    roles = ?raw_context.iter()
-                        .map(|m| m.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
-                        .collect::<Vec<_>>(),
-                    "Context file has no assistant messages after filtering, deleting. \
-                     This indicates context corruption (e.g. summarization produced \
-                     user-only context)."
-                );
-                tokio::fs::remove_file(&context_path).await.ok();
-            }
+    let content = match tokio::fs::read_to_string(&context_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %context_path.display(),
+                "load_context: failed to read context file"
+            );
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let raw_context: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                file_len = content.len(),
+                "load_context: failed to parse context file"
+            );
+            return (Vec::new(), Vec::new());
+        }
+    };
+    // Filter out invalid assistant messages (no content, no tool_calls)
+    let raw_context = crate::provider::filter_valid_messages(&raw_context);
+
+    if !raw_context.is_empty() {
+        // Validate: must contain at least one assistant message
+        let has_assistant = raw_context
+            .iter()
+            .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+        if has_assistant {
+            tracing::debug!(
+                context_messages = raw_context.len(),
+                "Loaded raw context from agent-context.json"
+            );
+            // Build internal messages from raw context (for reply detection logic)
+            let internal = raw_context_to_messages(&raw_context);
+            return (internal, raw_context);
+        } else {
+            tracing::error!(
+                context_messages = raw_context.len(),
+                roles = ?raw_context.iter()
+                    .map(|m| m.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
+                    .collect::<Vec<_>>(),
+                "Context file has no assistant messages after filtering, deleting. \
+                 This indicates context corruption (e.g. summarization produced \
+                 user-only context)."
+            );
+            tokio::fs::remove_file(&context_path).await.ok();
         }
     }
 

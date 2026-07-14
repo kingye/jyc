@@ -56,6 +56,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply not sent back despite `require_reply=true`.** The
+  in-message prompt instruction told the agent to call both
+  `jyc_reply_message` and `jyc_send_to_thread` but did not specify the
+  execution order. LLMs called `jyc_reply_message` (with `stop_after=true`)
+  first, ending the agent loop before `jyc_send_to_thread` was invoked.
+  Fixed by making the order explicit: step 1 calls `jyc_send_to_thread`,
+  step 2 calls `jyc_reply_message`. (#367)
+
 - **Cross-thread reply not sent back despite `require_reply=true`.** The system
   prompt instruction to use `jyc_send_to_thread` was placed in the general
   Cross-Thread Communication system prompt section, far from the actual

@@ -14,6 +14,7 @@ services:
     volumes:
       # Sync timezone with host
       - /etc/localtime:/etc/localtime:ro
+      - ${ADDITIONAL_DATA_DIR:-/root/additional-data}:/root/additional-data
 
       # JYC data directory (config.toml, .env, channels, workspace)
       - ${JYC_DATA_DIR:-./}:/opt/jyc

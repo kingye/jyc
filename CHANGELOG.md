@@ -56,6 +56,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply not sent back despite `require_reply=true`.** The system
+  prompt instruction to use `jyc_send_to_thread` was placed in the general
+  Cross-Thread Communication system prompt section, far from the actual
+  incoming message. LLMs often missed it due to position bias. Moved the
+  actionable instruction (`⚠️ ACTION REQUIRED`) directly into the incoming
+  message prompt, immediately after the Source header and next to the message
+  body — at the same recency level as the body and close to where the agent
+  decides its response. (#366)
+
 - **Cross-thread reply loses prior context with Anthropic provider.** The
   `raw_context_to_messages` function only handled OpenAI's string content format
   (`"content": "text"`) but not Anthropic's array block format

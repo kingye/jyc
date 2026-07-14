@@ -92,7 +92,15 @@ pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::
                 let internal = raw_context_to_messages(&raw_context);
                 return (internal, raw_context);
             } else {
-                tracing::warn!("Context file has no assistant messages (corrupted), ignoring");
+                tracing::error!(
+                    context_messages = raw_context.len(),
+                    roles = ?raw_context.iter()
+                        .map(|m| m.get("role").and_then(|r| r.as_str()).unwrap_or("?"))
+                        .collect::<Vec<_>>(),
+                    "Context file has no assistant messages after filtering, deleting. \
+                     This indicates context corruption (e.g. summarization produced \
+                     user-only context)."
+                );
                 tokio::fs::remove_file(&context_path).await.ok();
             }
         }
@@ -110,14 +118,25 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
             let role = m.get("role")?.as_str()?;
             match role {
                 "user" => {
-                    let content = m.get("content")?.as_str()?;
-                    Some(Message::user(content.to_string()))
+                    let text = extract_text_content(m.get("content")?)?;
+                    Some(Message::user(text))
                 }
                 "assistant" => {
-                    let content = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    if content.is_empty() {
-                        // Check for tool_calls
-                        if m.get("tool_calls").is_some() {
+                    let text = extract_text_content(m.get("content")?).unwrap_or_default();
+                    if text.is_empty() {
+                        // Check for tool_calls (OpenAI: separate field, Anthropic: content array)
+                        let has_tool_calls = m
+                            .get("tool_calls")
+                            .and_then(|t| t.as_array())
+                            .is_some_and(|a| !a.is_empty())
+                            || m.get("content")
+                                .and_then(|c| c.as_array())
+                                .is_some_and(|blocks| {
+                                    blocks.iter().any(|b| {
+                                        b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                    })
+                                });
+                        if has_tool_calls {
                             Some(Message {
                                 role: Role::Assistant,
                                 content: vec![], // Will be populated if needed
@@ -126,7 +145,7 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
                             None
                         }
                     } else {
-                        Some(Message::assistant(content.to_string()))
+                        Some(Message::assistant(text))
                     }
                 }
                 "tool" => {
@@ -142,6 +161,31 @@ fn raw_context_to_messages(raw: &[serde_json::Value]) -> Vec<Message> {
             }
         })
         .collect()
+}
+
+/// Extract text from a provider message's `content` field.
+/// Supports both OpenAI format (direct string) and Anthropic format
+/// (array of typed blocks like `[{"type": "text", "text": "..."}]`).
+fn extract_text_content(content: &serde_json::Value) -> Option<String> {
+    // OpenAI format: "content": "text string"
+    if let Some(text) = content.as_str() {
+        let s = text.to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    // Anthropic format: "content": [{"type": "text", "text": "..."}, ...]
+    if let Some(blocks) = content.as_array() {
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                && !text.is_empty()
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 // ─── Token Tracking ──────────────────────────────────────────────────
@@ -318,11 +362,13 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
         }
     };
 
-    // Build the compacted context: [task_anchor, synthetic_user_with_summary].
-    // The synthetic user message uses a tagged delimiter so the model can
-    // recognize it as machine-generated context.
-    let summary_user = serde_json::json!({
-        "role": "user",
+    // Build the compacted context: [task_anchor, synthetic_assistant_with_summary].
+    // The synthetic assistant message uses a tagged delimiter so the model can
+    // recognize it as machine-generated context. Using "assistant" role is
+    // critical: `load_context` rejects context files with no assistant messages
+    // (treating them as corrupted and deleting them).
+    let summary_assistant = serde_json::json!({
+        "role": "assistant",
         "content": format!(
             "<jyc-context-summary>\nPrior conversation summary (auto-generated when token budget was exceeded):\n\n{}\n</jyc-context-summary>",
             summary_text
@@ -333,7 +379,7 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
     if let Some(fu) = first_user {
         compacted.push(fu);
     }
-    compacted.push(summary_user);
+    compacted.push(summary_assistant);
 
     tracing::info!(
         original_messages = raw_context.len(),

@@ -56,6 +56,33 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Cross-thread reply loses prior context with Anthropic provider.** The
+  `raw_context_to_messages` function only handled OpenAI's string content format
+  (`"content": "text"`) but not Anthropic's array block format
+  (`"content": [{"type": "text", "text": "..."}]`). When using Anthropic models,
+  all prior context messages were silently dropped during `load_context`,
+  leaving the agent with no conversation history. Added `extract_text_content()`
+  helper that handles both formats, and fixed the tool_calls detection to also
+  check for Anthropic `tool_use` blocks in content arrays. (#365)
+
+- **Cross-thread reply not visible after new fix.** The system prompt instructed
+  agents receiving cross-thread messages with `"⚠️ Reply requested"` to reply
+  via `jyc_send_to_thread` but omitted the standard `jyc_reply_message` call
+  for the current thread. Agents processed cross-thread results but never
+  displayed them in the current thread's chat pane. Fixed by telling agents to
+  always use `jyc_reply_message` for cross-thread messages, and additionally
+  use `jyc_send_to_thread` for the ⚠️ case. (#364)
+
+- **Session context deleted after auto-reset summarization.** The
+  `summarize_context` function wrote the LLM-generated summary as a `"user"`
+  role message instead of `"assistant"`. When `load_context` read the
+  compacted context, it found no assistant messages, treated the file as
+  corrupted, and deleted `agent-context.json` — causing the next session to
+  start with no prior context. Fixed by using `"role": "assistant"` for the
+  summary message. Also upgraded the deletion log to `error!` level with
+  diagnostic details (message count, role list) for future troubleshooting.
+  (#363)
+
 - **Cross-thread reply not visible in WebSocket chat pane.** The
   `jyc_send_to_thread` tool set `InboundMessage.topic` to a hardcoded string
   `"Message from cross-thread tool"` instead of the target thread name. The

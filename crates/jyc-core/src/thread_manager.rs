@@ -214,6 +214,16 @@ impl ThreadManager {
             "ThreadManager::enqueue: extracted template from message metadata"
         );
 
+        // Resolve thread_path_override from thread_paths if not provided.
+        // This is critical for cross-thread messages (jyc_send_to_thread) where
+        // the target thread may have a custom thread_path configured via pattern.
+        let thread_path_override = if thread_path_override.is_some() {
+            thread_path_override
+        } else {
+            let paths = self.thread_paths.lock().await;
+            paths.get(&thread_name).cloned()
+        };
+
         let item = QueueItem {
             thread_name: thread_name.clone(),
             message,

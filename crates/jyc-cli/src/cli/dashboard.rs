@@ -704,6 +704,11 @@ pub async fn run_new(
 }
 
 /// Resolve the thread path to an absolute filesystem path.
+///
+/// Expands a leading `~` to `$HOME`. Relative paths are resolved against the
+/// current working directory. If the path exists, it is canonicalized; otherwise
+/// the absolute path is returned as-is so that new directories can be created
+/// later by the storage layer.
 fn resolve_thread_path(path: Option<&str>) -> Result<String> {
     let path = path.unwrap_or(".");
     let expanded = if let Some(stripped) = path.strip_prefix("~") {
@@ -713,8 +718,15 @@ fn resolve_thread_path(path: Option<&str>) -> Result<String> {
     } else {
         PathBuf::from(path)
     };
-    let abs = std::fs::canonicalize(&expanded)
-        .with_context(|| format!("failed to resolve path: {}", expanded.display()))?;
+
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+
+    // Canonicalize when possible; otherwise use the absolute path as-is.
+    let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
     Ok(abs.to_string_lossy().to_string())
 }
 
@@ -2301,5 +2313,53 @@ mod tests {
         // Messages must be cleared so stale content doesn't leak across threads
         assert!(app.chat_messages.is_empty());
         assert_eq!(app.chat_thread.as_deref(), Some("thread-b"));
+    }
+
+    #[test]
+    fn resolve_thread_path_defaults_to_cwd() {
+        let resolved = resolve_thread_path(None).expect("should resolve");
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(resolved, cwd);
+    }
+
+    #[test]
+    fn resolve_thread_path_makes_relative_absolute() {
+        let resolved = resolve_thread_path(Some(".")).expect("should resolve");
+        assert!(
+            PathBuf::from(&resolved).is_absolute(),
+            "relative path should be resolved to absolute: {resolved}"
+        );
+    }
+
+    #[test]
+    fn resolve_thread_path_canonicalizes_existing_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sub = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let input = tmp.path().join("a").join(".").join("b");
+        let resolved = resolve_thread_path(Some(input.to_str().unwrap())).expect("should resolve");
+        assert_eq!(resolved, sub.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn derive_thread_name_uses_explicit_value() {
+        assert_eq!(
+            derive_thread_name("/any/path", Some("my-thread")),
+            "my-thread"
+        );
+    }
+
+    #[test]
+    fn derive_thread_name_uses_folder_name() {
+        assert_eq!(derive_thread_name("/home/user/foo", None), "foo");
+    }
+
+    #[test]
+    fn derive_thread_name_falls_back_to_adhoc() {
+        assert_eq!(derive_thread_name("", None), "adhoc");
     }
 }

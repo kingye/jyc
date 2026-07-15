@@ -192,10 +192,15 @@ jyc monitor            # Start the agent (main command)
                        #   --config <FILE>    Config file path (default: config.toml)
                        #   --no-idle         Use polling instead of IMAP IDLE
                        #   --reset           Reset monitoring state before starting
-jyc dashboard          # Live TUI dashboard (connects via inspect server)
-                       #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
-                       #                     Also used for WebSocket chat on /ws
-                       #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
+jyc dashboard            # Live TUI dashboard (connects via inspect server)
+                         #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
+                         #                     Also used for WebSocket chat on /ws
+                         #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
+jyc dashboard new        # Create a new ad-hoc websocket thread and open chat
+                         #   -t, --thread <NAME>   Thread name (default: folder name of -p or CWD)
+                         #   -p, --path <PATH>     Thread working directory (default: CWD)
+                         #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
+                         #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
 jyc config init        # Generate config template
 jyc config validate    # Validate config file
                        #   --config <FILE>   Config file path (default: config.toml)

@@ -691,4 +691,30 @@ mod tests {
         let history = load_chat_history("nonexistent", &None, &None).await;
         assert!(history.is_empty());
     }
+
+    #[test]
+    fn create_thread_message_deserializes() {
+        let json = r#"{"type":"create_thread","thread":"my-thread","path":"/tmp/foo"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::CreateThread { thread, path } => {
+                assert_eq!(thread, "my-thread");
+                assert_eq!(path, Some("/tmp/foo".to_string()));
+            }
+            _ => panic!("expected CreateThread variant"),
+        }
+    }
+
+    #[test]
+    fn create_thread_message_without_path_deserializes() {
+        let json = r#"{"type":"create_thread","thread":"my-thread"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::CreateThread { thread, path } => {
+                assert_eq!(thread, "my-thread");
+                assert_eq!(path, None);
+            }
+            _ => panic!("expected CreateThread variant"),
+        }
+    }
 }

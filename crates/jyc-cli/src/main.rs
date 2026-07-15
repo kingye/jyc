@@ -31,7 +31,10 @@ enum Commands {
     Monitor(cli::monitor::MonitorArgs),
 
     /// Live TUI dashboard — connects to a running jyc monitor
-    Dashboard(cli::dashboard::DashboardArgs),
+    Dashboard {
+        #[command(subcommand)]
+        action: cli::dashboard::DashboardCommand,
+    },
 
     /// Manage configuration
     Config {
@@ -113,7 +116,21 @@ async fn main() -> Result<()> {
 
     let result = match &cli.command {
         Commands::Monitor(args) => cli::monitor::run(args, &workdir).await,
-        Commands::Dashboard(args) => cli::dashboard::run(args).await,
+        Commands::Dashboard {
+            action: cli::dashboard::DashboardCommand::Dashboard(args),
+        } => cli::dashboard::run(args, None).await,
+        Commands::Dashboard {
+            action:
+                cli::dashboard::DashboardCommand::New {
+                    thread,
+                    channel,
+                    path,
+                    addr,
+                },
+        } => {
+            cli::dashboard::run_new(thread.clone(), channel.clone(), path.clone(), addr.clone())
+                .await
+        }
         Commands::Config { action } => cli::config::run(action, &workdir).await,
         Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,

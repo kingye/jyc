@@ -216,7 +216,7 @@ impl ThreadManager {
 
         // Resolve thread_path_override: prefer the ThreadManager's registered
         // custom path (set by a prior message for this thread, e.g. an ad-hoc
-        // create_thread via jyc dashboard new) over the router-provided value
+        // create_thread via jyc dashboard open) over the router-provided value
         // (which may be a pattern fallback that doesn't apply to this specific
         // thread instance).
         let thread_path_override = self

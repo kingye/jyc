@@ -114,12 +114,12 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Commands::Monitor(args) => cli::monitor::run(args, &workdir).await,
         Commands::Dashboard(args) => match &args.command {
-            Some(cli::dashboard::DashboardCommand::New {
+            Some(cli::dashboard::DashboardCommand::Open {
                 thread,
                 channel,
                 path,
             }) => {
-                cli::dashboard::run_new(
+                cli::dashboard::run_open(
                     &args.addr,
                     thread.as_deref(),
                     channel.as_deref(),

@@ -35,9 +35,9 @@ pub struct DashboardArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DashboardCommand {
-    /// Create a new ad-hoc thread and open it in chat mode
-    #[command(name = "new")]
-    New {
+    /// Open a directory as an ad-hoc thread and launch chat mode.
+    #[command(name = "open")]
+    Open {
         /// Thread name (defaults to folder name of --path or current directory)
         #[arg(short = 't', long)]
         thread: Option<String>,
@@ -668,14 +668,18 @@ pub async fn run(
     result
 }
 
-/// Create a new ad-hoc websocket thread and open it directly in chat mode.
+/// Open a directory as an ad-hoc websocket thread and launch chat mode.
 ///
 /// Resolves the thread name (from explicit `-t` or the folder name of `-p`),
 /// the websocket channel (explicit `-c` or auto-detected when only one
 /// exists), and the absolute thread path. Sends a `create_thread` message
 /// over the websocket, waits for the inspect server to report the thread,
-/// then launches the dashboard with chat already open on the new thread.
-pub async fn run_new(
+/// then opens the dashboard with chat already focused on the thread.
+///
+/// The target directory may be brand new or already contain a `.jyc`
+/// subdirectory; in either case the path is registered as the thread's
+/// working directory.
+pub async fn run_open(
     addr: &str,
     thread: Option<&str>,
     channel: Option<&str>,
@@ -685,6 +689,11 @@ pub async fn run_new(
     let path = resolve_thread_path(path)?;
     let thread = derive_thread_name(&path, thread);
 
+    // If the directory was previously opened as a thread, the thread-name file
+    // records the canonical name. Refuse to re-open it under a different name
+    // to avoid diverging history and storage paths.
+    check_existing_thread_name(&path, &thread)?;
+
     // Resolve websocket channel using inspect state
     let mut client = InspectClient::new(addr);
     let channel = resolve_websocket_channel(&mut client, channel).await?;
@@ -693,16 +702,16 @@ pub async fn run_new(
         thread = %thread,
         channel = %channel,
         path = %path,
-        "Creating ad-hoc thread via dashboard CLI"
+        "Opening directory as ad-hoc thread via dashboard CLI"
     );
 
     // Send create_thread over websocket to the target channel
     create_thread_via_websocket(addr, &channel, &thread, &path).await?;
 
-    // Wait for the inspect server to report the new thread
+    // Wait for the inspect server to report the thread
     wait_for_thread(&mut client, &thread, &channel).await?;
 
-    // Open dashboard directly in chat mode for the new thread
+    // Open dashboard directly in chat mode for the thread
     run(
         &DashboardArgs {
             addr: addr.to_string(),
@@ -756,6 +765,33 @@ fn derive_thread_name(path: &str, thread: Option<&str>) -> String {
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "adhoc".to_string())
+}
+
+/// Verify that the directory has not already been registered under a
+/// different thread name.
+///
+/// If `<path>/.jyc/thread-name` exists and contains a non-empty name that
+/// differs from `thread`, returns an error to prevent diverging history and
+/// storage paths.
+fn check_existing_thread_name(path: &str, thread: &str) -> Result<()> {
+    let thread_name_file = PathBuf::from(path).join(".jyc").join("thread-name");
+    if thread_name_file.exists() {
+        let existing = std::fs::read_to_string(&thread_name_file)
+            .with_context(|| format!("failed to read {}", thread_name_file.display()))?;
+        let existing = existing.trim();
+        if !existing.is_empty() && existing != thread {
+            anyhow::bail!(
+                "directory '{}' is already registered as thread '{}'; \
+                 cannot open as '{}'. Use 'jyc dashboard open -t {} -p {}' instead",
+                path,
+                existing,
+                thread,
+                existing,
+                path
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the websocket channel name.
@@ -2376,5 +2412,54 @@ mod tests {
     #[test]
     fn derive_thread_name_falls_back_to_adhoc() {
         assert_eq!(derive_thread_name("", None), "adhoc");
+    }
+
+    #[test]
+    fn check_existing_thread_name_succeeds_when_no_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().to_string_lossy().to_string();
+        check_existing_thread_name(&path, "any-thread").expect("should pass when no file exists");
+    }
+
+    #[test]
+    fn check_existing_thread_name_succeeds_when_matching() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(jyc_dir.join("thread-name"), "abc").unwrap();
+
+        let path = tmp.path().to_string_lossy().to_string();
+        check_existing_thread_name(&path, "abc").expect("should pass when names match");
+    }
+
+    #[test]
+    fn check_existing_thread_name_fails_when_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(jyc_dir.join("thread-name"), "existing").unwrap();
+
+        let path = tmp.path().to_string_lossy().to_string();
+        let err = check_existing_thread_name(&path, "abc").expect_err("should fail on mismatch");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("existing"),
+            "error should mention existing name: {msg}"
+        );
+        assert!(
+            msg.contains("abc"),
+            "error should mention requested name: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_existing_thread_name_succeeds_when_file_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(jyc_dir.join("thread-name"), "").unwrap();
+
+        let path = tmp.path().to_string_lossy().to_string();
+        check_existing_thread_name(&path, "new-thread").expect("should pass when file is empty");
     }
 }

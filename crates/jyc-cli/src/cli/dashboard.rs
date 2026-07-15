@@ -25,16 +25,16 @@ use jyc_types::{InspectState, Severity, ThreadStatus};
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
     /// Inspect server address (also used for WebSocket chat)
-    #[arg(long, default_value = "127.0.0.1:9876")]
+    #[arg(long, default_value = "127.0.0.1:9876", global = true)]
     pub addr: String,
+
+    /// Subcommand for dashboard operations (defaults to opening the full dashboard)
+    #[command(subcommand)]
+    pub command: Option<DashboardCommand>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum DashboardCommand {
-    /// Open the full TUI dashboard
-    #[command(name = "dashboard")]
-    Dashboard(DashboardArgs),
-
     /// Create a new ad-hoc thread and open it in chat mode
     #[command(name = "new")]
     New {
@@ -49,10 +49,6 @@ pub enum DashboardCommand {
         /// Thread working directory (defaults to current directory)
         #[arg(short = 'p', long)]
         path: Option<String>,
-
-        /// Inspect server address
-        #[arg(long, default_value = "127.0.0.1:9876")]
-        addr: String,
     },
 }
 
@@ -212,7 +208,7 @@ impl App {
 
     // ── Chat pane helpers ──────────────────────────────────────────────
 
-    fn open_chat(&mut self, addr: &str, initial_thread: Option<&str>) {
+    fn open_chat(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
         self.chat_visible = true;
         self.chat_phase = if initial_thread.is_some() {
             ChatPhase::Chatting
@@ -239,7 +235,10 @@ impl App {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
-        let url = format!("ws://{}/ws", addr);
+        let url = match channel {
+            Some(ch) => format!("ws://{}/ws/{}", addr, ch),
+            None => format!("ws://{}/ws", addr),
+        };
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
     }
 
@@ -576,7 +575,11 @@ async fn ws_client_task(
     }
 }
 
-pub async fn run(args: &DashboardArgs, initial_thread: Option<&str>) -> Result<()> {
+pub async fn run(
+    args: &DashboardArgs,
+    initial_thread: Option<&str>,
+    initial_channel: Option<&str>,
+) -> Result<()> {
     let mut client = InspectClient::new(&args.addr);
 
     // Setup terminal
@@ -597,7 +600,7 @@ pub async fn run(args: &DashboardArgs, initial_thread: Option<&str>) -> Result<(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
-            app.open_chat(&args.addr, Some(thread));
+            app.open_chat(&args.addr, initial_channel, Some(thread));
         }
 
         loop {
@@ -673,18 +676,18 @@ pub async fn run(args: &DashboardArgs, initial_thread: Option<&str>) -> Result<(
 /// over the websocket, waits for the inspect server to report the thread,
 /// then launches the dashboard with chat already open on the new thread.
 pub async fn run_new(
-    thread: Option<String>,
-    channel: Option<String>,
-    path: Option<String>,
-    addr: String,
+    addr: &str,
+    thread: Option<&str>,
+    channel: Option<&str>,
+    path: Option<&str>,
 ) -> Result<()> {
     // Resolve thread path and name
-    let path = resolve_thread_path(path.as_deref())?;
-    let thread = derive_thread_name(&path, thread.as_deref());
+    let path = resolve_thread_path(path)?;
+    let thread = derive_thread_name(&path, thread);
 
     // Resolve websocket channel using inspect state
-    let mut client = InspectClient::new(&addr);
-    let channel = resolve_websocket_channel(&mut client, channel.as_deref()).await?;
+    let mut client = InspectClient::new(addr);
+    let channel = resolve_websocket_channel(&mut client, channel).await?;
 
     tracing::info!(
         thread = %thread,
@@ -694,13 +697,21 @@ pub async fn run_new(
     );
 
     // Send create_thread over websocket to the target channel
-    create_thread_via_websocket(&addr, &channel, &thread, &path).await?;
+    create_thread_via_websocket(addr, &channel, &thread, &path).await?;
 
     // Wait for the inspect server to report the new thread
     wait_for_thread(&mut client, &thread, &channel).await?;
 
     // Open dashboard directly in chat mode for the new thread
-    run(&DashboardArgs { addr }, Some(&thread)).await
+    run(
+        &DashboardArgs {
+            addr: addr.to_string(),
+            command: None,
+        },
+        Some(&thread),
+        Some(&channel),
+    )
+    .await
 }
 
 /// Resolve the thread path to an absolute filesystem path.
@@ -1144,11 +1155,11 @@ async fn handle_normal_keys(
             app.should_quit = true;
         }
         KeyCode::Char('c') => {
-            app.open_chat(addr, None);
+            app.open_chat(addr, None, None);
         }
         KeyCode::Enter => {
             // Enter chat directly when a websocket thread is selected
-            let thread_name = app.state.as_ref().and_then(|s| {
+            let thread_info = app.state.as_ref().and_then(|s| {
                 app.table_state
                     .selected()
                     .and_then(|i| s.threads.get(i))
@@ -1158,11 +1169,15 @@ async fn handle_normal_keys(
                             .iter()
                             .find(|c| c.name == t.channel)
                             .is_some_and(|c| c.channel_type == "websocket");
-                        if is_ws { Some(t.name.clone()) } else { None }
+                        if is_ws {
+                            Some((t.name.clone(), t.channel.clone()))
+                        } else {
+                            None
+                        }
                     })
             });
-            if let Some(name) = thread_name {
-                app.open_chat(addr, Some(&name));
+            if let Some((name, channel)) = thread_info {
+                app.open_chat(addr, Some(&channel), Some(&name));
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {

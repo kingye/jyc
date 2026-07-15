@@ -69,6 +69,17 @@ jyc monitor --workdir /path/to/data
 jyc dashboard --workdir /path/to/data
 ```
 
+Or create an ad-hoc thread directly from the CLI:
+
+```bash
+cd /path/to/project
+jyc dashboard new --workdir /path/to/data
+```
+
+The `new` subcommand creates a websocket thread named after the current
+folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
+`-c/--channel` to override the defaults.
+
 3. Press `c` to toggle the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
    - Type messages and press `Ctrl+D` to send

@@ -6,6 +6,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`jyc dashboard new` command for ad-hoc websocket threads.** Create a new
+  websocket thread directly from the CLI and open it in dashboard chat mode.
+  Supports `-t/--thread` (defaults to the folder name of `-p` or CWD), `-p/--path`
+  (defaults to CWD), and `-c/--channel` (auto-detected when only one websocket
+  channel exists). The server creates the thread via a new `create_thread`
+  WebSocket message, honoring the custom `thread_path` for file storage.
+
 - **`require_reply` flag for `jyc_send_to_thread`.** New optional boolean
   parameter `require_reply` (default: `false`) on the `jyc_send_to_thread`
   tool. When `true`, the target agent is instructed to send results back to

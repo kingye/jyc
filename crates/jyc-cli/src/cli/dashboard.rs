@@ -1,5 +1,5 @@
-use anyhow::Result;
-use clap::Args;
+use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::io::stdout;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use unicode_width::UnicodeWidthStr;
@@ -26,6 +27,33 @@ pub struct DashboardArgs {
     /// Inspect server address (also used for WebSocket chat)
     #[arg(long, default_value = "127.0.0.1:9876")]
     pub addr: String,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DashboardCommand {
+    /// Open the full TUI dashboard
+    #[command(name = "dashboard")]
+    Dashboard(DashboardArgs),
+
+    /// Create a new ad-hoc thread and open it in chat mode
+    #[command(name = "new")]
+    New {
+        /// Thread name (defaults to folder name of --path or current directory)
+        #[arg(short = 't', long)]
+        thread: Option<String>,
+
+        /// Websocket channel name (auto-detected if only one exists)
+        #[arg(short = 'c', long)]
+        channel: Option<String>,
+
+        /// Thread working directory (defaults to current directory)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
+
+        /// Inspect server address
+        #[arg(long, default_value = "127.0.0.1:9876")]
+        addr: String,
+    },
 }
 
 /// Phase of the chat pane UI.
@@ -184,12 +212,16 @@ impl App {
 
     // ── Chat pane helpers ──────────────────────────────────────────────
 
-    fn open_chat(&mut self, addr: &str) {
+    fn open_chat(&mut self, addr: &str, initial_thread: Option<&str>) {
         self.chat_visible = true;
-        self.chat_phase = ChatPhase::PatternSelect;
+        self.chat_phase = if initial_thread.is_some() {
+            ChatPhase::Chatting
+        } else {
+            ChatPhase::PatternSelect
+        };
         self.chat_patterns.clear();
         self.chat_pattern_selected = 0;
-        self.chat_thread = None;
+        self.chat_thread = initial_thread.map(|s| s.to_string());
         self.chat_messages.clear();
         self.chat_input.clear();
         self.chat_cursor = 0;
@@ -544,7 +576,7 @@ async fn ws_client_task(
     }
 }
 
-pub async fn run(args: &DashboardArgs) -> Result<()> {
+pub async fn run(args: &DashboardArgs, initial_thread: Option<&str>) -> Result<()> {
     let mut client = InspectClient::new(&args.addr);
 
     // Setup terminal
@@ -562,6 +594,11 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
         let mut app = App::new(ws_rx);
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+
+        // If a thread was requested on the CLI, open chat directly.
+        if let Some(thread) = initial_thread {
+            app.open_chat(&args.addr, Some(thread));
+        }
 
         loop {
             // Poll for new state
@@ -626,6 +663,166 @@ pub async fn run(args: &DashboardArgs) -> Result<()> {
     stdout().execute(LeaveAlternateScreen)?;
 
     result
+}
+
+/// Create a new ad-hoc websocket thread and open it directly in chat mode.
+///
+/// Resolves the thread name (from explicit `-t` or the folder name of `-p`),
+/// the websocket channel (explicit `-c` or auto-detected when only one
+/// exists), and the absolute thread path. Sends a `create_thread` message
+/// over the websocket, waits for the inspect server to report the thread,
+/// then launches the dashboard with chat already open on the new thread.
+pub async fn run_new(
+    thread: Option<String>,
+    channel: Option<String>,
+    path: Option<String>,
+    addr: String,
+) -> Result<()> {
+    // Resolve thread path and name
+    let path = resolve_thread_path(path.as_deref())?;
+    let thread = derive_thread_name(&path, thread.as_deref());
+
+    // Resolve websocket channel using inspect state
+    let mut client = InspectClient::new(&addr);
+    let channel = resolve_websocket_channel(&mut client, channel.as_deref()).await?;
+
+    tracing::info!(
+        thread = %thread,
+        channel = %channel,
+        path = %path,
+        "Creating ad-hoc thread via dashboard CLI"
+    );
+
+    // Send create_thread over websocket to the target channel
+    create_thread_via_websocket(&addr, &channel, &thread, &path).await?;
+
+    // Wait for the inspect server to report the new thread
+    wait_for_thread(&mut client, &thread, &channel).await?;
+
+    // Open dashboard directly in chat mode for the new thread
+    run(&DashboardArgs { addr }, Some(&thread)).await
+}
+
+/// Resolve the thread path to an absolute filesystem path.
+///
+/// Expands a leading `~` to `$HOME`. Relative paths are resolved against the
+/// current working directory. If the path exists, it is canonicalized; otherwise
+/// the absolute path is returned as-is so that new directories can be created
+/// later by the storage layer.
+fn resolve_thread_path(path: Option<&str>) -> Result<String> {
+    let path = path.unwrap_or(".");
+    let expanded = if let Some(stripped) = path.strip_prefix("~") {
+        dirs_home()
+            .ok_or_else(|| anyhow::anyhow!("HOME not set, cannot expand ~"))?
+            .join(stripped)
+    } else {
+        PathBuf::from(path)
+    };
+
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+
+    // Canonicalize when possible; otherwise use the absolute path as-is.
+    let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
+    Ok(abs.to_string_lossy().to_string())
+}
+
+/// Resolve HOME directory.
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Derive the thread name from explicit input or the folder name of the path.
+fn derive_thread_name(path: &str, thread: Option<&str>) -> String {
+    if let Some(name) = thread {
+        return name.to_string();
+    }
+    PathBuf::from(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "adhoc".to_string())
+}
+
+/// Resolve the websocket channel name.
+///
+/// If the user explicitly provided `-c`, use it. Otherwise query the inspect
+/// server and auto-select when exactly one websocket channel exists.
+async fn resolve_websocket_channel(
+    client: &mut InspectClient,
+    channel: Option<&str>,
+) -> Result<String> {
+    if let Some(name) = channel {
+        return Ok(name.to_string());
+    }
+
+    let state = client.get_state().await?;
+    let ws_channels: Vec<String> = state
+        .channels
+        .into_iter()
+        .filter(|c| c.channel_type == "websocket")
+        .map(|c| c.name)
+        .collect();
+
+    match ws_channels.len() {
+        0 => anyhow::bail!(
+            "No websocket channel configured. Add a [channels.<name>] with type = \"websocket\" to config.toml."
+        ),
+        1 => Ok(ws_channels.into_iter().next().unwrap()),
+        _ => anyhow::bail!(
+            "Multiple websocket channels found: {:?}. Use --channel (-c) to specify one.",
+            ws_channels
+        ),
+    }
+}
+
+/// Send a `create_thread` message over a short-lived websocket connection.
+async fn create_thread_via_websocket(
+    addr: &str,
+    channel: &str,
+    thread: &str,
+    path: &str,
+) -> Result<()> {
+    let url = format!("ws://{}/ws/{}", addr, channel);
+    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .with_context(|| format!("failed to connect to websocket at {url}"))?;
+
+    let msg = serde_json::json!({
+        "type": "create_thread",
+        "thread": thread,
+        "path": path,
+    });
+    use futures_util::SinkExt;
+    ws_stream
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            msg.to_string(),
+        ))
+        .await
+        .context("failed to send create_thread message")?;
+
+    // Graceful close; best-effort only.
+    let _ = ws_stream.close(None).await;
+    Ok(())
+}
+
+/// Poll the inspect server until the newly created thread appears in state.
+async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str) -> Result<()> {
+    for _ in 0..50 {
+        let state = client.get_state().await?;
+        if state
+            .threads
+            .iter()
+            .any(|t| t.name == thread && t.channel == channel)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("Timeout waiting for thread {thread} to be created")
 }
 
 /// Format elapsed time from an RFC 3339 timestamp to now.
@@ -947,7 +1144,7 @@ async fn handle_normal_keys(
             app.should_quit = true;
         }
         KeyCode::Char('c') => {
-            app.open_chat(addr);
+            app.open_chat(addr, None);
         }
         KeyCode::Enter => {
             // Enter chat directly when a websocket thread is selected
@@ -965,8 +1162,7 @@ async fn handle_normal_keys(
                     })
             });
             if let Some(name) = thread_name {
-                app.open_chat(addr);
-                app.select_pattern(name);
+                app.open_chat(addr, Some(&name));
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -2117,5 +2313,53 @@ mod tests {
         // Messages must be cleared so stale content doesn't leak across threads
         assert!(app.chat_messages.is_empty());
         assert_eq!(app.chat_thread.as_deref(), Some("thread-b"));
+    }
+
+    #[test]
+    fn resolve_thread_path_defaults_to_cwd() {
+        let resolved = resolve_thread_path(None).expect("should resolve");
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(resolved, cwd);
+    }
+
+    #[test]
+    fn resolve_thread_path_makes_relative_absolute() {
+        let resolved = resolve_thread_path(Some(".")).expect("should resolve");
+        assert!(
+            PathBuf::from(&resolved).is_absolute(),
+            "relative path should be resolved to absolute: {resolved}"
+        );
+    }
+
+    #[test]
+    fn resolve_thread_path_canonicalizes_existing_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sub = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let input = tmp.path().join("a").join(".").join("b");
+        let resolved = resolve_thread_path(Some(input.to_str().unwrap())).expect("should resolve");
+        assert_eq!(resolved, sub.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn derive_thread_name_uses_explicit_value() {
+        assert_eq!(
+            derive_thread_name("/any/path", Some("my-thread")),
+            "my-thread"
+        );
+    }
+
+    #[test]
+    fn derive_thread_name_uses_folder_name() {
+        assert_eq!(derive_thread_name("/home/user/foo", None), "foo");
+    }
+
+    #[test]
+    fn derive_thread_name_falls_back_to_adhoc() {
+        assert_eq!(derive_thread_name("", None), "adhoc");
     }
 }

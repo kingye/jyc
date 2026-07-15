@@ -106,6 +106,11 @@ enum ClientMessage {
     ListPatterns,
     #[serde(rename = "subscribe")]
     Subscribe { thread: String },
+    #[serde(rename = "create_thread")]
+    CreateThread {
+        thread: String,
+        path: Option<String>,
+    },
     #[serde(rename = "message")]
     Message { thread: String, text: String },
 }
@@ -337,6 +342,43 @@ where
                                 tracing::warn!(error = %e, addr = %addr, "Failed to send history");
                                 break;
                             }
+                        }
+                    }
+                    ClientMessage::CreateThread { thread, path } => {
+                        let mut message = InboundMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            channel: channel_name.clone(),
+                            channel_uid: "websocket".to_string(),
+                            sender: "user".to_string(),
+                            sender_address: addr.to_string(),
+                            recipients: vec![],
+                            topic: thread.clone(),
+                            content: MessageContent {
+                                text: Some(String::new()),
+                                html: None,
+                                markdown: None,
+                            },
+                            timestamp: chrono::Utc::now(),
+                            thread_refs: None,
+                            reply_to_id: None,
+                            external_id: None,
+                            attachments: vec![],
+                            metadata: HashMap::new(),
+                            matched_pattern: None,
+                        };
+                        if let Some(p) = path {
+                            message
+                                .metadata
+                                .insert("thread_path_override".to_string(), serde_json::json!(p));
+                        }
+
+                        let guard = on_message.lock().await;
+                        if let Some(ref callback) = *guard {
+                            if let Err(e) = (callback)(message) {
+                                tracing::error!(error = %e, "WebSocket on_message error");
+                            }
+                        } else {
+                            tracing::warn!("WebSocket on_message callback not set — create_thread dropped");
                         }
                     }
                     ClientMessage::Message { thread, text } => {
@@ -648,5 +690,31 @@ mod tests {
     async fn test_load_chat_history_returns_empty_when_no_dir() {
         let history = load_chat_history("nonexistent", &None, &None).await;
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn create_thread_message_deserializes() {
+        let json = r#"{"type":"create_thread","thread":"my-thread","path":"/tmp/foo"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::CreateThread { thread, path } => {
+                assert_eq!(thread, "my-thread");
+                assert_eq!(path, Some("/tmp/foo".to_string()));
+            }
+            _ => panic!("expected CreateThread variant"),
+        }
+    }
+
+    #[test]
+    fn create_thread_message_without_path_deserializes() {
+        let json = r#"{"type":"create_thread","thread":"my-thread"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::CreateThread { thread, path } => {
+                assert_eq!(thread, "my-thread");
+                assert_eq!(path, None);
+            }
+            _ => panic!("expected CreateThread variant"),
+        }
     }
 }

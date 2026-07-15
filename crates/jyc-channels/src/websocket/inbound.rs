@@ -345,6 +345,13 @@ where
                         }
                     }
                     ClientMessage::CreateThread { thread, path } => {
+                        tracing::info!(
+                            addr = %addr,
+                            thread = %thread,
+                            path = ?path,
+                            "WebSocket create_thread"
+                        );
+
                         let mut message = InboundMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             channel: channel_name.clone(),

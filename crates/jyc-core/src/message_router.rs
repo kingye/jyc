@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -165,10 +166,19 @@ impl MessageRouter {
                 .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
-        // 4. Resolve thread_path override (if pattern sets a custom filesystem path)
-        let thread_path_override = matched_pattern
-            .and_then(|p| p.thread_path.as_ref())
-            .map(|tp| crate::thread_path::resolve_thread_path(tp));
+        // 4. Resolve thread_path override: prefer explicit metadata from
+        // WebSocket create_thread, then fall back to the matched pattern's
+        // configured thread_path.
+        let thread_path_override: Option<PathBuf> = message
+            .metadata
+            .get("thread_path_override")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .or_else(|| {
+                matched_pattern
+                    .and_then(|p| p.thread_path.as_ref())
+                    .map(|tp| crate::thread_path::resolve_thread_path(tp))
+            });
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.thread_manager

@@ -92,7 +92,11 @@ All notable changes to JYC will be documented in this file.
   new` implementation changed the top-level `dashboard` command to require a
   subcommand (`jyc dashboard dashboard` to open the dashboard). Fixed by making
   the `new` subcommand optional, so `jyc dashboard` behaves exactly as before
-  and `jyc dashboard new` creates an ad-hoc thread.
+  and `jyc dashboard new` creates an ad-hoc thread. Also fixed ad-hoc threads
+  sharing `agent-session.json` with unrelated threads: `ThreadManager::enqueue`
+  now prefers the registered per-thread custom `thread_path` over the pattern
+  fallback, so messages sent after `create_thread` remain in the same thread
+  directory.
   check for Anthropic `tool_use` blocks in content arrays. (#365)
 
 - **Cross-thread reply not visible after new fix.** The system prompt instructed

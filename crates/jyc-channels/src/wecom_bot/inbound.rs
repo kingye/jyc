@@ -628,6 +628,21 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_file_content_without_filename() {
+        let mut bot_msg = create_test_message("text", "");
+        bot_msg.msgtype = "file".to_string();
+        bot_msg.file = Some(super::super::types::FileContent {
+            filename: None,
+            url: "https://example.com/file.csv".to_string(),
+            aeskey: "dGhpcyBpcyBhIDMyLWJ5dGUgYmFzZTY0IGtleQ==".to_string(),
+        });
+
+        let (text, attachments) = extract_content(&bot_msg).unwrap();
+        assert_eq!(text, "[File: unknown - https://example.com/file.csv]");
+        assert!(attachments.is_empty());
+    }
+
+    #[test]
     fn test_derive_thread_name_single() {
         let bot_msg = create_test_message("text", "Hello");
         let inbound = convert_bot_message_to_inbound(&bot_msg, "test").unwrap();

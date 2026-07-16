@@ -67,6 +67,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Ad-hoc websocket threads showing the pattern of another thread.** When a
+  websocket message arrived for a thread whose name did not match any configured
+  pattern, the websocket matcher fell back to the first enabled pattern and wrote
+  that name to `.jyc/pattern`. This caused ad-hoc threads (e.g., `adhoc`) to
+  display the pattern of an unrelated thread in the chat pane. The matcher now
+  uses the thread name itself as the pattern name when no configured pattern
+  matches, so ad-hoc threads keep their own identity.
+
 - **Cross-thread reply not sent back despite `require_reply=true`.** The
   in-message prompt instruction told the agent to call both
   `jyc_reply_message` and `jyc_send_to_thread` but did not specify the

@@ -56,17 +56,26 @@ impl ChannelMatcher for WebsocketMatcher {
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
         let topic = &message.topic;
+
         let pattern_name = if !topic.is_empty() {
             // Prefer the pattern whose name matches the client's thread name.
             // This allows per-thread config like `thread_path` to take effect.
             // If no pattern matches the thread name, treat the thread name itself
             // as the pattern name instead of falling back to an arbitrary enabled
             // pattern, which would leak the wrong pattern to ad-hoc threads.
+            // If the channel has no enabled patterns at all, the channel is
+            // effectively inactive and we return None.
             patterns
                 .iter()
                 .find(|p| p.enabled && p.name == *topic)
                 .map(|p| p.name.clone())
-                .unwrap_or_else(|| topic.clone())
+                .or_else(|| {
+                    if patterns.iter().any(|p| p.enabled) {
+                        Some(topic.clone())
+                    } else {
+                        None
+                    }
+                })?
         } else {
             // For empty topic, fall back to the first enabled pattern.
             patterns.iter().find(|p| p.enabled)?.name.clone()

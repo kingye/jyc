@@ -62,8 +62,13 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "image" => {
             if let Some(ref image) = bot_msg.image {
                 match download_and_decrypt(&image.url, &image.aeskey).await {
-                    Ok((bytes, mime, _http_mime)) => {
-                        attachments.push(build_attachment("image", &bytes, &mime));
+                    Ok((bytes, mime, http_mime)) => {
+                        attachments.push(build_attachment(
+                            "image",
+                            &bytes,
+                            &mime,
+                            http_mime.as_deref(),
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -86,11 +91,12 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
                         continue;
                     };
                     match download_and_decrypt(&image.url, &image.aeskey).await {
-                        Ok((bytes, mime, _http_mime)) => {
+                        Ok((bytes, mime, http_mime)) => {
                             attachments.push(build_attachment(
                                 &format!("image_{}", i),
                                 &bytes,
                                 &mime,
+                                http_mime.as_deref(),
                             ));
                         }
                         Err(e) => {
@@ -109,9 +115,14 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "file" => {
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
-                    Ok((bytes, mime, _http_mime)) => {
+                    Ok((bytes, mime, http_mime)) => {
                         let filename = file.filename.as_deref().unwrap_or("file");
-                        attachments.push(build_attachment(filename, &bytes, &mime));
+                        attachments.push(build_attachment(
+                            filename,
+                            &bytes,
+                            &mime,
+                            http_mime.as_deref(),
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -290,8 +301,26 @@ fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
 }
 
 /// Build a `MessageAttachment` from decrypted bytes.
-fn build_attachment(name: &str, bytes: &[u8], mime: &str) -> MessageAttachment {
-    let ext = extension_from_mime(mime);
+///
+/// `mime` is the MIME type detected from magic bytes. `http_content_type` is
+/// the optional MIME type from the HTTP response, used as a fallback when
+/// magic-byte detection cannot identify the file (returns
+/// `application/octet-stream`).
+fn build_attachment(
+    name: &str,
+    bytes: &[u8],
+    mime: &str,
+    http_content_type: Option<&str>,
+) -> MessageAttachment {
+    let effective_mime = if mime == "application/octet-stream" {
+        http_content_type
+            .filter(|ct| !ct.is_empty() && *ct != "application/octet-stream")
+            .unwrap_or(mime)
+    } else {
+        mime
+    };
+
+    let ext = extension_from_mime(effective_mime);
     let filename = if name.contains('.') {
         name.to_string()
     } else {
@@ -300,13 +329,12 @@ fn build_attachment(name: &str, bytes: &[u8], mime: &str) -> MessageAttachment {
 
     MessageAttachment {
         filename,
-        content_type: mime.to_string(),
+        content_type: effective_mime.to_string(),
         size: bytes.len(),
         content: Some(bytes.to_vec()),
         saved_path: None,
     }
 }
-
 /// Map a MIME type to a filesystem extension.
 fn extension_from_mime(mime: &str) -> &'static str {
     match mime {
@@ -501,7 +529,7 @@ mod tests {
 
     #[test]
     fn build_attachment_with_ext() {
-        let att = build_attachment("photo.png", b"data", "image/png");
+        let att = build_attachment("photo.png", b"data", "image/png", None);
         assert_eq!(att.filename, "photo.png");
         assert_eq!(att.content_type, "image/png");
         assert_eq!(att.size, 4);
@@ -510,10 +538,42 @@ mod tests {
 
     #[test]
     fn build_attachment_without_ext() {
-        let att = build_attachment("image", b"data", "image/jpeg");
+        let att = build_attachment("image", b"data", "image/jpeg", None);
         assert_eq!(att.filename, "image.jpg");
     }
 
+    #[test]
+    fn build_attachment_uses_http_content_type_when_magic_fails() {
+        // Magic bytes detection returned application/octet-stream, but the
+        // HTTP response said the file is text/csv.
+        let att = build_attachment(
+            "file",
+            b"a,b,c",
+            "application/octet-stream",
+            Some("text/csv"),
+        );
+        assert_eq!(att.filename, "file.csv");
+        assert_eq!(att.content_type, "text/csv");
+    }
+
+    #[test]
+    fn build_attachment_preserves_magic_mime_when_http_is_generic() {
+        let att = build_attachment(
+            "file",
+            b"data",
+            "application/octet-stream",
+            Some("application/octet-stream"),
+        );
+        assert_eq!(att.filename, "file.bin");
+        assert_eq!(att.content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn build_attachment_falls_back_to_bin_when_no_http_mime() {
+        let att = build_attachment("file", b"data", "application/octet-stream", None);
+        assert_eq!(att.filename, "file.bin");
+        assert_eq!(att.content_type, "application/octet-stream");
+    }
     // ── download_media tests ─────────────────────────────────────
 
     #[tokio::test]

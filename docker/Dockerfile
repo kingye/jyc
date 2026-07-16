@@ -53,6 +53,7 @@ FROM --platform=linux/amd64 ccr.ccs.tencentyun.com/jiny/jyc:slim AS full
 RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends \
         git build-essential pkg-config libssl-dev \
         protobuf-compiler pandoc inotify-tools xz-utils unzip procps \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

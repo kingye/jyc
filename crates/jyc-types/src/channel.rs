@@ -471,10 +471,10 @@ pub enum CompressionMode {
     /// No compression — delete all context on reset.
     None,
     /// Heuristic compaction: keep the last N user+assistant text pairs.
+    #[default]
     Heuristic,
     /// LLM-based summarization: use a separate LLM call to generate a summary.
     #[serde(alias = "llm")]
-    #[default]
     Llm,
 }
 
@@ -484,7 +484,7 @@ pub enum CompressionMode {
 /// (`AgentConfig.reset_compression`). Pattern-level config takes priority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetCompressionConfig {
-    /// Compression mode: "llm" | "heuristic" | "none". Default: "llm".
+    /// Compression mode: "llm" | "heuristic" | "none". Default: "heuristic".
     #[serde(default)]
     pub mode: CompressionMode,
     /// Number of user+assistant pairs to keep in heuristic mode. Default: 3.

@@ -289,17 +289,59 @@ fn build_attachment(name: &str, bytes: &[u8], mime: &str) -> MessageAttachment {
 /// Map a MIME type to a filesystem extension.
 fn extension_from_mime(mime: &str) -> &'static str {
     match mime {
+        // Images
         "image/jpeg" => "jpg",
         "image/png" => "png",
         "image/gif" => "gif",
         "image/webp" => "webp",
         "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/svg+xml" => "svg",
+        "image/heic" => "heic",
+        // Documents
         "application/pdf" => "pdf",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template" => "dotx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.template" => "xltx",
+        "application/vnd.openxmlformats-officedocument.presentationml.template" => "potx",
+        // Archives
         "application/zip" => "zip",
+        "application/x-zip-compressed" => "zip",
+        "application/gzip" => "gz",
+        "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/x-7z-compressed" => "7z",
+        "application/x-rar-compressed" => "rar",
+        "application/x-rar" => "rar",
+        // Text / data
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "text/markdown" => "md",
+        "text/html" => "html",
+        "text/xml" => "xml",
+        "application/json" => "json",
+        "application/xml" => "xml",
+        "application/yaml" => "yaml",
+        "application/x-yaml" => "yaml",
+        // Audio / video
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "audio/wav" => "wav",
+        "audio/x-wav" => "wav",
+        "audio/ogg" => "ogg",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/x-msvideo" => "avi",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
         _ => "bin",
     }
 }
-
 // ─── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -396,12 +438,44 @@ mod tests {
 
     #[test]
     fn extension_mapping() {
+        // Images
         assert_eq!(extension_from_mime("image/jpeg"), "jpg");
         assert_eq!(extension_from_mime("image/png"), "png");
         assert_eq!(extension_from_mime("image/gif"), "gif");
+        assert_eq!(extension_from_mime("image/webp"), "webp");
+        assert_eq!(extension_from_mime("image/bmp"), "bmp");
+
+        // Documents
+        assert_eq!(extension_from_mime("application/pdf"), "pdf");
+        assert_eq!(extension_from_mime("application/msword"), "doc");
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "docx"
+        );
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            "xlsx"
+        );
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            "pptx"
+        );
+
+        // Text / data
+        assert_eq!(extension_from_mime("text/plain"), "txt");
+        assert_eq!(extension_from_mime("text/csv"), "csv");
+        assert_eq!(extension_from_mime("text/markdown"), "md");
+        assert_eq!(extension_from_mime("application/json"), "json");
+
+        // Fallback
         assert_eq!(extension_from_mime("application/octet-stream"), "bin");
     }
-
     // ── build_attachment tests ───────────────────────────────────
 
     #[test]

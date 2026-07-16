@@ -152,6 +152,15 @@ struct GithubPullRequestHead {
     sha: String,
 }
 
+/// Collapse whitespace in an API error body so it fits on a single log line.
+///
+/// GitHub may return multi-line HTML error pages (e.g., 503 Service
+/// Unavailable). Replacing newlines, carriage returns, and tabs prevents the
+/// error body from being split across multiple journal/log lines.
+fn format_error_body(body: &str) -> String {
+    body.replace(['\n', '\r', '\t'], " ")
+}
+
 impl GithubClient {
     /// Create a new GitHub API client.
     pub fn new(config: &GithubConfig) -> Result<Self> {
@@ -204,6 +213,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET /user failed: {} — {}",
                 status,
@@ -244,6 +254,7 @@ impl GithubClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
+                let body = format_error_body(&body);
                 anyhow::bail!(
                     "GET all open issues failed: {} — {}",
                     status,
@@ -287,6 +298,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET comments failed: {} — {}",
                 status,
@@ -316,6 +328,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET closed issues failed: {} — {}",
                 status,
@@ -347,6 +360,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET reviews failed: {} — {}",
                 status,
@@ -378,6 +392,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET review comments failed: {} — {}",
                 status,
@@ -411,6 +426,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "POST comment failed: {} — {}",
                 status,
@@ -450,6 +466,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET PR detail failed: {} — {}",
                 status,
@@ -484,6 +501,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            let body = format_error_body(&body);
             anyhow::bail!(
                 "GET check runs failed: {} — {}",
                 status,
@@ -510,6 +528,18 @@ impl GithubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_error_body_cleans_whitespace() {
+        assert_eq!(
+            format_error_body("line1\nline2\rline3\tline4"),
+            "line1 line2 line3 line4"
+        );
+        assert_eq!(
+            format_error_body("already single line"),
+            "already single line"
+        );
+    }
 
     #[test]
     fn test_comment_issue_number() {

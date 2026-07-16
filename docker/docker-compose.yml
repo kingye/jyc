@@ -22,4 +22,7 @@ services:
       # Git/GitHub credentials
       - ${JYC_DATA_DIR}/.netrc:/root/.netrc
       - ${JYC_DATA_DIR}/gh_hosts.yml:/root/.config/gh/hosts.yml
+
+      # SSH keys (read-only); configure SSH_DIR in .env
+      - ${SSH_DIR:-~/.ssh}:/root/.ssh:ro
     restart: unless-stopped

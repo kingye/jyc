@@ -62,7 +62,7 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "image" => {
             if let Some(ref image) = bot_msg.image {
                 match download_and_decrypt(&image.url, &image.aeskey).await {
-                    Ok((bytes, mime)) => {
+                    Ok((bytes, mime, _http_mime)) => {
                         attachments.push(build_attachment("image", &bytes, &mime));
                     }
                     Err(e) => {
@@ -86,7 +86,7 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
                         continue;
                     };
                     match download_and_decrypt(&image.url, &image.aeskey).await {
-                        Ok((bytes, mime)) => {
+                        Ok((bytes, mime, _http_mime)) => {
                             attachments.push(build_attachment(
                                 &format!("image_{}", i),
                                 &bytes,
@@ -109,7 +109,7 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "file" => {
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
-                    Ok((bytes, mime)) => {
+                    Ok((bytes, mime, _http_mime)) => {
                         let filename = file.filename.as_deref().unwrap_or("file");
                         attachments.push(build_attachment(filename, &bytes, &mime));
                     }
@@ -134,18 +134,25 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
 // ─── Internal ─────────────────────────────────────────────────────
 
 /// Download encrypted bytes from a pre-signed URL and decrypt them.
-async fn download_and_decrypt(url: &str, aeskey: &str) -> Result<(Vec<u8>, String)> {
-    let encrypted = download_media(url).await?;
+///
+/// Returns the decrypted bytes, the MIME type detected from magic bytes, and
+/// the MIME type from the HTTP response (if any) as a fallback.
+async fn download_and_decrypt(
+    url: &str,
+    aeskey: &str,
+) -> Result<(Vec<u8>, String, Option<String>)> {
+    let (encrypted, http_content_type) = download_media(url).await?;
     let decrypted = decrypt_aes256cbc(&encrypted, aeskey)?;
     let mime = detect_mime_from_bytes(&decrypted).to_string();
-    Ok((decrypted, mime))
+    Ok((decrypted, mime, http_content_type))
 }
 
 /// HTTP GET a media payload from a pre-signed URL.
 ///
 /// No authentication header is needed — the URL itself is pre-signed.
-/// Returns the raw (encrypted) response body bytes.
-async fn download_media(url: &str) -> Result<Vec<u8>> {
+/// Returns the raw (encrypted) response body bytes and the response
+/// `Content-Type` (without parameters such as `charset`) if present.
+async fn download_media(url: &str) -> Result<(Vec<u8>, Option<String>)> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .build()
@@ -162,6 +169,12 @@ async fn download_media(url: &str) -> Result<Vec<u8>> {
         anyhow::bail!("WeCom Bot media fetch failed: HTTP {status}");
     }
 
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_type_header);
+
     let bytes = resp
         .bytes()
         .await
@@ -174,9 +187,17 @@ async fn download_media(url: &str) -> Result<Vec<u8>> {
         );
     }
 
-    Ok(bytes.to_vec())
+    Ok((bytes.to_vec(), content_type))
 }
 
+/// Extract and normalize the MIME type from a Content-Type header value.
+///
+/// Returns the `type/subtype` portion in lowercase, stripping parameters such
+/// as `charset` or `boundary`. Returns `None` if the value is empty or missing.
+fn parse_content_type_header(content_type: &str) -> Option<String> {
+    let mime = content_type.split(';').next()?.trim().to_lowercase();
+    if mime.is_empty() { None } else { Some(mime) }
+}
 /// Decrypt AES-256-CBC encrypted bytes with PKCS#7 padding.
 ///
 /// - `aeskey` is base64-encoded (with or without `=` padding).
@@ -501,16 +522,51 @@ mod tests {
         let body: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
         Mock::given(method("GET"))
             .and(path("/media"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/media", server.uri());
+        let (bytes, content_type) = download_media(&url).await.expect("must succeed");
+        assert_eq!(bytes, body);
+        assert_eq!(content_type.as_deref(), Some("image/jpeg"));
+    }
+
+    #[tokio::test]
+    async fn download_media_succeeds_without_content_type() {
+        let server = MockServer::start().await;
+        let body: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+        Mock::given(method("GET"))
+            .and(path("/media"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
             .expect(1)
             .mount(&server)
             .await;
 
         let url = format!("{}/media", server.uri());
-        let bytes = download_media(&url).await.expect("must succeed");
+        let (bytes, content_type) = download_media(&url).await.expect("must succeed");
         assert_eq!(bytes, body);
+        assert_eq!(content_type, None);
     }
 
+    #[test]
+    fn parse_content_type_strips_charset_and_lowercases() {
+        assert_eq!(
+            parse_content_type_header("text/csv; charset=utf-8"),
+            Some("text/csv".to_string())
+        );
+        assert_eq!(
+            parse_content_type_header("  IMAGE/JPEG  "),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(parse_content_type_header(""), None);
+        assert_eq!(parse_content_type_header(";;;"), None);
+    }
     #[tokio::test]
     async fn download_media_fails_on_404() {
         let server = MockServer::start().await;

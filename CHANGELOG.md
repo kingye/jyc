@@ -80,6 +80,13 @@ All notable changes to JYC will be documented in this file.
   uses the thread name itself as the pattern name when no configured pattern
   matches, so ad-hoc threads keep their own identity.
 
+- **WeCom bot file attachments saved as `.bin` when MIME type is unknown.** When
+  WeCom omits `filename` in a `msgtype: "file"` message or the file's magic bytes
+  are not recognized, the attachment was previously saved as a generic `.bin`
+  file. `download_media` now captures the HTTP `Content-Type` response header and
+  `build_attachment` uses it as a MIME fallback; `extension_from_mime` was also
+  expanded to cover common document, text, audio, and video types. (#375)
+
 - **Cross-thread reply not sent back despite `require_reply=true`.** The
   in-message prompt instruction told the agent to call both
   `jyc_reply_message` and `jyc_send_to_thread` but did not specify the

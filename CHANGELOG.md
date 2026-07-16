@@ -87,6 +87,13 @@ All notable changes to JYC will be documented in this file.
   `build_attachment` uses it as a MIME fallback; `extension_from_mime` was also
   expanded to cover common document, text, audio, and video types. (#375)
 
+- **WeCom bot file attachments still saved as `.bin` when URL has filename.**
+  Even after the MIME fallback in #375, CSV files (which have no magic bytes and
+  often no HTTP `Content-Type`) still ended up as `.bin`. `process_bot_attachments`
+  now extracts a filename hint from the media URL's last path segment when WeCom
+  omits `filename`, so `https://cos.example.com/bucket/data.csv?sign=xxx` yields a
+  `.csv` saved filename. (#376)
+
 - **Cross-thread reply not sent back despite `require_reply=true`.** The
   in-message prompt instruction told the agent to call both
   `jyc_reply_message` and `jyc_send_to_thread` but did not specify the

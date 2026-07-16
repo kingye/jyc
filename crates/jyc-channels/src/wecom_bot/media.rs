@@ -63,8 +63,10 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
             if let Some(ref image) = bot_msg.image {
                 match download_and_decrypt(&image.url, &image.aeskey).await {
                     Ok((bytes, mime, http_mime)) => {
+                        let filename =
+                            url_filename_hint(&image.url).unwrap_or_else(|| "image".to_string());
                         attachments.push(build_attachment(
-                            "image",
+                            &filename,
                             &bytes,
                             &mime,
                             http_mime.as_deref(),
@@ -92,8 +94,10 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
                     };
                     match download_and_decrypt(&image.url, &image.aeskey).await {
                         Ok((bytes, mime, http_mime)) => {
+                            let filename = url_filename_hint(&image.url)
+                                .unwrap_or_else(|| format!("image_{}", i));
                             attachments.push(build_attachment(
-                                &format!("image_{}", i),
+                                &filename,
                                 &bytes,
                                 &mime,
                                 http_mime.as_deref(),
@@ -116,9 +120,13 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
                     Ok((bytes, mime, http_mime)) => {
-                        let filename = file.filename.as_deref().unwrap_or("file");
+                        let filename = file
+                            .filename
+                            .clone()
+                            .or_else(|| url_filename_hint(&file.url))
+                            .unwrap_or_else(|| "file".to_string());
                         attachments.push(build_attachment(
-                            filename,
+                            &filename,
                             &bytes,
                             &mime,
                             http_mime.as_deref(),
@@ -209,6 +217,22 @@ fn parse_content_type_header(content_type: &str) -> Option<String> {
     let mime = content_type.split(';').next()?.trim().to_lowercase();
     if mime.is_empty() { None } else { Some(mime) }
 }
+
+/// Extract a filename hint from the last path segment of a URL.
+///
+/// Strips query parameters and fragments, then returns the last segment if it
+/// contains a dot (e.g., `data.csv`). Returns `None` for bare paths or URLs
+/// that cannot be parsed.
+fn url_filename_hint(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let segment = parsed.path().rsplit('/').next()?.trim();
+    if segment.is_empty() || !segment.contains('.') {
+        None
+    } else {
+        Some(segment.to_string())
+    }
+}
+
 /// Decrypt AES-256-CBC encrypted bytes with PKCS#7 padding.
 ///
 /// - `aeskey` is base64-encoded (with or without `=` padding).
@@ -574,6 +598,16 @@ mod tests {
         assert_eq!(att.filename, "file.bin");
         assert_eq!(att.content_type, "application/octet-stream");
     }
+
+    #[test]
+    fn build_attachment_prefers_url_filename_over_generic_fallback() {
+        // WeCom omits filename but the URL path contains data.csv.
+        let filename = url_filename_hint("https://cos.example.com/bucket/data.csv?sign=xxx")
+            .unwrap_or_else(|| "file".to_string());
+        let att = build_attachment(&filename, b"a,b,c", "application/octet-stream", None);
+        // The URL-derived filename (with extension) is preserved.
+        assert_eq!(att.filename, "data.csv");
+    }
     // ── download_media tests ─────────────────────────────────────
 
     #[tokio::test]
@@ -626,6 +660,28 @@ mod tests {
         );
         assert_eq!(parse_content_type_header(""), None);
         assert_eq!(parse_content_type_header(";;;"), None);
+    }
+
+    #[test]
+    fn url_filename_hint_extracts_last_segment() {
+        assert_eq!(
+            url_filename_hint("https://cos.example.com/bucket/data.csv?sign=xxx"),
+            Some("data.csv".to_string())
+        );
+        assert_eq!(
+            url_filename_hint("https://cos.example.com/path/to/report.xlsx#fragment"),
+            Some("report.xlsx".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_hint_returns_none_for_missing_extension() {
+        assert_eq!(
+            url_filename_hint("https://cos.example.com/bucket/no-extension"),
+            None
+        );
+        assert_eq!(url_filename_hint("not-a-url"), None);
+        assert_eq!(url_filename_hint(""), None);
     }
     #[tokio::test]
     async fn download_media_fails_on_404() {

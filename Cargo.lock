@@ -1735,6 +1735,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "url",
  "uuid",
  "wiremock",
 ]

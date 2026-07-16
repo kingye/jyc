@@ -62,8 +62,13 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "image" => {
             if let Some(ref image) = bot_msg.image {
                 match download_and_decrypt(&image.url, &image.aeskey).await {
-                    Ok((bytes, mime)) => {
-                        attachments.push(build_attachment("image", &bytes, &mime));
+                    Ok((bytes, mime, http_mime)) => {
+                        attachments.push(build_attachment(
+                            "image",
+                            &bytes,
+                            &mime,
+                            http_mime.as_deref(),
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -86,11 +91,12 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
                         continue;
                     };
                     match download_and_decrypt(&image.url, &image.aeskey).await {
-                        Ok((bytes, mime)) => {
+                        Ok((bytes, mime, http_mime)) => {
                             attachments.push(build_attachment(
                                 &format!("image_{}", i),
                                 &bytes,
                                 &mime,
+                                http_mime.as_deref(),
                             ));
                         }
                         Err(e) => {
@@ -109,9 +115,14 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
         "file" => {
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
-                    Ok((bytes, mime)) => {
+                    Ok((bytes, mime, http_mime)) => {
                         let filename = file.filename.as_deref().unwrap_or("file");
-                        attachments.push(build_attachment(filename, &bytes, &mime));
+                        attachments.push(build_attachment(
+                            filename,
+                            &bytes,
+                            &mime,
+                            http_mime.as_deref(),
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -134,18 +145,25 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
 // ─── Internal ─────────────────────────────────────────────────────
 
 /// Download encrypted bytes from a pre-signed URL and decrypt them.
-async fn download_and_decrypt(url: &str, aeskey: &str) -> Result<(Vec<u8>, String)> {
-    let encrypted = download_media(url).await?;
+///
+/// Returns the decrypted bytes, the MIME type detected from magic bytes, and
+/// the MIME type from the HTTP response (if any) as a fallback.
+async fn download_and_decrypt(
+    url: &str,
+    aeskey: &str,
+) -> Result<(Vec<u8>, String, Option<String>)> {
+    let (encrypted, http_content_type) = download_media(url).await?;
     let decrypted = decrypt_aes256cbc(&encrypted, aeskey)?;
     let mime = detect_mime_from_bytes(&decrypted).to_string();
-    Ok((decrypted, mime))
+    Ok((decrypted, mime, http_content_type))
 }
 
 /// HTTP GET a media payload from a pre-signed URL.
 ///
 /// No authentication header is needed — the URL itself is pre-signed.
-/// Returns the raw (encrypted) response body bytes.
-async fn download_media(url: &str) -> Result<Vec<u8>> {
+/// Returns the raw (encrypted) response body bytes and the response
+/// `Content-Type` (without parameters such as `charset`) if present.
+async fn download_media(url: &str) -> Result<(Vec<u8>, Option<String>)> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .build()
@@ -162,6 +180,12 @@ async fn download_media(url: &str) -> Result<Vec<u8>> {
         anyhow::bail!("WeCom Bot media fetch failed: HTTP {status}");
     }
 
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_type_header);
+
     let bytes = resp
         .bytes()
         .await
@@ -174,9 +198,17 @@ async fn download_media(url: &str) -> Result<Vec<u8>> {
         );
     }
 
-    Ok(bytes.to_vec())
+    Ok((bytes.to_vec(), content_type))
 }
 
+/// Extract and normalize the MIME type from a Content-Type header value.
+///
+/// Returns the `type/subtype` portion in lowercase, stripping parameters such
+/// as `charset` or `boundary`. Returns `None` if the value is empty or missing.
+fn parse_content_type_header(content_type: &str) -> Option<String> {
+    let mime = content_type.split(';').next()?.trim().to_lowercase();
+    if mime.is_empty() { None } else { Some(mime) }
+}
 /// Decrypt AES-256-CBC encrypted bytes with PKCS#7 padding.
 ///
 /// - `aeskey` is base64-encoded (with or without `=` padding).
@@ -269,8 +301,26 @@ fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
 }
 
 /// Build a `MessageAttachment` from decrypted bytes.
-fn build_attachment(name: &str, bytes: &[u8], mime: &str) -> MessageAttachment {
-    let ext = extension_from_mime(mime);
+///
+/// `mime` is the MIME type detected from magic bytes. `http_content_type` is
+/// the optional MIME type from the HTTP response, used as a fallback when
+/// magic-byte detection cannot identify the file (returns
+/// `application/octet-stream`).
+fn build_attachment(
+    name: &str,
+    bytes: &[u8],
+    mime: &str,
+    http_content_type: Option<&str>,
+) -> MessageAttachment {
+    let effective_mime = if mime == "application/octet-stream" {
+        http_content_type
+            .filter(|ct| !ct.is_empty() && *ct != "application/octet-stream")
+            .unwrap_or(mime)
+    } else {
+        mime
+    };
+
+    let ext = extension_from_mime(effective_mime);
     let filename = if name.contains('.') {
         name.to_string()
     } else {
@@ -279,27 +329,68 @@ fn build_attachment(name: &str, bytes: &[u8], mime: &str) -> MessageAttachment {
 
     MessageAttachment {
         filename,
-        content_type: mime.to_string(),
+        content_type: effective_mime.to_string(),
         size: bytes.len(),
         content: Some(bytes.to_vec()),
         saved_path: None,
     }
 }
-
 /// Map a MIME type to a filesystem extension.
 fn extension_from_mime(mime: &str) -> &'static str {
     match mime {
+        // Images
         "image/jpeg" => "jpg",
         "image/png" => "png",
         "image/gif" => "gif",
         "image/webp" => "webp",
         "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/svg+xml" => "svg",
+        "image/heic" => "heic",
+        // Documents
         "application/pdf" => "pdf",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template" => "dotx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.template" => "xltx",
+        "application/vnd.openxmlformats-officedocument.presentationml.template" => "potx",
+        // Archives
         "application/zip" => "zip",
+        "application/x-zip-compressed" => "zip",
+        "application/gzip" => "gz",
+        "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/x-7z-compressed" => "7z",
+        "application/x-rar-compressed" => "rar",
+        "application/x-rar" => "rar",
+        // Text / data
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "text/markdown" => "md",
+        "text/html" => "html",
+        "text/xml" => "xml",
+        "application/json" => "json",
+        "application/xml" => "xml",
+        "application/yaml" => "yaml",
+        "application/x-yaml" => "yaml",
+        // Audio / video
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "audio/wav" => "wav",
+        "audio/x-wav" => "wav",
+        "audio/ogg" => "ogg",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/x-msvideo" => "avi",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
         _ => "bin",
     }
 }
-
 // ─── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -396,17 +487,49 @@ mod tests {
 
     #[test]
     fn extension_mapping() {
+        // Images
         assert_eq!(extension_from_mime("image/jpeg"), "jpg");
         assert_eq!(extension_from_mime("image/png"), "png");
         assert_eq!(extension_from_mime("image/gif"), "gif");
+        assert_eq!(extension_from_mime("image/webp"), "webp");
+        assert_eq!(extension_from_mime("image/bmp"), "bmp");
+
+        // Documents
+        assert_eq!(extension_from_mime("application/pdf"), "pdf");
+        assert_eq!(extension_from_mime("application/msword"), "doc");
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "docx"
+        );
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            "xlsx"
+        );
+        assert_eq!(
+            extension_from_mime(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            "pptx"
+        );
+
+        // Text / data
+        assert_eq!(extension_from_mime("text/plain"), "txt");
+        assert_eq!(extension_from_mime("text/csv"), "csv");
+        assert_eq!(extension_from_mime("text/markdown"), "md");
+        assert_eq!(extension_from_mime("application/json"), "json");
+
+        // Fallback
         assert_eq!(extension_from_mime("application/octet-stream"), "bin");
     }
-
     // ── build_attachment tests ───────────────────────────────────
 
     #[test]
     fn build_attachment_with_ext() {
-        let att = build_attachment("photo.png", b"data", "image/png");
+        let att = build_attachment("photo.png", b"data", "image/png", None);
         assert_eq!(att.filename, "photo.png");
         assert_eq!(att.content_type, "image/png");
         assert_eq!(att.size, 4);
@@ -415,14 +538,67 @@ mod tests {
 
     #[test]
     fn build_attachment_without_ext() {
-        let att = build_attachment("image", b"data", "image/jpeg");
+        let att = build_attachment("image", b"data", "image/jpeg", None);
         assert_eq!(att.filename, "image.jpg");
     }
 
+    #[test]
+    fn build_attachment_uses_http_content_type_when_magic_fails() {
+        // Magic bytes detection returned application/octet-stream, but the
+        // HTTP response said the file is text/csv.
+        let att = build_attachment(
+            "file",
+            b"a,b,c",
+            "application/octet-stream",
+            Some("text/csv"),
+        );
+        assert_eq!(att.filename, "file.csv");
+        assert_eq!(att.content_type, "text/csv");
+    }
+
+    #[test]
+    fn build_attachment_preserves_magic_mime_when_http_is_generic() {
+        let att = build_attachment(
+            "file",
+            b"data",
+            "application/octet-stream",
+            Some("application/octet-stream"),
+        );
+        assert_eq!(att.filename, "file.bin");
+        assert_eq!(att.content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn build_attachment_falls_back_to_bin_when_no_http_mime() {
+        let att = build_attachment("file", b"data", "application/octet-stream", None);
+        assert_eq!(att.filename, "file.bin");
+        assert_eq!(att.content_type, "application/octet-stream");
+    }
     // ── download_media tests ─────────────────────────────────────
 
     #[tokio::test]
     async fn download_media_succeeds() {
+        let server = MockServer::start().await;
+        let body: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
+        Mock::given(method("GET"))
+            .and(path("/media"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/media", server.uri());
+        let (bytes, content_type) = download_media(&url).await.expect("must succeed");
+        assert_eq!(bytes, body);
+        assert_eq!(content_type.as_deref(), Some("image/jpeg"));
+    }
+
+    #[tokio::test]
+    async fn download_media_succeeds_without_content_type() {
         let server = MockServer::start().await;
         let body: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3];
         Mock::given(method("GET"))
@@ -433,10 +609,24 @@ mod tests {
             .await;
 
         let url = format!("{}/media", server.uri());
-        let bytes = download_media(&url).await.expect("must succeed");
+        let (bytes, content_type) = download_media(&url).await.expect("must succeed");
         assert_eq!(bytes, body);
+        assert_eq!(content_type, None);
     }
 
+    #[test]
+    fn parse_content_type_strips_charset_and_lowercases() {
+        assert_eq!(
+            parse_content_type_header("text/csv; charset=utf-8"),
+            Some("text/csv".to_string())
+        );
+        assert_eq!(
+            parse_content_type_header("  IMAGE/JPEG  "),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(parse_content_type_header(""), None);
+        assert_eq!(parse_content_type_header(";;;"), None);
+    }
     #[tokio::test]
     async fn download_media_fails_on_404() {
         let server = MockServer::start().await;

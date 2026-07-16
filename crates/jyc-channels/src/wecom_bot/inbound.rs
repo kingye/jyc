@@ -502,7 +502,10 @@ fn extract_content(bot_msg: &super::types::BotMessage) -> Result<(String, Vec<Me
         "file" => {
             let content = bot_msg.file.as_ref();
             let text = content
-                .map(|f| format!("[File: {} - {}]", f.filename, f.url))
+                .map(|f| {
+                    let filename = f.filename.as_deref().unwrap_or("unknown");
+                    format!("[File: {filename} - {}]", f.url)
+                })
                 .unwrap_or_else(|| "[File]".to_string());
             Ok((text, vec![]))
         }
@@ -622,6 +625,21 @@ mod tests {
 
         assert_eq!(inbound.channel_uid, "chat_456"); // group chat uses chatid
         assert_eq!(inbound.topic, "Group chat_456");
+    }
+
+    #[test]
+    fn test_extract_file_content_without_filename() {
+        let mut bot_msg = create_test_message("text", "");
+        bot_msg.msgtype = "file".to_string();
+        bot_msg.file = Some(super::super::types::FileContent {
+            filename: None,
+            url: "https://example.com/file.csv".to_string(),
+            aeskey: "dGhpcyBpcyBhIDMyLWJ5dGUgYmFzZTY0IGtleQ==".to_string(),
+        });
+
+        let (text, attachments) = extract_content(&bot_msg).unwrap();
+        assert_eq!(text, "[File: unknown - https://example.com/file.csv]");
+        assert!(attachments.is_empty());
     }
 
     #[test]

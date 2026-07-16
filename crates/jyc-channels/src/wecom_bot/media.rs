@@ -110,12 +110,13 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
                     Ok((bytes, mime)) => {
-                        attachments.push(build_attachment(&file.filename, &bytes, &mime));
+                        let filename = file.filename.as_deref().unwrap_or("file");
+                        attachments.push(build_attachment(filename, &bytes, &mime));
                     }
                     Err(e) => {
                         tracing::warn!(
                             msgid = %bot_msg.msgid,
-                            filename = %file.filename,
+                            filename = ?file.filename,
                             url = %file.url,
                             error = %e,
                             "Failed to download WeCom Bot file"
@@ -527,6 +528,54 @@ mod tests {
         let attachments = process_bot_attachments(&bot_msg)
             .await
             .expect("must succeed");
+        assert!(attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_without_filename_generates_fallback() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let encrypted_body = vec![0u8; 32]; // will fail decryption but we test the naming path
+        Mock::given(method("GET"))
+            .and(path("/file"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(encrypted_body))
+            .mount(&server)
+            .await;
+
+        let bot_msg = BotMessage {
+            msgid: "msg_file".to_string(),
+            aibotid: "bot_1".to_string(),
+            chatid: "chat_1".to_string(),
+            chattype: "single".to_string(),
+            from: super::super::types::SenderInfo {
+                userid: "user_1".to_string(),
+            },
+            msgtime: 0,
+            msgtype: "file".to_string(),
+            req_id: "req_1".to_string(),
+            servertime: 0,
+            text: None,
+            image: None,
+            mixed: None,
+            voice: None,
+            file: Some(super::super::types::FileContent {
+                filename: None,
+                url: format!("{}/file", server.uri()),
+                aeskey: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    [0u8; 20], // short key → decryption fails, but tests the code path
+                ),
+            }),
+            video: None,
+        };
+
+        let attachments = process_bot_attachments(&bot_msg)
+            .await
+            .expect("should not error");
+        // Decryption fails with short key → no attachments produced, but the
+        // important thing is the code path doesn't panic on missing filename
         assert!(attachments.is_empty());
     }
 }

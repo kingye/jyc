@@ -67,7 +67,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
-- **Ad-hoc websocket threads showing the pattern of another thread.** When a
+- **WeCom bot file messages parsing when filename is omitted.** The
+  `FileContent.filename` field was a required `String` but WeCom's API payload
+  for `msgtype: "file"` messages sometimes omits `filename` (only `url` and
+  `aeskey` are present). Changed to `Option<String>` with `#[serde(default)]`
+  and updated both consumers (`extract_content` and `process_bot_attachments`)
+  to handle `None` gracefully. (#374)
   websocket message arrived for a thread whose name did not match any configured
   pattern, the websocket matcher fell back to the first enabled pattern and wrote
   that name to `.jyc/pattern`. This caused ad-hoc threads (e.g., `adhoc`) to

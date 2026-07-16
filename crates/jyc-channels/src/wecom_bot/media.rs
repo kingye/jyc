@@ -110,12 +110,16 @@ pub async fn process_bot_attachments(bot_msg: &BotMessage) -> Result<Vec<Message
             if let Some(ref file) = bot_msg.file {
                 match download_and_decrypt(&file.url, &file.aeskey).await {
                     Ok((bytes, mime)) => {
-                        attachments.push(build_attachment(&file.filename, &bytes, &mime));
+                        let filename = file
+                            .filename
+                            .as_deref()
+                            .unwrap_or("file");
+                        attachments.push(build_attachment(filename, &bytes, &mime));
                     }
                     Err(e) => {
                         tracing::warn!(
                             msgid = %bot_msg.msgid,
-                            filename = %file.filename,
+                            filename = ?file.filename,
                             url = %file.url,
                             error = %e,
                             "Failed to download WeCom Bot file"

@@ -181,9 +181,13 @@ pub struct VoiceContent {
 }
 
 /// File message content.
+///
+/// Note: `filename` is optional because WeCom's actual API payload for
+/// `msgtype: "file"` messages sometimes omits the `filename` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileContent {
-    pub filename: String,
+    #[serde(default)]
+    pub filename: Option<String>,
     pub url: String,
     pub aeskey: String,
 }

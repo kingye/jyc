@@ -94,6 +94,12 @@ All notable changes to JYC will be documented in this file.
   omits `filename`, so `https://cos.example.com/bucket/data.csv?sign=xxx` yields a
   `.csv` saved filename. (#376)
 
+- **GitHub API error bodies spamming journal.** Non-2xx responses from GitHub may
+  return multi-line HTML error pages. The GitHub client now collapses `\n`, `\r`,
+  and `\t` in the error body before logging, keeping each failure on a single
+  journal line instead of splitting "Hello future GitHubber" across many entries.
+  (#377)
+
 - **Cross-thread reply not sent back despite `require_reply=true`.** The
   in-message prompt instruction told the agent to call both
   `jyc_reply_message` and `jyc_send_to_thread` but did not specify the

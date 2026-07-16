@@ -503,10 +503,7 @@ fn extract_content(bot_msg: &super::types::BotMessage) -> Result<(String, Vec<Me
             let content = bot_msg.file.as_ref();
             let text = content
                 .map(|f| {
-                    let filename = f
-                        .filename
-                        .as_deref()
-                        .unwrap_or("unknown");
+                    let filename = f.filename.as_deref().unwrap_or("unknown");
                     format!("[File: {filename} - {}]", f.url)
                 })
                 .unwrap_or_else(|| "[File]".to_string());

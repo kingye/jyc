@@ -629,14 +629,15 @@ mod tests {
             },
         ];
 
-        // Name match is disabled, so fall back to first enabled
+        // Name match is disabled, so use the topic itself as the pattern name
+        // rather than falling back to an arbitrary enabled pattern.
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().pattern_name, "fallback");
+        assert_eq!(result.unwrap().pattern_name, "my-project");
     }
 
     #[test]
-    fn test_match_message_fallback_when_no_name_match() {
+    fn test_match_message_uses_topic_when_no_name_match() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
         let msg = create_test_message(); // topic = "Test", no pattern named "Test"
 
@@ -655,7 +656,60 @@ mod tests {
             },
         ];
 
-        // No name match, falls back to first enabled
+        // No name match, use the topic itself as the pattern name so ad-hoc
+        // threads do not inherit an unrelated pattern.
+        let result = matcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "Test");
+    }
+
+    #[test]
+    fn test_match_message_adhoc_topic_does_not_inherit_other_pattern() {
+        let matcher = WebsocketMatcher::new("local_dev".to_string());
+        let mut msg = create_test_message();
+        msg.topic = "adhoc".to_string();
+
+        let patterns = vec![
+            ChannelPattern {
+                name: "jin".to_string(),
+                channel: "websocket".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "jyc".to_string(),
+                channel: "websocket".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+
+        let result = matcher.match_message(&msg, &patterns);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "adhoc");
+    }
+
+    #[test]
+    fn test_match_message_empty_topic_falls_back_to_first_enabled() {
+        let matcher = WebsocketMatcher::new("my-ws".to_string());
+        let mut msg = create_test_message();
+        msg.topic = String::new();
+
+        let patterns = vec![
+            ChannelPattern {
+                name: "p1".to_string(),
+                channel: "websocket".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+            ChannelPattern {
+                name: "p2".to_string(),
+                channel: "websocket".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "p1");

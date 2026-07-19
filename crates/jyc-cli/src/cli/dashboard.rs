@@ -653,15 +653,32 @@ pub async fn run(
             terminal.draw(|f| ui(f, &mut app))?;
 
             // Handle input (non-blocking, 50ms timeout)
-            if event::poll(Duration::from_millis(50))?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                if app.chat_visible {
-                    handle_chat_keys(&mut app, key);
-                } else {
-                    handle_normal_keys(&mut app, key, &mut client, &mut last_poll, &args.addr)
-                        .await;
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    Event::Paste(data)
+                        if app.chat_visible && app.chat_focus == ChatFocus::ChatPane =>
+                    {
+                        // Bracketed paste delivers the whole pasted chunk as
+                        // one event. Insert it verbatim (including newlines)
+                        // so it never triggers Enter handling / send.
+                        app.chat_input.insert_str(app.chat_cursor, &data);
+                        app.chat_cursor += data.len();
+                    }
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if app.chat_visible {
+                            handle_chat_keys(&mut app, key);
+                        } else {
+                            handle_normal_keys(
+                                &mut app,
+                                key,
+                                &mut client,
+                                &mut last_poll,
+                                &args.addr,
+                            )
+                            .await;
+                        }
+                    }
+                    _ => {}
                 }
             }
 

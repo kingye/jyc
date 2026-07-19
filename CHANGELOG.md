@@ -79,6 +79,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Multi-line paste in dashboard chat input triggering premature send.**
+  Pasting multi-line text into the chat pane delivered each line's Enter as a
+  regular key event, so the first line was sent via `send_chat_message()`
+  before the rest of the paste arrived. The dashboard now enables crossterm's
+  bracketed paste mode, so terminals that support it deliver pasted content as
+  a single `Event::Paste` that is inserted verbatim (newlines included) without
+  triggering Enter handling. The existing timing-based Enter debounce is kept
+  as a fallback for terminals without bracketed paste support. (#379)
+
 - **WeCom bot file messages parsing when filename is omitted.** The
   `FileContent.filename` field was a required `String` but WeCom's API payload
   for `msgtype: "file"` messages sometimes omits `filename` (only `url` and

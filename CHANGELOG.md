@@ -85,6 +85,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Stale key bindings in the websocket channel doc.** `docs/channels/websocket.md`
+  listed `Ctrl+D` (send) and `p` (back to pattern selection), neither of which
+  exists in the dashboard; `Enter` sends and `Esc` returns to pattern
+  selection. The Chat Pane Controls table now documents the actual bindings,
+  including `Shift+Enter`/`Alt+Enter` newline, `Ctrl+B`/`Ctrl+F` scrolling,
+  `Ctrl+W` split cycling, `Ctrl+C` cancel, `Shift+Tab` plan/build toggle, and
+  `Ctrl+Q` quit. (#381)
+
 - **Multi-line paste in dashboard chat input triggering premature send.**
   Pasting multi-line text into the chat pane delivered each line's Enter as a
   regular key event, so the first line was sent via `send_chat_message()`

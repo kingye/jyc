@@ -138,10 +138,6 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
-    /// Timestamp of the last Enter press, used for paste debounce.
-    /// When Enter is pressed within 300ms of the previous Enter, it's
-    /// treated as a paste event and inserts a newline instead of sending.
-    last_enter_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -170,7 +166,6 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
-            last_enter_at: None,
         }
     }
 
@@ -245,7 +240,6 @@ impl App {
         self.activity_hscroll = 0;
         self.activity_split = 0;
         self.ws_connected = false;
-        self.last_enter_at = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1179,27 +1173,17 @@ fn handle_chat_keys(
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
                 (EditorMode::Normal, KeyCode::Esc) => app.go_to_pattern_select(),
-                // Plain Enter in Insert mode sends the message (with the
-                // paste debounce: rapid consecutive Enters, e.g. pasting
-                // multi-line text without bracketed paste, insert newlines).
+                // Plain Enter in Insert mode inserts a newline (handled by
+                // the editor). Pasted multi-line text therefore can never
+                // trigger a send, so no paste debounce is needed.
                 (EditorMode::Insert, KeyCode::Enter)
                     if !key.modifiers.contains(KeyModifiers::SHIFT)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    let now = std::time::Instant::now();
-                    let is_fast_enter = app
-                        .last_enter_at
-                        .map(|t| now.duration_since(t) < std::time::Duration::from_millis(300))
-                        .unwrap_or(false);
-                    app.last_enter_at = Some(now);
-                    if is_fast_enter {
-                        insert_editor_newline(app);
-                    } else {
-                        app.send_chat_message();
-                    }
+                    app.chat_handler.on_key_event(key, &mut app.chat_editor)
                 }
-                // Shift/Alt+Enter inserts a newline in Insert mode.
-                (EditorMode::Insert, KeyCode::Enter) => insert_editor_newline(app),
+                // Shift/Alt+Enter in Insert mode sends the message.
+                (EditorMode::Insert, KeyCode::Enter) => app.send_chat_message(),
                 // Enter in Normal mode also sends (newlines come from o/O).
                 (EditorMode::Normal, KeyCode::Enter) => app.send_chat_message(),
                 // In Normal mode, Up/Down scroll the message history (cursor
@@ -1210,13 +1194,6 @@ fn handle_chat_keys(
             }
         }
     }
-}
-
-/// Insert a newline at the editor cursor by feeding a plain Enter key
-/// event to the editor (used for Shift/Alt+Enter and the paste debounce).
-fn insert_editor_newline(app: &mut App) {
-    let enter = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-    app.chat_handler.on_key_event(enter, &mut app.chat_editor);
 }
 
 async fn handle_normal_keys(

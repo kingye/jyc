@@ -13,8 +13,8 @@ All notable changes to JYC will be documented in this file.
   objects (`diw ciw vi" di(` …), yank/paste (`y yy p P`), undo/redo
   (`u`/`Ctrl+r`), and `.` repeat. The input starts in Insert mode; `Esc`
   switches to Normal mode, `Esc` again returns to pattern selection. `Enter`
-  sends from both Insert and Normal modes; `Shift+Enter`/`Alt+Enter` (Insert)
-  or `o`/`O` (Normal) insert newlines. (#383)
+  inserts a newline in Insert mode; send with `Shift+Enter`/`Alt+Enter`
+  (Insert) or plain `Enter` (Normal). (#383)
 
 - **External editor for dashboard chat input.** Press `Ctrl+E` in the chat
   pane to open `$VISUAL` / `$EDITOR` (fallback: `vi`) with the current input

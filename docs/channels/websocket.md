@@ -82,7 +82,7 @@ folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 
 3. Press `c` to open the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
-   - Type a message and press `Enter` to send (`Shift+Enter` / `Alt+Enter` inserts a newline)
+   - Type a message and press `Shift+Enter` / `Alt+Enter` to send (`Enter` inserts a newline); in Normal (vi) mode `Enter` sends
    - Press `Esc` to enter Normal (vi) mode; press `Esc` again to go back to pattern selection
    - Press `Esc` once more at pattern selection to close chat
 
@@ -96,8 +96,8 @@ starts in Insert mode.
 |-----|--------|
 | `c` | Open chat pane (from thread list) |
 | `↑` / `↓` | Select pattern (pattern select); scroll messages (Normal mode); move cursor (Insert/Visual mode) |
-| `Enter` | Select pattern / send message (Insert and Normal modes) |
-| `Shift+Enter` / `Alt+Enter` | Insert newline (Insert mode) |
+| `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
+| `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
 | `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection) |
 | `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Switch focus between Chat and Activity panes |

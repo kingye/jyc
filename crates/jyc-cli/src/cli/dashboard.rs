@@ -16,7 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
-use std::io::stdout;
+use std::io::{Stdout, stdout};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -666,7 +666,7 @@ pub async fn run(
                     }
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if app.chat_visible {
-                            handle_chat_keys(&mut app, key);
+                            handle_chat_keys(&mut app, key, &mut terminal);
                         } else {
                             handle_normal_keys(
                                 &mut app,
@@ -1032,12 +1032,80 @@ fn move_cursor_vertically(input: &str, cursor: &mut usize, down: bool) {
     }
 }
 
-fn handle_chat_keys(app: &mut App, key: event::KeyEvent) {
+/// Open an external editor ($VISUAL, $EDITOR, or vi) with the current chat
+/// input, then replace the input with the edited contents.
+///
+/// The TUI is suspended (raw mode off, alternate screen left) while the
+/// editor runs and restored afterwards regardless of the editor outcome.
+fn edit_input_externally(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) -> Result<()> {
+    let tmp = tempfile::Builder::new()
+        .prefix("jyc-chat-")
+        .suffix(".md")
+        .tempfile()
+        .context("Failed to create temp file for external editor")?;
+    std::fs::write(tmp.path(), &app.chat_input)
+        .with_context(|| format!("Failed to write {}", tmp.path().display()))?;
+
+    // Suspend the TUI so the editor takes over the terminal
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("EDITOR").ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "vi".to_string());
+
+    let status = std::process::Command::new(&editor).arg(tmp.path()).status();
+
+    // Resume the TUI regardless of the editor outcome
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    match status {
+        Ok(s) if s.success() => {
+            let edited = std::fs::read_to_string(tmp.path())
+                .with_context(|| format!("Failed to read {}", tmp.path().display()))?;
+            // Drop the single trailing newline editors typically append on save
+            app.chat_input = edited
+                .strip_suffix('\n')
+                .map(str::to_string)
+                .unwrap_or(edited);
+            app.chat_cursor = app.chat_input.len();
+        }
+        Ok(s) => {
+            app.set_status(format!("Editor exited with {s}; input unchanged"));
+        }
+        Err(e) => {
+            app.set_status(format!("Failed to launch editor `{editor}`: {e}"));
+        }
+    }
+    Ok(())
+}
+
+fn handle_chat_keys(
+    app: &mut App,
+    key: event::KeyEvent,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) {
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 
     if is_ctrl_q {
         app.should_quit = true;
+        return;
+    }
+
+    // Ctrl+E opens an external editor to compose the chat input
+    let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_e && app.chat_phase == ChatPhase::Chatting && app.chat_focus == ChatFocus::ChatPane {
+        if let Err(e) = edit_input_externally(app, terminal) {
+            app.set_status(format!("Editor error: {e:#}"));
+        }
         return;
     }
 

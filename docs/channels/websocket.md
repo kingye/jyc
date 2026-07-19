@@ -94,6 +94,7 @@ folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 | `c` | Toggle chat pane |
 | `↑` / `↓` | Select pattern (in pattern select mode) |
 | `Enter` | Select pattern / send message |
+| `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Switch focus between Chat and Activity panes |
 | `PgUp` / `PgDn` | Scroll focused pane |
 | `Ctrl+D` | Send input from Chat pane |

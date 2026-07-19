@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **External editor for dashboard chat input.** Press `Ctrl+E` in the chat
+  pane to open `$VISUAL` / `$EDITOR` (fallback: `vi`) with the current input
+  in a temp file. The TUI suspends while the editor runs; on successful exit
+  the edited contents replace the chat input, so you can compose messages
+  with a real editor (vim, nvim, etc.). (#381)
+
 - **Top-level `jyc open` shortcut for `jyc dashboard open`.** Open a directory
   as an ad-hoc websocket thread and launch chat mode directly from the top
   level CLI. Accepts the same flags (`-t/--thread`, `-p/--path`,

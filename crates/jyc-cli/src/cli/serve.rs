@@ -49,9 +49,9 @@ use jyc_types::MonitorConfig;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config, validation};
 
-/// Monitor command — start the agent, monitor inbound channels, process messages.
+/// Serve command — start the agent, monitor inbound channels, process messages.
 #[derive(Debug, Args)]
-pub struct MonitorArgs {
+pub struct ServeArgs {
     /// Config file path (default: config.toml in workdir)
     #[arg(short, long, default_value = "config.toml")]
     pub config: String,
@@ -87,7 +87,7 @@ async fn shutdown_signal() {
     }
 }
 
-pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
+pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
     // 1. Load and validate config
     let config_path = workdir.join(&args.config);
     tracing::info!(config = %config_path.display(), "Loading configuration");
@@ -1268,7 +1268,7 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
 
     tracing::info!(
         channels = tasks.len(),
-        "Monitor started, press Ctrl+C to stop"
+        "Serve started, press Ctrl+C to stop"
     );
 
     // Wait for all channel tasks to complete
@@ -1284,6 +1284,6 @@ pub async fn run(args: &MonitorArgs, workdir: &Path) -> Result<()> {
     // Wait for metrics collector to stop
     metrics_task.await.ok();
 
-    tracing::info!("Monitor stopped");
+    tracing::info!("Serve stopped");
     Ok(())
 }

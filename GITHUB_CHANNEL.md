@@ -646,7 +646,7 @@ the current phase passes human testing.
 - `src/channels/types.rs` — add `github_type`, `labels` to `PatternRules`
 - `src/channels/github/inbound.rs` — stub `GitHubMatcher` + `GitHubInboundAdapter`
 - `src/channels/github/outbound.rs` — stub `GitHubOutboundAdapter`
-- `src/cli/monitor.rs` — wire up GitHub channel (disabled by default)
+- `src/cli/serve.rs` — wire up GitHub channel (disabled by default)
 
 **Test**: `cargo test` passes. `cargo build --release` passes. No runtime behavior.
 

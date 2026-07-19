@@ -68,7 +68,7 @@ See `config.example.toml` for a full annotated example. Use `${ENV_VAR}` syntax 
 ### 3. Run
 
 ```bash
-./target/release/jyc monitor --workdir /path/to/data
+./target/release/jyc serve --workdir /path/to/data
 ```
 
 Add `--debug` for debug-level logging or `--verbose` for trace-level.
@@ -142,7 +142,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 ### ✅ WebSocket
 - **Status:** Production ready (implemented in v0.3.12)
 - **Features:** Interactive chat pane in `jyc dashboard`, multi-client support via broadcast
-- **Protocols:** WebSocket server runs inside `jyc monitor`, dashboard clients connect via `ws://`
+- **Protocols:** WebSocket server runs inside `jyc serve`, dashboard clients connect via `ws://`
 - **Usage:** Press `c` in dashboard to toggle chat pane
 
 ### 🔄 Future Channels (Planned)
@@ -188,7 +188,7 @@ Place a `system.md` file in a thread's workspace directory to customize the AI's
 ### Subcommands
 
 ```bash
-jyc monitor            # Start the agent (main command)
+jyc serve              # Start the agent (main command)
                        #   --config <FILE>    Config file path (default: config.toml)
                        #   --no-idle         Use polling instead of IMAP IDLE
                        #   --reset           Reset monitoring state before starting
@@ -196,7 +196,8 @@ jyc dashboard            # Live TUI dashboard (connects via inspect server)
                          #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
                          #                     Also used for WebSocket chat on /ws
                          #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
-jyc dashboard new        # Create a new ad-hoc websocket thread and open chat
+jyc open                 # Create a new ad-hoc websocket thread and open chat
+                         #   (shortcut for `jyc dashboard open`)
                          #   -t, --thread <NAME>   Thread name (default: folder name of -p or CWD)
                          #   -p, --path <PATH>     Thread working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
@@ -285,13 +286,13 @@ podman logs -f jyc
 **Direct (foreground):**
 ```bash
 # Debug level
-jyc monitor --workdir /path/to/data --debug
+jyc serve --workdir /path/to/data --debug
 
 # Trace level (very verbose)
-jyc monitor --workdir /path/to/data --verbose
+jyc serve --workdir /path/to/data --verbose
 
 # Or use RUST_LOG for fine-grained control
-RUST_LOG=jyc=debug,async_imap=warn jyc monitor --workdir /path/to/data
+RUST_LOG=jyc=debug,async_imap=warn jyc serve --workdir /path/to/data
 ```
 
 ### Checking MCP Reply Tool Logs

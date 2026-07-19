@@ -32,7 +32,7 @@ After=network.target
 Type=simple
 EnvironmentFile=%h/.zshrc.local
 Environment=PATH=%h/.opencode/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=<JYC_BINARY> monitor --workdir <JYC_WORKDIR> --debug
+ExecStart=<JYC_BINARY> serve --workdir <JYC_WORKDIR> --debug
 WorkingDirectory=<JYC_WORKDIR>
 Restart=always
 RestartSec=5
@@ -49,7 +49,7 @@ systemctl --user enable jyc
 
 **Example** (adjust paths for your setup):
 ```
-ExecStart=/home/user/bin/jyc monitor --workdir /home/user/jyc-data --debug
+ExecStart=/home/user/bin/jyc serve --workdir /home/user/jyc-data --debug
 WorkingDirectory=/home/user/jyc-data
 ```
 

@@ -44,7 +44,7 @@ WORKDIR /opt/jyc
 COPY --from=builder /usr/local/bin/jyc /usr/local/bin/jyc
 
 ENTRYPOINT ["jyc"]
-CMD ["monitor", "--workdir", "/opt/jyc", "--debug"]
+CMD ["serve", "--workdir", "/opt/jyc", "--debug"]
 
 # ── Stage 3: Full (slim + dev tools for AI agent development) ────────
 FROM --platform=linux/amd64 ccr.ccs.tencentyun.com/jiny/jyc:slim AS full

@@ -110,7 +110,7 @@ mentions = ["jyc"]                     # Your bot's display name
 ## Step 8: Start JYC
 
 ```bash
-./target/release/jyc monitor --workdir /path/to/data
+./target/release/jyc serve --workdir /path/to/data
 ```
 
 You should see in the logs:

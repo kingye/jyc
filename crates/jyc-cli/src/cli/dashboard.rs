@@ -37,19 +37,25 @@ pub struct DashboardArgs {
 pub enum DashboardCommand {
     /// Open a directory as an ad-hoc thread and launch chat mode.
     #[command(name = "open")]
-    Open {
-        /// Thread name (defaults to folder name of --path or current directory)
-        #[arg(short = 't', long)]
-        thread: Option<String>,
+    Open(OpenArgs),
+}
 
-        /// Websocket channel name (auto-detected if only one exists)
-        #[arg(short = 'c', long)]
-        channel: Option<String>,
+/// Arguments for opening a directory as an ad-hoc thread.
+///
+/// Shared by `jyc dashboard open` and the top-level `jyc open` shortcut.
+#[derive(Args, Debug)]
+pub struct OpenArgs {
+    /// Thread name (defaults to folder name of --path or current directory)
+    #[arg(short = 't', long)]
+    pub thread: Option<String>,
 
-        /// Thread working directory (defaults to current directory)
-        #[arg(short = 'p', long)]
-        path: Option<String>,
-    },
+    /// Websocket channel name (auto-detected if only one exists)
+    #[arg(short = 'c', long)]
+    pub channel: Option<String>,
+
+    /// Thread working directory (defaults to current directory)
+    #[arg(short = 'p', long)]
+    pub path: Option<String>,
 }
 
 /// Phase of the chat pane UI.
@@ -782,7 +788,7 @@ fn check_existing_thread_name(path: &str, thread: &str) -> Result<()> {
         if !existing.is_empty() && existing != thread {
             anyhow::bail!(
                 "directory '{}' is already registered as thread '{}'; \
-                 cannot open as '{}'. Use 'jyc dashboard open -t {} -p {}' instead",
+                 cannot open as '{}'. Use 'jyc open -t {} -p {}' instead",
                 path,
                 existing,
                 thread,

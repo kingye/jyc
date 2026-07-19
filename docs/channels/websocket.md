@@ -1,13 +1,13 @@
 # WebSocket Channel
 
-The `websocket` channel runs a WebSocket server inside `jyc monitor` for interactive terminal-based AI interaction via `jyc dashboard`.
+The `websocket` channel runs a WebSocket server inside `jyc serve` for interactive terminal-based AI interaction via `jyc dashboard`.
 
 ## Overview
 
-Unlike the old standalone `jyc local` command, the websocket channel is a first-class channel type that runs inside the monitor process alongside other channels (email, GitHub, etc.). Multiple dashboard clients can connect simultaneously and chat via the interactive chat pane.
+Unlike the old standalone `jyc local` command, the websocket channel is a first-class channel type that runs inside the serve process alongside other channels (email, GitHub, etc.). Multiple dashboard clients can connect simultaneously and chat via the interactive chat pane.
 
 **Key characteristics:**
-- **Runs inside `jyc monitor`** — no separate process needed
+- **Runs inside `jyc serve`** — no separate process needed
 - **Multi-client support** — multiple dashboard clients via `tokio::sync::broadcast`
 - **Real-time bidirectional chat** — type messages and see AI replies stream in the dashboard
 - **Pattern-based thread selection** — patterns serve as entry points for conversations
@@ -57,10 +57,10 @@ The WebSocket handler rides on the same port as the inspect server. Dashboard cl
 
 ## Usage
 
-1. Start the monitor with a websocket channel configured:
+1. Start the server with a websocket channel configured:
 
 ```bash
-jyc monitor --workdir /path/to/data
+jyc serve --workdir /path/to/data
 ```
 
 2. Open the dashboard in another terminal:
@@ -73,10 +73,10 @@ Or create an ad-hoc thread directly from the CLI:
 
 ```bash
 cd /path/to/project
-jyc dashboard new --workdir /path/to/data
+jyc open --workdir /path/to/data
 ```
 
-The `new` subcommand creates a websocket thread named after the current
+The `open` command creates a websocket thread named after the current
 folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 `-c/--channel` to override the defaults.
 
@@ -154,7 +154,7 @@ JSON envelope over WebSocket:
 
 ```
 ┌─────────────────────────────────────────────┐
-│  jyc monitor                                │
+│  jyc serve                                  │
 │  ┌───────────────────────────────────────┐  │
 │  │  Inspect Server (dual-protocol)       │  │
 │  │  • TCP JSON for state queries         │  │

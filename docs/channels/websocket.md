@@ -82,26 +82,36 @@ folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 
 3. Press `c` to open the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
-   - Type a message and press `Enter` to send (`Shift+Enter` / `Alt+Enter` inserts a newline)
-   - Press `Esc` to go back to pattern selection
-   - Press `Esc` again at pattern selection to close chat
+   - Type a message and press `Shift+Enter` / `Alt+Enter` to send (`Enter` inserts a newline); in Normal (vi) mode `Enter` sends
+   - Press `Esc` to enter Normal (vi) mode; press `Esc` again to go back to pattern selection
+   - Press `Esc` once more at pattern selection to close chat
 
 ### Chat Pane Controls
+
+The chat input is a vi-style modal editor (via [edtui](https://docs.rs/edtui))
+with Insert/Normal/Visual modes and a mode indicator in its status line. It
+starts in Insert mode.
 
 | Key | Action |
 |-----|--------|
 | `c` | Open chat pane (from thread list) |
-| `↑` / `↓` | Select pattern (in pattern select mode); move cursor in multi-line input, else scroll |
-| `Enter` | Select pattern / send message |
-| `Shift+Enter` / `Alt+Enter` | Insert newline in chat input |
+| `↑` / `↓` | Select pattern (pattern select); scroll messages (Normal mode); move cursor (Insert/Visual mode) |
+| `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
+| `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
+| `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection) |
 | `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Switch focus between Chat and Activity panes |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+W` | Cycle activity pane split ratio |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
-| `Esc` | Back to pattern selection / close chat |
 | `Ctrl+Q` | Quit the dashboard |
+
+In Normal mode the usual vi keys are available: motions (`h j k l w e b 0 $ gg
+G % { } f`/`t`), edits (`x dd dw D cw J o O`), text objects (`diw ciw vi" di(` …),
+yank/paste (`y yy p P`), undo/redo (`u` / `Ctrl+r`), repeat (`.`), half-page
+jumps (`Ctrl+d` / `Ctrl+u`), and Visual mode (`v`). See the
+[edtui keybinding list](https://docs.rs/edtui) for details.
 
 ### Interface Layout
 

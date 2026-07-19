@@ -6,6 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Vi-style modal editing for the dashboard chat input.** The chat pane
+  input is now a vim-inspired modal editor (via `edtui`) with
+  Insert/Normal/Visual modes and a mode indicator in its status line. Supports
+  motions (`hjkl w e b 0 $ gg G % {}` …), operators (`dd dw D cw J` …), text
+  objects (`diw ciw vi" di(` …), yank/paste (`y yy p P`), undo/redo
+  (`u`/`Ctrl+r`), and `.` repeat. The input starts in Insert mode; `Esc`
+  switches to Normal mode, `Esc` again returns to pattern selection. `Enter`
+  inserts a newline in Insert mode; send with `Shift+Enter`/`Alt+Enter`
+  (Insert) or plain `Enter` (Normal). (#383)
+
 - **External editor for dashboard chat input.** Press `Ctrl+E` in the chat
   pane to open `$VISUAL` / `$EDITOR` (fallback: `vi`) with the current input
   in a temp file. The TUI suspends while the editor runs; on successful exit

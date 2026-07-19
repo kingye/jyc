@@ -8,13 +8,14 @@ use crossterm::{
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use edtui::{EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Lines};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Widget, Wrap},
 };
 use std::io::{Stdout, stdout};
 use std::path::PathBuf;
@@ -87,6 +88,13 @@ struct ChatMessage {
     timestamp: Option<String>,
 }
 
+/// Creates a fresh, empty chat input editor in Insert mode.
+fn empty_chat_editor() -> EditorState {
+    let mut editor = EditorState::default();
+    editor.mode = EditorMode::Insert;
+    editor
+}
+
 /// Events from the WebSocket client task.
 #[derive(Debug)]
 enum WsEvent {
@@ -112,8 +120,10 @@ struct App {
     chat_pattern_selected: usize,
     chat_thread: Option<String>,
     chat_messages: Vec<ChatMessage>,
-    chat_input: String,
-    chat_cursor: usize,
+    /// Vim-style editor state for the chat input (edtui).
+    chat_editor: EditorState,
+    /// Vim-mode key event handler for the chat input (edtui).
+    chat_handler: EditorEventHandler,
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
@@ -128,10 +138,6 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
-    /// Timestamp of the last Enter press, used for paste debounce.
-    /// When Enter is pressed within 300ms of the previous Enter, it's
-    /// treated as a paste event and inserts a newline instead of sending.
-    last_enter_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -149,8 +155,8 @@ impl App {
             chat_pattern_selected: 0,
             chat_thread: None,
             chat_messages: vec![],
-            chat_input: String::new(),
-            chat_cursor: 0,
+            chat_editor: empty_chat_editor(),
+            chat_handler: EditorEventHandler::default(),
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
@@ -160,7 +166,6 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
-            last_enter_at: None,
         }
     }
 
@@ -228,15 +233,13 @@ impl App {
         self.chat_pattern_selected = 0;
         self.chat_thread = initial_thread.map(|s| s.to_string());
         self.chat_messages.clear();
-        self.chat_input.clear();
-        self.chat_cursor = 0;
+        self.chat_editor = empty_chat_editor();
         self.chat_focus = ChatFocus::ChatPane;
         self.chat_scroll = 0;
         self.activity_scroll = 0;
         self.activity_hscroll = 0;
         self.activity_split = 0;
         self.ws_connected = false;
-        self.last_enter_at = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -264,8 +267,7 @@ impl App {
     fn select_pattern(&mut self, pattern: String) {
         self.chat_phase = ChatPhase::Chatting;
         self.chat_thread = Some(pattern.clone());
-        self.chat_input.clear();
-        self.chat_cursor = 0;
+        self.chat_editor = empty_chat_editor();
         self.chat_scroll = 0;
         self.chat_messages.clear();
         self.chat_messages.clear();
@@ -283,8 +285,7 @@ impl App {
     fn go_to_pattern_select(&mut self) {
         self.chat_phase = ChatPhase::PatternSelect;
         self.chat_thread = None;
-        self.chat_input.clear();
-        self.chat_cursor = 0;
+        self.chat_editor = empty_chat_editor();
         self.chat_scroll = 0;
     }
 
@@ -318,7 +319,9 @@ impl App {
         match self.chat_focus {
             ChatFocus::ChatPane => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                let input_lines = count_wrapped_lines(&self.chat_input, term_width).clamp(1, 5);
+                // Editor rows: wrapped text lines (1-4) + 1 status line.
+                let input_lines =
+                    count_wrapped_lines(&self.chat_text(), term_width).clamp(1, 4) + 1;
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),
@@ -345,8 +348,13 @@ impl App {
         }
     }
 
+    /// Current chat input text (editor lines joined with newlines).
+    fn chat_text(&self) -> String {
+        self.chat_editor.lines.to_string()
+    }
+
     fn send_chat_message(&mut self) {
-        let text = self.chat_input.trim().to_string();
+        let text = self.chat_text().trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -361,8 +369,7 @@ impl App {
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
         });
-        self.chat_input.clear();
-        self.chat_cursor = 0;
+        self.chat_editor = empty_chat_editor();
         self.chat_scroll = 0;
         self.chat_awaiting_response = true;
 
@@ -659,10 +666,9 @@ pub async fn run(
                         if app.chat_visible && app.chat_focus == ChatFocus::ChatPane =>
                     {
                         // Bracketed paste delivers the whole pasted chunk as
-                        // one event. Insert it verbatim (including newlines)
-                        // so it never triggers Enter handling / send.
-                        app.chat_input.insert_str(app.chat_cursor, &data);
-                        app.chat_cursor += data.len();
+                        // one event. Forward it to the editor so it never
+                        // triggers Enter handling / send.
+                        app.chat_handler.on_paste_event(data, &mut app.chat_editor);
                     }
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if app.chat_visible {
@@ -972,64 +978,17 @@ fn format_group_elapsed(start: &Option<String>, end: &Option<String>) -> String 
     }
 }
 
-/// Count the number of visual lines when `text` is wrapped within
-/// `available_width`, accounting for the 4-character prefix ("▶ > " or
-/// "    ") that each logical line starts with.
+/// Count the number of visual lines when `text` is hard-wrapped within
+/// `available_width`. Approximates the editor's own wrapping, which is
+/// close enough for sizing the input area (the editor scrolls internally
+/// if the estimate is off by a line).
 fn count_wrapped_lines(text: &str, available_width: u16) -> usize {
-    let width = available_width as usize;
-    let prefix_width = 4usize;
-    let first_row_content = width.saturating_sub(prefix_width).max(1);
+    let width = (available_width as usize).max(1);
 
     text.split('\n')
-        .map(|line| {
-            let w = line.width();
-            if w <= first_row_content {
-                1
-            } else {
-                1 + (w - first_row_content).div_ceil(width)
-            }
-        })
+        .map(|line| (line.width().saturating_sub(1) / width) + 1)
         .sum::<usize>()
         .max(1)
-}
-
-/// Move the cursor up or down one line within a multi-line string.
-///
-/// `down = true` moves down, `false` moves up. If the cursor is on the
-/// first/last line, it moves to the start/end of that line respectively.
-fn move_cursor_vertically(input: &str, cursor: &mut usize, down: bool) {
-    // Find the start of the current line
-    let line_start = input[..*cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = input[*cursor..]
-        .find('\n')
-        .map(|p| *cursor + p)
-        .unwrap_or(input.len());
-    let col = *cursor - line_start;
-
-    if down {
-        // Find the next line
-        if line_end < input.len() {
-            let next_start = line_end + 1;
-            let next_end = input[next_start..]
-                .find('\n')
-                .map(|p| next_start + p)
-                .unwrap_or(input.len());
-            *cursor = next_start + col.min(next_end - next_start);
-        } else {
-            // Already on last line, move to end
-            *cursor = input.len();
-        }
-    } else {
-        // Find the previous line
-        if line_start > 0 {
-            let prev_end = line_start - 1; // position of the \n
-            let prev_start = input[..prev_end].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            *cursor = prev_start + col.min(prev_end - prev_start);
-        } else {
-            // Already on first line, move to start
-            *cursor = 0;
-        }
-    }
 }
 
 /// Open an external editor ($VISUAL, $EDITOR, or vi) with the current chat
@@ -1046,7 +1005,7 @@ fn edit_input_externally(
         .suffix(".md")
         .tempfile()
         .context("Failed to create temp file for external editor")?;
-    std::fs::write(tmp.path(), &app.chat_input)
+    std::fs::write(tmp.path(), app.chat_text())
         .with_context(|| format!("Failed to write {}", tmp.path().display()))?;
 
     // Suspend the TUI so the editor takes over the terminal
@@ -1071,11 +1030,9 @@ fn edit_input_externally(
             let edited = std::fs::read_to_string(tmp.path())
                 .with_context(|| format!("Failed to read {}", tmp.path().display()))?;
             // Drop the single trailing newline editors typically append on save
-            app.chat_input = edited
-                .strip_suffix('\n')
-                .map(str::to_string)
-                .unwrap_or(edited);
-            app.chat_cursor = app.chat_input.len();
+            let edited = edited.strip_suffix('\n').unwrap_or(&edited);
+            app.chat_editor = EditorState::new(Lines::from(edited));
+            app.chat_editor.mode = EditorMode::Insert;
         }
         Ok(s) => {
             app.set_status(format!("Editor exited with {s}; input unchanged"));
@@ -1172,100 +1129,70 @@ fn handle_chat_keys(
             }
             _ => {}
         },
-        ChatPhase::Chatting => match key.code {
-            KeyCode::Enter if app.chat_focus == ChatFocus::ChatPane => {
-                if key.modifiers.contains(KeyModifiers::SHIFT)
-                    || key.modifiers.contains(KeyModifiers::ALT)
+        ChatPhase::Chatting => {
+            // App-level keys take precedence over the vim editor.
+            match key.code {
+                KeyCode::Tab => {
+                    app.toggle_focus();
+                    return;
+                }
+                KeyCode::PageUp => {
+                    app.page_up();
+                    return;
+                }
+                KeyCode::PageDown => {
+                    app.page_down();
+                    return;
+                }
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.page_up();
+                    return;
+                }
+                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.page_down();
+                    return;
+                }
+                _ => {}
+            }
+
+            if app.chat_focus == ChatFocus::ActivityPane {
+                match key.code {
+                    KeyCode::Esc => app.go_to_pattern_select(),
+                    KeyCode::Up => app.scroll_up(),
+                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::Left => app.activity_hscroll = app.activity_hscroll.saturating_sub(1),
+                    KeyCode::Right => app.activity_hscroll = app.activity_hscroll.saturating_add(1),
+                    _ => {}
+                }
+                return;
+            }
+
+            // Chat pane: vim editor input. Everything not matched here is
+            // delegated to the edtui event handler.
+            match (app.chat_editor.mode, key.code) {
+                // Esc in Normal mode leaves the thread; in other modes the
+                // editor uses it to return to Normal mode.
+                (EditorMode::Normal, KeyCode::Esc) => app.go_to_pattern_select(),
+                // Plain Enter in Insert mode inserts a newline (handled by
+                // the editor). Pasted multi-line text therefore can never
+                // trigger a send, so no paste debounce is needed.
+                (EditorMode::Insert, KeyCode::Enter)
+                    if !key.modifiers.contains(KeyModifiers::SHIFT)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    // Insert newline for multi-line input
-                    app.chat_input.insert(app.chat_cursor, '\n');
-                    app.chat_cursor += 1;
-                } else if !app.chat_input.trim().is_empty() {
-                    let now = std::time::Instant::now();
-                    let is_fast_enter = app
-                        .last_enter_at
-                        .map(|t| now.duration_since(t) < std::time::Duration::from_millis(300))
-                        .unwrap_or(false);
-                    app.last_enter_at = Some(now);
-                    if is_fast_enter {
-                        // Rapid consecutive Enter (e.g. pasting multi-line text).
-                        // Insert newline instead of sending to prevent each
-                        // pasted line from being sent as a separate message.
-                        app.chat_input.insert(app.chat_cursor, '\n');
-                        app.chat_cursor += 1;
-                    } else {
-                        app.send_chat_message();
-                    }
+                    app.chat_handler.on_key_event(key, &mut app.chat_editor)
                 }
+                // Shift/Alt+Enter in Insert mode sends the message.
+                (EditorMode::Insert, KeyCode::Enter) => app.send_chat_message(),
+                // Enter in Normal mode also sends (newlines come from o/O).
+                (EditorMode::Normal, KeyCode::Enter) => app.send_chat_message(),
+                // In Normal mode, Up/Down scroll the message history (cursor
+                // movement is on j/k). In other modes arrows go to the editor.
+                (EditorMode::Normal, KeyCode::Up) => app.scroll_up(),
+                (EditorMode::Normal, KeyCode::Down) => app.scroll_down(),
+                _ => app.chat_handler.on_key_event(key, &mut app.chat_editor),
             }
-            KeyCode::Esc => {
-                app.go_to_pattern_select();
-            }
-            KeyCode::Tab => {
-                app.toggle_focus();
-            }
-            KeyCode::Up => {
-                if app.chat_focus == ChatFocus::ChatPane && app.chat_input.contains('\n') {
-                    // Move cursor up one line within multi-line input
-                    move_cursor_vertically(&app.chat_input, &mut app.chat_cursor, false);
-                } else {
-                    app.scroll_up();
-                }
-            }
-            KeyCode::Down => {
-                if app.chat_focus == ChatFocus::ChatPane && app.chat_input.contains('\n') {
-                    // Move cursor down one line within multi-line input
-                    move_cursor_vertically(&app.chat_input, &mut app.chat_cursor, true);
-                } else {
-                    app.scroll_down();
-                }
-            }
-            KeyCode::PageUp => {
-                app.page_up();
-            }
-            KeyCode::PageDown => {
-                app.page_down();
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.page_up();
-            }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.page_down();
-            }
-            KeyCode::Left if app.chat_focus == ChatFocus::ChatPane => {
-                app.chat_cursor = app
-                    .chat_input
-                    .floor_char_boundary(app.chat_cursor.saturating_sub(1));
-            }
-            KeyCode::Left if app.chat_focus == ChatFocus::ActivityPane => {
-                app.activity_hscroll = app.activity_hscroll.saturating_sub(1);
-            }
-            KeyCode::Right
-                if app.chat_focus == ChatFocus::ChatPane
-                    && app.chat_cursor < app.chat_input.len() =>
-            {
-                app.chat_cursor = app.chat_input.ceil_char_boundary(app.chat_cursor + 1);
-            }
-            KeyCode::Right if app.chat_focus == ChatFocus::ActivityPane => {
-                app.activity_hscroll = app.activity_hscroll.saturating_add(1);
-            }
-            _ => {
-                if app.chat_focus == ChatFocus::ChatPane {
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            app.chat_input.insert(app.chat_cursor, c);
-                            app.chat_cursor += c.len_utf8();
-                        }
-                        KeyCode::Backspace if app.chat_cursor > 0 => {
-                            let prev = app.chat_input.floor_char_boundary(app.chat_cursor - 1);
-                            app.chat_input.remove(prev);
-                            app.chat_cursor = prev;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        },
+        }
     }
 }
 
@@ -1838,9 +1765,10 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(block, area);
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area grows with content (up to 5 lines) for multi-line editing.
-    // Count visual lines including wrapped lines (not just explicit newlines).
-    let input_line_count = count_wrapped_lines(&app.chat_input, inner.width).clamp(1, 5) as u16;
+    // Input area grows with content (up to 5 rows) for multi-line editing:
+    // wrapped text lines (1-4) + 1 status line for the vim mode indicator.
+    let input_line_count =
+        count_wrapped_lines(&app.chat_text(), inner.width).clamp(1, 4) as u16 + 1;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -2131,106 +2059,19 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);
 
-    // --- Input area (multi-line, at bottom) ---
-    let focus_indicator = if app.chat_focus == ChatFocus::ChatPane {
-        "▶ "
+    // --- Input area (vim editor, at bottom) ---
+    // The editor renders its own cursor, wrapping, scroll-follow, and mode
+    // status line. Hide the cursor when the activity pane has focus.
+    let theme = EditorTheme::default().base(Style::default());
+    let theme = if app.chat_focus == ChatFocus::ChatPane {
+        theme
     } else {
-        "  "
+        theme.hide_cursor()
     };
-    let prompt_span = Span::styled("> ", Style::default().fg(Color::Yellow));
-
-    // Build input lines from chat_input, splitting on '\n'.
-    // The cursor block is inserted at the cursor position.
-    let before_cursor = &app.chat_input[..app.chat_cursor];
-    let after_cursor = &app.chat_input[app.chat_cursor..];
-
-    let mut input_lines: Vec<Line> = Vec::new();
-    let before_lines: Vec<&str> = before_cursor.split('\n').collect();
-    let after_lines: Vec<&str> = after_cursor.split('\n').collect();
-
-    // The cursor is at the boundary between before_lines (last) and after_lines (first).
-    // before_cursor ends at the end of before_lines' last element.
-    // after_cursor starts at the beginning of after_lines' first element.
-    let n_before = before_lines.len();
-    let n_after = after_lines.len();
-    let total_lines = n_before + n_after - 1; // they share the cursor line
-
-    for (i, _) in (0..total_lines).enumerate() {
-        let mut spans: Vec<Span> = Vec::new();
-        if i == 0 {
-            spans.push(Span::raw(focus_indicator));
-            spans.push(prompt_span.clone());
-        } else {
-            spans.push(Span::raw("    ")); // indent to align after "▶ > "
-        }
-
-        if i < n_before - 1 {
-            // Full line before cursor line
-            spans.push(Span::raw(before_lines[i]));
-        } else if i == n_before - 1 && n_after == 1 {
-            // Cursor line: before + cursor + after (single line)
-            spans.push(Span::raw(before_lines[i]));
-            spans.push(Span::styled("▌", Style::default().fg(Color::Yellow)));
-            spans.push(Span::raw(after_lines[0]));
-        } else if i == n_before - 1 {
-            // Cursor line: before + cursor (after has more lines)
-            spans.push(Span::raw(before_lines[i]));
-            spans.push(Span::styled("▌", Style::default().fg(Color::Yellow)));
-        } else {
-            // After cursor lines
-            let after_idx = i - n_before + 1;
-            spans.push(Span::raw(after_lines[after_idx]));
-        }
-
-        input_lines.push(Line::from(spans));
-    }
-
-    // When input exceeds the visible area, scroll to keep the cursor visible.
-    // Calculate using visual (wrapped) lines rather than logical lines.
-    let width = inner.width;
-    let visible_input_lines = input_line_count as usize;
-    let total_visual_lines = count_wrapped_lines(&app.chat_input, width);
-
-    // Determine the cursor's visual line (0-indexed)
-    // Visual lines from logical lines before the cursor's line
-    let visual_before: usize = before_lines[..before_lines.len() - 1]
-        .iter()
-        .map(|l| {
-            let lw = (*l).width();
-            let w = width as usize;
-            let first_row = w.saturating_sub(4).max(1);
-            if lw <= first_row {
-                1
-            } else {
-                1 + (lw - first_row).div_ceil(w)
-            }
-        })
-        .sum();
-    // Cursor's visual row within its logical line
-    let w = width as usize;
-    let first_row_content = w.saturating_sub(4).max(1);
-    let cursor_col_w = before_lines.last().unwrap_or(&"").width();
-    let cursor_row_within = if cursor_col_w > first_row_content {
-        1 + (cursor_col_w - first_row_content) / w
-    } else {
-        0
-    };
-    let cursor_visual_line = visual_before + cursor_row_within;
-
-    let input_scroll = if total_visual_lines > visible_input_lines {
-        if cursor_visual_line < visible_input_lines {
-            0
-        } else {
-            cursor_visual_line - visible_input_lines + 1
-        }
-    } else {
-        0
-    };
-
-    let input_para = Paragraph::new(input_lines)
-        .wrap(Wrap { trim: true })
-        .scroll((input_scroll as u16, 0));
-    frame.render_widget(input_para, chunks[1]);
+    EditorView::new(&mut app.chat_editor)
+        .theme(theme)
+        .wrap(true)
+        .render(chunks[1], frame.buffer_mut());
 }
 
 fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {

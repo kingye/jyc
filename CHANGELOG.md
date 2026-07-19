@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Top-level `jyc open` shortcut for `jyc dashboard open`.** Open a directory
+  as an ad-hoc websocket thread and launch chat mode directly from the top
+  level CLI. Accepts the same flags (`-t/--thread`, `-p/--path`,
+  `-c/--channel`) plus `--addr`. The `jyc dashboard open` form continues to
+  work unchanged.
+
 - **`jyc dashboard open` command for ad-hoc websocket threads.** Open a directory
   as a websocket thread directly from the CLI and launch dashboard chat mode.
   Works for brand new directories and for directories that already contain a
@@ -56,6 +62,12 @@ All notable changes to JYC will be documented in this file.
   `JobScheduler`. (#348)
 
 ### Changed
+
+- **Renamed `jyc monitor` → `jyc serve`.** The main command for starting the
+  agent is now `jyc serve`. `monitor` is kept as a hidden alias for backward
+  compatibility, so existing scripts and systemd units continue to work.
+  Updated deployment assets (`run-jyc.sh`, `docker/Dockerfile`, `SYSTEMD.md`),
+  user-facing log messages, and all documentation.
 
 - **Renamed `jyc_reply_reply_message` → `jyc_reply_message`.** The old tool name
   was redundant and awkward. Updated in tool registration (`mcp_bridge.rs`),

@@ -28,10 +28,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Monitor inbound channels and process messages with AI
-    Monitor(cli::monitor::MonitorArgs),
+    #[command(alias = "monitor")]
+    Serve(cli::serve::ServeArgs),
 
-    /// Live TUI dashboard — connects to a running jyc monitor
+    /// Live TUI dashboard — connects to a running jyc serve
     Dashboard(cli::dashboard::DashboardArgs),
+
+    /// Open a directory as an ad-hoc thread and launch chat (shortcut for `dashboard open`)
+    Open {
+        /// Inspect server address (also used for WebSocket chat)
+        #[arg(long, default_value = "127.0.0.1:9876")]
+        addr: String,
+
+        #[command(flatten)]
+        args: cli::dashboard::OpenArgs,
+    },
 
     /// Manage configuration
     Config {
@@ -112,23 +123,28 @@ async fn main() -> Result<()> {
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
-        Commands::Monitor(args) => cli::monitor::run(args, &workdir).await,
+        Commands::Serve(args) => cli::serve::run(args, &workdir).await,
         Commands::Dashboard(args) => match &args.command {
-            Some(cli::dashboard::DashboardCommand::Open {
-                thread,
-                channel,
-                path,
-            }) => {
+            Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
                     &args.addr,
-                    thread.as_deref(),
-                    channel.as_deref(),
-                    path.as_deref(),
+                    open.thread.as_deref(),
+                    open.channel.as_deref(),
+                    open.path.as_deref(),
                 )
                 .await
             }
             None => cli::dashboard::run(args, None, None).await,
         },
+        Commands::Open { addr, args } => {
+            cli::dashboard::run_open(
+                addr,
+                args.thread.as_deref(),
+                args.channel.as_deref(),
+                args.path.as_deref(),
+            )
+            .await
+        }
         Commands::Config { action } => cli::config::run(action, &workdir).await,
         Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,

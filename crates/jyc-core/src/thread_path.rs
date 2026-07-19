@@ -84,7 +84,7 @@ mod tests {
         msg
     }
 
-    // === resolve_workspace (used by cli/monitor.rs) ===
+    // === resolve_workspace (used by cli/serve.rs) ===
 
     #[test]
     fn test_resolve_thread_path_absolute() {

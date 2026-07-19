@@ -53,5 +53,5 @@ if nc -z -w 2 localhost $PORT 2>/dev/null; then
     echo "Run: jyc dashboard"
 else
     echo "Warning: Tunnel started but port $PORT not reachable."
-    echo "Check that jyc monitor is running with [inspect] enabled."
+    echo "Check that jyc serve is running with [inspect] enabled."
 fi

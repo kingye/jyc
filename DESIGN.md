@@ -1540,7 +1540,7 @@ pub struct AgentResult {
 }
 ```
 
-Each agent mode implements this trait. Adding a new agent requires only implementing `AgentService` + a match arm in `cli/monitor.rs`.
+Each agent mode implements this trait. Adding a new agent requires only implementing `AgentService` + a match arm in `cli/serve.rs`.
 
 **ThreadManager** (`src/core/thread_manager.rs`) — Orchestrator:
 
@@ -2057,12 +2057,12 @@ Events from `prompt_with_progress()` are logged with deduplication:
 
 ```
 jyc binary
-├── jyc monitor            ← main command
+├── jyc serve              ← main command
 ├── jyc config init        ← config management
 ├── jyc config validate
 ├── jyc state              ← show monitoring state
 ├── jyc patterns list      ← list patterns (shows all rule fields)
-├── jyc dashboard          ← live TUI dashboard (connects to running monitor)
+├── jyc dashboard          ← live TUI dashboard (connects to running jyc serve)
 ├── jyc mcp-reply-tool     ← hidden subcommand (MCP stdio server)
 ├── jyc mcp-vision-tool    ← hidden subcommand (vision analysis MCP server)
 └── jyc mcp-question-tool  ← hidden subcommand (ask_user MCP server)
@@ -2553,7 +2553,7 @@ Template directory structure (in workdir):
 
 ```
 ┌──────────────────────┐         TCP (127.0.0.1:9876)  ┌──────────────────────┐
-│   jyc monitor        │  ◄──────────────────────────► │   jyc dashboard      │
+│   jyc serve          │  ◄──────────────────────────► │   jyc dashboard      │
 │                       │    JSON line protocol          │   (ratatui TUI)      │
 │  ┌─────────────────┐ │                                │                      │
 │  │ InspectServer    │ │   {"method":"get_state"}      │  polls every 500ms   │
@@ -2641,7 +2641,7 @@ jyc/
 │   ├── main.rs                          # Entry point, clap CLI
 │   ├── cli/
 │   │   ├── mod.rs
-│   │   ├── monitor.rs                   # `jyc monitor` — wiring
+│   │   ├── serve.rs                     # `jyc serve` — wiring
 │   │   ├── dashboard.rs                 # `jyc dashboard` — ratatui TUI
 │   │   ├── config.rs                    # `jyc config init/validate`
 │   │   ├── patterns.rs                  # `jyc patterns list` (all rule fields)
@@ -2796,7 +2796,7 @@ Layer 1: component     (always present — identifies the subsystem)
 
 | Span Name | Layer    | Fields              | Where Created                    | Propagation                   |
 | --------- | -------- | ------------------- | -------------------------------- | ----------------------------- |
-| `inbound` | L1+L2    | `channel`           | `cli/monitor.rs` — per IMAP task | `tokio::spawn().instrument()` |
+| `inbound` | L1+L2    | `channel`           | `cli/serve.rs` — per IMAP task   | `tokio::spawn().instrument()` |
 | `worker`  | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
 | `metrics` | L1       | —                   | `metrics.rs` — background task   | `tokio::spawn().instrument()` |
 
@@ -2812,7 +2812,7 @@ INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
 #### How Spans Propagate in Async Code
 
 ```
-cli/monitor.rs:
+cli/serve.rs:
   tokio::spawn(async { ... }.instrument(info_span!("inbound", channel = %ch)))
     → imap/monitor.rs: start() — all logs inherit inbound{channel}
       → message_router.rs: route() — inherits inbound{channel}

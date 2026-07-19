@@ -1,6 +1,6 @@
 //! Shared agent service builder for CLI commands.
 //!
-//! Extracts common agent initialization logic used by both `monitor` and `local`
+//! Extracts common agent initialization logic used by both `serve` and `local`
 //! commands to avoid code duplication.
 
 use std::path::Path;
@@ -19,7 +19,7 @@ use jyc_types::{
 /// Result of building an agent service.
 ///
 /// The `jyc_agent` field is `Some` only when the configured mode is `"agent"`,
-/// allowing callers (e.g. `monitor.rs`) that need the concrete type for
+/// allowing callers (e.g. `serve.rs`) that need the concrete type for
 /// cross-channel wiring to collect it separately.
 pub struct AgentServiceResult {
     /// The generic agent service trait object.
@@ -31,7 +31,7 @@ pub struct AgentServiceResult {
 /// Build an `AgentServiceResult` from configuration.
 ///
 /// This helper centralises the ~110 lines of agent setup that are identical
-/// between `monitor.rs` and `local.rs` (provider mapping, `AgentConfig`
+/// between `serve.rs` and `local.rs` (provider mapping, `AgentConfig`
 /// construction, `VisionClient` building, `JycAgentService::new` call).
 ///
 /// # Parameters

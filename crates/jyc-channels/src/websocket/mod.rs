@@ -1,7 +1,7 @@
 //! WebSocket channel implementation.
 //!
 //! Provides inbound and outbound adapters for WebSocket-based AI interaction.
-//! Runs inside `jyc monitor` and accepts connections from `jyc dashboard` chat panes.
+//! Runs inside `jyc serve` and accepts connections from `jyc dashboard` chat panes.
 
 pub mod inbound;
 pub mod outbound;

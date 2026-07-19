@@ -96,7 +96,7 @@ impl ChannelOrchestrator {
         for name in new_names.difference(&old_names) {
             tracing::warn!(
                 channel = %name,
-                "New channel detected after reload — restart jyc monitor to activate"
+                "New channel detected after reload — restart jyc serve to activate"
             );
         }
 

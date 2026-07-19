@@ -30,4 +30,4 @@ if [ ! -f "$JYC_BINARY" ]; then
 fi
 
 cd "$JYC_WORKDIR"
-exec "$JYC_BINARY" monitor --workdir "$JYC_WORKDIR" --debug
+exec "$JYC_BINARY" serve --workdir "$JYC_WORKDIR" --debug

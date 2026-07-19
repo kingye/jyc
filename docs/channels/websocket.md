@@ -80,25 +80,28 @@ The `open` command creates a websocket thread named after the current
 folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 `-c/--channel` to override the defaults.
 
-3. Press `c` to toggle the chat pane:
+3. Press `c` to open the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
-   - Type messages and press `Ctrl+D` to send
-   - Press `Esc` to leave the current thread
-   - Press `p` to go back to pattern selection
-   - Press `c` or `Esc` at pattern selection to close chat
+   - Type a message and press `Enter` to send (`Shift+Enter` / `Alt+Enter` inserts a newline)
+   - Press `Esc` to go back to pattern selection
+   - Press `Esc` again at pattern selection to close chat
 
 ### Chat Pane Controls
 
 | Key | Action |
 |-----|--------|
-| `c` | Toggle chat pane |
-| `↑` / `↓` | Select pattern (in pattern select mode) |
+| `c` | Open chat pane (from thread list) |
+| `↑` / `↓` | Select pattern (in pattern select mode); move cursor in multi-line input, else scroll |
 | `Enter` | Select pattern / send message |
+| `Shift+Enter` / `Alt+Enter` | Insert newline in chat input |
+| `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Switch focus between Chat and Activity panes |
-| `PgUp` / `PgDn` | Scroll focused pane |
-| `Ctrl+D` | Send input from Chat pane |
-| `Esc` | Leave thread / close chat |
-| `p` | Return to pattern selection |
+| `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
+| `Ctrl+W` | Cycle activity pane split ratio |
+| `Ctrl+C` | Cancel current AI processing |
+| `Shift+Tab` | Toggle plan / build mode |
+| `Esc` | Back to pattern selection / close chat |
+| `Ctrl+Q` | Quit the dashboard |
 
 ### Interface Layout
 

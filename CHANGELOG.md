@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **External editor for dashboard chat input.** Press `Ctrl+E` in the chat
+  pane to open `$VISUAL` / `$EDITOR` (fallback: `vi`) with the current input
+  in a temp file. The TUI suspends while the editor runs; on successful exit
+  the edited contents replace the chat input, so you can compose messages
+  with a real editor (vim, nvim, etc.). (#381)
+
 - **Top-level `jyc open` shortcut for `jyc dashboard open`.** Open a directory
   as an ad-hoc websocket thread and launch chat mode directly from the top
   level CLI. Accepts the same flags (`-t/--thread`, `-p/--path`,
@@ -78,6 +84,14 @@ All notable changes to JYC will be documented in this file.
   (#341)
 
 ### Fixed
+
+- **Stale key bindings in the websocket channel doc.** `docs/channels/websocket.md`
+  listed `Ctrl+D` (send) and `p` (back to pattern selection), neither of which
+  exists in the dashboard; `Enter` sends and `Esc` returns to pattern
+  selection. The Chat Pane Controls table now documents the actual bindings,
+  including `Shift+Enter`/`Alt+Enter` newline, `Ctrl+B`/`Ctrl+F` scrolling,
+  `Ctrl+W` split cycling, `Ctrl+C` cancel, `Shift+Tab` plan/build toggle, and
+  `Ctrl+Q` quit. (#381)
 
 - **Multi-line paste in dashboard chat input triggering premature send.**
   Pasting multi-line text into the chat pane delivered each line's Enter as a

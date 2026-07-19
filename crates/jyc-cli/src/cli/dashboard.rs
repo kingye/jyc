@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
@@ -591,6 +594,7 @@ pub async fn run(
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableBracketedPaste)?;
 
     // Terminal and its backend are scoped so they drop *before* we restore
     // the terminal. Otherwise the backend's Drop flushes buffered escape
@@ -668,6 +672,7 @@ pub async fn run(
     }; // terminal + backend dropped here
 
     // Restore terminal — safe now that no buffered escape codes remain
+    stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

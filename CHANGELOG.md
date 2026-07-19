@@ -14,7 +14,9 @@ All notable changes to JYC will be documented in this file.
   (`u`/`Ctrl+r`), and `.` repeat. The input starts in Insert mode; `Esc`
   switches to Normal mode, `Esc` again returns to pattern selection. `Enter`
   inserts a newline in Insert mode; send with `Shift+Enter`/`Alt+Enter`
-  (Insert) or plain `Enter` (Normal). (#383)
+  (Insert) or plain `Enter` (Normal). The input shows a yellow `> ` prompt;
+  the cursor is a blinking underline in Insert mode and an inverted block
+  otherwise. (#383, #387)
 
 - **External editor for dashboard chat input.** Press `Ctrl+E` in the chat
   pane to open `$VISUAL` / `$EDITOR` (fallback: `vi`) with the current input

@@ -320,8 +320,11 @@ impl App {
             ChatFocus::ChatPane => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
                 // Editor rows: wrapped text lines (1-4) + 1 status line.
+                // Subtract the 2-column "> " prompt gutter from the width.
                 let input_lines =
-                    count_wrapped_lines(&self.chat_text(), term_width).clamp(1, 4) + 1;
+                    count_wrapped_lines(&self.chat_text(), term_width.saturating_sub(2))
+                        .clamp(1, 4)
+                        + 1;
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),
@@ -1767,8 +1770,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area grows with content (up to 5 rows) for multi-line editing:
     // wrapped text lines (1-4) + 1 status line for the vim mode indicator.
+    // Subtract the 2-column "> " prompt gutter from the wrap width.
     let input_line_count =
-        count_wrapped_lines(&app.chat_text(), inner.width).clamp(1, 4) as u16 + 1;
+        count_wrapped_lines(&app.chat_text(), inner.width.saturating_sub(2)).clamp(1, 4) as u16 + 1;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -2060,18 +2064,32 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(messages_para, chunks[0]);
 
     // --- Input area (vim editor, at bottom) ---
-    // The editor renders its own cursor, wrapping, scroll-follow, and mode
-    // status line. Hide the cursor when the activity pane has focus.
+    // The editor renders its own wrapping, scroll-follow, and mode status
+    // line. The cursor is a blinking underline in Insert mode and the
+    // default inverted block otherwise; hidden when the activity pane has
+    // focus. A "> " prompt sits in a 2-column gutter left of the editor.
     let theme = EditorTheme::default().base(Style::default());
-    let theme = if app.chat_focus == ChatFocus::ChatPane {
-        theme
-    } else {
-        theme.hide_cursor()
+    let theme = match app.chat_focus {
+        ChatFocus::ActivityPane => theme.hide_cursor(),
+        ChatFocus::ChatPane => match app.chat_editor.mode {
+            EditorMode::Insert => theme.cursor_style(
+                Style::default()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+            _ => theme,
+        },
     };
+    let [prompt_area, editor_area] =
+        Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(chunks[1]);
+    frame.render_widget(
+        Paragraph::new("> ").style(Style::default().fg(Color::Yellow)),
+        prompt_area,
+    );
     EditorView::new(&mut app.chat_editor)
         .theme(theme)
         .wrap(true)
-        .render(chunks[1], frame.buffer_mut());
+        .render(editor_area, frame.buffer_mut());
 }
 
 fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {

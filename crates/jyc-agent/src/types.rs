@@ -489,12 +489,14 @@ mod tests {
     #[test]
     fn model_config_default() {
         let config = ModelConfig {
+            model_id: None,
             context_window: Some(4096),
             supports_images: Some(true),
             params: None,
             user_agent: None,
         };
         assert_eq!(config.context_window, Some(4096));
+        assert_eq!(config.model_id, None);
     }
 
     #[test]

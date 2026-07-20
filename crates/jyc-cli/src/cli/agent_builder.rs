@@ -79,6 +79,7 @@ pub fn build_agent_service(
                             (
                                 model_name.clone(),
                                 jyc_agent::types::ModelConfig {
+                                    model_id: model_def.model_id.clone(),
                                     context_window: model_def.context_window,
                                     supports_images: model_def.supports_images,
                                     params: model_def.params.clone(),

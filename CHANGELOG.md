@@ -6,6 +6,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Per-model `model_id` override for provider model configs.** Each entry
+  under `[agent.providers.<name>.models]` accepts an optional `model_id`
+  holding the actual model identifier sent to the remote LLM; when unset,
+  the models-map key is used as before. This lets multiple config aliases
+  with different params (e.g. reasoning effort high/low) point at the same
+  remote model. (#389)
+
 - **Vi-style modal editing for the dashboard chat input.** The chat pane
   input is now a vim-inspired modal editor (via `edtui`) with
   Insert/Normal/Visual modes and a mode indicator in its status line. Supports

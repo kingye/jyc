@@ -408,6 +408,11 @@ pub struct ProviderDef {
 /// Per-model configuration within a provider.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelDef {
+    /// Actual model identifier sent to the remote LLM API.
+    /// When unset, the key of this entry in `ProviderDef.models` is used.
+    /// This allows multiple config entries (aliases) with different params
+    /// to point at the same remote model.
+    pub model_id: Option<String>,
     /// Context window size in tokens for this specific model
     pub context_window: Option<u64>,
     /// Whether this specific model can accept image content blocks

@@ -274,6 +274,16 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # supports_images = true
 # # Model-level user_agent overrides the provider-level value.
 # # user_agent = "opencode/1.15.13"
+# # Optional: actual model identifier sent to the remote LLM. When unset,
+# # the map key ("deepseek-v4-pro") is sent. This lets multiple aliases with
+# # different params share one remote model, e.g.:
+# #   [agent.providers.kimi.models."k3-high"]
+# #   model_id = "k3"
+# #   params = { reasoning_effort = "high" }
+# #   [agent.providers.kimi.models."k3-low"]
+# #   model_id = "k3"
+# #   params = { reasoning_effort = "low" }
+# # model_id = "ep-xxxxxxxx"
 #
 # [agent.providers.anthropic]
 # type = "anthropic"

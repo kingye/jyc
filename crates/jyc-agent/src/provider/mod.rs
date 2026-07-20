@@ -286,6 +286,15 @@ pub fn create_provider(
         None
     };
 
+    // Resolve the wire model id: per-model `model_id` override, else the
+    // models-map key. Config lookups (params, supports_images, ...) below
+    // still use the map key, so multiple aliases can share one remote id.
+    let wire_model_id = config
+        .models
+        .get(model_id)
+        .and_then(|m| m.model_id.as_deref())
+        .unwrap_or(model_id);
+
     // Resolve params: model-level overrides provider-level (shallow merge)
     let params = resolve_params(
         config.params.as_ref(),
@@ -315,7 +324,7 @@ pub fn create_provider(
                 .unwrap_or("https://api.anthropic.com/v1");
             Ok(Box::new(anthropic::AnthropicProvider::new(
                 base_url,
-                model_id,
+                wire_model_id,
                 api_key.as_deref(),
                 params,
                 supports_images,
@@ -330,7 +339,7 @@ pub fn create_provider(
             })?;
             Ok(Box::new(openai_compat::OpenAiCompatProvider::new(
                 base_url,
-                model_id,
+                wire_model_id,
                 api_key.as_deref(),
                 params,
                 supports_images,
@@ -790,5 +799,84 @@ mod dangling_tool_call_tests {
         let msg = json!({"role": "assistant", "content": "just text"});
         let ids = extract_tool_call_ids(&msg);
         assert!(ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod model_id_tests {
+    use super::*;
+    use crate::types::{ModelConfig, ProviderConfig};
+    use std::collections::HashMap;
+
+    fn model_config(model_id: Option<&str>) -> ModelConfig {
+        ModelConfig {
+            model_id: model_id.map(|s| s.to_string()),
+            context_window: None,
+            supports_images: None,
+            params: None,
+            user_agent: None,
+        }
+    }
+
+    fn providers_with(models: HashMap<String, ModelConfig>) -> HashMap<String, ProviderConfig> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "kimi".to_string(),
+            ProviderConfig {
+                provider_type: "openai-compatible".to_string(),
+                base_url: Some("https://api.moonshot.cn/v1".to_string()),
+                api_key_env: None,
+                context_window: None,
+                supports_images: None,
+                params: None,
+                user_agent: None,
+                models,
+            },
+        );
+        providers
+    }
+
+    #[test]
+    fn model_id_override_is_sent_to_wire() {
+        // Alias "k3-high" maps to the real remote id "k3" (#389).
+        let mut models = HashMap::new();
+        models.insert("k3-high".to_string(), model_config(Some("k3")));
+        let providers = providers_with(models);
+
+        let provider = create_provider("kimi/k3-high", &providers).unwrap();
+        assert_eq!(provider.model(), "k3");
+    }
+
+    #[test]
+    fn missing_model_id_falls_back_to_map_key() {
+        let mut models = HashMap::new();
+        models.insert("k3".to_string(), model_config(None));
+        let providers = providers_with(models);
+
+        let provider = create_provider("kimi/k3", &providers).unwrap();
+        assert_eq!(provider.model(), "k3");
+    }
+
+    #[test]
+    fn model_without_config_entry_falls_back_to_map_key() {
+        let providers = providers_with(HashMap::new());
+
+        let provider = create_provider("kimi/k3", &providers).unwrap();
+        assert_eq!(provider.model(), "k3");
+    }
+
+    #[test]
+    fn multiple_aliases_share_one_wire_id() {
+        // The issue-389 use case: same remote model, different params
+        // per alias. Both aliases must resolve to the same wire id.
+        let mut models = HashMap::new();
+        models.insert("k3-high".to_string(), model_config(Some("k3")));
+        models.insert("k3-low".to_string(), model_config(Some("k3")));
+        let providers = providers_with(models);
+
+        let high = create_provider("kimi/k3-high", &providers).unwrap();
+        let low = create_provider("kimi/k3-low", &providers).unwrap();
+        assert_eq!(high.model(), "k3");
+        assert_eq!(low.model(), "k3");
     }
 }

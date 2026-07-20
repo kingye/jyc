@@ -374,12 +374,23 @@ pub fn create_provider(
 /// The captured body is truncated at 2000 bytes — enough for the leading
 /// JSON error message from any sane provider, while bounding memory if the
 /// upstream returns a huge HTML error page.
+/// Diagnostic information captured by [`fetch_error_body`].
+pub struct DiagInfo {
+    /// HTTP status code of the diagnostic response.
+    pub status: u16,
+    /// Value of the `Retry-After` response header in whole seconds, when
+    /// present and parseable as an integer. HTTP-date form is not parsed.
+    pub retry_after: Option<u64>,
+    /// Truncated response body (provider's actual error message).
+    pub body: String,
+}
+
 pub async fn fetch_error_body<F>(
     client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
     apply_auth: F,
-) -> Option<(u16, String)>
+) -> Option<DiagInfo>
 where
     F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
 {
@@ -405,6 +416,13 @@ where
         .await
         .ok()?;
     let status = resp.status().as_u16();
+    // Capture Retry-After (integer-seconds form only) so throttled retries
+    // can honor the provider's requested wait window (#391).
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
     let text = resp
         .text()
         .await
@@ -415,7 +433,24 @@ where
     } else {
         text
     };
-    Some((status, trimmed))
+    Some(DiagInfo {
+        status,
+        retry_after,
+        body: trimmed,
+    })
+}
+
+/// Format the diagnostic suffix appended to SSE error messages, e.g.
+/// `(HTTP 429 retry-after: 30s body: {...})` or `(HTTP 400 body: {...})`
+/// when no Retry-After header was captured.
+pub fn format_diag_suffix(diag: &DiagInfo) -> String {
+    match diag.retry_after {
+        Some(secs) => format!(
+            "(HTTP {} retry-after: {}s body: {})",
+            diag.status, secs, diag.body
+        ),
+        None => format!("(HTTP {} body: {})", diag.status, diag.body),
+    }
 }
 
 /// Classify whether an SSE / network error from `complete_raw` is transient

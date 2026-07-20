@@ -438,8 +438,11 @@ impl Provider for OpenAiCompatProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => {
-                                    format!("SSE stream error: {e} (HTTP {status} body: {body})")
+                                Some(diag) => {
+                                    format!(
+                                        "SSE stream error: {e} {}",
+                                        super::format_diag_suffix(&diag)
+                                    )
                                 }
                                 None => format!("SSE stream error: {e}"),
                             };

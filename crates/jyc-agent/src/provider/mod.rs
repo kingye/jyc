@@ -374,12 +374,23 @@ pub fn create_provider(
 /// The captured body is truncated at 2000 bytes — enough for the leading
 /// JSON error message from any sane provider, while bounding memory if the
 /// upstream returns a huge HTML error page.
+/// Diagnostic information captured by [`fetch_error_body`].
+pub struct DiagInfo {
+    /// HTTP status code of the diagnostic response.
+    pub status: u16,
+    /// Value of the `Retry-After` response header in whole seconds, when
+    /// present and parseable as an integer. HTTP-date form is not parsed.
+    pub retry_after: Option<u64>,
+    /// Truncated response body (provider's actual error message).
+    pub body: String,
+}
+
 pub async fn fetch_error_body<F>(
     client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
     apply_auth: F,
-) -> Option<(u16, String)>
+) -> Option<DiagInfo>
 where
     F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
 {
@@ -405,6 +416,13 @@ where
         .await
         .ok()?;
     let status = resp.status().as_u16();
+    // Capture Retry-After (integer-seconds form only) so throttled retries
+    // can honor the provider's requested wait window (#391).
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
     let text = resp
         .text()
         .await
@@ -415,34 +433,65 @@ where
     } else {
         text
     };
-    Some((status, trimmed))
+    Some(DiagInfo {
+        status,
+        retry_after,
+        body: trimmed,
+    })
 }
 
-/// Classify whether an SSE / network error from `complete_raw` is transient
-/// and worth retrying.
+/// Format the diagnostic suffix appended to SSE error messages, e.g.
+/// `(HTTP 429 retry-after: 30s body: {...})` or `(HTTP 400 body: {...})`
+/// when no Retry-After header was captured.
+pub fn format_diag_suffix(diag: &DiagInfo) -> String {
+    match diag.retry_after {
+        Some(secs) => format!(
+            "(HTTP {} retry-after: {}s body: {})",
+            diag.status, secs, diag.body
+        ),
+        None => format!("(HTTP {} body: {})", diag.status, diag.body),
+    }
+}
+
+/// Retry classification for a failed LLM call (#391).
 ///
-/// Used by `agent_loop` to wrap a single LLM call in a bounded retry loop:
-/// transient errors (TCP RST mid-stream, body decode glitch, idle timeout,
-/// stream-ended-early, stale-connection send failure) get a few automatic
-/// retries with backoff before the thread is failed. Non-transient errors
-/// (e.g. HTTP 4xx/5xx with a captured body indicating a structural
-/// rejection) propagate immediately.
+/// Used by `agent_loop` to pick a retry policy per failure:
+/// - [`RetryClass::Transient`] — transport-level blips (TCP RST mid-stream,
+///   body decode glitch, idle timeout, stale-connection send failure).
+///   Fast retry schedule (few attempts, short backoff).
+/// - [`RetryClass::Throttled`] — rate-limited or overloaded upstream
+///   (HTTP 429 / 502 / 503 / 504). Slow retry schedule (more attempts,
+///   longer backoff), honoring `Retry-After` when captured.
+/// - [`RetryClass::Terminal`] — structural rejection (auth, quota, schema,
+///   model-not-supported). Propagate immediately; retrying won't help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryClass {
+    /// Transport-level blip — fast retry.
+    Transient,
+    /// Rate-limited / overloaded (429/502/503/504) — slow retry.
+    Throttled,
+    /// Structural rejection — no retry.
+    Terminal,
+}
+
+/// Classify an SSE / network error from `complete_raw` into a [`RetryClass`].
 ///
 /// The classifier is intentionally string-matching the user-visible error
 /// message — `complete_raw` returns `anyhow::Error`, and the underlying
 /// `reqwest_eventsource::Error` and `reqwest::Error` types do not provide a
 /// stable enum we can match through `anyhow::Error::downcast_ref` (the
 /// errors are wrapped via `anyhow!("SSE stream error: {e}")` which loses
-/// the source chain). String matching the well-known transient patterns is
-/// adequate and easy to extend.
+/// the source chain). String matching the well-known patterns is adequate
+/// and easy to extend.
 ///
 /// ## Diagnostic-suffix awareness
 ///
-/// `fetch_error_body` may have appended `(HTTP <code> body: <body>)` to the
-/// error after issuing a one-shot diagnostic POST. The status code carried
-/// in that suffix is authoritative:
+/// `fetch_error_body` may have appended `(HTTP <code> [retry-after: Ns]
+/// body: <body>)` to the error after issuing a one-shot diagnostic POST.
+/// The status code carried in that suffix is authoritative:
 ///
-/// - `429` → rate-limit exceeded; resolves after the retry window. **Transient.**
+/// - `429` / `502` / `503` / `504` → rate-limit or overloaded gateway;
+///   resolves after a wait window. **Throttled.**
 /// - Other `4xx` / `5xx` → the request is structurally rejected (auth, quota,
 ///   schema, model-not-supported). **Terminal.**
 /// - `2xx` → the diagnostic POST succeeded. The original SSE failure was
@@ -451,8 +500,10 @@ where
 ///   and a fresh attempt will likely succeed. **Transient.**
 /// - `3xx` (rare) → treat as transient; safe re-issue.
 ///
-/// Without the diag suffix, fall back to substring matching against the
-/// well-known transient patterns.
+/// Without the diag suffix, an `"Invalid status code: NNN"` pre-stream
+/// rejection is classified by the embedded code the same way; any other
+/// message falls back to substring matching against the well-known
+/// transient patterns.
 ///
 /// ## Transient patterns (substring match, case-insensitive)
 ///
@@ -469,40 +520,52 @@ where
 /// - `"dns error"` / `"tcp connect error"` — pre-connection failures.
 /// - `"transport error"` / `"incomplete message"` / `"unexpected eof"` —
 ///   misc transport blips.
-///
-/// ## Terminal patterns
-///
-/// - `"invalid status code"` (no diag suffix) — pre-stream rejection
-///   (e.g. 401 with empty body). Retry would hit the same rejection.
-pub fn is_transient_sse_error(err: &anyhow::Error) -> bool {
+pub fn classify_retry(err: &anyhow::Error) -> RetryClass {
     let msg = format!("{:#}", err);
     let lower = msg.to_lowercase();
 
     // If the diagnostic POST captured a status code, trust it.
     if let Some(status) = extract_diag_status(&msg) {
-        if status == 429 {
-            // 429 Too Many Requests — rate-limit that resolves after
-            // the retry window. Retry with backoff.
-            return true;
-        }
-        if (400..600).contains(&status) {
-            // Structured rejection — retry won't help.
-            return false;
-        }
-        // 2xx/3xx: diag confirmed upstream is healthy. The original SSE
-        // failure must have been a transport blip. Retry.
-        return true;
+        return classify_http_status(status);
     }
 
-    // No diag suffix — fall back to substring matching.
+    // No diag suffix — a pre-stream "Invalid status code: NNN" rejection
+    // still carries the code; classify it the same way. Unknown codes and
+    // other pre-stream rejections stay terminal.
     if lower.contains("invalid status code") {
-        return false;
+        return match extract_invalid_status(&lower) {
+            Some(status) => classify_http_status(status),
+            None => RetryClass::Terminal,
+        };
     }
 
-    matches_transient_pattern(&lower)
+    if matches_transient_pattern(&lower) {
+        RetryClass::Transient
+    } else {
+        RetryClass::Terminal
+    }
 }
 
-/// Parse the HTTP status code from the `(HTTP <code> body: ...)` suffix
+/// Map an HTTP status code to a retry class: 429/502/503/504 are throttled,
+/// other 4xx/5xx are terminal, everything else is transient.
+fn classify_http_status(status: u16) -> RetryClass {
+    match status {
+        429 | 502 | 503 | 504 => RetryClass::Throttled,
+        s if (400..600).contains(&s) => RetryClass::Terminal,
+        _ => RetryClass::Transient,
+    }
+}
+
+/// Parse the HTTP status code from an `"invalid status code: NNN"` message
+/// (reqwest_eventsource's pre-stream rejection text).
+fn extract_invalid_status(lower_msg: &str) -> Option<u16> {
+    let start = lower_msg.find("invalid status code:")? + "invalid status code:".len();
+    let rest = lower_msg.get(start..)?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// Parse the HTTP status code from the `(HTTP <code> ...)` suffix
 /// appended by `fetch_error_body`. Returns `None` when the suffix is not
 /// present or the code is malformed.
 fn extract_diag_status(msg: &str) -> Option<u16> {
@@ -510,6 +573,19 @@ fn extract_diag_status(msg: &str) -> Option<u16> {
     let rest = msg.get(start..)?;
     let end = rest.find(' ')?;
     rest.get(..end)?.parse().ok()
+}
+
+/// Parse the `Retry-After` value (whole seconds) from the
+/// `(HTTP <code> retry-after: Ns body: ...)` suffix appended by
+/// `fetch_error_body`. Returns `None` when the header was not captured.
+pub fn extract_retry_after(msg: &str) -> Option<u64> {
+    let start = msg.find("retry-after: ")? + "retry-after: ".len();
+    let rest = msg.get(start..)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 fn matches_transient_pattern(lower_msg: &str) -> bool {
@@ -571,8 +647,9 @@ mod classifier_tests {
         let e = err("SSE stream error: error sending request for url \
              (https://api.deepseek.com/chat/completions) \
              (HTTP 200 body: data: {\"id\":\"abc\",\"choices\":[...]})");
-        assert!(
-            is_transient_sse_error(&e),
+        assert_eq!(
+            classify_retry(&e),
+            RetryClass::Transient,
             "diag-200 confirms upstream healthy → must be transient"
         );
     }
@@ -582,38 +659,59 @@ mod classifier_tests {
         // Diag captured a structured rejection — retrying won't help.
         let e = err("SSE stream error: Invalid status code: 400 Bad Request \
              (HTTP 400 body: {\"error\":{\"message\":\"bad payload\"}})");
-        assert!(
-            !is_transient_sse_error(&e),
+        assert_eq!(
+            classify_retry(&e),
+            RetryClass::Terminal,
             "diag-400 is a structured rejection → terminal"
         );
     }
 
     #[test]
-    fn diag_status_5xx_is_terminal() {
-        // 503 is a server-side failure but the diag confirms structured
-        // upstream behavior. We surface it immediately rather than
-        // retrying tight against a known-broken upstream.
+    fn diag_status_503_is_throttled() {
+        // 503 Service Unavailable is an overloaded upstream — transient in
+        // nature, worth retrying on the slow schedule (#391).
         let e = err(
             "SSE stream error: Invalid status code: 503 Service Unavailable \
              (HTTP 503 body: {\"error\":\"upstream down\"})",
         );
-        assert!(
-            !is_transient_sse_error(&e),
-            "diag-5xx is terminal — surface to user, retry policy is not the right hammer"
+        assert_eq!(classify_retry(&e), RetryClass::Throttled);
+    }
+
+    #[test]
+    fn diag_status_502_504_are_throttled() {
+        for status in [502, 504] {
+            let e = err(&format!(
+                "SSE stream error: Invalid status code: {status} \
+                 (HTTP {status} body: {{\"error\":\"gateway\"}})"
+            ));
+            assert_eq!(
+                classify_retry(&e),
+                RetryClass::Throttled,
+                "diag-{status} is a gateway blip → throttled"
+            );
+        }
+    }
+
+    #[test]
+    fn diag_status_429_is_throttled() {
+        // 429 Too Many Requests — rate-limit that resolves after
+        // the retry window. Retry on the slow schedule (#391).
+        let e = err("SSE stream error: error sending request for url \
+             (https://api.deepseek.com/chat/completions) \
+             (HTTP 429 body: {\"error\":{\"message\":\"rate limit exceeded\"}})");
+        assert_eq!(
+            classify_retry(&e),
+            RetryClass::Throttled,
+            "diag-429 is a rate-limit → throttled"
         );
     }
 
     #[test]
-    fn diag_status_429_is_transient() {
-        // 429 Too Many Requests — rate-limit that resolves after
-        // the retry window. Retry with backoff.
-        let e = err("SSE stream error: error sending request for url \
-             (https://api.deepseek.com/chat/completions) \
-             (HTTP 429 body: {\"error\":{\"message\":\"rate limit exceeded\"}})");
-        assert!(
-            is_transient_sse_error(&e),
-            "diag-429 is a rate-limit → transient"
-        );
+    fn invalid_status_429_no_diag_is_throttled() {
+        // Diag POST itself failed — the pre-stream rejection code is still
+        // visible in the message and must be honored (#391).
+        let e = err("SSE stream error: Invalid status code: 429 Too Many Requests");
+        assert_eq!(classify_retry(&e), RetryClass::Throttled);
     }
 
     #[test]
@@ -629,7 +727,7 @@ mod classifier_tests {
         // Pre-this-fix production case: reqwest body decoder glitched
         // mid-stream, diag wasn't issued (already past Event::Open).
         let e = err("SSE stream error: error decoding response body");
-        assert!(is_transient_sse_error(&e));
+        assert_eq!(classify_retry(&e), RetryClass::Transient);
     }
 
     #[test]
@@ -637,7 +735,7 @@ mod classifier_tests {
         // No diag suffix and "Invalid status code" → pre-stream rejection
         // with no recoverable body. Retry would hit the same wall.
         let e = err("SSE error: Invalid status code: 401 Unauthorized");
-        assert!(!is_transient_sse_error(&e));
+        assert_eq!(classify_retry(&e), RetryClass::Terminal);
     }
 
     #[test]
@@ -646,7 +744,7 @@ mod classifier_tests {
         // still matches the "error sending request" pattern.
         let e = err("SSE stream error: error sending request for url \
              (https://api.deepseek.com/chat/completions)");
-        assert!(is_transient_sse_error(&e));
+        assert_eq!(classify_retry(&e), RetryClass::Transient);
     }
 
     #[test]
@@ -664,6 +762,24 @@ mod classifier_tests {
         assert_eq!(extract_diag_status("plain error"), None);
         assert_eq!(extract_diag_status("(HTTP "), None);
         assert_eq!(extract_diag_status("(HTTP abc body:)"), None);
+    }
+
+    #[test]
+    fn extract_retry_after_basic() {
+        assert_eq!(
+            extract_retry_after("SSE error (HTTP 429 retry-after: 30s body: {...})"),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn extract_retry_after_missing_returns_none() {
+        assert_eq!(
+            extract_retry_after("SSE error (HTTP 429 body: {...})"),
+            None
+        );
+        assert_eq!(extract_retry_after("plain error"), None);
+        assert_eq!(extract_retry_after("retry-after: "), None);
     }
 }
 

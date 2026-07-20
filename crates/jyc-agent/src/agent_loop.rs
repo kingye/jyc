@@ -15,7 +15,7 @@ use tracing;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_event_bus::ThreadEventBusRef;
 
-use crate::provider::{Provider, is_transient_sse_error};
+use crate::provider::{Provider, RetryClass, classify_retry, extract_retry_after};
 use crate::tools::{
     OutboundsMap, ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry,
 };
@@ -929,28 +929,76 @@ impl CollectedResponse {
     }
 }
 
-/// Maximum attempts for a single LLM call before failing the thread.
+/// Maximum attempts for a single LLM call before failing the thread,
+/// for transient (transport-level) failures.
 /// Includes the initial attempt — i.e. up to 2 retries after the first try.
 const SSE_MAX_ATTEMPTS: u32 = 3;
 
-/// Backoff (milliseconds) before each retry. Indexed by retry number (0-based:
-/// the wait BEFORE the 2nd attempt is `[0]`, before the 3rd is `[1]`, etc.).
-/// Length must be `SSE_MAX_ATTEMPTS - 1`.
+/// Backoff (milliseconds) before each retry of a transient failure.
+/// Indexed by retry number (0-based: the wait BEFORE the 2nd attempt is
+/// `[0]`, before the 3rd is `[1]`, etc.). Length must be
+/// `SSE_MAX_ATTEMPTS - 1`.
 const SSE_RETRY_BACKOFF_MS: &[u64] = &[1000, 2000];
 
+/// Maximum attempts for throttled failures (HTTP 429/502/503/504, #391).
+/// Rate-limit windows are typically tens of seconds, so this schedule is
+/// slower and more patient than the transient one.
+const THROTTLED_MAX_ATTEMPTS: u32 = 5;
+
+/// Backoff (milliseconds) before each retry of a throttled failure.
+/// Length must be `THROTTLED_MAX_ATTEMPTS - 1`.
+const THROTTLED_RETRY_BACKOFF_MS: &[u64] = &[5000, 15000, 30000, 60000];
+
+/// Cap on any single backoff, including waits derived from the provider's
+/// `Retry-After` header — bounds how long a pathological value can stall
+/// a thread.
+const MAX_BACKOFF_MS: u64 = 120_000;
+
+/// Maximum attempts for the given retry class (includes the initial call).
+fn max_attempts_for(class: RetryClass) -> u32 {
+    match class {
+        RetryClass::Throttled => THROTTLED_MAX_ATTEMPTS,
+        _ => SSE_MAX_ATTEMPTS,
+    }
+}
+
+/// Compute the wait (milliseconds) before the next retry.
+///
+/// `retry_after_secs` is the provider's `Retry-After` value when captured
+/// by the diagnostic probe; it acts as a floor on top of the class's fixed
+/// schedule, and the result is capped at [`MAX_BACKOFF_MS`]. `attempt_idx`
+/// is clamped to the schedule length so a mid-loop class change (e.g. a
+/// transient failure followed by a throttled one) cannot index out of
+/// bounds.
+fn retry_wait_ms(class: RetryClass, attempt_idx: u32, retry_after_secs: Option<u64>) -> u64 {
+    let schedule = match class {
+        RetryClass::Throttled => THROTTLED_RETRY_BACKOFF_MS,
+        _ => SSE_RETRY_BACKOFF_MS,
+    };
+    let idx = (attempt_idx as usize).min(schedule.len() - 1);
+    let fixed = schedule[idx];
+    let floor = retry_after_secs.unwrap_or(0).saturating_mul(1000);
+    fixed.max(floor).min(MAX_BACKOFF_MS)
+}
+
 /// Issue one LLM call and collect its streaming response, retrying on
-/// transient SSE / network failures.
+/// transient SSE / network failures and throttling rejections (#391).
 ///
-/// On a transient failure (classified by `is_transient_sse_error`):
-/// - Sleep with exponential backoff (1s, 2s).
-/// - Publish a `SessionStatus { status_type: "retry", attempt: N }` event so
-///   the dashboard surfaces the in-progress retry.
-/// - Re-issue the entire request (no resume — providers don't support it).
-///   Output tokens from the failed attempt are discarded; only the
-///   successful attempt's tokens are counted by the caller.
+/// On a failure classified by [`classify_retry`]:
+/// - `Transient` → fast schedule (3 attempts, 1s/2s backoff).
+/// - `Throttled` (429/502/503/504) → slow schedule (5 attempts,
+///   5s/15s/30s/60s backoff), honoring the provider's `Retry-After`
+///   header as a floor when captured.
+/// - `Terminal` → propagate immediately.
 ///
-/// On a non-transient failure (HTTP 4xx with captured body, malformed
-/// arguments, etc.) propagate immediately.
+/// Before each retry, a `SessionStatus { status_type: "retry", attempt: N }`
+/// event is published (and a `tracing::warn!` logged) carrying the next
+/// retry's absolute time and, when known, the Retry-After value — so both
+/// the dashboard and the logs show when the next attempt will happen.
+///
+/// Retries re-issue the entire request (no resume — providers don't
+/// support it). Output tokens from the failed attempt are discarded; only
+/// the successful attempt's tokens are counted by the caller.
 async fn complete_with_retry(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],
@@ -963,7 +1011,7 @@ async fn complete_with_retry(
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
 
-    for attempt_idx in 0..SSE_MAX_ATTEMPTS {
+    for attempt_idx in 0..THROTTLED_MAX_ATTEMPTS {
         let result: Result<CollectedResponse> = async {
             let stream = provider
                 .complete_raw(raw_context, tools, system_prompt)
@@ -977,24 +1025,38 @@ async fn complete_with_retry(
             Err(e) => last_err = e,
         }
 
-        // Retry decision: must be a known transient error AND we still have
-        // attempts remaining.
-        let is_last_attempt = attempt_idx + 1 == SSE_MAX_ATTEMPTS;
-        if is_last_attempt || !is_transient_sse_error(&last_err) {
+        // Retry decision: classify the failure, then apply the class's
+        // budget. Terminal errors propagate immediately.
+        let err_display = format!("{:#}", last_err);
+        let class = classify_retry(&last_err);
+        let max_attempts = max_attempts_for(class);
+        let is_last_attempt = attempt_idx + 1 >= max_attempts;
+        if class == RetryClass::Terminal || is_last_attempt {
             break;
         }
 
-        let backoff_ms = SSE_RETRY_BACKOFF_MS[attempt_idx as usize];
+        let retry_after_secs = extract_retry_after(&err_display);
+        let wait_ms = retry_wait_ms(class, attempt_idx, retry_after_secs);
         let next_attempt = attempt_idx + 2; // 1-based attempt # we're about to make
-        let err_display = format!("{:#}", last_err);
+        let next_at = Utc::now() + chrono::Duration::milliseconds(wait_ms as i64);
+        let retry_after_note = retry_after_secs
+            .map(|s| format!(", retry-after: {s}s"))
+            .unwrap_or_default();
+        let timing = format!(
+            "next retry at {} UTC (in {}s{})",
+            next_at.format("%H:%M:%S"),
+            wait_ms / 1000,
+            retry_after_note
+        );
         let truncated_err = truncate_str(&err_display, 160);
 
         tracing::warn!(
             attempt = next_attempt,
-            max_attempts = SSE_MAX_ATTEMPTS,
-            backoff_ms,
+            max_attempts,
+            class = ?class,
+            wait_ms,
             error = %err_display,
-            "Transient SSE error, retrying after backoff"
+            "LLM call failed, {timing}"
         );
 
         publish_event(
@@ -1004,15 +1066,15 @@ async fn complete_with_retry(
                 status_type: "retry".to_string(),
                 attempt: Some(next_attempt),
                 message: Some(format!(
-                    "transient SSE error, retrying ({}/{}): {}",
-                    next_attempt, SSE_MAX_ATTEMPTS, truncated_err
+                    "{class:?} error, retrying ({}/{}), {}: {}",
+                    next_attempt, max_attempts, timing, truncated_err
                 )),
                 timestamp: Utc::now(),
             },
         )
         .await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
     }
 
     Err(last_err)
@@ -1497,6 +1559,54 @@ mod retry_tests {
             vec![Some(2), Some(3)],
             "expected retry events for attempts 2 and 3"
         );
+    }
+
+    #[test]
+    fn retry_wait_transient_uses_fast_schedule() {
+        assert_eq!(retry_wait_ms(RetryClass::Transient, 0, None), 1000);
+        assert_eq!(retry_wait_ms(RetryClass::Transient, 1, None), 2000);
+    }
+
+    #[test]
+    fn retry_wait_throttled_uses_slow_schedule() {
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 0, None), 5000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 1, None), 15000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 2, None), 30000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 3, None), 60000);
+    }
+
+    #[test]
+    fn retry_wait_honors_retry_after_as_floor() {
+        // Retry-After larger than the fixed schedule wins.
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 0, Some(30)), 30000);
+        // Retry-After smaller than the fixed schedule does not shrink it.
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, 1, Some(5)), 15000);
+    }
+
+    #[test]
+    fn retry_wait_caps_at_max_backoff() {
+        assert_eq!(
+            retry_wait_ms(RetryClass::Throttled, 3, Some(3600)),
+            MAX_BACKOFF_MS,
+            "pathological Retry-After must be capped"
+        );
+    }
+
+    #[test]
+    fn retry_wait_clamps_attempt_idx_to_schedule() {
+        // A mid-loop class change can push attempt_idx past the transient
+        // schedule's end — clamp instead of panicking.
+        assert_eq!(retry_wait_ms(RetryClass::Transient, 5, None), 2000);
+    }
+
+    #[test]
+    fn max_attempts_per_class() {
+        assert_eq!(max_attempts_for(RetryClass::Transient), SSE_MAX_ATTEMPTS);
+        assert_eq!(
+            max_attempts_for(RetryClass::Throttled),
+            THROTTLED_MAX_ATTEMPTS
+        );
+        assert_eq!(max_attempts_for(RetryClass::Terminal), SSE_MAX_ATTEMPTS);
     }
 }
 

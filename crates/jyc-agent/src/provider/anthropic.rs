@@ -200,8 +200,8 @@ impl Provider for AnthropicProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => {
-                                    format!("SSE error: {e} (HTTP {status} body: {body})")
+                                Some(diag) => {
+                                    format!("SSE error: {e} {}", super::format_diag_suffix(&diag))
                                 }
                                 None => format!("SSE error: {e}"),
                             };
@@ -407,8 +407,8 @@ impl Provider for AnthropicProvider {
                                 None
                             };
                             let final_msg = match diagnosed {
-                                Some((status, body)) => {
-                                    format!("SSE error: {e} (HTTP {status} body: {body})")
+                                Some(diag) => {
+                                    format!("SSE error: {e} {}", super::format_diag_suffix(&diag))
                                 }
                                 None => format!("SSE error: {e}"),
                             };

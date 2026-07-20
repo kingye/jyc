@@ -104,6 +104,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Threads failing on LLM rate-limit / overload errors (429/502/503/504).**
+  LLM call failures are now classified as Transient / Throttled / Terminal.
+  429 previously burned through the fast transient budget (3 attempts,
+  1s/2s backoff) and 503 was not retried at all; both now use a patient
+  throttled schedule (5 attempts, 5s/15s/30s/60s), honor the provider's
+  `Retry-After` header as a floor (capped at 120s), and report the next
+  retry's absolute time plus the Retry-After value in logs and dashboard
+  status events. (#391)
+
 - **Stale key bindings in the websocket channel doc.** `docs/channels/websocket.md`
   listed `Ctrl+D` (send) and `p` (back to pattern selection), neither of which
   exists in the dashboard; `Enter` sends and `Esc` returns to pattern

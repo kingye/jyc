@@ -22,6 +22,21 @@ All notable changes to JYC will be documented in this file.
   command palette with live filtering, arrow-key navigation, and Enter-to-send.
   Commands are dynamically fetched from the inspect server. (#402, #403)
 
+- **Command popup improvements.** Filter no longer requires `/` prefix (typing
+  "model" finds `/model`). Inline model selection for `/model`: typing "model "
+  (with trailing space) shows available models for direct selection. Popup
+  widened to 52 columns. (#404)
+
+### Changed
+
+- **Removed Shift+Tab mode switch shortcut** from the dashboard chat input.
+  Mode switching is now done via `/plan` and `/build` commands in the popup.
+
+### Fixed
+
+- **Command popup shows empty list on open.** Fixed `filtered_commands()` to
+  return all commands when filter is empty, instead of an empty list.
+
 - **Multi-level configuration with platform-conventional paths.** JYC now
   separates user-edited config from generated data: `config.toml`, `skills/`,
   and `templates/` live in the platform config dir (Linux: `~/.config/jyc`),

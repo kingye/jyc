@@ -3,28 +3,34 @@ use clap::Subcommand;
 use std::path::Path;
 
 use jyc_types::LabelRule;
-use jyc_types::load_config;
-use jyc_utils::constants::DEFAULT_CONFIG_FILENAME;
+use jyc_types::load_config_layered;
+
+use super::resolve::resolve_config;
 
 #[derive(Debug, Subcommand)]
 pub enum PatternsAction {
     /// List all configured patterns
     List {
         /// Config file path
-        #[arg(short, long, default_value = DEFAULT_CONFIG_FILENAME)]
-        config: String,
+        #[arg(short, long)]
+        config: Option<String>,
     },
 }
 
-pub async fn run(action: &PatternsAction, workdir: &Path) -> Result<()> {
+pub async fn run(action: &PatternsAction, workdir: &Path, workdir_explicit: bool) -> Result<()> {
     match action {
-        PatternsAction::List { config } => run_list(workdir, config).await,
+        PatternsAction::List { config } => {
+            run_list(workdir, config.as_deref(), workdir_explicit).await
+        }
     }
 }
 
-async fn run_list(workdir: &Path, config_file: &str) -> Result<()> {
-    let config_path = workdir.join(config_file);
-    let config = load_config(&config_path)?;
+async fn run_list(workdir: &Path, config_file: Option<&str>, workdir_explicit: bool) -> Result<()> {
+    let resolution = resolve_config(workdir, config_file, workdir_explicit)?;
+    let config = load_config_layered(
+        resolution.global_config_path.as_deref(),
+        &resolution.config_path,
+    )?;
 
     let mut total = 0;
 

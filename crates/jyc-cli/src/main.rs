@@ -141,7 +141,9 @@ async fn main() -> Result<()> {
         Commands::Config { action } => {
             cli::config::run(action, &workdir, cli.workdir.is_some()).await
         }
-        Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
+        Commands::Patterns { action } => {
+            cli::patterns::run(action, &workdir, cli.workdir.is_some()).await
+        }
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
     };

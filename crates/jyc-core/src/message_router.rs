@@ -178,7 +178,10 @@ impl MessageRouter {
                 matched_pattern
                     .and_then(|p| p.thread_path.as_ref())
                     .map(|tp| {
-                        crate::thread_path::resolve_thread_path(tp, &self.thread_manager.data_root())
+                        crate::thread_path::resolve_thread_path(
+                            tp,
+                            &self.thread_manager.data_root(),
+                        )
                     })
             });
         // 5. Enqueue (channel-agnostic)

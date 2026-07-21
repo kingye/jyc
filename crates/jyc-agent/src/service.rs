@@ -698,10 +698,8 @@ impl JycAgentService {
                 }
             }
         }
-        if let Some(global_skills) = jyc_utils::paths::global_skills_dir() {
-            if global_skills.exists() && global_skills.is_dir() {
-                roots.push(global_skills);
-            }
+        if let Some(global_skills) = jyc_utils::paths::global_skills_dir().filter(|d| d.is_dir()) {
+            roots.push(global_skills);
         }
         let workdir_skills = self.workdir.join("skills");
         if workdir_skills.exists() && workdir_skills.is_dir() {

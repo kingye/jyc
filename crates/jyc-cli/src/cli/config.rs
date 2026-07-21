@@ -68,10 +68,12 @@ async fn run_validate(
     let resolution = resolve_config(workdir, config_file, workdir_explicit)?;
     let config_path = &resolution.config_path;
     println!("Validating {}...", config_path.display());
-    if let Some(ref global) = resolution.global_config_path {
-        if global.exists() {
-            println!("(layered on global config: {})", global.display());
-        }
+    if let Some(global) = resolution
+        .global_config_path
+        .as_ref()
+        .filter(|g| g.exists())
+    {
+        println!("(layered on global config: {})", global.display());
     }
 
     let config = load_config_layered(resolution.global_config_path.as_deref(), config_path)?;

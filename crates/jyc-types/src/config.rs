@@ -700,15 +700,12 @@ pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConf
     let mut value: toml::Value = toml::from_str(&content)
         .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
 
-    if let Some(global_path) = global {
-        if global_path != path && global_path.exists() {
-            let global_content = std::fs::read_to_string(global_path).with_context(|| {
-                format!("failed to read config file: {}", global_path.display())
-            })?;
-            let global_value: toml::Value = toml::from_str(&global_content)
-                .with_context(|| format!("failed to parse TOML: {}", global_path.display()))?;
-            value = merge_toml(global_value, value);
-        }
+    if let Some(global_path) = global.filter(|g| *g != path && g.exists()) {
+        let global_content = std::fs::read_to_string(global_path)
+            .with_context(|| format!("failed to read config file: {}", global_path.display()))?;
+        let global_value: toml::Value = toml::from_str(&global_content)
+            .with_context(|| format!("failed to parse TOML: {}", global_path.display()))?;
+        value = merge_toml(global_value, value);
     }
 
     expand_env_vars(&mut value);
@@ -951,10 +948,7 @@ model = "workdir-model"
             Some(3)
         );
         // Overlay wins on conflicting keys
-        assert_eq!(
-            merged["agent"]["model"].as_str(),
-            Some("workdir-model")
-        );
+        assert_eq!(merged["agent"]["model"].as_str(), Some("workdir-model"));
         // Base-only keys survive
         assert_eq!(merged["agent"]["mode"].as_str(), Some("opencode"));
     }

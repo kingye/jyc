@@ -1878,9 +1878,13 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let thread_path = workspace.join("issue-1");
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         let marker = tokio::fs::read_to_string(thread_path.join(".jyc/template"))
             .await
@@ -1903,14 +1907,22 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let thread_path = workspace.join("issue-1");
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         // Second call with the same template is a no-op.
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1924,14 +1936,22 @@ mod template_init_tests {
 
         let thread_path = workspace.join("issue-1");
         // First, init with HLP.
-        initialize_thread_from_template(&thread_path, "github-high-level-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-high-level-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         // Then, request a different template for the same thread → must error.
-        let err = initialize_thread_from_template(&thread_path, "github-planner", &template_dir.clone().into())
-            .await
-            .expect_err("expected TemplateMismatch");
+        let err = initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .expect_err("expected TemplateMismatch");
         assert!(
             err.downcast_ref::<TemplateMismatch>().is_some(),
             "expected TemplateMismatch, got: {:#}",

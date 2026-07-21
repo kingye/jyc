@@ -88,7 +88,10 @@ pub async fn provision_default_config(res: &ConfigResolution) -> Result<bool> {
         .await
         .with_context(|| format!("failed to write {}", res.config_path.display()))?;
 
-    println!("Created default configuration: {}", res.config_path.display());
+    println!(
+        "Created default configuration: {}",
+        res.config_path.display()
+    );
     println!("Edit the file to configure your channels, then run `jyc serve` again.");
     Ok(true)
 }

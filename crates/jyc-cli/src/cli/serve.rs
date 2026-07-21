@@ -47,14 +47,15 @@ use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::InboundAdapter;
 use jyc_types::MonitorConfig;
 use jyc_types::OutboundAdapter;
-use jyc_types::{load_config, validation};
+use jyc_types::{load_config_layered, validation};
 
 /// Serve command — start the agent, monitor inbound channels, process messages.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    /// Config file path (default: config.toml in workdir)
-    #[arg(short, long, default_value = "config.toml")]
-    pub config: String,
+    /// Config file path (default: <config_home>/config.toml, e.g.
+    /// ~/.config/jyc/config.toml; or config.toml in --workdir when given)
+    #[arg(short, long)]
+    pub config: Option<String>,
 
     /// Use polling instead of IMAP IDLE
     #[arg(long)]
@@ -87,12 +88,24 @@ async fn shutdown_signal() {
     }
 }
 
-pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
-    // 1. Load and validate config
-    let config_path = workdir.join(&args.config);
-    tracing::info!(config = %config_path.display(), "Loading configuration");
+pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Result<()> {
+    // 1. Resolve config locations, provision default config on first run
+    let resolution =
+        super::resolve::resolve_config(workdir, args.config.as_deref(), workdir_explicit)?;
+    if super::resolve::provision_default_config(&resolution).await? {
+        return Ok(());
+    }
 
-    let config = load_config(&config_path)?;
+    // 2. Load (layered: global base + workdir overlay) and validate config
+    let config_path = resolution.config_path.clone();
+    let global_config_path = resolution.global_config_path.clone();
+    tracing::info!(
+        config = %config_path.display(),
+        global = ?global_config_path,
+        "Loading configuration"
+    );
+
+    let config = load_config_layered(global_config_path.as_deref(), &config_path)?;
     let errors = validation::validate_config(&config);
     if !errors.is_empty() {
         let msg = errors
@@ -104,7 +117,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
     }
     let config = Arc::new(ArcSwap::from_pointee(config));
 
-    // 2. Setup cancellation (Ctrl+C and SIGTERM)
+    // 3. Setup cancellation (Ctrl+C and SIGTERM)
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
@@ -112,11 +125,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // 3. Start metrics collector
+    // 4. Start metrics collector
     let metrics_collector = MetricsCollector::new(cancel.clone());
     let (metrics_handle, shared_stats, metrics_task) = metrics_collector.start();
 
-    // 4. Process each configured channel
+    // 5. Process each configured channel
     let mut tasks = Vec::new();
     // Collect JycAgentService instances for wiring cross-channel thread managers
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
@@ -383,7 +396,17 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
         }
         let agent = agent_result.agent;
 
-        let template_dir = workdir.join("templates");
+        // Layered template dirs (low → high priority): L1 global < L2 workdir.
+        // Thread-level (L3) .jyc/templates/ is checked first at lookup time.
+        let template_dirs = jyc_core::template_dirs::TemplateDirs::new(
+            [
+                jyc_utils::paths::global_templates_dir(),
+                Some(workdir.join("templates")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        );
 
         let thread_manager = Arc::new(ThreadManager::new_with_options(
             config_snapshot.general.max_concurrent_threads,
@@ -393,10 +416,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
             agent,
             cancel.clone(),
             true, // enable_events: true for Thread Event system
-            template_dir,
+            template_dirs,
             config.clone(),
             channel_name.clone(),
             channel_type.to_string(),
+            workdir.to_path_buf(),
             workspace_dir.clone(),
             metrics_handle.clone(),
         ));
@@ -1146,7 +1170,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("No channels configured");
     }
 
-    // 4.5. Wire cross-channel thread managers and outbound adapters into agent services
+    // 5.5. Wire cross-channel thread managers and outbound adapters into agent services
     {
         let tms = orchestrator.thread_managers().load();
         let tm_map: HashMap<String, Arc<ThreadManager>> = tms
@@ -1196,7 +1220,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
         }
     }
 
-    // 5. Start inspect server (if configured)
+    // 6. Start inspect server (if configured)
     let inspect_task = if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
         let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: jyc_inspect::server::SharedActivityMap =
@@ -1209,6 +1233,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path) -> Result<()> {
             activity_map: activity_map.clone(),
             start_time: std::time::Instant::now(),
             config_path: Some(config_path.clone()),
+            global_config_path: global_config_path.clone(),
             config: Some(Arc::clone(&config)),
             workspace_dirs: orchestrator.workspace_dirs(),
             websocket_handlers: {

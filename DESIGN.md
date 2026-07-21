@@ -820,6 +820,45 @@ Comprehensive unit tests (14 tests for rule filtering alone) cover:
 - Label change detection (new label triggers routing)
 - Trigger message building (issue and PR variants)
 
+## Configuration Layering
+
+JYC separates **user-edited configuration** from **generated data** and supports three-level layering of `config.toml`, `skills/`, and `templates/` (#393).
+
+### Platform Paths
+
+Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) the XDG Base Directory convention is used; on Windows native `dirs` paths.
+
+| Platform | Config dir (L1) | Data dir (default workdir, L2) |
+|---|---|---|
+| Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
+| Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
+
+- **Config dir** holds user-edited files: `config.toml`, `skills/`, `templates/`.
+- **Data dir** (= default workdir / data root) holds generated state: `<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<thread>/`.
+- `jyc serve` without `--workdir` uses the data dir (never the current directory). Without `--config`, the config is `<config dir>/config.toml`; with an explicit `--workdir` but no `--config`, it's `<workdir>/config.toml`.
+- **First run**: if the default config is missing on a flag-less invocation, jyc creates it from `config.example.toml` (plus empty `skills/` and `templates/`), prints edit instructions, and exits.
+
+### The Three Levels
+
+- **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
+- **L2 (workdir / data root)**: `--workdir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
+- **L3 (thread)**: `<thread_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history
+
+### Merge & Lookup Rules
+
+| Asset | Rule |
+|---|---|
+| `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
+| `config.toml` (L3) | Restricted `[agent]` subset (`ThreadConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
+| Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
+| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/opencode/skills`, `~/.claude/skills` → L1 → L2 → thread repo → L3. |
+| `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_thread`); first match wins. |
+| Custom `thread_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any thread directory, including ad-hoc threads (`jyc open <path>`). |
+
+> **Merge limitation**: L2 can override any L1 value but cannot *remove* entries (e.g. a channel defined in L1 cannot be deleted by L2). If removal is needed, either omit the channel from L1 or add it with `enabled = false` in L2.
+
+**Self-containment invariant**: all generated state follows the *effective data root* — a custom `--workdir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
+
 ## Config Hot-Reload Architecture
 
 JYC supports live configuration reload via the Dashboard `R` key without restarting the monitor process. The architecture uses a layered approach based on the "thermal volatility" of each config type:

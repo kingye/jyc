@@ -102,7 +102,7 @@ mode = "agent"
             ),
             channel: "test".into(),
             agent: None,
-            template_dir: PathBuf::from("/tmp/test/templates"),
+            template_dirs: PathBuf::from("/tmp/test/templates").into(),
         }
     }
 

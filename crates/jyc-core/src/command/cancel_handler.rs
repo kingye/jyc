@@ -114,6 +114,7 @@ mode = "agent"
             config,
             "test".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ))
@@ -190,7 +191,7 @@ mode = "agent"
             ),
             channel: "test".into(),
             agent: None,
-            template_dir: std::path::PathBuf::from("/tmp/test/templates"),
+            template_dirs: std::path::PathBuf::from("/tmp/test/templates").into(),
         }
     }
 

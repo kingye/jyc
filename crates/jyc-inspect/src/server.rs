@@ -70,6 +70,8 @@ pub struct InspectContext {
     pub start_time: Instant,
     /// Path to the config file (for reload)
     pub config_path: Option<PathBuf>,
+    /// Path to the global (L1) config file used as base layer (for reload)
+    pub global_config_path: Option<PathBuf>,
     /// Swappable application config (for live reload)
     pub config: Option<Arc<ArcSwap<AppConfig>>>,
     /// Per-channel workspace directories (dynamic — updated on reload)
@@ -266,8 +268,11 @@ impl InspectServer {
 
         tracing::info!(path = %config_path.display(), "Reloading configuration");
 
-        // Load and validate new config
-        let new_config = match jyc_types::load_config(config_path) {
+        // Load and validate new config (layered: global base + workdir overlay)
+        let new_config = match jyc_types::load_config_layered(
+            context.global_config_path.as_deref(),
+            config_path,
+        ) {
             Ok(c) => c,
             Err(e) => {
                 let msg = format!("failed to load config: {e:#}");
@@ -1029,6 +1034,7 @@ mod tests {
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
+            global_config_path: None,
             config: None,
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
@@ -1266,6 +1272,7 @@ mode = "agent"
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: Some(config_path.clone()),
+            global_config_path: None,
             config: Some(config_swap.clone()),
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
@@ -1354,6 +1361,7 @@ mode = "agent"
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
+            global_config_path: None,
             config: None,
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
@@ -1450,6 +1458,7 @@ mode = "agent"
             activity_map: Arc::new(Mutex::new(HashMap::new())),
             start_time: Instant::now(),
             config_path: None,
+            global_config_path: None,
             config: None,
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,

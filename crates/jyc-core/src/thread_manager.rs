@@ -68,13 +68,16 @@ pub struct ThreadManager {
     // Per-thread cancellation tokens (used by close_thread to stop workers)
     pub(crate) thread_cancels: Mutex<HashMap<String, CancellationToken>>,
 
-    // Template directory for thread initialization
-    template_dir: PathBuf,
+    // Template directories for thread initialization (layered: L1 global < L2 workdir)
+    template_dirs: crate::template_dirs::TemplateDirs,
 
     // Channel name this ThreadManager belongs to
     channel_name: String,
     // Channel type (e.g., "email", "wecom_bot")
     channel_type: String,
+
+    // Workdir (data root) for this channel.
+    workdir: PathBuf,
 
     // Workspace directory for this channel (<workdir>/<channel>/workspace/)
     workspace_dir: PathBuf,
@@ -106,10 +109,11 @@ impl ThreadManager {
         outbound: Arc<dyn OutboundAdapter>,
         agent: Arc<dyn AgentService>,
         cancel: CancellationToken,
-        template_dir: PathBuf,
+        template_dirs: impl Into<crate::template_dirs::TemplateDirs>,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
+        workdir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -121,10 +125,11 @@ impl ThreadManager {
             agent,
             cancel,
             true,
-            template_dir,
+            template_dirs,
             config,
             channel_name,
             channel_type,
+            workdir,
             workspace_dir,
             metrics,
         )
@@ -140,10 +145,11 @@ impl ThreadManager {
         agent: Arc<dyn AgentService>,
         cancel: CancellationToken,
         enable_events: bool,
-        template_dir: PathBuf,
+        template_dirs: impl Into<crate::template_dirs::TemplateDirs>,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
+        workdir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -157,9 +163,10 @@ impl ThreadManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
-            template_dir,
+            template_dirs: template_dirs.into(),
             channel_name,
             channel_type,
+            workdir,
             workspace_dir,
             config,
             metrics,
@@ -308,9 +315,10 @@ impl ThreadManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,
             thread_cancels: Mutex::new(HashMap::new()),
-            template_dir: self.template_dir.clone(),
+            template_dirs: self.template_dirs.clone(),
             channel_name: self.channel_name.clone(),
             channel_type: self.channel_type.clone(),
+            workdir: self.workdir.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
@@ -353,7 +361,7 @@ impl ThreadManager {
         let storage = thread_manager.storage.clone();
         let outbound = thread_manager.outbound.clone();
         let agent = thread_manager.agent.clone();
-        let template_dir = thread_manager.template_dir.clone();
+        let template_dirs = thread_manager.template_dirs.clone();
         let config = thread_manager.config.clone();
         let tm = thread_manager;
         let tm_span = tracing::info_span!("tm", t = %thread_name);
@@ -418,7 +426,7 @@ impl ThreadManager {
                     match initialize_thread_from_template(
                         &thread_path,
                         template_name,
-                        &template_dir,
+                        &template_dirs,
                     ).await {
                         Ok(()) => {}
                         Err(e) => {
@@ -559,7 +567,7 @@ impl ThreadManager {
                     outbound.clone(),
                     agent.clone(),
                     &mut rx,
-                    &template_dir,
+                    &template_dirs,
                     &config,
                     &tx_for_reenqueue,
                     tm.clone(),
@@ -682,6 +690,11 @@ impl ThreadManager {
         &self.channel_type
     }
 
+    /// Return the workdir (data root) for this channel.
+    pub fn data_root(&self) -> &Path {
+        &self.workdir
+    }
+
     /// Return the max concurrent threads (semaphore capacity).
     pub fn max_concurrent(&self) -> usize {
         self.semaphore.available_permits() + self.active_worker_count()
@@ -746,7 +759,7 @@ impl ThreadManager {
             let Some(tp) = &pattern.thread_path else {
                 continue;
             };
-            let resolved = crate::thread_path::resolve_thread_path(tp);
+            let resolved = crate::thread_path::resolve_thread_path(tp, self.data_root());
             let thread_name_file = resolved.join(".jyc").join("thread-name");
             match tokio::fs::read_to_string(&thread_name_file).await {
                 Ok(name) => {
@@ -1249,7 +1262,7 @@ async fn process_message(
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
-    template_dir: &Path,
+    template_dirs: &crate::template_dirs::TemplateDirs,
     config: &Arc<ArcSwap<jyc_types::AppConfig>>,
     tx_for_reenqueue: &mpsc::Sender<QueueItem>,
     thread_manager: Arc<ThreadManager>,
@@ -1341,7 +1354,7 @@ async fn process_message(
         config: config.load_full(),
         channel: message.channel.clone(),
         agent: Some(agent.clone()),
-        template_dir: template_dir.to_path_buf(),
+        template_dirs: template_dirs.clone(),
     };
 
     let cmd_output = command_registry
@@ -1797,7 +1810,7 @@ pub struct TemplateMismatch {
 async fn initialize_thread_from_template(
     thread_path: &Path,
     template_name: &str,
-    template_dir: &Path,
+    template_dirs: &crate::template_dirs::TemplateDirs,
 ) -> Result<()> {
     let jyc_dir = thread_path.join(".jyc");
     let template_marker = jyc_dir.join("template");
@@ -1826,15 +1839,13 @@ async fn initialize_thread_from_template(
         }
     }
 
-    let template_src = template_dir.join(template_name);
-    if !template_src.exists() {
+    let Some(template_src) = template_dirs.resolve_with_thread(thread_path, template_name) else {
         tracing::warn!(
             template = %template_name,
-            path = %template_src.display(),
-            "Template directory does not exist"
+            "Template directory does not exist in any templates layer"
         );
         return Ok(());
-    }
+    };
 
     copy_template_files(&template_src, thread_path).await?;
 
@@ -1869,9 +1880,13 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let thread_path = workspace.join("issue-1");
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         let marker = tokio::fs::read_to_string(thread_path.join(".jyc/template"))
             .await
@@ -1894,14 +1909,22 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let thread_path = workspace.join("issue-1");
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         // Second call with the same template is a no-op.
-        initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1915,14 +1938,22 @@ mod template_init_tests {
 
         let thread_path = workspace.join("issue-1");
         // First, init with HLP.
-        initialize_thread_from_template(&thread_path, "github-high-level-planner", &template_dir)
-            .await
-            .unwrap();
+        initialize_thread_from_template(
+            &thread_path,
+            "github-high-level-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         // Then, request a different template for the same thread → must error.
-        let err = initialize_thread_from_template(&thread_path, "github-planner", &template_dir)
-            .await
-            .expect_err("expected TemplateMismatch");
+        let err = initialize_thread_from_template(
+            &thread_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .expect_err("expected TemplateMismatch");
         assert!(
             err.downcast_ref::<TemplateMismatch>().is_some(),
             "expected TemplateMismatch, got: {:#}",
@@ -2218,6 +2249,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ))
@@ -2424,6 +2456,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ));
@@ -2519,6 +2552,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ));

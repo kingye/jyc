@@ -607,6 +607,49 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     load_config_from_str(&content)
 }
 
+/// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
+///
+/// Restricted subset of the app config: only `[agent]` model overrides are
+/// supported. Precedence: `.jyc/<mode>-model-override` file > `.jyc/config.toml`
+/// > pattern > channel > global config.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadConfig {
+    /// Agent overrides for this thread.
+    pub agent: Option<ThreadAgentConfig>,
+}
+
+/// Agent model overrides for a single thread.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadAgentConfig {
+    /// Model override for all modes.
+    pub model: Option<String>,
+    /// Model override for plan mode.
+    pub plan_model: Option<String>,
+    /// Model override for build mode.
+    pub build_model: Option<String>,
+    /// Small model override (used for lightweight tasks).
+    pub small_model: Option<String>,
+}
+
+/// Load thread-level overrides from `<thread_path>/.jyc/config.toml`.
+///
+/// Returns `None` when the file does not exist. Parse errors are logged and
+/// treated as "no overrides" (a broken thread config must not crash the agent).
+pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
+    let path = thread_path.join(".jyc").join("config.toml");
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    match toml::from_str(&content) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "Ignoring invalid thread config");
+            None
+        }
+    }
+}
+
 /// Load configuration from a TOML string.
 ///
 /// Expands `${VAR}` environment variable references, then deserializes.
@@ -619,6 +662,54 @@ pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
     // Now deserialize the expanded TOML into our config struct
     let config: AppConfig = value.try_into().context("failed to deserialize config")?;
 
+    Ok(config)
+}
+
+/// Deep-merge two TOML values: tables merge recursively; all other values
+/// (strings, arrays, scalars) are replaced by the overlay.
+///
+/// Used for layered configuration: the workdir config (overlay) overrides
+/// the global config (base) on a per-key basis.
+pub fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value {
+    match (base, overlay) {
+        (toml::Value::Table(mut base_table), toml::Value::Table(overlay_table)) => {
+            for (key, overlay_value) in overlay_table {
+                let merged = match base_table.remove(&key) {
+                    Some(base_value) => merge_toml(base_value, overlay_value),
+                    None => overlay_value,
+                };
+                base_table.insert(key, merged);
+            }
+            toml::Value::Table(base_table)
+        }
+        (_base, overlay) => overlay,
+    }
+}
+
+/// Load configuration with global/workdir layering.
+///
+/// When `global` is `Some` and differs from `path`, the global config is
+/// loaded first as the base layer and `path` is merged on top of it via
+/// [`merge_toml`]. `${VAR}` expansion happens after the merge.
+///
+/// A missing global config file is silently ignored (layering is optional);
+/// a missing `path` config file is an error.
+pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConfig> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    let mut value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
+
+    if let Some(global_path) = global.filter(|g| *g != path && g.exists()) {
+        let global_content = std::fs::read_to_string(global_path)
+            .with_context(|| format!("failed to read config file: {}", global_path.display()))?;
+        let global_value: toml::Value = toml::from_str(&global_content)
+            .with_context(|| format!("failed to parse TOML: {}", global_path.display()))?;
+        value = merge_toml(global_value, value);
+    }
+
+    expand_env_vars(&mut value);
+    let config: AppConfig = value.try_into().context("failed to deserialize config")?;
     Ok(config)
 }
 
@@ -828,5 +919,203 @@ enabled = true
             }
             _ => panic!("Expected Remote variant for remote_mcp"),
         }
+    }
+
+    #[test]
+    fn test_merge_toml_tables_deep_merge() {
+        let base: toml::Value = toml::from_str(
+            r#"
+[general]
+max_concurrent_threads = 3
+
+[agent]
+model = "global-model"
+mode = "opencode"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[agent]
+model = "workdir-model"
+"#,
+        )
+        .unwrap();
+
+        let merged = merge_toml(base, overlay);
+        assert_eq!(
+            merged["general"]["max_concurrent_threads"].as_integer(),
+            Some(3)
+        );
+        // Overlay wins on conflicting keys
+        assert_eq!(merged["agent"]["model"].as_str(), Some("workdir-model"));
+        // Base-only keys survive
+        assert_eq!(merged["agent"]["mode"].as_str(), Some("opencode"));
+    }
+
+    #[test]
+    fn test_merge_toml_channels_merge_by_name() {
+        let base: toml::Value = toml::from_str(
+            r#"
+[channels.global_chan]
+type = "email"
+
+[channels.shared]
+type = "email"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[channels.local_chan]
+type = "feishu"
+
+[channels.shared]
+type = "websocket"
+"#,
+        )
+        .unwrap();
+
+        let merged = merge_toml(base, overlay);
+        let channels = merged["channels"].as_table().unwrap();
+        assert_eq!(channels.len(), 3);
+        assert_eq!(channels["global_chan"]["type"].as_str(), Some("email"));
+        assert_eq!(channels["local_chan"]["type"].as_str(), Some("feishu"));
+        // Same-name channel: overlay wins
+        assert_eq!(channels["shared"]["type"].as_str(), Some("websocket"));
+    }
+
+    #[test]
+    fn test_merge_toml_arrays_replaced_not_concatenated() {
+        let base: toml::Value = toml::from_str(
+            r#"
+[[mcps]]
+name = "a"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[[mcps]]
+name = "b"
+"#,
+        )
+        .unwrap();
+
+        let merged = merge_toml(base, overlay);
+        let mcps = merged["mcps"].as_array().unwrap();
+        assert_eq!(mcps.len(), 1);
+        assert_eq!(mcps[0]["name"].as_str(), Some("b"));
+    }
+
+    #[test]
+    fn test_load_config_layered_global_base_workdir_overlay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_path = tmp.path().join("global.toml");
+        let workdir_path = tmp.path().join("config.toml");
+
+        std::fs::write(
+            &global_path,
+            r#"
+[agent]
+mode = "static"
+model = "global-model"
+
+[channels.global_chan]
+type = "email"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &workdir_path,
+            r#"
+[agent]
+mode = "static"
+model = "workdir-model"
+
+[channels.local_chan]
+type = "feishu"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        assert_eq!(config.agent.model.as_deref(), Some("workdir-model"));
+        assert!(config.channels.contains_key("global_chan"));
+        assert!(config.channels.contains_key("local_chan"));
+    }
+
+    #[test]
+    fn test_load_config_layered_missing_global_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_path = tmp.path().join("nonexistent.toml");
+        let workdir_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &workdir_path,
+            r#"
+[agent]
+mode = "static"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        assert_eq!(config.agent.mode, "static");
+    }
+
+    #[test]
+    fn test_load_thread_config_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_thread_config(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_load_thread_config_agent_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "provider/thread-model"
+plan_model = "provider/plan-model"
+small_model = "provider/small-model"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(agent.model.as_deref(), Some("provider/thread-model"));
+        assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
+        assert_eq!(agent.build_model, None);
+        assert_eq!(agent.small_model.as_deref(), Some("provider/small-model"));
+    }
+
+    #[test]
+    fn test_load_thread_config_invalid_toml_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
+        assert!(load_thread_config(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_load_config_layered_same_path_not_double_loaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+mode = "static"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config_layered(Some(&path), &path).unwrap();
+        assert_eq!(config.agent.mode, "static");
     }
 }

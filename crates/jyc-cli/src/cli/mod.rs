@@ -3,5 +3,6 @@ pub mod config;
 pub mod dashboard;
 pub mod mcp_reply;
 pub mod patterns;
+pub mod resolve;
 pub mod serve;
 pub mod templates;

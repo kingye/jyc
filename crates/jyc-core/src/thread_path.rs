@@ -21,8 +21,10 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
 
 /// Resolve a custom thread path from a pattern's `thread_path` config.
 ///
-/// Expands `~` to `$HOME`. Absolute paths are used as-is.
-pub fn resolve_thread_path(path: &str) -> PathBuf {
+/// - `~` is expanded to `$HOME`
+/// - Absolute paths are used as-is
+/// - Relative paths are resolved against the data root (workdir)
+pub fn resolve_thread_path(path: &str, data_root: &Path) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join(rest)
@@ -34,7 +36,12 @@ pub fn resolve_thread_path(path: &str) -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(path))
     } else {
-        PathBuf::from(path)
+        let p = PathBuf::from(path);
+        if p.is_absolute() {
+            p
+        } else {
+            data_root.join(p)
+        }
     }
 }
 
@@ -88,13 +95,13 @@ mod tests {
 
     #[test]
     fn test_resolve_thread_path_absolute() {
-        let p = resolve_thread_path("/home/jiny/my-project");
+        let p = resolve_thread_path("/home/jiny/my-project", Path::new("/data"));
         assert_eq!(p, PathBuf::from("/home/jiny/my-project"));
     }
 
     #[test]
     fn test_resolve_thread_path_tilde() {
-        let p = resolve_thread_path("~/my-project");
+        let p = resolve_thread_path("~/my-project", Path::new("/data"));
         if let Some(home) = std::env::var_os("HOME") {
             assert_eq!(p, PathBuf::from(home).join("my-project"));
         } else {
@@ -410,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_resolve_thread_path_home_only() {
-        let p = resolve_thread_path("~");
+        let p = resolve_thread_path("~", Path::new("/data"));
         if let Some(home) = std::env::var_os("HOME") {
             assert_eq!(p, PathBuf::from(home));
         } else {
@@ -420,9 +427,9 @@ mod tests {
 
     #[test]
     fn test_resolve_thread_path_relative() {
-        // Relative paths are used as-is (no workspace resolution)
-        let p = resolve_thread_path("my-project");
-        assert_eq!(p, PathBuf::from("my-project"));
+        // Relative paths are resolved against the data root (workdir)
+        let p = resolve_thread_path("my-project", Path::new("/data"));
+        assert_eq!(p, PathBuf::from("/data/my-project"));
     }
 
     #[tokio::test]

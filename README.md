@@ -53,14 +53,14 @@ cargo build --release
 ### 2. Configure
 
 ```bash
-# Generate a config template
-./target/release/jyc config init --workdir /path/to/data
+# Generate a config template (in the platform config dir, see below)
+./target/release/jyc config init
 
-# Edit the config
-vi /path/to/data/config.toml
+# Edit the config (Linux: ~/.config/jyc/config.toml)
+vi ~/.config/jyc/config.toml
 
 # Validate
-./target/release/jyc config validate --workdir /path/to/data
+./target/release/jyc config validate
 ```
 
 See `config.example.toml` for a full annotated example. Use `${ENV_VAR}` syntax for secrets (passwords, API keys).
@@ -68,10 +68,34 @@ See `config.example.toml` for a full annotated example. Use `${ENV_VAR}` syntax 
 ### 3. Run
 
 ```bash
-./target/release/jyc serve --workdir /path/to/data
+./target/release/jyc serve
 ```
 
+On first run without a config, `jyc serve` creates a default `config.toml` (plus empty `skills/` and `templates/` directories) in the platform config dir and exits — edit the file, then start again.
+
 Add `--debug` for debug-level logging or `--verbose` for trace-level.
+
+## Configuration & Data Layout
+
+JYC separates **user-edited configuration** from **generated data**, following platform conventions:
+
+| Platform | Config dir (L1) | Data dir (default workdir, L2) |
+|---|---|---|
+| Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
+| Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
+
+Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
+
+- **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`
+- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<thread>/`)
+- **L3 (thread)** — `<thread_path>/.jyc/`: `config.toml` (restricted `[agent]` model overrides), `skills/`, `templates/`, sessions, chat history
+
+Merge/lookup rules:
+
+- **config.toml**: L2 is deep-merged over L1 (tables merge recursively, arrays/scalars are replaced). L3 only supports `[agent]` model overrides. Model precedence: `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config.
+- **skills**: all levels are scanned; higher levels override same-named skills.
+- **templates**: looked up L3 → L2 → L1; first match wins.
+- A pattern's custom `thread_path` (absolute or `~`) lives outside the data root; relative paths resolve against the data root. L3 applies to any thread directory, including ad-hoc ones (`jyc open <path>`).
 
 ## Deployment
 
@@ -180,7 +204,8 @@ Place a `system.md` file in a thread's workspace directory to customize the AI's
 ### Global Flags
 
 ```bash
--w, --workdir <PATH>   # Working directory (default: current directory)
+-w, --workdir <PATH>   # Working directory / data root (default: platform data dir,
+                       #   e.g. ~/.local/share/jyc on Linux)
 -d, --debug            # Enable debug logging
 -v, --verbose         # Enable verbose (trace) logging
 ```
@@ -189,7 +214,8 @@ Place a `system.md` file in a thread's workspace directory to customize the AI's
 
 ```bash
 jyc serve              # Start the agent (main command)
-                       #   --config <FILE>    Config file path (default: config.toml)
+                       #   --config <FILE>    Config file path (default:
+                       #     <config dir>/config.toml, or config.toml in --workdir)
                        #   --no-idle         Use polling instead of IMAP IDLE
                        #   --reset           Reset monitoring state before starting
 jyc dashboard            # Live TUI dashboard (connects via inspect server)
@@ -202,11 +228,11 @@ jyc open                 # Create a new ad-hoc websocket thread and open chat
                          #   -p, --path <PATH>     Thread working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
                          #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
-jyc config init        # Generate config template
-jyc config validate    # Validate config file
-                       #   --config <FILE>   Config file path (default: config.toml)
+jyc config init        # Generate config template (in <config dir>, or --workdir)
+jyc config validate    # Validate config file (layered: global + workdir)
+                       #   --config <FILE>   Config file path (default: as serve)
 jyc patterns list      # List configured patterns
-                       #   --config <FILE>   Config file path (default: config.toml)
+                       #   --config <FILE>   Config file path (default: as serve)
 jyc templates list     # List available templates and their skills
                        #   --source-dir <PATH>   Source directory containing templates/
 jyc templates deploy <target_dir>   # Deploy templates to a target directory

@@ -10,6 +10,45 @@ All notable changes to JYC will be documented in this file.
   GitHub Actions on every push to `main`, published to a rolling `nightly`
   GitHub Release, and synced to Gitee Release. (#394)
 
+- **Multi-level configuration with platform-conventional paths.** JYC now
+  separates user-edited config from generated data: `config.toml`, `skills/`,
+  and `templates/` live in the platform config dir (Linux: `~/.config/jyc`),
+  while threads, channel state, and chat history live in the platform data
+  dir (Linux: `~/.local/share/jyc`). Three-level layering: L1 global
+  (config dir) → L2 workdir (`--workdir`/`--config`) → L3 thread (`.jyc/`).
+  `config.toml` is deep-merged L2-over-L1; skills are merged with
+  higher-level-wins; templates are looked up L3 → L2 → L1. (#393)
+- **First-run provisioning.** `jyc serve` without flags and without an
+  existing config creates `~/.config/jyc/config.toml` (from
+  `config.example.toml`) plus empty `skills/` and `templates/` directories,
+  prints edit instructions, and exits. (#393)
+- **Thread-level `.jyc/config.toml`.** Supports a restricted `[agent]`
+  subset (`model`, `plan_model`, `build_model`, `small_model`). Precedence:
+  `.jyc/<mode>-model-override` file > `.jyc/config.toml` > pattern > config.
+  Invalid files are ignored with a warning. (#393)
+- **Auto-start `jyc serve` from `jyc dashboard` and `jyc open`.** When the
+  server is not running, dashboard and open commands auto-spawn `jyc serve`
+  in the background (once per session). Logs are written to
+  `<data_home>/jyc.log`. First-run provisioning output is shown to the user.
+  Only works for localhost addresses. (#393)
+
+### Changed
+
+- **Default config/workdir locations.** `jyc serve` without `--workdir` no
+  longer uses the current directory — it uses the platform data dir
+  (Linux: `~/.local/share/jyc`); the default config is
+  `~/.config/jyc/config.toml`. `jyc config init` now writes to the platform
+  config dir by default. (#393)
+- **Relative pattern `thread_path`** now resolves against the data root
+  (workdir) instead of the process current directory. Absolute and `~`
+  paths are unchanged. (#393)
+
+### Fixed
+
+- **Flaky skill-discovery tests.** `with_temp_home` now serializes tests
+  that mutate the shared `HOME` env var via a static mutex (parallel-safe).
+  (#393)
+
 - **Per-model `model_id` override for provider model configs.** Each entry
   under `[agent.providers.<name>.models]` accepts an optional `model_id`
   holding the actual model identifier sent to the remote LLM; when unset,

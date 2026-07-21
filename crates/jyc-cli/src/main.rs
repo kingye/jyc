@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "jyc", version, about)]
 struct Cli {
-    /// Working directory (default: current directory)
+    /// Working directory / data root (default: platform data dir,
+    /// e.g. ~/.local/share/jyc on Linux)
     #[arg(short, long, global = true)]
     workdir: Option<PathBuf>,
 
@@ -94,24 +95,16 @@ fn init_tracing(debug: bool, verbose: bool) {
 fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
     match workdir {
         Some(w) => {
-            let expanded = if w.starts_with("~") {
-                if let Some(home) = dirs_home() {
-                    home.join(w.strip_prefix("~").unwrap())
-                } else {
-                    w.clone()
-                }
-            } else {
-                w.clone()
-            };
+            let expanded = jyc_utils::paths::expand_tilde(&w.to_string_lossy());
             let abs = std::fs::canonicalize(&expanded).unwrap_or(expanded);
             Ok(abs)
         }
-        None => Ok(std::env::current_dir()?),
+        None => jyc_utils::paths::data_home().ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not determine platform data directory; pass --workdir explicitly"
+            )
+        }),
     }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[tokio::main]
@@ -123,7 +116,7 @@ async fn main() -> Result<()> {
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
-        Commands::Serve(args) => cli::serve::run(args, &workdir).await,
+        Commands::Serve(args) => cli::serve::run(args, &workdir, cli.workdir.is_some()).await,
         Commands::Dashboard(args) => match &args.command {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
@@ -145,8 +138,12 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Config { action } => cli::config::run(action, &workdir).await,
-        Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
+        Commands::Config { action } => {
+            cli::config::run(action, &workdir, cli.workdir.is_some()).await
+        }
+        Commands::Patterns { action } => {
+            cli::patterns::run(action, &workdir, cli.workdir.is_some()).await
+        }
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
     };

@@ -14,6 +14,7 @@ pub mod security;
 pub mod session_state;
 pub mod state_manager;
 pub mod static_agent;
+pub mod template_dirs;
 pub mod template_utils;
 pub mod thread_event;
 pub mod thread_event_bus;

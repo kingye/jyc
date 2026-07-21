@@ -67,17 +67,19 @@ impl TemplateCommandHandler {
             }
         };
 
-        let template_src = context.template_dir.join(&template_name);
-        if !template_src.exists() {
+        let Some(template_src) = context
+            .template_dirs
+            .resolve_with_thread(&context.thread_path, &template_name)
+        else {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/template: template '{}' not found in templates/",
+                    "/template: template '{}' not found in any templates layer",
                     template_name
                 ),
-                error: Some(format!("Path does not exist: {}", template_src.display())),
+                error: Some(format!("Template not found: {}", template_name)),
             });
-        }
+        };
 
         let copied = copy_template_files(&template_src, thread_path).await?;
 
@@ -148,17 +150,19 @@ impl TemplateCommandHandler {
             }
         };
 
-        let template_src = context.template_dir.join(&template_name);
-        if !template_src.exists() {
+        let Some(template_src) = context
+            .template_dirs
+            .resolve_with_thread(&context.thread_path, &template_name)
+        else {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/template update: template '{}' not found in templates/",
+                    "/template update: template '{}' not found in any templates layer",
                     template_name
                 ),
-                error: Some(format!("Path does not exist: {}", template_src.display())),
+                error: Some(format!("Template not found: {}", template_name)),
             });
-        }
+        };
 
         let copied = overwrite_template_files(&template_src, thread_path).await?;
 
@@ -204,7 +208,7 @@ mode = "agent"
             ),
             channel: "test".into(),
             agent: None,
-            template_dir: tmp_dir.join("templates"),
+            template_dirs: tmp_dir.join("templates").into(),
         }
     }
 
@@ -256,7 +260,7 @@ mode = "agent"
         let mut ctx = test_context(tmp.path());
         ctx.thread_path = thread_dir.clone();
 
-        println!("Template dir in ctx: {:?}", ctx.template_dir);
+        println!("Template dir in ctx: {:?}", ctx.template_dirs);
 
         let result = handler.execute(ctx).await.unwrap();
 

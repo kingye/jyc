@@ -1,5 +1,11 @@
 # JYC Configuration
 # Fill in your credentials below. Use ${ENV_VAR} syntax for secrets if preferred.
+#
+# Locations & layering (see README "Configuration & Data Layout"):
+#   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
+#   L2 (workdir): <workdir>/config.toml      (--workdir, or platform data dir)
+#   L3 (thread):  <thread>/.jyc/config.toml  (restricted [agent] model overrides)
+# L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
 [general]
 max_concurrent_threads = 3

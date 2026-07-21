@@ -222,7 +222,6 @@ pub async fn write_config(config_path: &std::path::Path, doc: &DocumentMut) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[tokio::test]
     async fn test_append_and_remove_pattern() {
@@ -254,7 +253,7 @@ enabled = true
         // Verify it was appended
         let content = tokio::fs::read_to_string(&config_path).await.unwrap();
         assert!(content.contains("name = \"my-project\""));
-        assert!(content.contains(&tp.to_string_lossy().as_ref()));
+        assert!(content.contains(tp.to_string_lossy().as_ref()));
 
         // Remove it
         let removed = remove_pattern_from_config(&config_path, &tp).await.unwrap();

@@ -18,7 +18,7 @@ fn skip_slash(s: &str) -> &str {
 /// instead of sending /model).
 fn is_model_mode(filter: &str) -> bool {
     let f = skip_slash(filter);
-    f == "model " || f.starts_with("model ")
+    f.starts_with("model ")
 }
 
 /// Returns the model sub-filter (text after "model ").
@@ -163,7 +163,17 @@ pub fn render_command_popup(
 
     let (items, title) = if model_mode {
         let filtered = state.filtered_models(models);
-        (render_model_list(&filtered, state.selected), " Models ")
+        if filtered.is_empty() {
+            (
+                vec![Line::from(Span::styled(
+                    "  (no models)",
+                    Style::default().fg(Color::DarkGray),
+                ))],
+                " Models ",
+            )
+        } else {
+            (render_model_list(&filtered, state.selected), " Models ")
+        }
     } else if state.filter.is_empty() || !state.filtered_commands(commands).is_empty() {
         let filtered = state.filtered_commands(commands);
         (render_command_list(&filtered, state.selected), " Commands ")
@@ -237,19 +247,9 @@ pub fn render_command_popup(
         chunks[0],
     );
 
-    // "Loading..."
-    if model_mode && models.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "  Loading...",
-                Style::default().fg(Color::DarkGray),
-            ))),
-            chunks[1],
-        );
-        return;
-    }
-
-    if !model_mode && commands.is_empty() {
+    // "Loading..." — only before any data has arrived from the first poll
+    let has_data = !commands.is_empty() || !models.is_empty();
+    if !has_data {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  Loading...",

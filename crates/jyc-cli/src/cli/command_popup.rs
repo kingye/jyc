@@ -35,15 +35,6 @@ impl CommandPopupState {
             .filter(|cmd| cmd.name.to_lowercase().starts_with(&lower))
             .collect()
     }
-
-    /// Clamp selection to stay within valid bounds.
-    pub fn clamp_selection(&mut self, count: usize) {
-        if count == 0 {
-            self.selected = 0;
-        } else {
-            self.selected = self.selected.min(count - 1);
-        }
-    }
 }
 
 /// Handle a key event for the command popup.

@@ -2301,6 +2301,11 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         .theme(theme)
         .wrap(true)
         .render(editor_area, frame.buffer_mut());
+
+    // ── Command popup overlay ──
+    if let Some(ref popup) = app.command_popup {
+        render_command_popup(frame, inner, popup, &app.commands);
+    }
 }
 
 fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {

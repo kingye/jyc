@@ -155,7 +155,8 @@ jobs:
             resp=$(curl -sS -X POST "${API}/releases/${new_release_id}/attach_files" \
               -F "access_token=${GITEE_TOKEN}" \
               -F "file=@${f}")
-            if ! echo "${resp}" | jq -e '.download_url // .source' > /dev/null; then
+            # Gitee attach_files success response contains .id (no download_url/source fields)
+            if ! echo "${resp}" | jq -e '.id' > /dev/null; then
               echo "Failed to upload ${f}: ${resp}"
               exit 1
             fi

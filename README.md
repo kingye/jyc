@@ -81,8 +81,7 @@ JYC separates **user-edited configuration** from **generated data**, following p
 
 | Platform | Config dir (L1) | Data dir (default workdir, L2) |
 |---|---|---|
-| Linux | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
-| macOS | `~/Library/Application Support/jyc` | `~/Library/Application Support/jyc` |
+| Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
 
 Three-level layering applies to `config.toml`, `skills/`, and `templates/`:

@@ -5,10 +5,15 @@
 //!
 //! | Platform | Config dir                    | Data dir                        |
 //! |----------|-------------------------------|---------------------------------|
-//! | Linux    | `$XDG_CONFIG_HOME/jyc`        | `$XDG_DATA_HOME/jyc`            |
-//! |          | (`~/.config/jyc`)             | (`~/.local/share/jyc`)          |
-//! | macOS    | `~/Library/Application Support/jyc` | `~/Library/Application Support/jyc` |
-//! | Windows  | `%APPDATA%\jyc`               | `%LOCALAPPDATA%\jyc`            |
+//! | Linux    | `$XDG_CONFIG_HOME/jyc`   | `$XDG_DATA_HOME/jyc`        |
+//! |          | (`~/.config/jyc`)        | (`~/.local/share/jyc`)      |
+//! | macOS    | `$XDG_CONFIG_HOME/jyc`   | `$XDG_DATA_HOME/jyc`        |
+//! |          | (`~/.config/jyc`)        | (`~/.local/share/jyc`)      |
+//! | Windows  | `%APPDATA%\jyc`          | `%LOCALAPPDATA%\jyc`        |
+//!
+//! On Unix (Linux / macOS) the XDG base directory convention is used
+//! (`~/.config/jyc` and `~/.local/share/jyc`). On Windows the native
+//! `dirs` crate paths are used.
 //!
 //! The **config dir** (L1) holds user-edited files: `config.toml`,
 //! `skills/`, `templates/`. The **data dir** (default workdir, L2) holds
@@ -23,19 +28,50 @@ pub const APP_DIR_NAME: &str = "jyc";
 
 /// User-edited configuration directory (L1).
 ///
-/// Linux: `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`.
+/// Linux/macOS: `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`.
+/// Windows: `%APPDATA%\jyc`.
 /// Returns `None` when no home/config directory can be determined.
 pub fn config_home() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join(APP_DIR_NAME))
+    #[cfg(not(windows))]
+    {
+        // XDG convention on all Unix (Linux + macOS)
+        Some(
+            std::env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .ok()
+                .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?
+                .join(APP_DIR_NAME),
+        )
+    }
+    #[cfg(windows)]
+    {
+        dirs::config_dir().map(|p| p.join(APP_DIR_NAME))
+    }
 }
 
 /// Generated-data directory (default workdir / data root, L2).
 ///
-/// Linux: `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`.
-/// Uses the machine-local data dir (`%LOCALAPPDATA%` on Windows).
+/// Linux/macOS: `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`.
+/// Windows: `%LOCALAPPDATA%\jyc`.
 /// Returns `None` when no home/data directory can be determined.
 pub fn data_home() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|p| p.join(APP_DIR_NAME))
+    #[cfg(not(windows))]
+    {
+        Some(
+            std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .ok()
+                .or_else(|| {
+                    let home = dirs::home_dir()?;
+                    Some(home.join(".local").join("share"))
+                })?
+                .join(APP_DIR_NAME),
+        )
+    }
+    #[cfg(windows)]
+    {
+        dirs::data_local_dir().map(|p| p.join(APP_DIR_NAME))
+    }
 }
 
 /// Default config file path: `<config_home>/config.toml`.

@@ -826,12 +826,11 @@ JYC separates **user-edited configuration** from **generated data** and supports
 
 ### Platform Paths
 
-Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`):
+Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) the XDG Base Directory convention is used; on Windows native `dirs` paths.
 
 | Platform | Config dir (L1) | Data dir (default workdir, L2) |
 |---|---|---|
-| Linux | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
-| macOS | `~/Library/Application Support/jyc` | `~/Library/Application Support/jyc` |
+| Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
 
 - **Config dir** holds user-edited files: `config.toml`, `skills/`, `templates/`.

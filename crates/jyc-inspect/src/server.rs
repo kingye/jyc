@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::all_commands;
+use jyc_core::command::list_available_models;
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_manager::ThreadManager;
@@ -491,6 +492,11 @@ impl InspectServer {
             threads,
             stats,
             commands: all_commands(),
+            models: context
+                .config
+                .as_ref()
+                .map(|cfg| list_available_models(&cfg.load().agent.providers))
+                .unwrap_or_default(),
         }
     }
 }

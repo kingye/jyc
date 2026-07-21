@@ -1,5 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::collections::HashMap;
+
+use jyc_types::{ModelInfo, ProviderDef};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -10,6 +13,28 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///   /model <provider/model-id>  Switch to the specified model
 ///   /model reset        Reset to default model from config
 pub struct ModelCommandHandler;
+
+/// Returns the list of available models, same format as `/model` (no args).
+///
+/// This is the shared function used by both the command handler and the
+/// inspect server, ensuring the dashboard popup shows the exact same list.
+pub fn list_available_models(providers: &HashMap<String, ProviderDef>) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
+    for (provider_name, provider_def) in providers {
+        if provider_def.models.is_empty() {
+            models.push(ModelInfo {
+                name: format!("{provider_name}/*"),
+            });
+        } else {
+            for model_id in provider_def.models.keys() {
+                models.push(ModelInfo {
+                    name: format!("{provider_name}/{model_id}"),
+                });
+            }
+        }
+    }
+    models
+}
 
 #[async_trait]
 impl CommandHandler for ModelCommandHandler {
@@ -32,7 +57,8 @@ impl CommandHandler for ModelCommandHandler {
 
         if context.args.is_empty() {
             // /model — list all available models
-            if providers.is_empty() {
+            let models = list_available_models(providers);
+            if models.is_empty() {
                 return Ok(CommandResult {
                     success: true,
                     message: "/model: no models configured".into(),
@@ -41,14 +67,8 @@ impl CommandHandler for ModelCommandHandler {
             }
 
             let mut lines = vec!["Available models:".to_string()];
-            for (provider_name, provider_def) in providers {
-                if provider_def.models.is_empty() {
-                    lines.push(format!("  {provider_name}/*  (no specific models listed)"));
-                } else {
-                    for model_id in provider_def.models.keys() {
-                        lines.push(format!("  {provider_name}/{model_id}"));
-                    }
-                }
+            for model in &models {
+                lines.push(format!("  {}", model.name));
             }
 
             Ok(CommandResult {

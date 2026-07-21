@@ -9,6 +9,8 @@ pub mod registry;
 pub mod reset_handler;
 pub mod template_handler;
 
+pub use model_handler::list_available_models;
+
 use jyc_types::CommandInfo;
 
 /// Returns the static list of all available commands with descriptions.

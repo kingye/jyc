@@ -49,6 +49,9 @@ pub struct InspectState {
     /// Available commands (name + description), populated from server-side CommandRegistry
     #[serde(default)]
     pub commands: Vec<CommandInfo>,
+    /// Available models (name only), populated from agent config providers
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
 }
 
 /// Information about a configured channel.
@@ -182,6 +185,13 @@ pub struct CommandInfo {
     pub description: String,
 }
 
+/// Information about an available model (name only, for model picker UI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// Full model identifier (e.g., "deepseek/deepseek-chat", "claude-sonnet-4-6")
+    pub name: String,
+}
+
 // ── Protocol constants ──
 
 /// Default TCP port for the inspect server.
@@ -248,6 +258,7 @@ mod tests {
                 errors: 2,
             },
             commands: vec![],
+            models: vec![],
         };
 
         let json = serde_json::to_string(&state).unwrap();

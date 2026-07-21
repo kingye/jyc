@@ -29,7 +29,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, InspectState, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectState, ModelInfo, Severity, ThreadStatus};
 
 use super::command_popup::*;
 
@@ -148,6 +148,7 @@ struct App {
 
     // Command popup state
     commands: Vec<CommandInfo>,
+    models: Vec<ModelInfo>,
     command_popup: Option<CommandPopupState>,
 }
 
@@ -178,6 +179,7 @@ impl App {
             ws_rx,
             ws_connected: false,
             commands: vec![],
+            models: vec![],
             command_popup: None,
         }
     }
@@ -792,6 +794,7 @@ pub async fn run(
                         app.state = Some(state);
                         if let Some(ref s) = app.state {
                             app.commands = s.commands.clone();
+                            app.models = s.models.clone();
                         }
                         app.error = None;
                     }
@@ -1267,7 +1270,7 @@ fn handle_chat_keys(
 
     // ── Command popup handling ─────────────────────────────────────
     if let Some(ref mut popup) = app.command_popup {
-        match handle_popup_key(key, popup, &app.commands) {
+        match handle_popup_key(key, popup, &app.commands, &app.models) {
             Some(cmd) if cmd.is_empty() => {
                 // Esc — close popup without action
                 app.command_popup = None;
@@ -2281,7 +2284,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // ── Command popup overlay ──
     if let Some(ref popup) = app.command_popup {
-        render_command_popup(frame, inner, popup, &app.commands);
+        render_command_popup(frame, inner, popup, &app.commands, &app.models);
     }
 }
 

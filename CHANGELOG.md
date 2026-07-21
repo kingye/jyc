@@ -31,6 +31,7 @@ All notable changes to JYC will be documented in this file.
   in the background (once per session). Logs are written to
   `<data_home>/jyc.log`. First-run provisioning output is shown to the user.
   Only works for localhost addresses. (#393)
+- **jyc stop command** — Stop a running jyc serve process via `jyc stop` (SIGTERM) or `jyc stop --force` (SIGKILL). Works with the same `--workdir` resolution as serve. (#400)
 
 ### Changed
 

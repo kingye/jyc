@@ -99,3 +99,59 @@ fn pid_exists(_pid: u32) -> bool {
     // Non-Unix fallback: we can't easily check, assume it exists
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_stop_missing_pid_file() {
+        let tmp = TempDir::new().unwrap();
+        let args = StopArgs { force: false };
+        let err = run(&args, tmp.path()).await.unwrap_err().to_string();
+        assert!(
+            err.contains("Failed to read PID file"),
+            "expected PID file error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_invalid_pid_format() {
+        let tmp = TempDir::new().unwrap();
+        let pid_path = tmp.path().join("jyc.pid");
+        tokio::fs::write(&pid_path, "not_a_number").await.unwrap();
+        let args = StopArgs { force: false };
+        let err = run(&args, tmp.path()).await.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid PID"),
+            "expected Invalid PID error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_stop_stale_pid_file_cleaned_up() {
+        let tmp = TempDir::new().unwrap();
+        let pid_path = tmp.path().join("jyc.pid");
+        // Use a very large PID that won't exist on any typical system
+        tokio::fs::write(&pid_path, "999999999").await.unwrap();
+        assert!(pid_path.exists());
+
+        let args = StopArgs { force: false };
+        let err = run(&args, tmp.path()).await.unwrap_err().to_string();
+        assert!(
+            err.contains("stale PID"),
+            "expected stale PID error, got: {err}"
+        );
+        // Stale PID file should be cleaned up
+        assert!(!pid_path.exists(), "stale PID file should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_pid_exists_returns_false_for_non_existent_pid() {
+        // PID 999999999 should not exist on any typical system
+        assert!(!pid_exists(999999999));
+    }
+}

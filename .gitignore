@@ -20,5 +20,6 @@ jyc.bak
 # data directory (contains runtime data, logs, and credentials)
 jyc-data 
 
+*.tar.gz
 *-mcps.toml
 **/__pycache__/

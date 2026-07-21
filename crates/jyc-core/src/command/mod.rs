@@ -5,9 +5,12 @@ pub mod help_handler;
 pub mod mode_handler;
 pub mod model_handler;
 pub mod new_handler;
+pub mod pin_common;
+pub mod pin_handler;
 pub mod registry;
 pub mod reset_handler;
 pub mod template_handler;
+pub mod unpin_handler;
 
 pub use model_handler::list_available_models;
 
@@ -56,6 +59,14 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/?".into(),
             description: "Show available commands".into(),
         },
+        CommandInfo {
+            name: "/pin".into(),
+            description: "Pin this ad-hoc websocket thread to config.toml".into(),
+        },
+        CommandInfo {
+            name: "/unpin".into(),
+            description: "Remove pinned thread configuration from config.toml".into(),
+        },
     ]
 }
 
@@ -80,6 +91,8 @@ mod tests {
             "/template",
             "/cancel",
             "/?",
+            "/pin",
+            "/unpin",
         ] {
             assert!(
                 names.contains(expected),
@@ -88,7 +101,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            9,
+            11,
             "all_commands() count changed. Update this test if intentional."
         );
     }

@@ -48,8 +48,10 @@ fn test_context(thread_path: &std::path::Path) -> CommandContext {
         thread_path: thread_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
+        channel_type: "websocket".to_string(),
         agent: None,
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
+        config_path: None,
     }
 }
 
@@ -185,8 +187,10 @@ async fn test_close_command_invalid_thread_path() {
         thread_path: PathBuf::from("/"),
         config: test_config(),
         channel: "test".into(),
+        channel_type: "websocket".to_string(),
         agent: None,
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
+        config_path: None,
     };
 
     let result = handler.execute(ctx).await.unwrap();

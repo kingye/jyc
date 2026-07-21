@@ -452,6 +452,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             workdir.to_path_buf(),
             workspace_dir.clone(),
             metrics_handle.clone(),
+            Some(config_path.clone()),
         ));
 
         // Wire thread_manager to websocket handler for custom thread_path resolution

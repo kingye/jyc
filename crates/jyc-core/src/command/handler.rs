@@ -16,11 +16,15 @@ pub struct CommandContext {
     pub config: Arc<AppConfig>,
     /// Channel name
     pub channel: String,
+    /// Channel type (e.g., "websocket", "email")
+    pub channel_type: String,
     /// Agent service (optional, for commands that need to query server)
     pub agent: Option<Arc<dyn crate::agent::AgentService>>,
     /// Template directories (layered: L1 global < L2 workdir; thread L3
     /// `.jyc/templates/` is checked first at lookup time)
     pub template_dirs: crate::template_dirs::TemplateDirs,
+    /// Path to the config.toml file (for commands that write config)
+    pub config_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for CommandContext {
@@ -30,7 +34,9 @@ impl std::fmt::Debug for CommandContext {
             .field("thread_path", &self.thread_path)
             .field("config", &self.config)
             .field("channel", &self.channel)
+            .field("channel_type", &self.channel_type)
             .field("agent", &self.agent.is_some())
+            .field("config_path", &self.config_path)
             .finish()
     }
 }

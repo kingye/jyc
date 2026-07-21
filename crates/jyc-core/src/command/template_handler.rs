@@ -209,6 +209,8 @@ mode = "agent"
             channel: "test".into(),
             agent: None,
             template_dirs: tmp_dir.join("templates").into(),
+            channel_type: "websocket".to_string(),
+            config_path: None,
         }
     }
 

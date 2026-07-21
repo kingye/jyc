@@ -78,9 +78,11 @@ impl CommandPopupState {
 /// Handle a key event for the command popup.
 ///
 /// Returns `Some(text)` if the user selected something via Enter:
-/// - If in command mode, `text` is the command name (e.g., `"/plan"`)
-/// - If in model mode, `text` is `"/model provider/model-id"`
-/// Or `Some("")` if Esc was pressed (close without action).
+/// - In command mode: `text` is the command name (e.g., `"/plan"`)
+/// - In model mode: `text` is `"/model provider/model-id"`
+///
+/// Returns `Some("")` if Esc was pressed (close without action).
+///
 /// Returns `None` if the popup handled the key without selecting.
 pub fn handle_popup_key(
     key: crossterm::event::KeyEvent,
@@ -261,11 +263,12 @@ pub fn render_command_popup(
     frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), chunks[1]);
 }
 
-fn render_command_list<'a>(
-    filtered: &[&'a CommandInfo],
-    selected: usize,
-) -> Vec<Line<'a>> {
-    let clamped = if filtered.is_empty() { 0 } else { selected.min(filtered.len() - 1) };
+fn render_command_list<'a>(filtered: &[&'a CommandInfo], selected: usize) -> Vec<Line<'a>> {
+    let clamped = if filtered.is_empty() {
+        0
+    } else {
+        selected.min(filtered.len() - 1)
+    };
 
     filtered
         .iter()
@@ -297,11 +300,12 @@ fn render_command_list<'a>(
         .collect()
 }
 
-fn render_model_list<'a>(
-    filtered: &[&'a ModelInfo],
-    selected: usize,
-) -> Vec<Line<'a>> {
-    let clamped = if filtered.is_empty() { 0 } else { selected.min(filtered.len() - 1) };
+fn render_model_list<'a>(filtered: &[&'a ModelInfo], selected: usize) -> Vec<Line<'a>> {
+    let clamped = if filtered.is_empty() {
+        0
+    } else {
+        selected.min(filtered.len() - 1)
+    };
 
     filtered
         .iter()

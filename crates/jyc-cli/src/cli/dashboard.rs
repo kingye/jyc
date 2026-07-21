@@ -29,7 +29,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, ModelInfo, InspectState, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectState, ModelInfo, Severity, ThreadStatus};
 
 use super::command_popup::*;
 

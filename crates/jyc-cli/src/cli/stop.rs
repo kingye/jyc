@@ -53,8 +53,8 @@ pub async fn run(args: &StopArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("Failed to send {signal_name} to PID {pid}: {err}");
     }
 
-    // Wait briefly for process to exit (poll every 200ms, up to 3s)
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    // Wait for process to exit (poll every 200ms, up to 10s)
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut exited = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -73,9 +73,9 @@ pub async fn run(args: &StopArgs, workdir: &Path) -> Result<()> {
         Ok(())
     } else if !args.force {
         // Process didn't exit in time, suggest --force
-        tracing::warn!(pid, "Process did not exit after SIGTERM within 3s");
+        tracing::warn!(pid, "Process did not exit after SIGTERM within 10s");
         println!(
-            "jyc serve (PID {pid}) did not stop within 3 seconds after SIGTERM.\n\
+            "jyc serve (PID {pid}) did not stop within 10 seconds after SIGTERM.\n\
              Use `jyc stop --force` to force kill."
         );
         Ok(())

@@ -414,25 +414,6 @@ impl App {
         }
     }
 
-    /// Send a raw command message via WebSocket without echoing to the chat
-    /// view or clearing the input. Used for quick keyboard shortcuts like
-    /// Ctrl+C (cancel).
-    fn send_raw_message(&mut self, text: &str) {
-        let thread = match &self.chat_thread {
-            Some(t) => t.clone(),
-            None => return,
-        };
-        let msg = serde_json::json!({
-            "type": "message",
-            "thread": thread,
-            "text": text,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
-        }
-    }
-
     fn handle_ws_event(&mut self, event: WsEvent) {
         match event {
             WsEvent::Connected => {
@@ -1232,15 +1213,6 @@ fn handle_chat_keys(
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_w && app.chat_phase == ChatPhase::Chatting {
         app.activity_split = (app.activity_split + 1) % 4;
-        return;
-    }
-
-    // Ctrl+C sends /cancel to stop the current AI processing
-    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_c && app.chat_phase == ChatPhase::Chatting {
-        app.send_raw_message("/cancel");
-        app.set_status("⏹ Cancelled".to_string());
-        app.chat_awaiting_response = false;
         return;
     }
 
@@ -2378,7 +2350,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^W]split [Esc]back [^Q]quit"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
             }
         }
     } else {

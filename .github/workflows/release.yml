@@ -54,6 +54,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -68,3 +70,54 @@ jobs:
           name: Nightly Build (${{ github.sha }})
           prerelease: true
           files: dist/*.tar.gz
+
+  sync-gitee:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_OWNER: ${{ secrets.GITEE_USERNAME }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Sync nightly release to Gitee
+        run: |
+          set -euo pipefail
+          API="https://gitee.com/api/v5/repos/${GITEE_OWNER}/jyc"
+
+          # Delete existing nightly release if present
+          release_id=$(curl -sf "${API}/releases?access_token=${GITEE_TOKEN}" \
+            | jq -r '.[] | select(.tag_name == "nightly") | .id' | head -n1)
+          if [ -n "${release_id}" ]; then
+            echo "Deleting existing Gitee release id=${release_id}"
+            curl -sf -X DELETE "${API}/releases/${release_id}?access_token=${GITEE_TOKEN}"
+          fi
+
+          # Recreate the nightly tag on Gitee (pointing at main HEAD)
+          curl -sf -X DELETE "${API}/tags/nightly?access_token=${GITEE_TOKEN}" || true
+          curl -sf -X POST "${API}/tags" \
+            -d "access_token=${GITEE_TOKEN}" \
+            -d "tag_name=nightly" \
+            -d "refs=main"
+
+          # Create new nightly release
+          new_release_id=$(curl -sf -X POST "${API}/releases" \
+            -d "access_token=${GITEE_TOKEN}" \
+            -d "tag_name=nightly" \
+            -d "name=Nightly Build (${GITHUB_SHA})" \
+            -d "body=Automated nightly build from commit ${GITHUB_SHA}" \
+            -d "target_commitish=main" \
+            | jq -r '.id')
+          echo "Created Gitee release id=${new_release_id}"
+
+          # Upload assets
+          for f in dist/*.tar.gz; do
+            echo "Uploading ${f}"
+            curl -sf -X POST "${API}/releases/${new_release_id}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "file=@${f}"
+          done

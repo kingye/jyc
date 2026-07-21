@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "jyc", version, about)]
 struct Cli {
-    /// Working directory (default: current directory)
+    /// Working directory / data root (default: platform data dir,
+    /// e.g. ~/.local/share/jyc on Linux)
     #[arg(short, long, global = true)]
     workdir: Option<PathBuf>,
 
@@ -94,24 +95,16 @@ fn init_tracing(debug: bool, verbose: bool) {
 fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
     match workdir {
         Some(w) => {
-            let expanded = if w.starts_with("~") {
-                if let Some(home) = dirs_home() {
-                    home.join(w.strip_prefix("~").unwrap())
-                } else {
-                    w.clone()
-                }
-            } else {
-                w.clone()
-            };
+            let expanded = jyc_utils::paths::expand_tilde(&w.to_string_lossy());
             let abs = std::fs::canonicalize(&expanded).unwrap_or(expanded);
             Ok(abs)
         }
-        None => Ok(std::env::current_dir()?),
+        None => jyc_utils::paths::data_home().ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not determine platform data directory; pass --workdir explicitly"
+            )
+        }),
     }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[tokio::main]

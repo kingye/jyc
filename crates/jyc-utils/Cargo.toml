@@ -7,6 +7,7 @@ description = "Utility functions for the JYC AI agent framework"
 [dependencies]
 jyc-types = { path = "../jyc-types" }
 anyhow = "1"
+dirs = "6"
 thiserror = "2"
 regex = "1"
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros"] }

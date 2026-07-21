@@ -233,7 +233,12 @@ impl JycAgentService {
                 paths.push(PathBuf::from(&home).join(".claude/skills"));
             }
 
-            // {jyc-data}/skills/ (via workdir)
+            // L1 global: <config_home>/skills/ (e.g. ~/.config/jyc/skills)
+            if let Some(global_skills) = jyc_utils::paths::global_skills_dir() {
+                paths.push(global_skills);
+            }
+
+            // L2: {workdir}/skills/
             paths.push(self.workdir.join("skills"));
 
             // {thread_path}/repo/.claude/skills/
@@ -691,6 +696,11 @@ impl JycAgentService {
                 if dir.exists() && dir.is_dir() {
                     roots.push(dir.clone());
                 }
+            }
+        }
+        if let Some(global_skills) = jyc_utils::paths::global_skills_dir() {
+            if global_skills.exists() && global_skills.is_dir() {
+                roots.push(global_skills);
             }
         }
         let workdir_skills = self.workdir.join("skills");
@@ -1549,6 +1559,10 @@ mod tests {
 
     /// Helper: temporarily override HOME to prevent real skills from leaking into tests.
     fn with_temp_home<F: FnOnce()>(f: F) {
+        // Serialize tests that mutate the shared HOME env var (parallel-safety).
+        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".config/opencode/skills")).ok();
         std::fs::create_dir_all(tmp.path().join(".claude/skills")).ok();

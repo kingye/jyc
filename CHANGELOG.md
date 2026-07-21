@@ -26,6 +26,11 @@ All notable changes to JYC will be documented in this file.
   subset (`model`, `plan_model`, `build_model`, `small_model`). Precedence:
   `.jyc/<mode>-model-override` file > `.jyc/config.toml` > pattern > config.
   Invalid files are ignored with a warning. (#393)
+- **Auto-start `jyc serve` from `jyc dashboard` and `jyc open`.** When the
+  server is not running, dashboard and open commands auto-spawn `jyc serve`
+  in the background (once per session). Logs are written to
+  `<data_home>/jyc.log`. First-run provisioning output is shown to the user.
+  Only works for localhost addresses. (#393)
 
 ### Changed
 

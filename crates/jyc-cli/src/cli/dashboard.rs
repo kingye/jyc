@@ -19,7 +19,12 @@ use ratatui::{
 };
 use std::io::{Stdout, stdout};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+use tokio::process::Command;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -594,11 +599,130 @@ async fn ws_client_task(
     }
 }
 
+/// Auto-spawn `jyc serve` when it's not running, once per dashboard process.
+///
+/// Writes `serve` logs to `<data_home>/jyc.log` so the user can review
+/// diagnostics. Only works for localhost addresses (the default).
+async fn ensure_serve_running(addr: &str) -> Result<()> {
+    // Only try to spawn once per dashboard session.
+    static SPAWNED: AtomicBool = AtomicBool::new(false);
+
+    // Quick check: server already up?
+    if TcpStream::connect(addr).await.is_ok() {
+        return Ok(());
+    }
+    if SPAWNED.swap(true, Ordering::SeqCst) {
+        // Already tried spawning — server is still down, fail.
+        anyhow::bail!("Could not connect to {addr}; jyc serve already attempted to start");
+    }
+
+    // Only auto-spawn for localhost addresses.
+    let is_local = addr.starts_with("127.0.0.1")
+        || addr.starts_with("localhost")
+        || addr.starts_with("::1")
+        || addr.starts_with("[::1]");
+    if !is_local {
+        anyhow::bail!("Could not connect to {addr}. Start jyc serve manually.");
+    }
+
+    // Determine log file path.
+    let log_dir = jyc_utils::paths::data_home().ok_or_else(|| {
+        anyhow::anyhow!("Could not determine platform data directory for log file")
+    })?;
+    tokio::fs::create_dir_all(&log_dir)
+        .await
+        .with_context(|| format!("Failed to create log directory {}", log_dir.display()))?;
+    let log_path = log_dir.join("jyc.log");
+
+    // Open log file (create / truncate).
+    let log_file = std::fs::File::create(&log_path)
+        .with_context(|| format!("Failed to create log file {}", log_path.display()))?;
+    let log_dup = log_file
+        .try_clone()
+        .context("Failed to clone log file handle")?;
+
+    // Spawn jyc serve as a background child process.
+    let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
+    let mut child = Command::new(&exe)
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(log_dup)
+        .stderr(log_file)
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("Failed to spawn {} serve", exe.display()))?;
+
+    // Poll for readiness with exponential backoff (~10s total).
+    let delays = [100u64, 200, 400, 800, 1500, 3000, 4000];
+    for ms in &delays {
+        tokio::time::sleep(Duration::from_millis(*ms)).await;
+        if TcpStream::connect(addr).await.is_ok() {
+            tracing::info!("Auto-started jyc serve (pid={})", child.id().unwrap_or(0));
+            std::mem::forget(child); // Detach — serve runs until terminated separately.
+            return Ok(());
+        }
+        // Check if child exited early (e.g. first-run provisioning, config error).
+        if let Ok(Some(status)) = child.try_wait() {
+            let log_content = read_log_tail(&log_path, 20).await;
+            tokio::fs::remove_file(&log_path).await.ok();
+            if !log_content.is_empty() {
+                eprintln!("--- jyc serve log ---\n{log_content}\n--- end of log ---");
+            }
+            if status.success() {
+                anyhow::bail!(
+                    "jyc serve started but exited after configuration. \
+                     Edit the file and try again."
+                );
+            }
+            anyhow::bail!(
+                "jyc serve exited with status {status}. See log: {}",
+                log_path.display()
+            );
+        }
+    }
+
+    // All delays exhausted — print diagnostics.
+    let log_content = read_log_tail(&log_path, 20).await;
+    if !log_content.is_empty() {
+        eprintln!("--- jyc serve log tail ---\n{log_content}");
+    }
+    anyhow::bail!(
+        "jyc serve did not start in time. See full log: {}",
+        log_path.display()
+    );
+}
+
+/// Read the last `n` lines from a log file (stripping ANSI codes).
+async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
+    let mut content = String::new();
+    let mut f = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let _ = f.read_to_string(&mut content).await;
+    let clean = content.replace("\x1b[", "");
+    let lines: Vec<&str> = clean.lines().collect();
+    let tail = if lines.len() > n {
+        &lines[lines.len() - n..]
+    } else {
+        &lines
+    };
+    tail.join("\n")
+}
+
 pub async fn run(
     args: &DashboardArgs,
     initial_thread: Option<&str>,
     initial_channel: Option<&str>,
 ) -> Result<()> {
+    // Auto-spawn jyc serve if it's not running.
+    ensure_serve_running(&args.addr).await.with_context(|| {
+        format!(
+            "Failed to connect to {}. Start jyc serve manually.",
+            args.addr
+        )
+    })?;
+
     let mut client = InspectClient::new(&args.addr);
 
     // Setup terminal
@@ -722,6 +846,11 @@ pub async fn run_open(
     channel: Option<&str>,
     path: Option<&str>,
 ) -> Result<()> {
+    // Auto-spawn jyc serve if it's not running.
+    ensure_serve_running(addr)
+        .await
+        .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
+
     // Resolve thread path and name
     let path = resolve_thread_path(path)?;
     let thread = derive_thread_name(&path, thread);

@@ -1934,6 +1934,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing",
  "uuid",
 ]
 

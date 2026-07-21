@@ -1146,8 +1146,9 @@ impl AgentService for JycAgentService {
         //     For plan/build mode:
         //       a) .jyc/<mode>-model-override (mode-specific runtime override)
         //       b) .jyc/model-override (legacy fallback, for migration)
-        //       c) Pattern-level plan_model / build_model / model
-        //       d) Config-level plan_model / build_model / model
+        //       c) .jyc/config.toml [agent] (thread-level, L3)
+        //       d) Pattern-level plan_model / build_model / model
+        //       e) Config-level plan_model / build_model / model
         //     For default mode (no override):
         //       a) Pattern-level model
         //       b) Config-level model
@@ -1184,6 +1185,16 @@ impl AgentService for JycAgentService {
             .and_then(|name| self.patterns.iter().find(|p| p.name == name));
         // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
         let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
+        // Thread-level (L3) .jyc/config.toml — [agent] model overrides.
+        // Priority: file overrides > thread config > pattern > config.
+        let thread_agent_cfg = jyc_types::load_thread_config(thread_path).and_then(|c| c.agent);
+        let thread_cfg_override = thread_agent_cfg
+            .as_ref()
+            .and_then(|a| match mode_override.as_deref() {
+                Some("plan") => a.plan_model.as_deref(),
+                _ => a.build_model.as_deref(), // default = build
+            })
+            .or_else(|| thread_agent_cfg.as_ref().and_then(|a| a.model.as_deref()));
         // Pattern: try mode-specific field first, then generic model
         let pattern_override = pattern
             .and_then(|p| match mode_override.as_deref() {
@@ -1199,6 +1210,7 @@ impl AgentService for JycAgentService {
         .or(self.config.model.as_deref());
         let model_override = file_override
             .clone()
+            .or_else(|| thread_cfg_override.map(|s| s.to_string()))
             .or_else(|| pattern_override.map(|s| s.to_string()))
             .or_else(|| config_override.map(|s| s.to_string()));
 
@@ -1214,8 +1226,9 @@ impl AgentService for JycAgentService {
         );
 
         // 2b. Resolve small_model with priority:
-        //     1. Pattern-level small_model (from matched pattern config)
-        //     2. Config-level small_model (from self.config.small_model, already
+        //     1. Thread-level .jyc/config.toml [agent] small_model (L3)
+        //     2. Pattern-level small_model (from matched pattern config)
+        //     3. Config-level small_model (from self.config.small_model, already
         //        channel-resolved or global fallback)
         //     Falls back to main model at call site if unset or construction fails.
         let pattern_small_model = message
@@ -1223,7 +1236,11 @@ impl AgentService for JycAgentService {
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.small_model.as_deref());
-        let small_model_resolved = pattern_small_model.or(self.config.small_model.as_deref());
+        let small_model_resolved = thread_agent_cfg
+            .as_ref()
+            .and_then(|a| a.small_model.as_deref())
+            .or(pattern_small_model)
+            .or(self.config.small_model.as_deref());
 
         // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
         let pattern_threshold = message

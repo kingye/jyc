@@ -607,6 +607,49 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     load_config_from_str(&content)
 }
 
+/// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
+///
+/// Restricted subset of the app config: only `[agent]` model overrides are
+/// supported. Precedence: `.jyc/<mode>-model-override` file > `.jyc/config.toml`
+/// > pattern > channel > global config.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadConfig {
+    /// Agent overrides for this thread.
+    pub agent: Option<ThreadAgentConfig>,
+}
+
+/// Agent model overrides for a single thread.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadAgentConfig {
+    /// Model override for all modes.
+    pub model: Option<String>,
+    /// Model override for plan mode.
+    pub plan_model: Option<String>,
+    /// Model override for build mode.
+    pub build_model: Option<String>,
+    /// Small model override (used for lightweight tasks).
+    pub small_model: Option<String>,
+}
+
+/// Load thread-level overrides from `<thread_path>/.jyc/config.toml`.
+///
+/// Returns `None` when the file does not exist. Parse errors are logged and
+/// treated as "no overrides" (a broken thread config must not crash the agent).
+pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
+    let path = thread_path.join(".jyc").join("config.toml");
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    match toml::from_str(&content) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "Ignoring invalid thread config");
+            None
+        }
+    }
+}
+
 /// Load configuration from a TOML string.
 ///
 /// Expands `${VAR}` environment variable references, then deserializes.
@@ -1024,6 +1067,45 @@ mode = "static"
 
         let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
         assert_eq!(config.agent.mode, "static");
+    }
+
+    #[test]
+    fn test_load_thread_config_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(load_thread_config(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_load_thread_config_agent_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "provider/thread-model"
+plan_model = "provider/plan-model"
+small_model = "provider/small-model"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(agent.model.as_deref(), Some("provider/thread-model"));
+        assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
+        assert_eq!(agent.build_model, None);
+        assert_eq!(agent.small_model.as_deref(), Some("provider/small-model"));
+    }
+
+    #[test]
+    fn test_load_thread_config_invalid_toml_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
+        assert!(load_thread_config(tmp.path()).is_none());
     }
 
     #[test]

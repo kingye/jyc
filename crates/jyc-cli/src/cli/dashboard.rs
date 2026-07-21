@@ -416,7 +416,7 @@ impl App {
 
     /// Send a raw command message via WebSocket without echoing to the chat
     /// view or clearing the input. Used for quick keyboard shortcuts like
-    /// Ctrl+C (cancel) and Shift+Tab (mode switch).
+    /// Ctrl+C (cancel).
     fn send_raw_message(&mut self, text: &str) {
         let thread = match &self.chat_thread {
             Some(t) => t.clone(),
@@ -1241,30 +1241,6 @@ fn handle_chat_keys(
         app.send_raw_message("/cancel");
         app.set_status("⏹ Cancelled".to_string());
         app.chat_awaiting_response = false;
-        return;
-    }
-
-    // Shift+Tab toggles between plan and build mode
-    let is_shift_tab = key.code == KeyCode::BackTab;
-    if is_shift_tab && app.chat_phase == ChatPhase::Chatting {
-        let current_mode = app
-            .state
-            .as_ref()
-            .and_then(|s| {
-                let chat_name = app.chat_thread.as_deref()?;
-                s.threads.iter().find(|t| t.name == chat_name)
-            })
-            .and_then(|t| t.mode.clone())
-            .unwrap_or_else(|| "build".to_string());
-
-        if current_mode == "plan" {
-            app.send_raw_message("/build");
-            app.set_status("Switched to build mode".to_string());
-        } else {
-            app.send_raw_message("/plan");
-            app.set_status("Switched to plan mode".to_string());
-        }
-        app.chat_awaiting_response = true;
         return;
     }
 
@@ -2402,7 +2378,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat_phase {
             ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [⇧Tab]mode [^W]split [Esc]back [^Q]quit"
+                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^W]split [Esc]back [^Q]quit"
             }
         }
     } else {

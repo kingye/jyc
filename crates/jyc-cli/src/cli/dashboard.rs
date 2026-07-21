@@ -401,6 +401,40 @@ impl App {
         }
     }
 
+    /// Send a programmatic text as a chat message, echoing locally and sending
+    /// via WebSocket. Unlike `send_chat_message`, this does not read from the
+    /// editor — it takes the text as a parameter. Used by the command popup.
+    fn send_chat_message_with_text(&mut self, text: &str) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let thread = match &self.chat_thread {
+            Some(t) => t.clone(),
+            None => return,
+        };
+
+        // Echo user message locally
+        self.chat_messages.push(ChatMessage {
+            sender: "user".to_string(),
+            text: text.clone(),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        });
+        self.chat_editor = empty_chat_editor();
+        self.chat_scroll = 0;
+        self.chat_awaiting_response = true;
+
+        let msg = serde_json::json!({
+            "type": "message",
+            "thread": thread,
+            "text": text,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
     /// Send a raw command message via WebSocket without echoing to the chat
     /// view or clearing the input. Used for quick keyboard shortcuts like
     /// Ctrl+C (cancel) and Shift+Tab (mode switch).
@@ -1252,6 +1286,41 @@ fn handle_chat_keys(
         }
         app.chat_awaiting_response = true;
         return;
+    }
+
+    // ── Command popup handling ─────────────────────────────────────
+    if let Some(ref mut popup) = app.command_popup {
+        match handle_popup_key(key, popup, &app.commands) {
+            Some(cmd) if cmd.is_empty() => {
+                // Esc — close popup without action
+                app.command_popup = None;
+            }
+            Some(cmd) => {
+                // Enter — send the command immediately
+                app.command_popup = None;
+                app.send_chat_message_with_text(&cmd);
+            }
+            None => {
+                // Popup handled the key, continue
+            }
+        }
+        return;
+    }
+
+    // Check for "/" to open the command popup (before it reaches the editor)
+    let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_slash && app.chat_phase == ChatPhase::Chatting && app.chat_focus == ChatFocus::ChatPane {
+        let should_open = match app.chat_editor.mode {
+            // Normal mode: "/" always opens the popup
+            EditorMode::Normal => true,
+            // Insert mode: only when editor is empty (first char)
+            EditorMode::Insert => app.chat_text().trim().is_empty(),
+            _ => false,
+        };
+        if should_open {
+            app.command_popup = Some(CommandPopupState::new());
+            return;
+        }
     }
 
     match app.chat_phase {

@@ -18,8 +18,9 @@ pub struct CommandContext {
     pub channel: String,
     /// Agent service (optional, for commands that need to query server)
     pub agent: Option<Arc<dyn crate::agent::AgentService>>,
-    /// Template directory path
-    pub template_dir: PathBuf,
+    /// Template directories (layered: L1 global < L2 workdir; thread L3
+    /// `.jyc/templates/` is checked first at lookup time)
+    pub template_dirs: crate::template_dirs::TemplateDirs,
 }
 
 impl std::fmt::Debug for CommandContext {

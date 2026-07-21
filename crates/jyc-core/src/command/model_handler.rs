@@ -200,7 +200,7 @@ context_window = 200000
             ),
             channel: "test".into(),
             agent: None,
-            template_dir: PathBuf::from("/tmp/test/templates"),
+            template_dirs: PathBuf::from("/tmp/test/templates").into(),
         }
     }
 
@@ -249,7 +249,7 @@ mode = "agent"
             ),
             channel: "test".into(),
             agent: None,
-            template_dir: PathBuf::from("/tmp/test/templates"),
+            template_dirs: PathBuf::from("/tmp/test/templates").into(),
         };
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();

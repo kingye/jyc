@@ -396,7 +396,17 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         }
         let agent = agent_result.agent;
 
-        let template_dir = workdir.join("templates");
+        // Layered template dirs (low → high priority): L1 global < L2 workdir.
+        // Thread-level (L3) .jyc/templates/ is checked first at lookup time.
+        let template_dirs = jyc_core::template_dirs::TemplateDirs::new(
+            [
+                jyc_utils::paths::global_templates_dir(),
+                Some(workdir.join("templates")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        );
 
         let thread_manager = Arc::new(ThreadManager::new_with_options(
             config_snapshot.general.max_concurrent_threads,
@@ -406,7 +416,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             agent,
             cancel.clone(),
             true, // enable_events: true for Thread Event system
-            template_dir,
+            template_dirs,
             config.clone(),
             channel_name.clone(),
             channel_type.to_string(),

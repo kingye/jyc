@@ -84,16 +84,26 @@ pub fn handle_popup_key(
 }
 
 /// Render the command popup as a centered overlay.
-pub fn render_command_popup(frame: &mut Frame, area: Rect, state: &CommandPopupState, all: &[CommandInfo]) {
+pub fn render_command_popup(
+    frame: &mut Frame,
+    area: Rect,
+    state: &CommandPopupState,
+    all: &[CommandInfo],
+) {
     let filtered = state.filtered_commands(all);
-    let list_height = filtered.len().min(10).max(1) as u16;
+    let list_height = filtered.len().clamp(1, 10) as u16;
     let popup_height = list_height + 4; // border(2) + filter(1) + margin(1)
     let popup_width = 42u16;
 
     // Center the popup
     let x = area.x + area.width.saturating_sub(popup_width) / 2;
     let y = area.y + area.height.saturating_sub(popup_height) / 2;
-    let popup_area = Rect::new(x, y.min(area.bottom().saturating_sub(popup_height)), popup_width, popup_height);
+    let popup_area = Rect::new(
+        x,
+        y.min(area.bottom().saturating_sub(popup_height)),
+        popup_width,
+        popup_height,
+    );
 
     // Clear behind
     frame.render_widget(Clear, popup_area);
@@ -198,8 +208,5 @@ pub fn render_command_popup(frame: &mut Frame, area: Rect, state: &CommandPopupS
         })
         .collect();
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        chunks[1],
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[1]);
 }

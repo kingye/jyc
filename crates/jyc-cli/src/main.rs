@@ -66,6 +66,9 @@ enum Commands {
     /// MCP reply tool server (internal — spawned by agent)
     #[command(hide = true)]
     McpReplyTool,
+
+    /// Stop a running jyc serve process
+    Stop(cli::stop::StopArgs),
 }
 
 fn init_tracing(debug: bool, verbose: bool) {
@@ -146,6 +149,7 @@ async fn main() -> Result<()> {
         }
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
+        Commands::Stop(args) => cli::stop::run(args, &workdir).await,
     };
 
     if let Err(ref e) = result {

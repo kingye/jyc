@@ -37,3 +37,4 @@ url = "2"
 unicode-width = "0.2"
 tempfile = "3"
 edtui = { version = "0.9.9", default-features = false }
+libc = "0.2"

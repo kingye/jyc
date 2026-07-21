@@ -24,8 +24,9 @@ pub struct ConfigResolution {
 /// Resolve the effective config path and the optional global (L1) layer.
 ///
 /// Rules:
-/// - `--config <path>`: absolute paths used as-is; relative paths resolved
-///   against the workdir. L1 still applies as base layer when different.
+/// - `--config <path>`: absolute paths used as-is; `~` is expanded; **relative
+///   paths are resolved against the current directory** (the user's shell cwd).
+///   L1 still applies as base layer when different.
 /// - No `--config`, explicit `--workdir`: `<workdir>/config.toml`, L1 as base.
 /// - No `--config`, no `--workdir`: `<config_home>/config.toml` (is_default).
 pub fn resolve_config(
@@ -41,7 +42,11 @@ pub fn resolve_config(
             if expanded.is_absolute() {
                 expanded
             } else {
-                workdir.join(expanded)
+                // Resolve relative --config against the shell's cwd, not the
+                // workdir (a flag typed in the terminal is a cwd-relative path).
+                std::env::current_dir()
+                    .unwrap_or_else(|_| workdir.to_path_buf())
+                    .join(expanded)
             }
         }
         None if workdir_explicit => workdir.join(DEFAULT_CONFIG_FILENAME),
@@ -102,8 +107,9 @@ mod tests {
 
     #[test]
     fn test_resolve_config_explicit_relative_against_workdir() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let res = resolve_config(Path::new("/data"), Some("custom.toml"), true).unwrap();
-        assert_eq!(res.config_path, PathBuf::from("/data/custom.toml"));
+        assert_eq!(res.config_path, cwd.join("custom.toml"));
         assert!(!res.is_default);
     }
 
@@ -138,6 +144,26 @@ mod tests {
             global_config_path: None,
             is_default: false,
         };
+        assert!(!provision_default_config(&res).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_provision_creates_config_and_skeletons() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let res = ConfigResolution {
+            config_path: config_path.clone(),
+            global_config_path: None,
+            is_default: true,
+        };
+        assert!(provision_default_config(&res).await.unwrap());
+        assert!(config_path.exists(), "config.toml should be created");
+        assert!(tmp.path().join("skills").is_dir(), "skills/ should exist");
+        assert!(
+            tmp.path().join("templates").is_dir(),
+            "templates/ should exist"
+        );
+        // Second call is a no-op
         assert!(!provision_default_config(&res).await.unwrap());
     }
 }

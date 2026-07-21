@@ -856,6 +856,8 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`):
 | `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_thread`); first match wins. |
 | Custom `thread_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any thread directory, including ad-hoc threads (`jyc open <path>`). |
 
+> **Merge limitation**: L2 can override any L1 value but cannot *remove* entries (e.g. a channel defined in L1 cannot be deleted by L2). If removal is needed, either omit the channel from L1 or add it with `enabled = false` in L2.
+
 **Self-containment invariant**: all generated state follows the *effective data root* — a custom `--workdir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
 
 ## Config Hot-Reload Architecture

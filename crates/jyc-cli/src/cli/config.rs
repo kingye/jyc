@@ -50,6 +50,16 @@ async fn run_init(workdir: &Path, workdir_explicit: bool) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
+    // Create skills/ and templates/ skeletons next to the config.
+    if let Some(config_home) = config_path.parent() {
+        for sub in ["skills", "templates"] {
+            let dir = config_home.join(sub);
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .with_context(|| format!("failed to create {}", dir.display()))?;
+        }
+    }
+
     let template = include_str!("../../config.example.toml");
     tokio::fs::write(&config_path, template)
         .await

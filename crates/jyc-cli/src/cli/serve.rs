@@ -420,6 +420,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config.clone(),
             channel_name.clone(),
             channel_type.to_string(),
+            workdir.to_path_buf(),
             workspace_dir.clone(),
             metrics_handle.clone(),
         ));

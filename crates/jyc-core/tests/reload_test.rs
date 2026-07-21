@@ -184,6 +184,7 @@ async fn test_dynamic_pattern_reload() {
         "test_channel".to_string(),
         "email".to_string(),
         tmpdir.path().to_path_buf(),
+        tmpdir.path().to_path_buf(),
         metrics_handle,
     ));
 
@@ -273,6 +274,7 @@ async fn test_channel_orchestrator_register_and_remove() {
         config_swap.clone(),
         "test_channel".to_string(),
         "email".to_string(),
+        tmpdir.path().to_path_buf(),
         tmpdir.path().to_path_buf(),
         metrics_handle,
     ));

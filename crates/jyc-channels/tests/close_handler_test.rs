@@ -49,7 +49,7 @@ fn test_context(thread_path: &std::path::Path) -> CommandContext {
         config: test_config(),
         channel: "test".into(),
         agent: None,
-        template_dir: PathBuf::from("/tmp/test/templates"),
+        template_dirs: PathBuf::from("/tmp/test/templates").into(),
     }
 }
 
@@ -86,6 +86,7 @@ async fn test_close_command_deletes_thread_directory() {
         test_config_swap(),
         "test".to_string(),
         "email".to_string(),
+        tmp.path().to_path_buf(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));
@@ -130,6 +131,7 @@ async fn test_close_command_nonexistent_thread_succeeds() {
         test_config_swap(),
         "test".to_string(),
         "email".to_string(),
+        tmp.path().to_path_buf(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));
@@ -171,6 +173,7 @@ async fn test_close_command_invalid_thread_path() {
         test_config_swap(),
         "test".to_string(),
         "email".to_string(),
+        tmp.path().to_path_buf(),
         workspace.clone(),
         MetricsHandle::noop(),
     ));
@@ -183,7 +186,7 @@ async fn test_close_command_invalid_thread_path() {
         config: test_config(),
         channel: "test".into(),
         agent: None,
-        template_dir: PathBuf::from("/tmp/test/templates"),
+        template_dirs: PathBuf::from("/tmp/test/templates").into(),
     };
 
     let result = handler.execute(ctx).await.unwrap();

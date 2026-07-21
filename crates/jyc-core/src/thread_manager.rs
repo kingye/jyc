@@ -76,6 +76,9 @@ pub struct ThreadManager {
     // Channel type (e.g., "email", "wecom_bot")
     channel_type: String,
 
+    // Workdir (data root) for this channel.
+    workdir: PathBuf,
+
     // Workspace directory for this channel (<workdir>/<channel>/workspace/)
     workspace_dir: PathBuf,
 
@@ -110,6 +113,7 @@ impl ThreadManager {
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
+        workdir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -125,6 +129,7 @@ impl ThreadManager {
             config,
             channel_name,
             channel_type,
+            workdir,
             workspace_dir,
             metrics,
         )
@@ -144,6 +149,7 @@ impl ThreadManager {
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
+        workdir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -160,6 +166,7 @@ impl ThreadManager {
             template_dirs: template_dirs.into(),
             channel_name,
             channel_type,
+            workdir,
             workspace_dir,
             config,
             metrics,
@@ -311,6 +318,7 @@ impl ThreadManager {
             template_dirs: self.template_dirs.clone(),
             channel_name: self.channel_name.clone(),
             channel_type: self.channel_type.clone(),
+            workdir: self.workdir.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
@@ -682,15 +690,9 @@ impl ThreadManager {
         &self.channel_type
     }
 
-    /// Return the data root (workdir) for this channel.
-    ///
-    /// Derived from `workspace_dir` (`<workdir>/<channel>/workspace`).
-    pub fn data_root(&self) -> PathBuf {
-        self.workspace_dir
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or(&self.workspace_dir)
-            .to_path_buf()
+    /// Return the workdir (data root) for this channel.
+    pub fn data_root(&self) -> &Path {
+        &self.workdir
     }
 
     /// Return the max concurrent threads (semaphore capacity).
@@ -757,7 +759,7 @@ impl ThreadManager {
             let Some(tp) = &pattern.thread_path else {
                 continue;
             };
-            let resolved = crate::thread_path::resolve_thread_path(tp, &self.data_root());
+            let resolved = crate::thread_path::resolve_thread_path(tp, self.data_root());
             let thread_name_file = resolved.join(".jyc").join("thread-name");
             match tokio::fs::read_to_string(&thread_name_file).await {
                 Ok(name) => {
@@ -2247,6 +2249,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ))
@@ -2453,6 +2456,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ));
@@ -2548,6 +2552,7 @@ mode = "agent"
             config,
             "test-channel".to_string(),
             "websocket".to_string(),
+            workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
         ));

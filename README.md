@@ -233,7 +233,7 @@ jyc config init        # Generate config template (in <config dir>, or --workdir
 jyc config validate    # Validate config file (layered: global + workdir)
                        #   --config <FILE>   Config file path (default: as serve)
 jyc patterns list      # List configured patterns
-                       #   --config <FILE>   Config file path (default: config.toml)
+                       #   --config <FILE>   Config file path (default: as serve)
 jyc templates list     # List available templates and their skills
                        #   --source-dir <PATH>   Source directory containing templates/
 jyc templates deploy <target_dir>   # Deploy templates to a target directory

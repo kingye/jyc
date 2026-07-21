@@ -68,10 +68,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # action-gh-release updates release assets but does not move an
-      # existing tag — delete it first so the rolling tag tracks main HEAD
-      - name: Delete existing nightly tag
-        run: gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
+      # Delete the existing GitHub release (and its tag) so action-gh-release
+      # creates a fresh release without encountering duplicate-release errors.
+      - name: Delete existing nightly release
+        run: gh release delete nightly --cleanup-tag -y || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

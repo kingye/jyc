@@ -5,4 +5,5 @@ pub mod mcp_reply;
 pub mod patterns;
 pub mod resolve;
 pub mod serve;
+pub mod stop;
 pub mod templates;

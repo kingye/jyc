@@ -1810,6 +1810,7 @@ dependencies = [
  "jyc-services",
  "jyc-types",
  "jyc-utils",
+ "libc",
  "ratatui",
  "ratatui-markdown",
  "serde",

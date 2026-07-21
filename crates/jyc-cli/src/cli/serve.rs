@@ -2,11 +2,28 @@ use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use clap::Args;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
+
+/// RAII guard that removes a PID file on drop.
+struct PidFileGuard {
+    path: PathBuf,
+}
+
+impl PidFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for PidFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 use jyc_agent::JycAgentService;
 
@@ -124,6 +141,18 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         shutdown_signal().await;
         cancel_clone.cancel();
     });
+
+    // Write PID file for `jyc stop` command (removed automatically on drop)
+    let pid_path = workdir.join("jyc.pid");
+    let _pid_guard = if let Err(e) =
+        tokio::fs::write(&pid_path, std::process::id().to_string()).await
+    {
+        tracing::warn!(path = %pid_path.display(), error = %e, "Failed to write PID file");
+        None
+    } else {
+        tracing::info!(pid = std::process::id(), path = %pid_path.display(), "PID file written");
+        Some(PidFileGuard::new(pid_path))
+    };
 
     // 4. Start metrics collector
     let metrics_collector = MetricsCollector::new(cancel.clone());

@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use jyc_core::activity_log_store::ActivityLogStore;
+use jyc_core::command::all_commands;
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_manager::ThreadManager;
@@ -489,6 +490,7 @@ impl InspectServer {
             channels,
             threads,
             stats,
+            commands: all_commands(),
         }
     }
 }

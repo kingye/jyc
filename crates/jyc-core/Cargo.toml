@@ -25,6 +25,7 @@ regex = "1"
 base64 = "0.22"
 libc = "0.2"
 toml = "0.8"
+toml_edit = "0.22"
 futures = "0.3"
 
 [dev-dependencies]

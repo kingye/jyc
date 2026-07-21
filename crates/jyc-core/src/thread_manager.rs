@@ -85,6 +85,9 @@ pub struct ThreadManager {
     // Application config (for command handlers that need channel/pattern info)
     config: Arc<ArcSwap<jyc_types::AppConfig>>,
 
+    // Path to the config.toml file (for commands that write config, like /pin)
+    pub(crate) config_path: Option<PathBuf>,
+
     // Metrics handle for reporting events to the inspect server
     pub(crate) metrics: MetricsHandle,
 
@@ -132,6 +135,7 @@ impl ThreadManager {
             workdir,
             workspace_dir,
             metrics,
+            None,
         )
     }
 
@@ -152,6 +156,7 @@ impl ThreadManager {
         workdir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
+        config_path: Option<PathBuf>,
     ) -> Self {
         Self {
             thread_queues: Mutex::new(HashMap::new()),
@@ -169,6 +174,7 @@ impl ThreadManager {
             workdir,
             workspace_dir,
             config,
+            config_path,
             metrics,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
@@ -321,6 +327,7 @@ impl ThreadManager {
             workdir: self.workdir.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
+            config_path: self.config_path.clone(),
             metrics: self.metrics.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
@@ -1353,8 +1360,10 @@ async fn process_message(
         thread_path: store_result.thread_path.clone(),
         config: config.load_full(),
         channel: message.channel.clone(),
+        channel_type: thread_manager.channel_type.clone(),
         agent: Some(agent.clone()),
         template_dirs: template_dirs.clone(),
+        config_path: thread_manager.config_path.clone(),
     };
 
     let cmd_output = command_registry
@@ -2252,6 +2261,7 @@ mode = "agent"
             workspace.parent().unwrap_or(workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
+            None,
         ))
     }
 
@@ -2459,6 +2469,7 @@ mode = "agent"
             workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
+            None,
         ));
 
         // Before restore: empty
@@ -2555,6 +2566,7 @@ mode = "agent"
             workspace.parent().unwrap_or(&workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
+            None,
         ));
 
         tm.restore_custom_thread_paths().await;

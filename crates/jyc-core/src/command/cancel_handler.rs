@@ -117,6 +117,7 @@ mode = "agent"
             workspace.parent().unwrap_or(workspace).to_path_buf(),
             workspace.to_path_buf(),
             metrics,
+            None,
         ))
     }
 

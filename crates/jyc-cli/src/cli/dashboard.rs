@@ -372,40 +372,17 @@ impl App {
 
     fn send_chat_message(&mut self) {
         let text = self.chat_text().trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        let thread = match &self.chat_thread {
-            Some(t) => t.clone(),
-            None => return,
-        };
-
-        // Echo user message locally
-        self.chat_messages.push(ChatMessage {
-            sender: "user".to_string(),
-            text: text.clone(),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-        });
-        self.chat_editor = empty_chat_editor();
-        self.chat_scroll = 0;
-        self.chat_awaiting_response = true;
-
-        let msg = serde_json::json!({
-            "type": "message",
-            "thread": thread,
-            "text": text,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
-        }
+        self.send_chat_message_inner(text);
     }
 
     /// Send a programmatic text as a chat message, echoing locally and sending
-    /// via WebSocket. Unlike `send_chat_message`, this does not read from the
-    /// editor — it takes the text as a parameter. Used by the command popup.
+    /// via WebSocket. Used by the command popup.
     fn send_chat_message_with_text(&mut self, text: &str) {
-        let text = text.trim().to_string();
+        self.send_chat_message_inner(text.trim().to_string());
+    }
+
+    /// Shared implementation for sending a chat message.
+    fn send_chat_message_inner(&mut self, text: String) {
         if text.is_empty() {
             return;
         }

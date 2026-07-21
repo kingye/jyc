@@ -48,6 +48,14 @@ pub fn handle_popup_key(
 ) -> Option<String> {
     use crossterm::event::KeyCode;
 
+    // Clamp selection against current filtered count
+    let count = state.filtered_commands(commands).len();
+    if count == 0 {
+        state.selected = 0;
+    } else if state.selected >= count {
+        state.selected = count - 1;
+    }
+
     match key.code {
         KeyCode::Esc => {
             // Close without action — signal with empty string
@@ -59,9 +67,8 @@ pub fn handle_popup_key(
             return Some(selected.name.clone());
         }
         KeyCode::Up => {
-            let count = state.filtered_commands(commands).len();
-            if count > 0 {
-                state.selected = state.selected.saturating_sub(1);
+            if state.selected > 0 {
+                state.selected -= 1;
             }
         }
         KeyCode::Down => {
@@ -92,7 +99,7 @@ pub fn render_command_popup(
 ) {
     let filtered = state.filtered_commands(all);
     let list_height = filtered.len().clamp(1, 10) as u16;
-    let popup_height = list_height + 4; // border(2) + filter(1) + margin(1)
+    let popup_height = list_height + 3; // border(2) + filter(1)
     let popup_width = 42u16;
 
     // Center the popup

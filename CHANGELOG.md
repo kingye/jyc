@@ -6,6 +6,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- Nightly release binaries for macOS (aarch64) and Linux (x86_64), built by
+  GitHub Actions on every push to `main`, published to a rolling `nightly`
+  GitHub Release, and synced to Gitee Release. (#394)
+
 - **Per-model `model_id` override for provider model configs.** Each entry
   under `[agent.providers.<name>.models]` accepts an optional `model_id`
   holding the actual model identifier sent to the remote LLM; when unset,

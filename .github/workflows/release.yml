@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Serialize nightly releases — rapid pushes must not race delete/recreate
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Build release binary
+        run: cargo build --release -p jyc-cli --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jyc-${{ matrix.target }}
+          path: dist/jyc-${{ matrix.target }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # action-gh-release updates release assets but does not move an
+      # existing tag — delete it first so the rolling tag tracks main HEAD
+      - name: Delete existing nightly tag
+        run: gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build (${{ github.sha }})
+          prerelease: true
+          files: dist/*.tar.gz
+
+  sync-gitee:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_OWNER: ${{ secrets.GITEE_USERNAME }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Needed so git can push the nightly tag to Gitee
+      - uses: actions/checkout@v4
+
+      - name: Sync nightly release to Gitee
+        run: |
+          set -euo pipefail
+          API="https://gitee.com/api/v5/repos/${GITEE_OWNER}/jyc"
+          GIT_URL="https://${GITEE_OWNER}:${GITEE_TOKEN}@gitee.com/${GITEE_OWNER}/jyc.git"
+
+          # sync-to-gitee.yml mirrors main concurrently — wait until Gitee
+          # main actually contains this commit before tagging
+          echo "Waiting for Gitee main to reach ${GITHUB_SHA} ..."
+          gitee_sha=""
+          for i in $(seq 1 30); do
+            gitee_sha=$(curl -sS "${API}/branches/main?access_token=${GITEE_TOKEN}" \
+              | jq -r '.commit.sha // empty')
+            if [ "${gitee_sha}" = "${GITHUB_SHA}" ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ "${gitee_sha}" != "${GITHUB_SHA}" ]; then
+            echo "Timeout: Gitee main is at '${gitee_sha}', expected '${GITHUB_SHA}'"
+            exit 1
+          fi
+
+          # Delete existing nightly release if present
+          release_id=$(curl -sS "${API}/releases?access_token=${GITEE_TOKEN}" \
+            | jq -r '.[] | select(.tag_name == "nightly") | .id // empty' | head -n1)
+          if [ -n "${release_id}" ]; then
+            echo "Deleting existing Gitee release id=${release_id}"
+            curl -sSf -X DELETE "${API}/releases/${release_id}?access_token=${GITEE_TOKEN}"
+          fi
+
+          # Recreate the nightly tag on Gitee via git push (Gitee API has no
+          # DELETE /tags endpoint, and deleting a release keeps its tag)
+          git push "${GIT_URL}" :refs/tags/nightly || true
+          git push "${GIT_URL}" "${GITHUB_SHA}:refs/tags/nightly"
+
+          # Create new nightly release (fail loudly with response body on error)
+          resp=$(curl -sS -X POST "${API}/releases" \
+            -d "access_token=${GITEE_TOKEN}" \
+            -d "tag_name=nightly" \
+            -d "name=Nightly Build (${GITHUB_SHA})" \
+            -d "body=Automated nightly build from commit ${GITHUB_SHA}" \
+            -d "target_commitish=${GITHUB_SHA}")
+          new_release_id=$(echo "${resp}" | jq -r '.id // empty')
+          if [ -z "${new_release_id}" ]; then
+            echo "Failed to create Gitee release: ${resp}"
+            exit 1
+          fi
+          echo "Created Gitee release id=${new_release_id}"
+
+          # Upload assets
+          for f in dist/*.tar.gz; do
+            echo "Uploading ${f}"
+            resp=$(curl -sS -X POST "${API}/releases/${new_release_id}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "file=@${f}")
+            # Gitee attach_files success response contains .id (no download_url/source fields)
+            if ! echo "${resp}" | jq -e '.id' > /dev/null; then
+              echo "Failed to upload ${f}: ${resp}"
+              exit 1
+            fi
+          done

@@ -29,7 +29,9 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{InspectState, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectState, Severity, ThreadStatus};
+
+use super::command_popup::*;
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
@@ -143,6 +145,10 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
+
+    // Command popup state
+    commands: Vec<CommandInfo>,
+    command_popup: Option<CommandPopupState>,
 }
 
 impl App {
@@ -171,6 +177,8 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
+            commands: vec![],
+            command_popup: None,
         }
     }
 
@@ -263,6 +271,7 @@ impl App {
         self.chat_visible = false;
         self.chat_phase = ChatPhase::PatternSelect;
         self.ws_connected = false;
+        self.command_popup = None;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -770,6 +779,9 @@ pub async fn run(
                             }
                         }
                         app.state = Some(state);
+                        if let Some(ref s) = app.state {
+                            app.commands = s.commands.clone();
+                        }
                         app.error = None;
                     }
                     Err(e) => {

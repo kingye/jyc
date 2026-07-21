@@ -29,7 +29,9 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{InspectState, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectState, Severity, ThreadStatus};
+
+use super::command_popup::*;
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {
@@ -143,6 +145,10 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
+
+    // Command popup state
+    commands: Vec<CommandInfo>,
+    command_popup: Option<CommandPopupState>,
 }
 
 impl App {
@@ -171,6 +177,8 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
+            commands: vec![],
+            command_popup: None,
         }
     }
 
@@ -263,6 +271,7 @@ impl App {
         self.chat_visible = false;
         self.chat_phase = ChatPhase::PatternSelect;
         self.ws_connected = false;
+        self.command_popup = None;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -363,6 +372,17 @@ impl App {
 
     fn send_chat_message(&mut self) {
         let text = self.chat_text().trim().to_string();
+        self.send_chat_message_inner(text);
+    }
+
+    /// Send a programmatic text as a chat message, echoing locally and sending
+    /// via WebSocket. Used by the command popup.
+    fn send_chat_message_with_text(&mut self, text: &str) {
+        self.send_chat_message_inner(text.trim().to_string());
+    }
+
+    /// Shared implementation for sending a chat message.
+    fn send_chat_message_inner(&mut self, text: String) {
         if text.is_empty() {
             return;
         }
@@ -770,6 +790,9 @@ pub async fn run(
                             }
                         }
                         app.state = Some(state);
+                        if let Some(ref s) = app.state {
+                            app.commands = s.commands.clone();
+                        }
                         app.error = None;
                     }
                     Err(e) => {
@@ -1240,6 +1263,41 @@ fn handle_chat_keys(
         }
         app.chat_awaiting_response = true;
         return;
+    }
+
+    // ── Command popup handling ─────────────────────────────────────
+    if let Some(ref mut popup) = app.command_popup {
+        match handle_popup_key(key, popup, &app.commands) {
+            Some(cmd) if cmd.is_empty() => {
+                // Esc — close popup without action
+                app.command_popup = None;
+            }
+            Some(cmd) => {
+                // Enter — send the command immediately
+                app.command_popup = None;
+                app.send_chat_message_with_text(&cmd);
+            }
+            None => {
+                // Popup handled the key, continue
+            }
+        }
+        return;
+    }
+
+    // Check for "/" to open the command popup (before it reaches the editor)
+    let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_slash && app.chat_phase == ChatPhase::Chatting && app.chat_focus == ChatFocus::ChatPane {
+        let should_open = match app.chat_editor.mode {
+            // Normal mode: "/" always opens the popup
+            EditorMode::Normal => true,
+            // Insert mode: only when editor is empty (first char)
+            EditorMode::Insert => app.chat_text().trim().is_empty(),
+            _ => false,
+        };
+        if should_open {
+            app.command_popup = Some(CommandPopupState::new());
+            return;
+        }
     }
 
     match app.chat_phase {
@@ -2220,6 +2278,11 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         .theme(theme)
         .wrap(true)
         .render(editor_area, frame.buffer_mut());
+
+    // ── Command popup overlay ──
+    if let Some(ref popup) = app.command_popup {
+        render_command_popup(frame, inner, popup, &app.commands);
+    }
 }
 
 fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {

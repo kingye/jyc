@@ -46,6 +46,9 @@ pub struct InspectState {
     pub threads: Vec<ThreadInfo>,
     /// Aggregate statistics
     pub stats: GlobalStats,
+    /// Available commands (name + description), populated from server-side CommandRegistry
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
 }
 
 /// Information about a configured channel.
@@ -170,6 +173,15 @@ pub struct GlobalStats {
     pub errors: u64,
 }
 
+/// Information about an available command (name + description).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandInfo {
+    /// Command name including slash (e.g., "/model")
+    pub name: String,
+    /// Short description (e.g., "Switch AI model for this thread")
+    pub description: String,
+}
+
 // ── Protocol constants ──
 
 /// Default TCP port for the inspect server.
@@ -235,6 +247,7 @@ mod tests {
                 messages_processed: 150,
                 errors: 2,
             },
+            commands: vec![],
         };
 
         let json = serde_json::to_string(&state).unwrap();

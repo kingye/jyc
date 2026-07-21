@@ -1,4 +1,5 @@
 pub mod agent_builder;
+pub mod command_popup;
 pub mod config;
 pub mod dashboard;
 pub mod mcp_reply;

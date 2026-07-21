@@ -14,9 +14,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- Nightly release binaries for macOS (aarch64) and Linux (x86_64), built by
+- **Nightly release binaries for macOS (aarch64) and Linux (x86_64)**, built by
   GitHub Actions on every push to `main`, published to a rolling `nightly`
   GitHub Release, and synced to Gitee Release. (#394)
+
+- **`/` command popup in dashboard TUI chat input.** Typing `/` opens a
+  command palette with live filtering, arrow-key navigation, and Enter-to-send.
+  Commands are dynamically fetched from the inspect server. (#402, #403)
 
 - **Multi-level configuration with platform-conventional paths.** JYC now
   separates user-edited config from generated data: `config.toml`, `skills/`,

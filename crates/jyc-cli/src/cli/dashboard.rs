@@ -652,10 +652,11 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
         .spawn()
         .with_context(|| format!("Failed to spawn {} serve", exe.display()))?;
 
-    // Poll for readiness with exponential backoff (~10s total).
-    let delays = [100u64, 200, 400, 800, 1500, 3000, 4000];
-    for ms in &delays {
-        tokio::time::sleep(Duration::from_millis(*ms)).await;
+    // Poll for readiness (up to SERVE_STARTUP_TIMEOUT).
+    const SERVE_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + SERVE_STARTUP_TIMEOUT;
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
         if TcpStream::connect(addr).await.is_ok() {
             tracing::info!("Auto-started jyc serve (pid={})", child.id().unwrap_or(0));
             std::mem::forget(child); // Detach — serve runs until terminated separately.
@@ -679,9 +680,12 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
                 log_path.display()
             );
         }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
     }
 
-    // All delays exhausted — print diagnostics.
+    // Timeout — print diagnostics.
     let log_content = read_log_tail(&log_path, 20).await;
     if !log_content.is_empty() {
         eprintln!("--- jyc serve log tail ---\n{log_content}");

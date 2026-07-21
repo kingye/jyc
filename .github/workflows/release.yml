@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: aarch64-apple-darwin
 
@@ -36,7 +36,7 @@ jobs:
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler musl-tools
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'

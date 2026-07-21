@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
-        Commands::Serve(args) => cli::serve::run(args, &workdir).await,
+        Commands::Serve(args) => cli::serve::run(args, &workdir, cli.workdir.is_some()).await,
         Commands::Dashboard(args) => match &args.command {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
@@ -138,7 +138,9 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Config { action } => cli::config::run(action, &workdir).await,
+        Commands::Config { action } => {
+            cli::config::run(action, &workdir, cli.workdir.is_some()).await
+        }
         Commands::Patterns { action } => cli::patterns::run(action, &workdir).await,
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,

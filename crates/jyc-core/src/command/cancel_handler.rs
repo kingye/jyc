@@ -193,6 +193,8 @@ mode = "agent"
             channel: "test".into(),
             agent: None,
             template_dirs: std::path::PathBuf::from("/tmp/test/templates").into(),
+            channel_type: "websocket".to_string(),
+            config_path: None,
         }
     }
 

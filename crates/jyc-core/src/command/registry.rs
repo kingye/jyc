@@ -206,6 +206,8 @@ mode = "agent"
             channel: "test".into(),
             agent: None,
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
+            channel_type: "websocket".to_string(),
+            config_path: None,
         }
     }
 

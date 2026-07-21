@@ -19,9 +19,11 @@ use crate::command::help_handler::HelpCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::command::model_handler::ModelCommandHandler;
 use crate::command::new_handler::NewCommandHandler;
+use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
+use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::metrics::MetricsHandle;
 use crate::pending_delivery::watch_pending_deliveries;
@@ -1354,6 +1356,8 @@ async fn process_message(
     command_registry.register(Box::new(TemplateCommandHandler));
     command_registry.register(Box::new(CloseCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(CancelCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(PinCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
 
     let cmd_context = CommandContext {
         args: vec![],

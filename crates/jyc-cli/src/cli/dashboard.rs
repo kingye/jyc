@@ -1346,9 +1346,6 @@ async fn handle_normal_keys(
     }
 
     match key.code {
-        KeyCode::Esc => {
-            app.should_quit = true;
-        }
         KeyCode::Char('c') => {
             app.open_chat(addr, None, None);
         }

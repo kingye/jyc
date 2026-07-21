@@ -17,10 +17,10 @@ All notable changes to JYC will be documented in this file.
 - **`/pin` command.** Persist an ad-hoc websocket thread's configuration to
   `config.toml`. If a websocket channel already exists, adds a pattern with
   `thread_path` pointing to the adhoc directory; otherwise creates a new
-  websocket channel. (#NNN)
+  websocket channel. (#405)
 
 - **`/unpin` command.** Remove a pinned thread's pattern entry from
-  `config.toml`, reversing `/pin`. (#NNN)
+  `config.toml`, reversing `/pin`. (#405)
 
 - **Nightly release binaries for macOS (aarch64) and Linux (x86_64)**, built by
   GitHub Actions on every push to `main`, published to a rolling `nightly`

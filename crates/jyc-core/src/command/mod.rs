@@ -5,6 +5,7 @@ pub mod help_handler;
 pub mod mode_handler;
 pub mod model_handler;
 pub mod new_handler;
+pub mod pin_common;
 pub mod pin_handler;
 pub mod registry;
 pub mod reset_handler;

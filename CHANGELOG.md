@@ -4,6 +4,14 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Nightly release sync to Gitee.** Reordered `sync-gitee` job steps in
+  `release.yml` so `actions/checkout@v4` runs before artifact download —
+  checkout was resetting the workspace and deleting the `dist/` directory,
+  causing `curl: (26) Failed to open/read local data from file/application`
+  when uploading release assets. (#395)
+
 ### Added
 
 - Nightly release binaries for macOS (aarch64) and Linux (x86_64), built by

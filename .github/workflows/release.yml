@@ -90,14 +90,15 @@ jobs:
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
       GITEE_OWNER: ${{ secrets.GITEE_USERNAME }}
     steps:
+      # Must come before download-artifact — checkout resets the workspace,
+      # which would wipe the dist/ directory and cause curl upload failures.
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-
-      # Needed so git can push the nightly tag to Gitee
-      - uses: actions/checkout@v4
 
       - name: Sync nightly release to Gitee
         run: |

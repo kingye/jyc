@@ -682,6 +682,17 @@ impl ThreadManager {
         &self.channel_type
     }
 
+    /// Return the data root (workdir) for this channel.
+    ///
+    /// Derived from `workspace_dir` (`<workdir>/<channel>/workspace`).
+    pub fn data_root(&self) -> PathBuf {
+        self.workspace_dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(&self.workspace_dir)
+            .to_path_buf()
+    }
+
     /// Return the max concurrent threads (semaphore capacity).
     pub fn max_concurrent(&self) -> usize {
         self.semaphore.available_permits() + self.active_worker_count()
@@ -746,7 +757,7 @@ impl ThreadManager {
             let Some(tp) = &pattern.thread_path else {
                 continue;
             };
-            let resolved = crate::thread_path::resolve_thread_path(tp);
+            let resolved = crate::thread_path::resolve_thread_path(tp, &self.data_root());
             let thread_name_file = resolved.join(".jyc").join("thread-name");
             match tokio::fs::read_to_string(&thread_name_file).await {
                 Ok(name) => {

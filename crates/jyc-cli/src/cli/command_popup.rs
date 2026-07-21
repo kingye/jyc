@@ -50,8 +50,13 @@ impl CommandPopupState {
     /// the leading `/`, so typing "model" matches "/model" without requiring
     /// the slash.
     pub fn filtered_commands<'a>(&self, all: &'a [CommandInfo]) -> Vec<&'a CommandInfo> {
-        if self.filter.is_empty() || is_model_mode(&self.filter) {
+        // In model mode, don't show commands
+        if is_model_mode(&self.filter) {
             return vec![];
+        }
+        // Empty filter shows all commands
+        if self.filter.is_empty() {
+            return all.iter().collect();
         }
         let lower = self.filter.to_lowercase();
         all.iter()

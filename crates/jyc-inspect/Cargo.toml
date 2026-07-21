@@ -15,7 +15,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 arc-swap = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 async-trait = "0.1"
 

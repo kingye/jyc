@@ -4,6 +4,15 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Dashboard vim-style pane navigation.** The chat and activity panes now
+  support `j`/`k` for scrolling and `gg`/`G` for jumping to the top/bottom, in
+  addition to the arrow keys. In the chat pane this applies in Normal mode when
+  the input is a single line (where these keys are editor no-ops); multi-line
+  input keeps them as editor motions. The pattern select list also accepts
+  `j`/`k`. The chat input area now grows from 1 up to 10 text lines (was 4).
+
 ### Fixed
 
 - **Dashboard message injection loses routing metadata for non-websocket channels.**

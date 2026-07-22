@@ -26,6 +26,12 @@ All notable changes to JYC will be documented in this file.
   causing `curl: (26) Failed to open/read local data from file/application`
   when uploading release assets. (#395)
 
+- **Dashboard AI replies not visible in chat pane in real-time.**
+  The `SimpleThreadEventBus` dropped events when no subscriber existed,
+  creating a race with the ActivityTracker's 2-second discovery interval.
+  If the AI replied before the tracker subscribed, `ReplySent` events were
+  permanently lost. Now events are buffered and replayed to late subscribers. (#411)
+
 ### Added
 
 - **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket

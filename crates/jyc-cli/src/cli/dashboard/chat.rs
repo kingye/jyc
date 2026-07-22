@@ -71,6 +71,10 @@ pub(super) struct ChatState {
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
     pub(super) command_popup: Option<CommandPopupState>,
+    /// History of sent messages for Up/Down recall (newest appended last).
+    pub(super) input_history: Vec<String>,
+    /// Current position in history browsing (None = not browsing).
+    pub(super) history_pos: Option<usize>,
 }
 
 /// Creates a fresh, empty chat input editor in Insert mode.
@@ -389,6 +393,13 @@ pub(super) fn handle_chat_keys(
                 }
                 // Shift/Alt+Enter in Insert mode sends the message.
                 (EditorMode::Insert, KeyCode::Enter) => app.chat.send_message(),
+                // Up/Down in Insert mode, when input is empty, recall history.
+                (EditorMode::Insert, KeyCode::Up) if app.chat.text().trim().is_empty() => {
+                    app.chat.recall_older()
+                }
+                (EditorMode::Insert, KeyCode::Down) if app.chat.text().trim().is_empty() => {
+                    app.chat.recall_newer()
+                }
                 // Enter in Normal mode also sends (newlines come from o/O).
                 (EditorMode::Normal, KeyCode::Enter) => app.chat.send_message(),
                 // In Normal mode, Up/Down scroll the message history (cursor
@@ -1070,6 +1081,8 @@ impl ChatState {
             commands: vec![],
             models: vec![],
             command_popup: None,
+            input_history: vec![],
+            history_pos: None,
         }
     }
 
@@ -1092,6 +1105,8 @@ impl ChatState {
         self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1143,6 +1158,8 @@ impl ChatState {
         self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
         self.detail_channel = Some(channel.to_string());
         self.detail_thread_path = None;
 
@@ -1197,6 +1214,8 @@ impl ChatState {
         self.scroll = 0;
         self.messages.clear();
         self.messages.clear();
+        self.input_history.clear();
+        self.history_pos = None;
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
@@ -1333,6 +1352,13 @@ impl ChatState {
         if text.is_empty() {
             return;
         }
+
+        // Record sent text in input history (newest last, capped at 100).
+        self.input_history.push(text.clone());
+        if self.input_history.len() > 100 {
+            self.input_history.remove(0);
+        }
+
         let thread = match &self.thread {
             Some(t) => t.clone(),
             None => return,
@@ -1426,6 +1452,40 @@ impl ChatState {
             _ => {}
         }
     }
+
+    /// Recall an older entry from input history into the editor.
+    /// Bounded by the oldest (first) entry.
+    pub(super) fn recall_older(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        let pos = self.history_pos.map_or(self.input_history.len(), |p| p);
+        if pos == 0 {
+            return; // Already at oldest
+        }
+        let new_pos = pos - 1;
+        self.editor = EditorState::new(Lines::from(self.input_history[new_pos].as_str()));
+        self.editor.mode = EditorMode::Insert;
+        self.history_pos = Some(new_pos);
+    }
+
+    /// Recall a newer entry from input history into the editor.
+    /// At the newest, clears the editor and exits history mode.
+    pub(super) fn recall_newer(&mut self) {
+        match self.history_pos {
+            Some(pos) if pos + 1 < self.input_history.len() => {
+                let new_pos = pos + 1;
+                self.editor = EditorState::new(Lines::from(self.input_history[new_pos].as_str()));
+                self.editor.mode = EditorMode::Insert;
+                self.history_pos = Some(new_pos);
+            }
+            _ => {
+                // No newer entry or not browsing — clear back to empty
+                self.editor = empty_chat_editor();
+                self.history_pos = None;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1500,5 +1560,80 @@ mod tests {
         // `g` after reset does not jump
         assert!(!app.chat.gg_step(true));
         assert!(app.chat.pending_g);
+    }
+
+    #[test]
+    fn recall_older_on_empty_history_does_nothing() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        assert!(app.chat.input_history.is_empty());
+        app.chat.recall_older(); // should not panic or change anything
+        assert!(app.chat.history_pos.is_none());
+    }
+
+    #[test]
+    fn recall_older_recalls_and_recall_newer_clears() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        app.chat.input_history = vec![
+            "first msg".to_string(),
+            "second msg".to_string(),
+            "third msg".to_string(),
+        ];
+
+        // Up x3: third → second → first → stays at first
+        // Note: recall_older operates on the full history; it starts from newest (pos=len).
+        // Initial press: len=3 → pos=2 → "third msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(2));
+        assert_eq!(app.chat.text(), "third msg");
+
+        // Next older: pos 2 → 1 → "second msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(1));
+        assert_eq!(app.chat.text(), "second msg");
+
+        // Next older: pos 1 → 0 → "first msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(0));
+        assert_eq!(app.chat.text(), "first msg");
+
+        // Already at oldest — no change
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(0));
+        assert_eq!(app.chat.text(), "first msg");
+
+        // Down: pos 0 → 1 → "second msg"
+        app.chat.recall_newer();
+        assert_eq!(app.chat.history_pos, Some(1));
+        assert_eq!(app.chat.text(), "second msg");
+
+        // Down: pos 1 → 2 → "third msg"
+        app.chat.recall_newer();
+        assert_eq!(app.chat.history_pos, Some(2));
+        assert_eq!(app.chat.text(), "third msg");
+
+        // Down at newest — clears to empty
+        app.chat.recall_newer();
+        assert!(app.chat.history_pos.is_none());
+        assert!(app.chat.text().is_empty());
+    }
+
+    #[test]
+    fn select_pattern_clears_input_history() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        app.chat.input_history = vec!["msg from thread A".to_string()];
+        app.chat.history_pos = Some(0);
+
+        // Switch to a new thread
+        app.chat.select_pattern("thread-b".to_string());
+
+        // History must be cleared so it doesn't leak across threads
+        assert!(app.chat.input_history.is_empty());
+        assert!(app.chat.history_pos.is_none());
     }
 }

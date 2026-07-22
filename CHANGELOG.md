@@ -12,6 +12,12 @@ All notable changes to JYC will be documented in this file.
   the input is a single line (where these keys are editor no-ops); multi-line
   input keeps them as editor motions. The pattern select list also accepts
   `j`/`k`. The chat input area now grows from 1 up to 10 text lines (was 4).
+- **Command popup tab auto-complete.** Pressing Tab in the `/` command popup
+  fills the selected command or model name into the filter field, allowing
+  refinement before sending. The popup stays open. (#416)
+- **Chat input history with Up/Down.** When the chat input is empty, Up arrow
+  recalls the last sent message. Repeated Up cycles older, Down cycles newer;
+  Down at the newest clears back to empty. History is scoped per thread. (#416)
 
 ### Fixed
 

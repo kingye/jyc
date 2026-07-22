@@ -116,6 +116,29 @@ pub fn handle_popup_key(
             // Close without action — signal with empty string
             return Some(String::new());
         }
+        KeyCode::Tab => {
+            // Auto-complete: fill the filter with the selected item's name.
+            // Popup stays open so the user can refine and press Enter.
+            if model_mode {
+                if let Some(model) = state
+                    .filtered_models(models)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    state.filter = format!("/model {}", model.name);
+                    state.selected = 0;
+                }
+            } else {
+                if let Some(cmd) = state
+                    .filtered_commands(commands)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    state.filter = cmd.name.clone();
+                    state.selected = 0;
+                }
+            }
+        }
         KeyCode::Enter => {
             if model_mode {
                 let filtered = state.filtered_models(models);
@@ -330,4 +353,77 @@ fn render_model_list<'a>(filtered: &[&'a ModelInfo], selected: usize) -> Vec<Lin
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn make_cmd(name: &str) -> CommandInfo {
+        CommandInfo {
+            name: name.to_string(),
+            description: format!("{name} description"),
+        }
+    }
+
+    fn make_model(name: &str) -> ModelInfo {
+        ModelInfo {
+            name: name.to_string(),
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn tab_auto_completes_command_name_into_filter() {
+        let mut state = CommandPopupState::new();
+        state.filter = "pl".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert!(result.is_none(), "Tab should not close popup");
+        assert_eq!(state.filter, "/plan");
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn tab_auto_completes_selected_command_not_first() {
+        let mut state = CommandPopupState::new();
+        state.filter = String::new(); // All commands shown
+        state.selected = 1; // Second item
+        let commands = vec![make_cmd("/plan"), make_cmd("/model")];
+
+        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert!(result.is_none());
+        assert_eq!(state.filter, "/model");
+    }
+
+    #[test]
+    fn tab_auto_completes_model_in_model_mode() {
+        let mut state = CommandPopupState::new();
+        state.filter = "model ".to_string();
+        state.selected = 0;
+        let models = vec![make_model("gpt-4"), make_model("claude-3")];
+
+        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
+        assert!(result.is_none());
+        assert_eq!(state.filter, "/model gpt-4");
+    }
+
+    #[test]
+    fn tab_no_op_when_no_commands_match() {
+        let mut state = CommandPopupState::new();
+        state.filter = "zzz".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert!(result.is_none());
+        // No matching command, so filter unchanged
+        assert!(!state.filter.contains("/plan"));
+    }
 }

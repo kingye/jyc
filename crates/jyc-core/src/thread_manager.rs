@@ -348,6 +348,19 @@ impl ThreadManager {
             repo_group_locks: self.repo_group_locks.clone(),
             thread_paths: self.thread_paths.clone(),
         });
+
+        // Share the event bus with the clone so publish_reply_sent() can find it.
+        // The event bus was created in `self` (the original ThreadManager), but
+        // publish_reply_sent() looks up the bus via `self.get_event_bus()` on the
+        // worker's clone, which has an empty event_buses HashMap. Without this,
+        // ReplySent events are silently dropped and the dashboard never sees them.
+        if let Some(ref bus) = event_bus {
+            tm.event_buses
+                .lock()
+                .await
+                .insert(thread_name.clone(), bus.clone());
+        }
+
         let handle = ThreadManager::spawn_worker(
             tm,
             thread_name,

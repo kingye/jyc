@@ -289,6 +289,7 @@ pub struct ChannelPattern {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Matching rules (channel-specific)
+    #[serde(default)]
     pub rules: PatternRules,
     /// Attachment download configuration for messages matching this pattern
     pub attachments: Option<InboundAttachmentConfig>,

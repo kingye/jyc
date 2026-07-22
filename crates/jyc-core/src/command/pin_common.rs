@@ -88,8 +88,8 @@ pub async fn append_pattern_to_config(
     // Create the new TOML section
     let escaped_path = thread_path.to_string_lossy().replace('\\', "\\\\");
     let section = format!(
-        "\n# Added by /pin command\n[[channels.{}.patterns]]\nname = \"{}\"\nenabled = true\nthread_path = \"{}\"\n\n[channels.{}.patterns.rules]\n",
-        channel_name, pattern_name, escaped_path, channel_name
+        "\n# Added by /pin command\n[[channels.{}.patterns]]\nname = \"{}\"\nenabled = true\nthread_path = \"{}\"\n",
+        channel_name, pattern_name, escaped_path
     );
 
     let mut new_raw = raw;

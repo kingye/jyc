@@ -393,11 +393,15 @@ pub(super) fn handle_chat_keys(
                 }
                 // Shift/Alt+Enter in Insert mode sends the message.
                 (EditorMode::Insert, KeyCode::Enter) => app.chat.send_message(),
-                // Up/Down in Insert mode, when input is empty, recall history.
-                (EditorMode::Insert, KeyCode::Up) if app.chat.text().trim().is_empty() => {
+                // Up/Down in Insert mode, when input is empty or browsing history, recall history.
+                (EditorMode::Insert, KeyCode::Up)
+                    if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
+                {
                     app.chat.recall_older()
                 }
-                (EditorMode::Insert, KeyCode::Down) if app.chat.text().trim().is_empty() => {
+                (EditorMode::Insert, KeyCode::Down)
+                    if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
+                {
                     app.chat.recall_newer()
                 }
                 // Enter in Normal mode also sends (newlines come from o/O).

@@ -1376,6 +1376,32 @@ async fn process_message(
         }
     }
 
+    // ── 1.2. WRITE THREAD ROUTING METADATA ────────────────────────────
+    // Persist routing metadata on the first message for a thread so that
+    // dashboard message injection (handle_inject_message) can restore it.
+    // Without this, the synthetic InboundMessage has empty metadata and
+    // channel-specific reply routing fails (e.g., github_number missing → 404).
+    let thread_meta_path = store_result
+        .thread_path
+        .join(".jyc")
+        .join("thread-meta.json");
+    if !thread_meta_path.exists() {
+        let meta = serde_json::json!({
+            "channel_uid": item.message.channel_uid,
+            "external_id": item.message.external_id,
+            "thread_refs": item.message.thread_refs,
+            "metadata": item.message.metadata,
+        });
+        if let Ok(json) = serde_json::to_string_pretty(&meta) {
+            let _ = tokio::fs::create_dir_all(store_result.thread_path.join(".jyc")).await;
+            if let Err(e) = tokio::fs::write(&thread_meta_path, json).await {
+                tracing::warn!(error = %e, "Failed to write thread-meta.json");
+            } else {
+                tracing::debug!(thread = %thread_name, "Wrote thread-meta.json");
+            }
+        }
+    }
+
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
     // Save attachments AFTER thread name resolution (not before).
     // This ensures attachments go to the correct thread directory when
@@ -2486,6 +2512,141 @@ mode = "agent"
         // No event bus created — publish should silently succeed (no panic)
         tm.publish_incoming_message("test-thread", "user", "hello")
             .await;
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_meta_written_on_first_message() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let thread_path = workspace.join("test-thread");
+        tokio::fs::create_dir_all(thread_path.join(".jyc"))
+            .await
+            .unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("github_number".to_string(), serde_json::json!(42));
+
+        let msg = InboundMessage {
+            id: "test".to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "test-uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: Some(vec!["ref-1".to_string()]),
+            reply_to_id: None,
+            external_id: Some("ext-123".to_string()),
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+        let pattern_match = PatternMatch {
+            pattern_name: "test".to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+        tm.enqueue(
+            msg,
+            "test-thread".to_string(),
+            pattern_match,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        // Give the worker a moment to process
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Check thread-meta.json was written
+        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+        assert!(meta_path.exists(), "thread-meta.json should be written");
+
+        let content = std::fs::read_to_string(&meta_path).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(meta["channel_uid"], "test-uid");
+        assert_eq!(meta["external_id"], "ext-123");
+        assert_eq!(meta["thread_refs"], serde_json::json!(["ref-1"]));
+        assert_eq!(meta["metadata"]["github_number"], 42);
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_meta_not_overwritten_on_second_message() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let thread_path = workspace.join("test-thread");
+        tokio::fs::create_dir_all(thread_path.join(".jyc"))
+            .await
+            .unwrap();
+
+        // Pre-write a thread-meta.json with a known value
+        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+        std::fs::write(
+            &meta_path,
+            r#"{"channel_uid":"original-uid","metadata":{"github_number":99}}"#,
+        )
+        .unwrap();
+
+        let msg = InboundMessage {
+            id: "test".to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "new-uid".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+        let pattern_match = PatternMatch {
+            pattern_name: "test".to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+        tm.enqueue(
+            msg,
+            "test-thread".to_string(),
+            pattern_match,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Should NOT be overwritten — still has original values
+        let content = std::fs::read_to_string(&meta_path).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(meta["channel_uid"], "original-uid");
+        assert_eq!(meta["metadata"]["github_number"], 99);
 
         tm.shutdown().await;
     }

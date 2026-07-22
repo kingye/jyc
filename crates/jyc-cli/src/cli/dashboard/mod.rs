@@ -34,7 +34,9 @@ use jyc_types::{CommandInfo, InspectState, ModelInfo, Severity, ThreadStatus};
 use super::command_popup::*;
 
 mod chat;
+mod ws;
 use chat::*;
+use ws::*;
 
 #[derive(Args, Debug)]
 pub struct DashboardArgs {

@@ -39,6 +39,11 @@ All notable changes to JYC will be documented in this file.
   were silently dropped. Now the event bus reference is also inserted into the
   clone's `event_buses`, so `publish_reply_sent()` finds it. (#412)
 
+- **Dashboard chat pane auto-scrolls to bottom every poll cycle.**
+  The detail-mode message processing unconditionally reset `chat_scroll` to 0
+  on every poll, overriding any user scroll position. Now auto-scroll only fires
+  when new messages are actually added. (#413)
+
 ### Added
 
 - **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket

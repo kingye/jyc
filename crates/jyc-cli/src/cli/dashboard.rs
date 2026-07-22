@@ -134,6 +134,8 @@ struct App {
     chat_focus: ChatFocus,
     chat_scroll: usize,
     activity_scroll: usize,
+    /// Pending `g` keypress for the `gg` (jump to top) sequence.
+    pending_g: bool,
     /// Horizontal scroll offset for the activity pane (left-right).
     activity_hscroll: usize,
     /// Set locally when user sends a message, cleared when the poll confirms
@@ -182,6 +184,7 @@ impl App {
             chat_focus: ChatFocus::ChatPane,
             chat_scroll: 0,
             activity_scroll: 0,
+            pending_g: false,
             activity_hscroll: 0,
             chat_awaiting_response: false,
             activity_split: 0,
@@ -266,6 +269,7 @@ impl App {
         self.chat_scroll = 0;
         self.activity_scroll = 0;
         self.activity_hscroll = 0;
+        self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
 
@@ -311,6 +315,7 @@ impl App {
         self.chat_scroll = 0;
         self.activity_scroll = 0;
         self.activity_hscroll = 0;
+        self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
         self.detail_channel = Some(channel.to_string());
@@ -392,9 +397,22 @@ impl App {
 
     fn scroll_up(&mut self) {
         match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll += 1,
-            ChatFocus::ActivityPane => self.activity_scroll += 1,
+            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_add(1),
+            ChatFocus::ActivityPane => {
+                self.activity_scroll = self.activity_scroll.saturating_add(1)
+            }
         }
+    }
+
+    /// Advance the `gg` key-sequence state machine.
+    ///
+    /// Returns `true` when `pressed_g` completes the sequence (the previous
+    /// key was also `g`); the caller should then jump to the top. Any non-`g`
+    /// key resets the state.
+    fn gg_step(&mut self, pressed_g: bool) -> bool {
+        let jump = self.pending_g && pressed_g;
+        self.pending_g = pressed_g && !jump;
+        jump
     }
 
     fn scroll_down(&mut self) {
@@ -406,6 +424,25 @@ impl App {
         }
     }
 
+    /// Jump to the oldest message (top) of the focused pane.
+    ///
+    /// The offset is clamped to the actual maximum during rendering, so
+    /// setting it to `usize::MAX` is a safe "scroll all the way up".
+    fn scroll_to_top(&mut self) {
+        match self.chat_focus {
+            ChatFocus::ChatPane => self.chat_scroll = usize::MAX,
+            ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
+        }
+    }
+
+    /// Jump to the latest message (bottom) of the focused pane.
+    fn scroll_to_bottom(&mut self) {
+        match self.chat_focus {
+            ChatFocus::ChatPane => self.chat_scroll = 0,
+            ChatFocus::ActivityPane => self.activity_scroll = 0,
+        }
+    }
+
     fn page_size(&self) -> usize {
         let base = crossterm::terminal::size()
             .map(|(_, h)| h.saturating_sub(7) as usize)
@@ -413,11 +450,11 @@ impl App {
         match self.chat_focus {
             ChatFocus::ChatPane => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // Editor rows: wrapped text lines (1-4) + 1 status line.
+                // Editor rows: wrapped text lines (1-10) + 1 status line.
                 // Subtract the 2-column "> " prompt gutter from the width.
                 let input_lines =
                     count_wrapped_lines(&self.chat_text(), term_width.saturating_sub(2))
-                        .clamp(1, 4)
+                        .clamp(1, 10)
                         + 1;
                 base.saturating_sub(input_lines).max(1)
             }
@@ -1392,12 +1429,12 @@ fn handle_chat_keys(
             KeyCode::Esc => {
                 app.close_chat();
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 if app.chat_pattern_selected > 0 {
                     app.chat_pattern_selected -= 1;
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 if app.chat_pattern_selected + 1 < app.chat_patterns.len() {
                     app.chat_pattern_selected += 1;
                 }
@@ -1411,6 +1448,10 @@ fn handle_chat_keys(
             _ => {}
         },
         ChatPhase::Chatting => {
+            // `gg` sequence: a second consecutive `g` jumps to the top; any
+            // other key resets the sequence state.
+            let gg_jump = app.gg_step(key.code == KeyCode::Char('g'));
+
             // App-level keys take precedence over the vim editor.
             match key.code {
                 KeyCode::Tab => {
@@ -1445,8 +1486,11 @@ fn handle_chat_keys(
                             app.go_to_pattern_select();
                         }
                     }
-                    KeyCode::Up => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+                    KeyCode::Char('G') => app.scroll_to_bottom(),
+                    KeyCode::Char('g') if gg_jump => app.scroll_to_top(),
+                    KeyCode::Char('g') => {}
                     KeyCode::Left => app.activity_hscroll = app.activity_hscroll.saturating_sub(1),
                     KeyCode::Right => app.activity_hscroll = app.activity_hscroll.saturating_add(1),
                     _ => {}
@@ -1456,6 +1500,12 @@ fn handle_chat_keys(
 
             // Chat pane: vim editor input. Everything not matched here is
             // delegated to the edtui event handler.
+            //
+            // When the input holds at most one line, `j`/`k`/`gg`/`G` would
+            // be no-ops in the editor, so in Normal mode they scroll the
+            // message history instead. With multi-line input they remain
+            // editor motions.
+            let single_line_input = app.chat_editor.lines.len() <= 1;
             match (app.chat_editor.mode, key.code) {
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
@@ -1480,9 +1530,21 @@ fn handle_chat_keys(
                 // Enter in Normal mode also sends (newlines come from o/O).
                 (EditorMode::Normal, KeyCode::Enter) => app.send_chat_message(),
                 // In Normal mode, Up/Down scroll the message history (cursor
-                // movement is on j/k). In other modes arrows go to the editor.
+                // movement is on h/l). In other modes arrows go to the editor.
                 (EditorMode::Normal, KeyCode::Up) => app.scroll_up(),
                 (EditorMode::Normal, KeyCode::Down) => app.scroll_down(),
+                // j/k and gg/G scroll the history only when the input is a
+                // single line (where they are editor no-ops); multi-line
+                // input keeps them as editor motions.
+                (EditorMode::Normal, KeyCode::Char('k')) if single_line_input => app.scroll_up(),
+                (EditorMode::Normal, KeyCode::Char('j')) if single_line_input => app.scroll_down(),
+                (EditorMode::Normal, KeyCode::Char('G')) if single_line_input => {
+                    app.scroll_to_bottom()
+                }
+                (EditorMode::Normal, KeyCode::Char('g')) if single_line_input && gg_jump => {
+                    app.scroll_to_top()
+                }
+                (EditorMode::Normal, KeyCode::Char('g')) if single_line_input => {}
                 _ => app.chat_handler.on_key_event(key, &mut app.chat_editor),
             }
         }
@@ -2055,11 +2117,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(block, area);
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area grows with content (up to 5 rows) for multi-line editing:
-    // wrapped text lines (1-4) + 1 status line for the vim mode indicator.
+    // Input area grows with content (up to 11 rows) for multi-line editing:
+    // wrapped text lines (1-10) + 1 status line for the vim mode indicator.
     // Subtract the 2-column "> " prompt gutter from the wrap width.
-    let input_line_count =
-        count_wrapped_lines(&app.chat_text(), inner.width.saturating_sub(2)).clamp(1, 4) as u16 + 1;
+    let input_line_count = count_wrapped_lines(&app.chat_text(), inner.width.saturating_sub(2))
+        .clamp(1, 10) as u16
+        + 1;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -2496,9 +2559,9 @@ fn render_activity_log_inner(
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat_visible {
         match app.chat_phase {
-            ChatPhase::PatternSelect => "[↑↓]select [Enter]choose [Esc]back [^Q]quit",
+            ChatPhase::PatternSelect => "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓]scroll [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
+                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
             }
         }
     } else {
@@ -2611,6 +2674,50 @@ mod tests {
         // Messages must be cleared so stale content doesn't leak across threads
         assert!(app.chat_messages.is_empty());
         assert_eq!(app.chat_thread.as_deref(), Some("thread-b"));
+    }
+
+    #[test]
+    fn scroll_to_top_and_bottom_follow_focus() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Chat pane focused
+        app.chat_focus = ChatFocus::ChatPane;
+        app.scroll_to_top();
+        assert_eq!(app.chat_scroll, usize::MAX);
+        assert_eq!(app.activity_scroll, 0);
+        app.scroll_to_bottom();
+        assert_eq!(app.chat_scroll, 0);
+
+        // Activity pane focused
+        app.chat_focus = ChatFocus::ActivityPane;
+        app.scroll_to_top();
+        assert_eq!(app.activity_scroll, usize::MAX);
+        assert_eq!(app.chat_scroll, 0);
+        app.scroll_to_bottom();
+        assert_eq!(app.activity_scroll, 0);
+    }
+
+    #[test]
+    fn gg_step_completes_only_on_consecutive_g() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Single `g` arms the sequence without jumping
+        assert!(!app.gg_step(true));
+        assert!(app.pending_g);
+        // Second consecutive `g` completes the jump and resets
+        assert!(app.gg_step(true));
+        assert!(!app.pending_g);
+        // Third `g` starts a fresh sequence
+        assert!(!app.gg_step(true));
+        assert!(app.pending_g);
+        // A non-`g` key resets the sequence
+        assert!(!app.gg_step(false));
+        assert!(!app.pending_g);
+        // `g` after reset does not jump
+        assert!(!app.gg_step(true));
+        assert!(app.pending_g);
     }
 
     #[test]

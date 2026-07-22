@@ -95,7 +95,8 @@ starts in Insert mode.
 | Key | Action |
 |-----|--------|
 | `c` | Open chat pane (from thread list) |
-| `↑` / `↓` | Select pattern (pattern select); scroll messages (Normal mode); move cursor (Insert/Visual mode) |
+| `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (Normal mode); move cursor (Insert/Visual mode) |
+| `gg` / `G` | Jump to top / bottom of the focused pane (Normal mode, single-line input) |
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
 | `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection) |
@@ -112,6 +113,12 @@ G % { } f`/`t`), edits (`x dd dw D cw J o O`), text objects (`diw ciw vi" di(` �
 yank/paste (`y yy p P`), undo/redo (`u` / `Ctrl+r`), repeat (`.`), half-page
 jumps (`Ctrl+d` / `Ctrl+u`), and Visual mode (`v`). See the
 [edtui keybinding list](https://docs.rs/edtui) for details.
+
+Note: when the input holds at most one line (where `j`/`k`/`gg`/`G` would be
+editor no-ops), Normal mode uses them to scroll the message history instead —
+`j`/`k` scroll down/up, `gg`/`G` jump to the top/bottom. With multi-line input
+they remain editor motions. The input area grows with content from 1 up to 10
+text lines.
 
 ### Interface Layout
 

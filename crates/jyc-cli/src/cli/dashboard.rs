@@ -867,6 +867,7 @@ pub async fn run(
                             && let Some(ref chat_name) = app.chat_thread
                             && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
                         {
+                            let mut new_msg = false;
                             for msg in &ct.recent_messages {
                                 // Skip messages we already have (dedup by text+timestamp)
                                 let already = app
@@ -879,10 +880,13 @@ pub async fn run(
                                         text: msg.text.clone(),
                                         timestamp: msg.timestamp.clone(),
                                     });
+                                    new_msg = true;
                                 }
                             }
-                            // Auto-scroll to bottom on new messages
-                            app.chat_scroll = 0;
+                            // Auto-scroll to bottom only when new messages arrive
+                            if new_msg {
+                                app.chat_scroll = 0;
+                            }
                         }
 
                         app.state = Some(state);

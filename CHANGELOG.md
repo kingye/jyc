@@ -37,7 +37,7 @@ All notable changes to JYC will be documented in this file.
   empty `event_buses` HashMap. `publish_reply_sent()` called `get_event_bus()` on
   this clone, which always returned `None` — events never reached the bus and
   were silently dropped. Now the event bus reference is also inserted into the
-  clone's `event_buses`, so `publish_reply_sent()` finds it. (#411)
+  clone's `event_buses`, so `publish_reply_sent()` finds it. (#412)
 
 ### Added
 

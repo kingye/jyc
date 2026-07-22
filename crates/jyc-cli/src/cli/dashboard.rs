@@ -121,18 +121,18 @@ struct App {
     pending_reset: Option<(String, std::time::Instant)>,
 
     // Chat pane state
-    chat_visible: bool,
-    chat_phase: ChatPhase,
-    chat_patterns: Vec<String>,
-    chat_pattern_selected: usize,
-    chat_thread: Option<String>,
-    chat_messages: Vec<ChatMessage>,
+    visible: bool,
+    phase: ChatPhase,
+    patterns: Vec<String>,
+    pattern_selected: usize,
+    thread: Option<String>,
+    messages: Vec<ChatMessage>,
     /// Vim-style editor state for the chat input (edtui).
-    chat_editor: EditorState,
+    editor: EditorState,
     /// Vim-mode key event handler for the chat input (edtui).
-    chat_handler: EditorEventHandler,
-    chat_focus: ChatFocus,
-    chat_scroll: usize,
+    handler: EditorEventHandler,
+    focus: ChatFocus,
+    scroll: usize,
     activity_scroll: usize,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pending_g: bool,
@@ -141,7 +141,7 @@ struct App {
     /// Set locally when user sends a message, cleared when the poll confirms
     /// the thread is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
-    chat_awaiting_response: bool,
+    awaiting_response: bool,
     /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
     activity_split: u8,
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -155,7 +155,7 @@ struct App {
     /// Thread path from ThreadInfo (for loading chat history from disk).
     detail_thread_path: Option<std::path::PathBuf>,
     /// Pending message to inject via inspect protocol (detail mode).
-    /// Set by `send_chat_message_inner` and consumed by the main poll loop.
+    /// Set by `send_message_inner` and consumed by the main poll loop.
     pending_inject: Option<(String, String)>,
 
     // Command popup state
@@ -173,20 +173,20 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_reset: None,
-            chat_visible: false,
-            chat_phase: ChatPhase::PatternSelect,
-            chat_patterns: vec![],
-            chat_pattern_selected: 0,
-            chat_thread: None,
-            chat_messages: vec![],
-            chat_editor: empty_chat_editor(),
-            chat_handler: EditorEventHandler::default(),
-            chat_focus: ChatFocus::ChatPane,
-            chat_scroll: 0,
+            visible: false,
+            phase: ChatPhase::PatternSelect,
+            patterns: vec![],
+            pattern_selected: 0,
+            thread: None,
+            messages: vec![],
+            editor: empty_chat_editor(),
+            handler: EditorEventHandler::default(),
+            focus: ChatFocus::ChatPane,
+            scroll: 0,
             activity_scroll: 0,
             pending_g: false,
             activity_hscroll: 0,
-            chat_awaiting_response: false,
+            awaiting_response: false,
             activity_split: 0,
             ws_tx: None,
             ws_rx,
@@ -253,20 +253,20 @@ impl App {
 
     // ── Chat pane helpers ──────────────────────────────────────────────
 
-    fn open_chat(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
-        self.chat_visible = true;
-        self.chat_phase = if initial_thread.is_some() {
+    fn open(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
+        self.visible = true;
+        self.phase = if initial_thread.is_some() {
             ChatPhase::Chatting
         } else {
             ChatPhase::PatternSelect
         };
-        self.chat_patterns.clear();
-        self.chat_pattern_selected = 0;
-        self.chat_thread = initial_thread.map(|s| s.to_string());
-        self.chat_messages.clear();
-        self.chat_editor = empty_chat_editor();
-        self.chat_focus = ChatFocus::ChatPane;
-        self.chat_scroll = 0;
+        self.patterns.clear();
+        self.pattern_selected = 0;
+        self.thread = initial_thread.map(|s| s.to_string());
+        self.messages.clear();
+        self.editor = empty_chat_editor();
+        self.focus = ChatFocus::ChatPane;
+        self.scroll = 0;
         self.activity_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -286,9 +286,9 @@ impl App {
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
     }
 
-    fn close_chat(&mut self) {
-        self.chat_visible = false;
-        self.chat_phase = ChatPhase::PatternSelect;
+    fn close(&mut self) {
+        self.visible = false;
+        self.phase = ChatPhase::PatternSelect;
         self.ws_connected = false;
         self.command_popup = None;
         self.detail_channel = None;
@@ -301,18 +301,18 @@ impl App {
 
     /// Open detail/chat mode for a non-WebSocket thread.
     ///
-    /// Unlike `open_chat`, this does NOT create a WebSocket connection.
+    /// Unlike `open`, this does NOT create a WebSocket connection.
     /// Instead, it relies on the inspect server's poll-based state (via
     /// `get_state`) for live message updates and the `inject_message`
     /// protocol method for sending messages.
     fn open_thread_detail(&mut self, channel: &str, thread_name: &str) {
-        self.chat_visible = true;
-        self.chat_phase = ChatPhase::Chatting;
-        self.chat_thread = Some(thread_name.to_string());
-        self.chat_messages.clear();
-        self.chat_editor = empty_chat_editor();
-        self.chat_focus = ChatFocus::ChatPane;
-        self.chat_scroll = 0;
+        self.visible = true;
+        self.phase = ChatPhase::Chatting;
+        self.thread = Some(thread_name.to_string());
+        self.messages.clear();
+        self.editor = empty_chat_editor();
+        self.focus = ChatFocus::ChatPane;
+        self.scroll = 0;
         self.activity_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -334,7 +334,7 @@ impl App {
             None => {
                 // Try to get thread_path from the current state
                 if let Some(ref state) = self.state
-                    && let Some(ref chat_name) = self.chat_thread
+                    && let Some(ref chat_name) = self.thread
                     && let Some(thread) = state.threads.iter().find(|t| t.name == *chat_name)
                     && let Some(ref path) = thread.thread_path
                 {
@@ -348,7 +348,7 @@ impl App {
         };
 
         let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
-        self.chat_messages = entries
+        self.messages = entries
             .into_iter()
             .map(|e| ChatMessage {
                 sender: e.sender,
@@ -364,12 +364,12 @@ impl App {
     }
 
     fn select_pattern(&mut self, pattern: String) {
-        self.chat_phase = ChatPhase::Chatting;
-        self.chat_thread = Some(pattern.clone());
-        self.chat_editor = empty_chat_editor();
-        self.chat_scroll = 0;
-        self.chat_messages.clear();
-        self.chat_messages.clear();
+        self.phase = ChatPhase::Chatting;
+        self.thread = Some(pattern.clone());
+        self.editor = empty_chat_editor();
+        self.scroll = 0;
+        self.messages.clear();
+        self.messages.clear();
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
@@ -382,22 +382,22 @@ impl App {
     }
 
     fn go_to_pattern_select(&mut self) {
-        self.chat_phase = ChatPhase::PatternSelect;
-        self.chat_thread = None;
-        self.chat_editor = empty_chat_editor();
-        self.chat_scroll = 0;
+        self.phase = ChatPhase::PatternSelect;
+        self.thread = None;
+        self.editor = empty_chat_editor();
+        self.scroll = 0;
     }
 
     fn toggle_focus(&mut self) {
-        self.chat_focus = match self.chat_focus {
+        self.focus = match self.focus {
             ChatFocus::ChatPane => ChatFocus::ActivityPane,
             ChatFocus::ActivityPane => ChatFocus::ChatPane,
         };
     }
 
     fn scroll_up(&mut self) {
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_add(1),
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_add(1),
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
             }
@@ -416,8 +416,8 @@ impl App {
     }
 
     fn scroll_down(&mut self) {
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_sub(1),
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_sub(1),
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(1)
             }
@@ -429,16 +429,16 @@ impl App {
     /// The offset is clamped to the actual maximum during rendering, so
     /// setting it to `usize::MAX` is a safe "scroll all the way up".
     fn scroll_to_top(&mut self) {
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = usize::MAX,
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = usize::MAX,
             ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
         }
     }
 
     /// Jump to the latest message (bottom) of the focused pane.
     fn scroll_to_bottom(&mut self) {
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = 0,
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = 0,
             ChatFocus::ActivityPane => self.activity_scroll = 0,
         }
     }
@@ -447,15 +447,14 @@ impl App {
         let base = crossterm::terminal::size()
             .map(|(_, h)| h.saturating_sub(7) as usize)
             .unwrap_or(10);
-        match self.chat_focus {
+        match self.focus {
             ChatFocus::ChatPane => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
                 // Editor rows: wrapped text lines (1-10) + 1 status line.
                 // Subtract the 2-column "> " prompt gutter from the width.
-                let input_lines =
-                    count_wrapped_lines(&self.chat_text(), term_width.saturating_sub(2))
-                        .clamp(1, 10)
-                        + 1;
+                let input_lines = count_wrapped_lines(&self.text(), term_width.saturating_sub(2))
+                    .clamp(1, 10)
+                    + 1;
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),
@@ -464,8 +463,8 @@ impl App {
 
     fn page_up(&mut self) {
         let page = self.page_size();
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_add(page),
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_add(page),
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
             }
@@ -474,8 +473,8 @@ impl App {
 
     fn page_down(&mut self) {
         let page = self.page_size();
-        match self.chat_focus {
-            ChatFocus::ChatPane => self.chat_scroll = self.chat_scroll.saturating_sub(page),
+        match self.focus {
+            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_sub(page),
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)
             }
@@ -483,27 +482,27 @@ impl App {
     }
 
     /// Current chat input text (editor lines joined with newlines).
-    fn chat_text(&self) -> String {
-        self.chat_editor.lines.to_string()
+    fn text(&self) -> String {
+        self.editor.lines.to_string()
     }
 
-    fn send_chat_message(&mut self) {
-        let text = self.chat_text().trim().to_string();
-        self.send_chat_message_inner(text);
+    fn send_message(&mut self) {
+        let text = self.text().trim().to_string();
+        self.send_message_inner(text);
     }
 
     /// Send a programmatic text as a chat message, echoing locally and sending
     /// via WebSocket. Used by the command popup.
-    fn send_chat_message_with_text(&mut self, text: &str) {
-        self.send_chat_message_inner(text.trim().to_string());
+    fn send_message_with_text(&mut self, text: &str) {
+        self.send_message_inner(text.trim().to_string());
     }
 
     /// Shared implementation for sending a chat message.
-    fn send_chat_message_inner(&mut self, text: String) {
+    fn send_message_inner(&mut self, text: String) {
         if text.is_empty() {
             return;
         }
-        let thread = match &self.chat_thread {
+        let thread = match &self.thread {
             Some(t) => t.clone(),
             None => return,
         };
@@ -519,7 +518,7 @@ impl App {
             // WebSocket mode: echo user message locally, send via WebSocket.
             // No duplication — the WebSocket broadcast only sends AI replies,
             // not user messages.
-            self.chat_messages.push(ChatMessage {
+            self.messages.push(ChatMessage {
                 sender: "user".to_string(),
                 text: text.clone(),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
@@ -535,9 +534,9 @@ impl App {
             }
         }
 
-        self.chat_editor = empty_chat_editor();
-        self.chat_scroll = 0;
-        self.chat_awaiting_response = true;
+        self.editor = empty_chat_editor();
+        self.scroll = 0;
+        self.awaiting_response = true;
     }
 
     fn handle_ws_event(&mut self, event: WsEvent) {
@@ -551,7 +550,7 @@ impl App {
                 }
 
                 // Auto-re-subscribe to the previously selected thread, if any
-                if let Some(ref thread) = self.chat_thread {
+                if let Some(ref thread) = self.thread {
                     let subscribe_msg = serde_json::json!({
                         "type": "subscribe",
                         "thread": thread,
@@ -585,20 +584,20 @@ impl App {
         match parsed.get("type").and_then(|v| v.as_str()) {
             Some("patterns") => {
                 if let Some(patterns) = parsed.get("patterns").and_then(|v| v.as_array()) {
-                    self.chat_patterns = patterns
+                    self.patterns = patterns
                         .iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect();
-                    self.chat_pattern_selected = 0;
+                    self.pattern_selected = 0;
                 }
             }
             Some("history") => {
                 if let (Some(thread), Some(messages)) = (
                     parsed.get("thread").and_then(|v| v.as_str()),
                     parsed.get("messages").and_then(|v| v.as_array()),
-                ) && self.chat_thread.as_deref() == Some(thread)
+                ) && self.thread.as_deref() == Some(thread)
                 {
-                    self.chat_messages = messages
+                    self.messages = messages
                         .iter()
                         .filter_map(|m| {
                             Some(ChatMessage {
@@ -619,14 +618,14 @@ impl App {
                     parsed.get("text").and_then(|v| v.as_str()),
                 ) {
                     // Only append if it matches our subscribed thread
-                    if self.chat_thread.as_deref() == Some(thread) {
-                        self.chat_messages.push(ChatMessage {
+                    if self.thread.as_deref() == Some(thread) {
+                        self.messages.push(ChatMessage {
                             sender: "ai".to_string(),
                             text: text.to_string(),
                             timestamp: Some(chrono::Utc::now().to_rfc3339()),
                         });
-                        self.chat_scroll = 0;
-                        self.chat_awaiting_response = false;
+                        self.scroll = 0;
+                        self.awaiting_response = false;
                     }
                 }
             }
@@ -877,7 +876,7 @@ pub async fn run(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
-            app.open_chat(&args.addr, initial_channel, Some(thread));
+            app.open(&args.addr, initial_channel, Some(thread));
         }
 
         loop {
@@ -885,34 +884,34 @@ pub async fn run(
             if last_poll.elapsed() >= poll_interval {
                 match client.get_state().await {
                     Ok(state) => {
-                        // Clear chat_awaiting_response once the server confirms the thread
+                        // Clear awaiting_response once the server confirms the thread
                         // is no longer processing (with a small grace period to avoid
                         // flicker between the local flag and server state).
-                        if app.chat_awaiting_response
-                            && let Some(ref chat_name) = app.chat_thread
+                        if app.awaiting_response
+                            && let Some(ref chat_name) = app.thread
                         {
                             let ct = state.threads.iter().find(|t| t.name == *chat_name);
                             if let Some(ct) = ct
                                 && ct.status != ThreadStatus::Processing
                             {
-                                app.chat_awaiting_response = false;
+                                app.awaiting_response = false;
                             }
                         }
 
                         // Detail mode: extract live chat messages from recent_messages
                         if app.is_detail_mode()
-                            && let Some(ref chat_name) = app.chat_thread
+                            && let Some(ref chat_name) = app.thread
                             && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
                         {
                             let mut new_msg = false;
                             for msg in &ct.recent_messages {
                                 // Skip messages we already have (dedup by text+timestamp)
                                 let already = app
-                                    .chat_messages
+                                    .messages
                                     .iter()
                                     .any(|m| m.text == msg.text && m.timestamp == msg.timestamp);
                                 if !already {
-                                    app.chat_messages.push(ChatMessage {
+                                    app.messages.push(ChatMessage {
                                         sender: msg.sender.clone(),
                                         text: msg.text.clone(),
                                         timestamp: msg.timestamp.clone(),
@@ -922,7 +921,7 @@ pub async fn run(
                             }
                             // Auto-scroll to bottom only when new messages arrive
                             if new_msg {
-                                app.chat_scroll = 0;
+                                app.scroll = 0;
                             }
                         }
 
@@ -950,11 +949,11 @@ pub async fn run(
                     }
                     Ok((false, msg)) => {
                         app.set_status(format!("Inject failed: {msg}"));
-                        app.chat_awaiting_response = false;
+                        app.awaiting_response = false;
                     }
                     Err(e) => {
                         app.set_status(format!("Inject error: {e:#}"));
-                        app.chat_awaiting_response = false;
+                        app.awaiting_response = false;
                     }
                 }
             }
@@ -973,16 +972,14 @@ pub async fn run(
             // Handle input (non-blocking, 50ms timeout)
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    Event::Paste(data)
-                        if app.chat_visible && app.chat_focus == ChatFocus::ChatPane =>
-                    {
+                    Event::Paste(data) if app.visible && app.focus == ChatFocus::ChatPane => {
                         // Bracketed paste delivers the whole pasted chunk as
                         // one event. Forward it to the editor so it never
                         // triggers Enter handling / send.
-                        app.chat_handler.on_paste_event(data, &mut app.chat_editor);
+                        app.handler.on_paste_event(data, &mut app.editor);
                     }
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if app.chat_visible {
+                        if app.visible {
                             handle_chat_keys(&mut app, key, &mut terminal);
                         } else {
                             handle_normal_keys(
@@ -1321,7 +1318,7 @@ fn edit_input_externally(
         .suffix(".md")
         .tempfile()
         .context("Failed to create temp file for external editor")?;
-    std::fs::write(tmp.path(), app.chat_text())
+    std::fs::write(tmp.path(), app.text())
         .with_context(|| format!("Failed to write {}", tmp.path().display()))?;
 
     // Suspend the TUI so the editor takes over the terminal
@@ -1347,8 +1344,8 @@ fn edit_input_externally(
                 .with_context(|| format!("Failed to read {}", tmp.path().display()))?;
             // Drop the single trailing newline editors typically append on save
             let edited = edited.strip_suffix('\n').unwrap_or(&edited);
-            app.chat_editor = EditorState::new(Lines::from(edited));
-            app.chat_editor.mode = EditorMode::Insert;
+            app.editor = EditorState::new(Lines::from(edited));
+            app.editor.mode = EditorMode::Insert;
         }
         Ok(s) => {
             app.set_status(format!("Editor exited with {s}; input unchanged"));
@@ -1375,7 +1372,7 @@ fn handle_chat_keys(
 
     // Ctrl+E opens an external editor to compose the chat input
     let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_e && app.chat_phase == ChatPhase::Chatting && app.chat_focus == ChatFocus::ChatPane {
+    if is_ctrl_e && app.phase == ChatPhase::Chatting && app.focus == ChatFocus::ChatPane {
         if let Err(e) = edit_input_externally(app, terminal) {
             app.set_status(format!("Editor error: {e:#}"));
         }
@@ -1384,7 +1381,7 @@ fn handle_chat_keys(
 
     // Ctrl+W cycles activity pane split ratio
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_w && app.chat_phase == ChatPhase::Chatting {
+    if is_ctrl_w && app.phase == ChatPhase::Chatting {
         app.activity_split = (app.activity_split + 1) % 4;
         return;
     }
@@ -1399,7 +1396,7 @@ fn handle_chat_keys(
             Some(cmd) => {
                 // Enter — send the command immediately
                 app.command_popup = None;
-                app.send_chat_message_with_text(&cmd);
+                app.send_message_with_text(&cmd);
             }
             None => {
                 // Popup handled the key, continue
@@ -1410,12 +1407,12 @@ fn handle_chat_keys(
 
     // Check for "/" to open the command popup (before it reaches the editor)
     let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_slash && app.chat_phase == ChatPhase::Chatting && app.chat_focus == ChatFocus::ChatPane {
-        let should_open = match app.chat_editor.mode {
+    if is_slash && app.phase == ChatPhase::Chatting && app.focus == ChatFocus::ChatPane {
+        let should_open = match app.editor.mode {
             // Normal mode: "/" always opens the popup
             EditorMode::Normal => true,
             // Insert mode: only when editor is empty (first char)
-            EditorMode::Insert => app.chat_text().trim().is_empty(),
+            EditorMode::Insert => app.text().trim().is_empty(),
             _ => false,
         };
         if should_open {
@@ -1424,23 +1421,23 @@ fn handle_chat_keys(
         }
     }
 
-    match app.chat_phase {
+    match app.phase {
         ChatPhase::PatternSelect => match key.code {
             KeyCode::Esc => {
-                app.close_chat();
+                app.close();
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if app.chat_pattern_selected > 0 {
-                    app.chat_pattern_selected -= 1;
+                if app.pattern_selected > 0 {
+                    app.pattern_selected -= 1;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if app.chat_pattern_selected + 1 < app.chat_patterns.len() {
-                    app.chat_pattern_selected += 1;
+                if app.pattern_selected + 1 < app.patterns.len() {
+                    app.pattern_selected += 1;
                 }
             }
             KeyCode::Enter => {
-                if let Some(pattern) = app.chat_patterns.get(app.chat_pattern_selected) {
+                if let Some(pattern) = app.patterns.get(app.pattern_selected) {
                     let pattern = pattern.clone();
                     app.select_pattern(pattern);
                 }
@@ -1477,11 +1474,11 @@ fn handle_chat_keys(
                 _ => {}
             }
 
-            if app.chat_focus == ChatFocus::ActivityPane {
+            if app.focus == ChatFocus::ActivityPane {
                 match key.code {
                     KeyCode::Esc => {
                         if app.is_detail_mode() {
-                            app.close_chat();
+                            app.close();
                         } else {
                             app.go_to_pattern_select();
                         }
@@ -1505,13 +1502,13 @@ fn handle_chat_keys(
             // be no-ops in the editor, so in Normal mode they scroll the
             // message history instead. With multi-line input they remain
             // editor motions.
-            let single_line_input = app.chat_editor.lines.len() <= 1;
-            match (app.chat_editor.mode, key.code) {
+            let single_line_input = app.editor.lines.len() <= 1;
+            match (app.editor.mode, key.code) {
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
                 (EditorMode::Normal, KeyCode::Esc) => {
                     if app.is_detail_mode() {
-                        app.close_chat();
+                        app.close();
                     } else {
                         app.go_to_pattern_select();
                     }
@@ -1523,12 +1520,12 @@ fn handle_chat_keys(
                     if !key.modifiers.contains(KeyModifiers::SHIFT)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    app.chat_handler.on_key_event(key, &mut app.chat_editor)
+                    app.handler.on_key_event(key, &mut app.editor)
                 }
                 // Shift/Alt+Enter in Insert mode sends the message.
-                (EditorMode::Insert, KeyCode::Enter) => app.send_chat_message(),
+                (EditorMode::Insert, KeyCode::Enter) => app.send_message(),
                 // Enter in Normal mode also sends (newlines come from o/O).
-                (EditorMode::Normal, KeyCode::Enter) => app.send_chat_message(),
+                (EditorMode::Normal, KeyCode::Enter) => app.send_message(),
                 // In Normal mode, Up/Down scroll the message history (cursor
                 // movement is on h/l). In other modes arrows go to the editor.
                 (EditorMode::Normal, KeyCode::Up) => app.scroll_up(),
@@ -1545,7 +1542,7 @@ fn handle_chat_keys(
                     app.scroll_to_top()
                 }
                 (EditorMode::Normal, KeyCode::Char('g')) if single_line_input => {}
-                _ => app.chat_handler.on_key_event(key, &mut app.chat_editor),
+                _ => app.handler.on_key_event(key, &mut app.editor),
             }
         }
     }
@@ -1566,7 +1563,7 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            app.open_chat(addr, None, None);
+            app.open(addr, None, None);
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads
@@ -1585,7 +1582,7 @@ async fn handle_normal_keys(
             });
             if let Some((name, channel, is_ws)) = thread_info {
                 if is_ws {
-                    app.open_chat(addr, Some(&channel), Some(&name));
+                    app.open(addr, Some(&channel), Some(&name));
                 } else {
                     app.open_thread_detail(&channel, &name);
                 }
@@ -1664,7 +1661,7 @@ async fn handle_normal_keys(
 fn ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    if app.chat_visible {
+    if app.visible {
         ui_chat_mode(frame, area, app);
     } else {
         ui_normal_mode(frame, area, app);
@@ -1703,7 +1700,7 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     render_channels(frame, main_chunks[0], app);
     render_compact_info(frame, main_chunks[1], app);
 
-    match app.chat_phase {
+    match app.phase {
         ChatPhase::PatternSelect => {
             render_pattern_select(frame, main_chunks[2], app);
         }
@@ -1997,8 +1994,8 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = if app.chat_visible && app.chat_phase == ChatPhase::Chatting {
-        app.chat_thread
+    let selected = if app.visible && app.phase == ChatPhase::Chatting {
+        app.thread
             .as_ref()
             .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
     } else {
@@ -2071,7 +2068,7 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.chat_patterns.is_empty() {
+    if app.patterns.is_empty() {
         let text = Paragraph::new(Span::styled(
             "  No patterns available",
             Style::default().fg(Color::DarkGray),
@@ -2081,11 +2078,11 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let lines: Vec<Line> = app
-        .chat_patterns
+        .patterns
         .iter()
         .enumerate()
         .map(|(i, pattern)| {
-            if i == app.chat_pattern_selected {
+            if i == app.pattern_selected {
                 Line::from(vec![Span::styled(
                     format!("> {pattern}"),
                     Style::default()
@@ -2104,9 +2101,9 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
-    let title = format!(" Chat: {} ", app.chat_thread.as_deref().unwrap_or("-"));
+    let title = format!(" Chat: {} ", app.thread.as_deref().unwrap_or("-"));
     let mut block = Block::default().title(title).borders(Borders::ALL);
-    if app.chat_focus == ChatFocus::ChatPane {
+    if app.focus == ChatFocus::ChatPane {
         block = block.border_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -2120,9 +2117,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Input area grows with content (up to 11 rows) for multi-line editing:
     // wrapped text lines (1-10) + 1 status line for the vim mode indicator.
     // Subtract the 2-column "> " prompt gutter from the wrap width.
-    let input_line_count = count_wrapped_lines(&app.chat_text(), inner.width.saturating_sub(2))
-        .clamp(1, 10) as u16
-        + 1;
+    let input_line_count =
+        count_wrapped_lines(&app.text(), inner.width.saturating_sub(2)).clamp(1, 10) as u16 + 1;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -2138,12 +2134,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut box_open = false;
     let mut group_start_ts: Option<String> = None;
 
-    for (idx, msg) in app.chat_messages.iter().enumerate() {
+    for (idx, msg) in app.messages.iter().enumerate() {
         let is_user = msg.sender == "user";
         let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
         let prev_sender = if idx > 0 {
-            Some(app.chat_messages[idx - 1].sender.as_str())
+            Some(app.messages[idx - 1].sender.as_str())
         } else {
             None
         };
@@ -2151,10 +2147,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         // Close previous group box on AI → user transition
         if is_user && prev_sender == Some("ai") && box_open {
             all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-            let last_ts = app
-                .chat_messages
-                .get(idx - 1)
-                .and_then(|m| m.timestamp.clone());
+            let last_ts = app.messages.get(idx - 1).and_then(|m| m.timestamp.clone());
             let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
             let width = chunks[0].width as usize;
             let close_spans = if elapsed.is_empty() {
@@ -2220,7 +2213,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Close any open box at the end
     if box_open {
         all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-        let last_ts = app.chat_messages.last().and_then(|m| m.timestamp.clone());
+        let last_ts = app.messages.last().and_then(|m| m.timestamp.clone());
         let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
         let width = chunks[0].width as usize;
         let close_spans = if elapsed.is_empty() {
@@ -2248,14 +2241,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         .state
         .as_ref()
         .and_then(|s| {
-            let chat_name = app.chat_thread.as_deref()?;
+            let chat_name = app.thread.as_deref()?;
             s.threads.iter().find(|t| t.name == chat_name)
         })
         .is_some_and(|ct| ct.status == ThreadStatus::Processing);
 
     // Show progress if the server reports processing OR we've sent a message
     // locally and are still waiting for the server state to catch up.
-    let show_progress = server_processing || app.chat_awaiting_response;
+    let show_progress = server_processing || app.awaiting_response;
 
     if show_progress {
         // Try to get activity entries from the server
@@ -2263,7 +2256,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
             .state
             .as_ref()
             .and_then(|s| {
-                let chat_name = app.chat_thread.as_deref()?;
+                let chat_name = app.thread.as_deref()?;
                 s.threads.iter().find(|t| t.name == chat_name)
             })
             .filter(|ct| ct.status == ThreadStatus::Processing)
@@ -2406,8 +2399,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let inner_height = chunks[0].height as usize;
     let max_skip = all_lines.len().saturating_sub(inner_height);
-    app.chat_scroll = app.chat_scroll.min(max_skip);
-    let skip = max_skip.saturating_sub(app.chat_scroll);
+    app.scroll = app.scroll.min(max_skip);
+    let skip = max_skip.saturating_sub(app.scroll);
     let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
 
     let messages_para = Paragraph::new(visible_lines);
@@ -2419,9 +2412,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // default inverted block otherwise; hidden when the activity pane has
     // focus. A "> " prompt sits in a 2-column gutter left of the editor.
     let theme = EditorTheme::default().base(Style::default());
-    let theme = match app.chat_focus {
+    let theme = match app.focus {
         ChatFocus::ActivityPane => theme.hide_cursor(),
-        ChatFocus::ChatPane => match app.chat_editor.mode {
+        ChatFocus::ChatPane => match app.editor.mode {
             EditorMode::Insert => theme.cursor_style(
                 Style::default()
                     .add_modifier(Modifier::UNDERLINED)
@@ -2436,7 +2429,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new("> ").style(Style::default().fg(Color::Yellow)),
         prompt_area,
     );
-    EditorView::new(&mut app.chat_editor)
+    EditorView::new(&mut app.editor)
         .theme(theme)
         .wrap(true)
         .render(editor_area, frame.buffer_mut());
@@ -2457,8 +2450,8 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     };
 
-    let selected = if app.chat_visible && app.chat_phase == ChatPhase::Chatting {
-        app.chat_thread
+    let selected = if app.visible && app.phase == ChatPhase::Chatting {
+        app.thread
             .as_ref()
             .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
     } else {
@@ -2476,7 +2469,7 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     };
 
-    let focused = app.chat_visible && app.chat_focus == ChatFocus::ActivityPane;
+    let focused = app.visible && app.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
     let max_skip = selected.activity.len().saturating_sub(inner_height);
     app.activity_scroll = app.activity_scroll.min(max_skip);
@@ -2557,8 +2550,8 @@ fn render_activity_log_inner(
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.chat_visible {
-        match app.chat_phase {
+    let help_text = if app.visible {
+        match app.phase {
             ChatPhase::PatternSelect => "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
                 "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
@@ -2597,7 +2590,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let bar = Paragraph::new(Line::from({
         let mut spans = vec![Span::raw(" ")];
-        if app.chat_visible && !app.is_detail_mode() {
+        if app.visible && !app.is_detail_mode() {
             if app.ws_connected {
                 spans.push(Span::styled("●", Style::default().fg(Color::Green)));
             } else {
@@ -2656,24 +2649,24 @@ mod tests {
         let mut app = App::new(rx);
 
         // Simulate messages from a previous thread
-        app.chat_messages.push(ChatMessage {
+        app.messages.push(ChatMessage {
             sender: "user".to_string(),
             text: "hello from thread A".to_string(),
             timestamp: None,
         });
-        app.chat_messages.push(ChatMessage {
+        app.messages.push(ChatMessage {
             sender: "ai".to_string(),
             text: "reply from thread A".to_string(),
             timestamp: None,
         });
-        assert_eq!(app.chat_messages.len(), 2);
+        assert_eq!(app.messages.len(), 2);
 
         // Switch to a new thread
         app.select_pattern("thread-b".to_string());
 
         // Messages must be cleared so stale content doesn't leak across threads
-        assert!(app.chat_messages.is_empty());
-        assert_eq!(app.chat_thread.as_deref(), Some("thread-b"));
+        assert!(app.messages.is_empty());
+        assert_eq!(app.thread.as_deref(), Some("thread-b"));
     }
 
     #[test]
@@ -2682,18 +2675,18 @@ mod tests {
         let mut app = App::new(rx);
 
         // Chat pane focused
-        app.chat_focus = ChatFocus::ChatPane;
+        app.focus = ChatFocus::ChatPane;
         app.scroll_to_top();
-        assert_eq!(app.chat_scroll, usize::MAX);
+        assert_eq!(app.scroll, usize::MAX);
         assert_eq!(app.activity_scroll, 0);
         app.scroll_to_bottom();
-        assert_eq!(app.chat_scroll, 0);
+        assert_eq!(app.scroll, 0);
 
         // Activity pane focused
-        app.chat_focus = ChatFocus::ActivityPane;
+        app.focus = ChatFocus::ActivityPane;
         app.scroll_to_top();
         assert_eq!(app.activity_scroll, usize::MAX);
-        assert_eq!(app.chat_scroll, 0);
+        assert_eq!(app.scroll, 0);
         app.scroll_to_bottom();
         assert_eq!(app.activity_scroll, 0);
     }

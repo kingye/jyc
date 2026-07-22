@@ -1105,6 +1105,8 @@ impl ChatState {
         self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1156,6 +1158,8 @@ impl ChatState {
         self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
         self.detail_channel = Some(channel.to_string());
         self.detail_thread_path = None;
 
@@ -1210,6 +1214,8 @@ impl ChatState {
         self.scroll = 0;
         self.messages.clear();
         self.messages.clear();
+        self.input_history.clear();
+        self.history_pos = None;
 
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
@@ -1554,5 +1560,80 @@ mod tests {
         // `g` after reset does not jump
         assert!(!app.chat.gg_step(true));
         assert!(app.chat.pending_g);
+    }
+
+    #[test]
+    fn recall_older_on_empty_history_does_nothing() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        assert!(app.chat.input_history.is_empty());
+        app.chat.recall_older(); // should not panic or change anything
+        assert!(app.chat.history_pos.is_none());
+    }
+
+    #[test]
+    fn recall_older_recalls_and_recall_newer_clears() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        app.chat.input_history = vec![
+            "first msg".to_string(),
+            "second msg".to_string(),
+            "third msg".to_string(),
+        ];
+
+        // Up x3: third → second → first → stays at first
+        // Note: recall_older operates on the full history; it starts from newest (pos=len).
+        // Initial press: len=3 → pos=2 → "third msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(2));
+        assert_eq!(app.chat.text(), "third msg");
+
+        // Next older: pos 2 → 1 → "second msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(1));
+        assert_eq!(app.chat.text(), "second msg");
+
+        // Next older: pos 1 → 0 → "first msg"
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(0));
+        assert_eq!(app.chat.text(), "first msg");
+
+        // Already at oldest — no change
+        app.chat.recall_older();
+        assert_eq!(app.chat.history_pos, Some(0));
+        assert_eq!(app.chat.text(), "first msg");
+
+        // Down: pos 0 → 1 → "second msg"
+        app.chat.recall_newer();
+        assert_eq!(app.chat.history_pos, Some(1));
+        assert_eq!(app.chat.text(), "second msg");
+
+        // Down: pos 1 → 2 → "third msg"
+        app.chat.recall_newer();
+        assert_eq!(app.chat.history_pos, Some(2));
+        assert_eq!(app.chat.text(), "third msg");
+
+        // Down at newest — clears to empty
+        app.chat.recall_newer();
+        assert!(app.chat.history_pos.is_none());
+        assert!(app.chat.text().is_empty());
+    }
+
+    #[test]
+    fn select_pattern_clears_input_history() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        app.chat.input_history = vec!["msg from thread A".to_string()];
+        app.chat.history_pos = Some(0);
+
+        // Switch to a new thread
+        app.chat.select_pattern("thread-b".to_string());
+
+        // History must be cleared so it doesn't leak across threads
+        assert!(app.chat.input_history.is_empty());
+        assert!(app.chat.history_pos.is_none());
     }
 }

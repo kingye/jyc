@@ -116,6 +116,29 @@ pub fn handle_popup_key(
             // Close without action — signal with empty string
             return Some(String::new());
         }
+        KeyCode::Tab => {
+            // Auto-complete: fill the filter with the selected item's name.
+            // Popup stays open so the user can refine and press Enter.
+            if model_mode {
+                if let Some(model) = state
+                    .filtered_models(models)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    state.filter = format!("/model {}", model.name);
+                    state.selected = 0;
+                }
+            } else {
+                if let Some(cmd) = state
+                    .filtered_commands(commands)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    state.filter = cmd.name.clone();
+                    state.selected = 0;
+                }
+            }
+        }
         KeyCode::Enter => {
             if model_mode {
                 let filtered = state.filtered_models(models);

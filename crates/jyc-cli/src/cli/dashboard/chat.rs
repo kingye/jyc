@@ -1316,12 +1316,16 @@ impl ChatState {
     pub(super) fn send_message(&mut self) {
         let text = self.text().trim().to_string();
         self.send_message_inner(text);
+        // Normal send clears the editor input field.
+        self.editor = empty_chat_editor();
     }
 
     /// Send a programmatic text as a chat message, echoing locally and sending
-    /// via WebSocket. Used by the command popup.
+    /// via WebSocket. Used by the command popup — preserves editor content.
     pub(super) fn send_message_with_text(&mut self, text: &str) {
         self.send_message_inner(text.trim().to_string());
+        // Deliberately NOT clearing the editor: the user may have been typing
+        // before opening the command popup and we don't want to lose that text.
     }
 
     /// Shared implementation for sending a chat message.
@@ -1361,7 +1365,6 @@ impl ChatState {
             }
         }
 
-        self.editor = empty_chat_editor();
         self.scroll = 0;
         self.awaiting_response = true;
     }

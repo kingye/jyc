@@ -464,13 +464,11 @@ where
 
 /// Load recent chat history messages from JSONL files for a thread.
 ///
-/// Reads `chat_history_*.jsonl` files in the thread directory, parses each
-/// line, and returns up to `max_messages` most recent entries.
-/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
-///
 /// Resolves the actual thread directory via ThreadManager for custom
 /// `thread_path` configurations. Falls back to `workspace_dir.join(thread)`
 /// when no ThreadManager is available or no custom path is configured.
+/// Uses the shared `jyc_core::chat_log_store::load_recent_chat_history` for
+/// the actual file parsing.
 async fn load_chat_history(
     thread: &str,
     workspace_dir: &Option<PathBuf>,
@@ -493,56 +491,14 @@ async fn load_chat_history(
         }
     };
 
-    if !thread_dir.exists() {
-        return vec![];
-    }
-
-    // Use the centralized helper that tries .jyc/ first, then root
-    let (mut files, _dir) = jyc_core::chat_log_store::list_chat_history_files(&thread_dir);
-    files.sort_by(|a, b| b.cmp(a)); // newest first
-
-    let mut entries = Vec::new();
-    for file in files {
-        if entries.len() >= max_messages {
-            break;
-        }
-        let content = match std::fs::read_to_string(&file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        // Parse lines in reverse (most recent first within the file)
-        let mut file_entries: Vec<HistoryEntry> = content
-            .lines()
-            .rev()
-            .filter_map(|line| {
-                let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
-                let msg_type = parsed.get("type")?.as_str()?;
-                let content = parsed.get("content")?.as_str()?;
-                let sender = match msg_type {
-                    "received" => "user",
-                    "reply" => "ai",
-                    _ => return None,
-                };
-                Some(HistoryEntry {
-                    sender: sender.to_string(),
-                    text: content.to_string(),
-                    timestamp: parsed
-                        .get("ts")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                })
-            })
-            .collect();
-        file_entries.reverse(); // restore chronological order
-        entries.splice(0..0, file_entries);
-    }
-
-    // Keep only the most recent entries (newest at end)
-    if entries.len() > max_messages {
-        let drain_count = entries.len() - max_messages;
-        entries.drain(0..drain_count);
-    }
-    entries
+    jyc_core::chat_log_store::load_recent_chat_history(&thread_dir, max_messages)
+        .into_iter()
+        .map(|e| HistoryEntry {
+            sender: e.sender,
+            text: e.text,
+            timestamp: e.timestamp,
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -119,6 +119,36 @@ pub enum ThreadEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// A new message arrived in this thread.
+    ///
+    /// Published when `ThreadManager::enqueue()` receives a message from any
+    /// source (remote user, scheduled job, dashboard injection, cross-thread).
+    /// Enables the dashboard to display live chat messages for non-WebSocket
+    /// threads.
+    IncomingMessage {
+        /// Name of the thread
+        thread_name: String,
+        /// Sender identifier (e.g., "user", display name, "job")
+        sender: String,
+        /// Message body preview (may be truncated)
+        text: String,
+        /// When the message arrived
+        timestamp: DateTime<Utc>,
+    },
+
+    /// The AI sent a reply for this thread.
+    ///
+    /// Published after `outbound.send_reply()` succeeds. Enables the dashboard
+    /// to display live AI replies for non-WebSocket threads.
+    ReplySent {
+        /// Name of the thread
+        thread_name: String,
+        /// The AI reply text
+        text: String,
+        /// When the reply was sent
+        timestamp: DateTime<Utc>,
+    },
+
     /// Session status change event.
     ///
     /// Sent when the AI session status changes (e.g., retry on overload,
@@ -149,6 +179,8 @@ impl ThreadEvent {
             ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
             ThreadEvent::LLMRequestStarted { thread_name, .. } => thread_name,
             ThreadEvent::Thinking { thread_name, .. } => thread_name,
+            ThreadEvent::IncomingMessage { thread_name, .. } => thread_name,
+            ThreadEvent::ReplySent { thread_name, .. } => thread_name,
             ThreadEvent::SessionStatus { thread_name, .. } => thread_name,
         }
     }
@@ -164,6 +196,8 @@ impl ThreadEvent {
             ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
             ThreadEvent::LLMRequestStarted { timestamp, .. } => *timestamp,
             ThreadEvent::Thinking { timestamp, .. } => *timestamp,
+            ThreadEvent::IncomingMessage { timestamp, .. } => *timestamp,
+            ThreadEvent::ReplySent { timestamp, .. } => *timestamp,
             ThreadEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
     }

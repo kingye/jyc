@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use jyc_types::InboundMessage;
+use jyc_types::inspect::ChatMessageEntry;
 
 /// Metadata for reply messages.
 #[derive(Debug, Clone)]
@@ -59,6 +60,61 @@ fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// Load recent chat history entries from a thread directory.
+///
+/// Reads `chat_history_*.jsonl` files (`.jyc/` first, falls back to thread root),
+/// parses each line, and returns up to `max_messages` most recent entries.
+/// Entries are mapped: `"received"` → sender `"user"`, `"reply"` → sender `"ai"`.
+pub fn load_recent_chat_history(thread_path: &Path, max_messages: usize) -> Vec<ChatMessageEntry> {
+    if !thread_path.exists() {
+        return vec![];
+    }
+
+    let (mut files, _dir) = list_chat_history_files(thread_path);
+    files.sort_by(|a, b| b.cmp(a)); // newest first
+
+    let mut entries = Vec::new();
+    for file in files {
+        if entries.len() >= max_messages {
+            break;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut file_entries: Vec<ChatMessageEntry> = content
+            .lines()
+            .rev()
+            .filter_map(|line| {
+                let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+                let msg_type = parsed.get("type")?.as_str()?;
+                let content = parsed.get("content")?.as_str()?;
+                let sender = match msg_type {
+                    "received" => "user",
+                    "reply" => "ai",
+                    _ => return None,
+                };
+                Some(ChatMessageEntry {
+                    sender: sender.to_string(),
+                    text: content.to_string(),
+                    timestamp: parsed
+                        .get("ts")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                })
+            })
+            .collect();
+        file_entries.reverse();
+        entries.splice(0..0, file_entries);
+    }
+
+    if entries.len() > max_messages {
+        let drain_count = entries.len() - max_messages;
+        entries.drain(0..drain_count);
+    }
+    entries
 }
 
 impl ChatLogStore {
@@ -427,5 +483,90 @@ mod tests {
         // Should use user_name from thread.json
         assert_eq!(parsed["sender_name"], "张三");
         assert_eq!(parsed["from"], "张三 (wecomkf:wm123)");
+    }
+
+    #[test]
+    fn test_load_recent_chat_history_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entries = load_recent_chat_history(tmp.path(), 100);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_load_recent_chat_history_reads_jyc_subdir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            r#"{"ts":"2026-07-22T10:00:00Z","type":"received","matched":true,"sender":"user","channel":"test","topic":"test","from":"user","content":"hello"}"#,
+        )
+        .unwrap();
+
+        let entries = load_recent_chat_history(tmp.path(), 100);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sender, "user");
+        assert_eq!(entries[0].text, "hello");
+    }
+
+    #[test]
+    fn test_load_recent_chat_history_reads_reply() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            r#"{"ts":"2026-07-22T10:00:00Z","type":"reply","matched":true,"sender":"bot","channel":"test","content":"AI reply"}"#,
+        )
+        .unwrap();
+
+        let entries = load_recent_chat_history(tmp.path(), 100);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sender, "ai");
+        assert_eq!(entries[0].text, "AI reply");
+    }
+
+    #[test]
+    fn test_load_recent_chat_history_respects_max() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let mut lines = String::new();
+        for i in 0..10 {
+            lines.push_str(&format!(
+                r#"{{"ts":"2026-07-22T10:00:{:02}Z","type":"received","content":"msg {}"}}"#,
+                i, i
+            ));
+            lines.push('\n');
+        }
+        std::fs::write(jyc_dir.join("chat_history_2026-07-22.jsonl"), lines).unwrap();
+
+        let entries = load_recent_chat_history(tmp.path(), 3);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].text, "msg 7");
+        assert_eq!(entries[2].text, "msg 9");
+    }
+
+    #[test]
+    fn test_load_recent_chat_history_skips_unknown_types() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            concat!(
+                r#"{"ts":"2026-07-22T10:00:00Z","type":"received","content":"hello"}"#,
+                "\n",
+                r#"{"ts":"2026-07-22T10:01:00Z","type":"unknown","content":"skip"}"#,
+                "\n",
+                r#"{"ts":"2026-07-22T10:02:00Z","type":"reply","content":"world"}"#,
+            ),
+        )
+        .unwrap();
+
+        let entries = load_recent_chat_history(tmp.path(), 100);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].text, "hello");
+        assert_eq!(entries[1].text, "world");
     }
 }

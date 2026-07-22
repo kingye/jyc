@@ -13,6 +13,13 @@ All notable changes to JYC will be documented in this file.
   metadata is persisted to `.jyc/thread-meta.json` on first message and restored
   during injection. (#408)
 
+- **Dashboard injection poisons `thread-meta.json` with empty metadata.**
+  When the first message for a thread was a dashboard injection
+  (`channel_uid == "dashboard"`), the empty metadata was persisted to
+  `thread-meta.json`, causing subsequent injections to lose routing data
+  (e.g., `github_number` missing → 404). Now `thread-meta.json` is only
+  written for messages with real routing data. (#410)
+
 - **Nightly release sync to Gitee.** Reordered `sync-gitee` job steps in
   `release.yml` so `actions/checkout@v4` runs before artifact download —
   checkout was resetting the workspace and deleting the `dist/` directory,

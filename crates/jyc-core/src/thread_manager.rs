@@ -1385,7 +1385,7 @@ async fn process_message(
         .thread_path
         .join(".jyc")
         .join("thread-meta.json");
-    if !thread_meta_path.exists() {
+    if !thread_meta_path.exists() && item.message.channel_uid != "dashboard" {
         let meta = serde_json::json!({
             "channel_uid": item.message.channel_uid,
             "external_id": item.message.external_id,
@@ -2647,6 +2647,70 @@ mode = "agent"
         let meta: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(meta["channel_uid"], "original-uid");
         assert_eq!(meta["metadata"]["github_number"], 99);
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_thread_meta_not_written_for_dashboard_channel_uid() {
+        // Dashboard-injected messages have channel_uid == "dashboard" and empty
+        // metadata. Writing thread-meta.json for these would poison subsequent
+        // injections — the empty metadata would be re-used and real routing data
+        // (e.g. github_number) would be lost, causing 404 errors on replies.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let thread_path = workspace.join("test-thread");
+        let mut metadata = HashMap::new();
+        metadata.insert("github_number".to_string(), serde_json::json!(42));
+
+        let msg = InboundMessage {
+            id: "test".to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "dashboard".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: Some(vec!["ref-1".to_string()]),
+            reply_to_id: None,
+            external_id: Some("ext-123".to_string()),
+            attachments: vec![],
+            metadata,
+            matched_pattern: None,
+        };
+        let pattern_match = PatternMatch {
+            pattern_name: "test".to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+        tm.enqueue(
+            msg,
+            "test-thread".to_string(),
+            pattern_match,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        // Give the worker a moment to process
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // thread-meta.json must NOT be written for dashboard messages
+        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+        assert!(
+            !meta_path.exists(),
+            "thread-meta.json should NOT be written for dashboard channel_uid"
+        );
 
         tm.shutdown().await;
     }

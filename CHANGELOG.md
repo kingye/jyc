@@ -6,6 +6,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Dashboard message injection loses routing metadata for non-websocket channels.**
+  When injecting a message via dashboard into a GitHub/Gitee/WeCom/Feishu/Email
+  thread, the synthetic `InboundMessage` had empty metadata, causing reply
+  delivery failures (e.g., GitHub 404 — `github_number` missing). Now routing
+  metadata is persisted to `.jyc/thread-meta.json` on first message and restored
+  during injection. (#408)
+
 - **Nightly release sync to Gitee.** Reordered `sync-gitee` job steps in
   `release.yml` so `actions/checkout@v4` runs before artifact download —
   checkout was resetting the workspace and deleting the `dist/` directory,

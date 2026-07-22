@@ -262,6 +262,20 @@ impl InspectServer {
         }
     }
 
+    /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
+    ///
+    /// Written by `process_message()` on the first message for a thread.
+    /// Returns `None` if the file doesn't exist or can't be parsed.
+    async fn load_thread_meta(
+        tm: &Arc<ThreadManager>,
+        thread_name: &str,
+    ) -> Option<serde_json::Value> {
+        let thread_path = tm.thread_path(thread_name).await?;
+        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+        let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
     /// Inject a message into a thread's queue for AI processing.
     ///
     /// Params: `channel` (channel name), `thread` (thread name), `text` (message body).
@@ -318,11 +332,39 @@ impl InspectServer {
             }
         };
 
+        // Load stored routing metadata for this thread (written on first message).
+        // Restores channel-specific fields (github_number, chat_id, req_id,
+        // external_id, thread_refs) so the outbound adapter can route replies.
+        let thread_meta = Self::load_thread_meta(tm, thread_name).await;
+        let (channel_uid, external_id, thread_refs, metadata) = match thread_meta {
+            Some(meta) => {
+                let uid = meta
+                    .get("channel_uid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("dashboard")
+                    .to_string();
+                let ext_id = meta
+                    .get("external_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let refs = meta
+                    .get("thread_refs")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let md = meta
+                    .get("metadata")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                (uid, ext_id, refs, md)
+            }
+            None => ("dashboard".to_string(), None, None, HashMap::new()),
+        };
+
         // Build synthetic InboundMessage (same pattern as send_to_thread tool)
         let message = InboundMessage {
             id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
             channel: channel.to_string(),
-            channel_uid: "dashboard".to_string(),
+            channel_uid,
             sender: "dashboard".to_string(),
             sender_address: "dashboard@inspect".to_string(),
             recipients: vec![],
@@ -333,11 +375,11 @@ impl InspectServer {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            thread_refs,
             reply_to_id: None,
-            external_id: None,
+            external_id,
             attachments: vec![],
-            metadata: HashMap::new(),
+            metadata,
             matched_pattern: None,
         };
 

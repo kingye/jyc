@@ -2795,9 +2795,15 @@ pub enum ThreadEvent {
 │  Find ThreadManager by channel_name                               │
 │       │                                                          │
 │       ▼                                                          │
+│  Load routing metadata from .jyc/thread-meta.json                  │
+│    (written on first message — restores channel_uid,               │
+│     external_id, thread_refs, github_number, chat_id, etc.)        │
+│       │                                                          │
+│       ▼                                                          │
 │  Build synthetic InboundMessage:                                  │
 │    sender = "dashboard", topic = thread_name,                     │
-│    content.text = text, channel = channel_name                    │
+│    content.text = text, channel = channel_name,                   │
+│    metadata = <restored from thread-meta.json>                    │
 │       │                                                          │
 │       ▼                                                          │
 │  ThreadManager::enqueue(message, thread_name, pm, ...)            │
@@ -2818,7 +2824,9 @@ ThreadEvent (crates/jyc-core/src/thread_event.rs)
 
 ThreadManager (crates/jyc-core/src/thread_manager.rs)
   ├── enqueue(): publish IncomingMessage on ThreadEventBus
-  └── worker reply path: publish ReplySent after send_reply() succeeds
+  ├── worker reply path: publish ReplySent after send_reply() succeeds
+  └── process_message(): write .jyc/thread-meta.json on first message
+      (routing metadata for dashboard injection)
 
 ThreadActivityState (crates/jyc-inspect/src/server.rs)
   └── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
@@ -2832,7 +2840,8 @@ InspectState / ThreadInfo (crates/jyc-types/src/inspect.rs)
 
 InspectServer (crates/jyc-inspect/src/server.rs)
   ├── build_state(): drain recent_messages → ThreadInfo
-  └── handle_request("inject_message"): enqueue via ThreadManager
+  ├── handle_request("inject_message"): load thread-meta.json, enqueue via ThreadManager
+  └── load_thread_meta(): read .jyc/thread-meta.json for routing metadata
 
 InspectClient (crates/jyc-inspect/src/client.rs)
   └── +inject_message(channel, thread, text) → Result<()>

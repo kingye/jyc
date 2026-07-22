@@ -32,6 +32,11 @@ All notable changes to JYC will be documented in this file.
   If the AI replied before the tracker subscribed, `ReplySent` events were
   permanently lost. Now events are buffered and replayed to late subscribers. (#411)
 
+- **Dashboard chat pane auto-scrolls to bottom every poll cycle.**
+  The detail-mode message processing unconditionally reset `chat_scroll` to 0
+  on every poll, overriding any user scroll position. Now auto-scroll only fires
+  when new messages are actually added.
+
 ### Added
 
 - **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket

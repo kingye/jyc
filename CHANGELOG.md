@@ -32,6 +32,13 @@ All notable changes to JYC will be documented in this file.
   If the AI replied before the tracker subscribed, `ReplySent` events were
   permanently lost. Now events are buffered and replayed to late subscribers. (#411)
 
+- **Event bus not shared with worker clone, silencing all ReplySent events.**
+  `create_and_enqueue` creates a cloned `ThreadManager` for each worker with an
+  empty `event_buses` HashMap. `publish_reply_sent()` called `get_event_bus()` on
+  this clone, which always returned `None` — events never reached the bus and
+  were silently dropped. Now the event bus reference is also inserted into the
+  clone's `event_buses`, so `publish_reply_sent()` finds it. (#412)
+
 ### Added
 
 - **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket

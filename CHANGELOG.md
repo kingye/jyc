@@ -30,7 +30,7 @@ All notable changes to JYC will be documented in this file.
   The `SimpleThreadEventBus` dropped events when no subscriber existed,
   creating a race with the ActivityTracker's 2-second discovery interval.
   If the AI replied before the tracker subscribed, `ReplySent` events were
-  permanently lost. Now events are buffered and replayed to late subscribers. (#412)
+  permanently lost. Now events are buffered and replayed to late subscribers. (#411)
 
 ### Added
 

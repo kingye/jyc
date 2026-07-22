@@ -29,6 +29,11 @@ pub enum InspectResponse {
         success: bool,
         message: String,
     },
+    /// Result of an `inject_message` request.
+    InjectMessageResult {
+        success: bool,
+        message: String,
+    },
 }
 
 // ── State snapshot ──
@@ -97,9 +102,12 @@ pub struct ThreadInfo {
     /// Skills loaded for this thread
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Recent chat messages (incoming + replies) for live dashboard display
+    #[serde(default)]
+    pub recent_messages: Vec<ChatMessageEntry>,
     /// Filesystem path for this thread (may differ from workspace/name when
     /// a pattern's `thread_path` override is active).
-    #[serde(skip)]
+    #[serde(default)]
     pub thread_path: Option<std::path::PathBuf>,
 }
 
@@ -125,6 +133,21 @@ pub struct ActivityEntry {
     /// Severity level (defaults to Info for backward compat)
     #[serde(default)]
     pub severity: Severity,
+}
+
+/// A chat message entry for live display in the dashboard.
+///
+/// Captured from `ThreadEvent::IncomingMessage` and `ThreadEvent::ReplySent`
+/// by the ActivityTracker and forwarded via `ThreadInfo.recent_messages`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageEntry {
+    /// Sender label: "user", "ai", or a display name
+    pub sender: String,
+    /// Message or reply text
+    pub text: String,
+    /// RFC 3339 timestamp
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 /// Thread processing status.
@@ -246,6 +269,7 @@ mod tests {
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
+                recent_messages: vec![],
                 thread_path: None,
             }],
             stats: GlobalStats {

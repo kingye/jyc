@@ -95,6 +95,9 @@ impl InspectClient {
             InspectResponse::ResetSessionResult { .. } => {
                 anyhow::bail!("unexpected reset_session_result for get_state")
             }
+            InspectResponse::InjectMessageResult { .. } => {
+                anyhow::bail!("unexpected inject_message_result for get_state")
+            }
         }
     }
 
@@ -137,6 +140,9 @@ impl InspectClient {
             InspectResponse::ResetSessionResult { .. } => {
                 anyhow::bail!("unexpected reset_session_result for reload_config")
             }
+            InspectResponse::InjectMessageResult { .. } => {
+                anyhow::bail!("unexpected inject_message_result for reload_config")
+            }
         }
     }
 
@@ -177,6 +183,68 @@ impl InspectClient {
             InspectResponse::State(_) => anyhow::bail!("unexpected state for reset_session"),
             InspectResponse::ReloadResult { .. } => {
                 anyhow::bail!("unexpected reload_result for reset_session")
+            }
+            InspectResponse::InjectMessageResult { .. } => {
+                anyhow::bail!("unexpected inject_message_result for reset_session")
+            }
+        }
+    }
+
+    /// Inject a message into a thread for AI processing.
+    ///
+    /// The server creates a synthetic `InboundMessage` and enqueues it via
+    /// `ThreadManager::enqueue()`, following the same path as cross-thread
+    /// message injection from the `jyc_send_to_thread` tool.
+    pub async fn inject_message(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        text: &str,
+    ) -> Result<(bool, String)> {
+        if self.conn.is_none() {
+            self.connect().await?;
+        }
+
+        let conn = self.conn.as_mut().context("not connected")?;
+
+        let request = InspectRequest {
+            method: "inject_message".to_string(),
+            params: Some(serde_json::json!({
+                "channel": channel,
+                "thread": thread,
+                "text": text,
+            })),
+        };
+        let mut json = serde_json::to_string(&request)?;
+        json.push('\n');
+        conn.writer.write_all(json.as_bytes()).await?;
+        conn.writer.flush().await?;
+
+        let mut response_line = String::new();
+        let bytes = conn
+            .reader
+            .read_line(&mut response_line)
+            .await
+            .context("failed to read response")?;
+
+        if bytes == 0 {
+            anyhow::bail!("server closed connection");
+        }
+
+        let resp: InspectResponse = serde_json::from_str(response_line.trim())
+            .context("failed to parse inspect response")?;
+
+        match resp {
+            InspectResponse::InjectMessageResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            InspectResponse::State(_) => {
+                anyhow::bail!("unexpected state for inject_message")
+            }
+            InspectResponse::ReloadResult { .. } => {
+                anyhow::bail!("unexpected reload_result for inject_message")
+            }
+            InspectResponse::ResetSessionResult { .. } => {
+                anyhow::bail!("unexpected reset_session_result for inject_message")
             }
         }
     }

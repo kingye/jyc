@@ -146,6 +146,16 @@ struct App {
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
 
+    // Detail mode (non-WebSocket thread chat) state
+    /// Channel name for the thread being viewed in detail mode.
+    /// Set when Enter is pressed on a non-websocket thread.
+    detail_channel: Option<String>,
+    /// Thread path from ThreadInfo (for loading chat history from disk).
+    detail_thread_path: Option<std::path::PathBuf>,
+    /// Pending message to inject via inspect protocol (detail mode).
+    /// Set by `send_chat_message_inner` and consumed by the main poll loop.
+    pending_inject: Option<(String, String)>,
+
     // Command popup state
     commands: Vec<CommandInfo>,
     models: Vec<ModelInfo>,
@@ -178,6 +188,9 @@ impl App {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
+            detail_channel: None,
+            detail_thread_path: None,
+            pending_inject: None,
             commands: vec![],
             models: vec![],
             command_popup: None,
@@ -274,10 +287,75 @@ impl App {
         self.chat_phase = ChatPhase::PatternSelect;
         self.ws_connected = false;
         self.command_popup = None;
+        self.detail_channel = None;
+        self.detail_thread_path = None;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
         }
+    }
+
+    /// Open detail/chat mode for a non-WebSocket thread.
+    ///
+    /// Unlike `open_chat`, this does NOT create a WebSocket connection.
+    /// Instead, it relies on the inspect server's poll-based state (via
+    /// `get_state`) for live message updates and the `inject_message`
+    /// protocol method for sending messages.
+    fn open_thread_detail(&mut self, channel: &str, thread_name: &str) {
+        self.chat_visible = true;
+        self.chat_phase = ChatPhase::Chatting;
+        self.chat_thread = Some(thread_name.to_string());
+        self.chat_messages.clear();
+        self.chat_editor = empty_chat_editor();
+        self.chat_focus = ChatFocus::ChatPane;
+        self.chat_scroll = 0;
+        self.activity_scroll = 0;
+        self.activity_hscroll = 0;
+        self.activity_split = 0;
+        self.ws_connected = false;
+        self.detail_channel = Some(channel.to_string());
+        self.detail_thread_path = None;
+
+        // Load initial chat history from disk
+        self.load_detail_history();
+    }
+
+    /// Load chat history from the thread's chat_history_*.jsonl files.
+    ///
+    /// Reads up to 100 most recent entries (same limit as WebSocket adapter).
+    fn load_detail_history(&mut self) {
+        let thread_path = match &self.detail_thread_path {
+            Some(p) => p.clone(),
+            None => {
+                // Try to get thread_path from the current state
+                if let Some(ref state) = self.state
+                    && let Some(ref chat_name) = self.chat_thread
+                    && let Some(thread) = state.threads.iter().find(|t| t.name == *chat_name)
+                    && let Some(ref path) = thread.thread_path
+                {
+                    let path = path.clone();
+                    self.detail_thread_path = Some(path.clone());
+                    path
+                } else {
+                    return;
+                }
+            }
+        };
+
+        let entries = load_chat_history_from_path(&thread_path, 100);
+        self.chat_messages = entries
+            .into_iter()
+            .map(|e| ChatMessage {
+                sender: e.sender,
+                text: e.text,
+                timestamp: e.timestamp,
+            })
+            .collect();
+    }
+
+    /// Check whether the current chat is a detail mode (non-WebSocket) session.
+    fn is_detail_mode(&self) -> bool {
+        self.detail_channel.is_some()
     }
 
     fn select_pattern(&mut self, pattern: String) {
@@ -403,14 +481,23 @@ impl App {
         self.chat_scroll = 0;
         self.chat_awaiting_response = true;
 
-        let msg = serde_json::json!({
-            "type": "message",
-            "thread": thread,
-            "text": text,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
+        if self.is_detail_mode() {
+            // Detail mode (non-WebSocket): inject via inspect protocol.
+            // The send is deferred to the main loop since we don't have
+            // a mutable InspectClient reference here. Store a pending send
+            // that the poll loop will pick up.
+            self.pending_inject = Some((thread, text));
+        } else {
+            // WebSocket mode: send via WebSocket
+            let msg = serde_json::json!({
+                "type": "message",
+                "thread": thread,
+                "text": text,
+            })
+            .to_string();
+            if let Some(tx) = &self.ws_tx {
+                let _ = tx.send(msg);
+            }
         }
     }
 
@@ -772,6 +859,30 @@ pub async fn run(
                                 app.chat_awaiting_response = false;
                             }
                         }
+
+                        // Detail mode: extract live chat messages from recent_messages
+                        if app.is_detail_mode()
+                            && let Some(ref chat_name) = app.chat_thread
+                            && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
+                        {
+                            for msg in &ct.recent_messages {
+                                // Skip messages we already have (dedup by text+timestamp)
+                                let already = app
+                                    .chat_messages
+                                    .iter()
+                                    .any(|m| m.text == msg.text && m.timestamp == msg.timestamp);
+                                if !already {
+                                    app.chat_messages.push(ChatMessage {
+                                        sender: msg.sender.clone(),
+                                        text: msg.text.clone(),
+                                        timestamp: msg.timestamp.clone(),
+                                    });
+                                }
+                            }
+                            // Auto-scroll to bottom on new messages
+                            app.chat_scroll = 0;
+                        }
+
                         app.state = Some(state);
                         if let Some(ref s) = app.state {
                             app.commands = s.commands.clone();
@@ -784,6 +895,25 @@ pub async fn run(
                     }
                 }
                 last_poll = std::time::Instant::now();
+            }
+
+            // Process pending message injection (detail mode)
+            if let Some((thread, text)) = app.pending_inject.take()
+                && let Some(ref channel) = app.detail_channel
+            {
+                match client.inject_message(channel, &thread, &text).await {
+                    Ok((true, msg)) => {
+                        tracing::debug!("Message injected: {msg}");
+                    }
+                    Ok((false, msg)) => {
+                        app.set_status(format!("Inject failed: {msg}"));
+                        app.chat_awaiting_response = false;
+                    }
+                    Err(e) => {
+                        app.set_status(format!("Inject error: {e:#}"));
+                        app.chat_awaiting_response = false;
+                    }
+                }
             }
 
             // Check for WebSocket events
@@ -1047,6 +1177,71 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     anyhow::bail!("Timeout waiting for thread {thread} to be created")
+}
+
+/// A chat history entry parsed from chat_history_*.jsonl.
+struct ChatHistoryEntry {
+    sender: String,
+    text: String,
+    timestamp: Option<String>,
+}
+
+/// Load recent chat history messages from JSONL files for a thread.
+///
+/// Reads `chat_history_*.jsonl` files in the thread directory, parses each
+/// line, and returns up to `max_messages` most recent entries.
+/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
+fn load_chat_history_from_path(
+    thread_dir: &std::path::Path,
+    max_messages: usize,
+) -> Vec<ChatHistoryEntry> {
+    if !thread_dir.exists() {
+        return vec![];
+    }
+
+    let (mut files, _dir) = jyc_core::chat_log_store::list_chat_history_files(thread_dir);
+    files.sort_by(|a, b| b.cmp(a)); // newest first
+
+    let mut entries = Vec::new();
+    for file in files {
+        if entries.len() >= max_messages {
+            break;
+        }
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut file_entries: Vec<ChatHistoryEntry> = content
+            .lines()
+            .rev()
+            .filter_map(|line| {
+                let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+                let msg_type = parsed.get("type")?.as_str()?;
+                let content = parsed.get("content")?.as_str()?;
+                let sender = match msg_type {
+                    "received" => "user",
+                    "reply" => "ai",
+                    _ => return None,
+                };
+                Some(ChatHistoryEntry {
+                    sender: sender.to_string(),
+                    text: content.to_string(),
+                    timestamp: parsed
+                        .get("ts")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                })
+            })
+            .collect();
+        file_entries.reverse();
+        entries.splice(0..0, file_entries);
+    }
+
+    if entries.len() > max_messages {
+        let drain_count = entries.len() - max_messages;
+        entries.drain(0..drain_count);
+    }
+    entries
 }
 
 /// Format elapsed time from an RFC 3339 timestamp to now.
@@ -1359,26 +1554,26 @@ async fn handle_normal_keys(
             app.open_chat(addr, None, None);
         }
         KeyCode::Enter => {
-            // Enter chat directly when a websocket thread is selected
+            // Enter chat for websocket threads, detail mode for non-websocket threads
             let thread_info = app.state.as_ref().and_then(|s| {
                 app.table_state
                     .selected()
                     .and_then(|i| s.threads.get(i))
-                    .and_then(|t| {
+                    .map(|t| {
                         let is_ws = s
                             .channels
                             .iter()
                             .find(|c| c.name == t.channel)
                             .is_some_and(|c| c.channel_type == "websocket");
-                        if is_ws {
-                            Some((t.name.clone(), t.channel.clone()))
-                        } else {
-                            None
-                        }
+                        (t.name.clone(), t.channel.clone(), is_ws)
                     })
             });
-            if let Some((name, channel)) = thread_info {
-                app.open_chat(addr, Some(&channel), Some(&name));
+            if let Some((name, channel, is_ws)) = thread_info {
+                if is_ws {
+                    app.open_chat(addr, Some(&channel), Some(&name));
+                } else {
+                    app.open_thread_detail(&channel, &name);
+                }
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {

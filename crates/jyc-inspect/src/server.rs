@@ -37,6 +37,9 @@ pub trait WebsocketHandler: Send + Sync {
 /// Max activity entries kept per thread.
 const MAX_ACTIVITY_ENTRIES: usize = 180;
 
+/// Max recent chat messages kept per thread for live dashboard display.
+const MAX_RECENT_MESSAGES: usize = 50;
+
 /// Per-thread activity buffer, shared between the activity tracker and the server.
 ///
 /// Key is `(channel_name, thread_name)` so that two channels with same-named
@@ -50,6 +53,8 @@ pub struct ThreadActivityState {
     pub is_processing: bool,
     pub has_error: bool,
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Recent chat messages (incoming + replies) for live dashboard display.
+    pub recent_messages: VecDeque<ChatMessageEntry>,
 }
 
 /// Callback invoked after config is swapped atomically during reload.
@@ -250,9 +255,118 @@ impl InspectServer {
             }
             "reload_config" => Self::handle_reload_config(context).await,
             "reset_session" => Self::handle_reset_session(request, context).await,
+            "inject_message" => Self::handle_inject_message(request, context).await,
             other => InspectResponse::Error {
                 error: format!("unknown method: {other}"),
             },
+        }
+    }
+
+    /// Inject a message into a thread's queue for AI processing.
+    ///
+    /// Params: `channel` (channel name), `thread` (thread name), `text` (message body).
+    /// Creates a synthetic `InboundMessage` and enqueues it via `ThreadManager::enqueue()`.
+    async fn handle_inject_message(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+
+        let thread_name = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+
+        let text = match params.get("text").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'text' param".to_string(),
+                };
+            }
+        };
+
+        // Find the ThreadManager for this channel
+        let tms = context.thread_managers.load();
+        let tm = tms.iter().find(|tm| tm.channel_name() == channel);
+        let tm = match tm {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+
+        // Build synthetic InboundMessage (same pattern as send_to_thread tool)
+        let message = InboundMessage {
+            id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
+            channel: channel.to_string(),
+            channel_uid: "dashboard".to_string(),
+            sender: "dashboard".to_string(),
+            sender_address: "dashboard@inspect".to_string(),
+            recipients: vec![],
+            topic: thread_name.to_string(),
+            content: MessageContent {
+                text: Some(text.to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+
+        let pattern_match = PatternMatch {
+            pattern_name: String::new(),
+            channel: channel.to_string(),
+            matches: HashMap::new(),
+        };
+
+        tm.enqueue(
+            message,
+            thread_name.to_string(),
+            pattern_match,
+            None,
+            true,
+            None,
+        )
+        .await;
+
+        tracing::info!(
+            channel = %channel,
+            thread = %thread_name,
+            text_len = text.len(),
+            "Dashboard message injected"
+        );
+
+        InspectResponse::InjectMessageResult {
+            success: true,
+            message: format!("message injected into {channel}/{thread_name}"),
         }
     }
 
@@ -450,6 +564,7 @@ impl InspectServer {
             let key = (thread.channel.clone(), thread.name.clone());
             if let Some(state) = activity_map.get(&key) {
                 thread.activity = state.entries.iter().cloned().collect();
+                thread.recent_messages = state.recent_messages.iter().cloned().collect();
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
                 } else if state.has_error {
@@ -633,6 +748,26 @@ impl ActivityTracker {
                                                                         &event,
                                                                         ThreadEvent::ProcessingCompleted { .. }
                                                                     );
+
+                                                                    // Capture chat messages for live dashboard display
+                                                                    let chat_msg: Option<ChatMessageEntry> = match &event {
+                                                                        ThreadEvent::IncomingMessage { sender, text, timestamp, .. } => {
+                                                                            Some(ChatMessageEntry {
+                                                                                sender: sender.clone(),
+                                                                                text: text.clone(),
+                                                                                timestamp: Some(timestamp.to_rfc3339()),
+                                                                            })
+                                                                        }
+                                                                        ThreadEvent::ReplySent { text, timestamp, .. } => {
+                                                                            Some(ChatMessageEntry {
+                                                                                sender: "ai".to_string(),
+                                                                                text: text.clone(),
+                                                                                timestamp: Some(timestamp.to_rfc3339()),
+                                                                            })
+                                                                        }
+                                                                        _ => None,
+                                                                    };
+
                                                                     let entry = event_to_activity(&event);
                                                                     let is_error = entry.severity == Severity::Error;
                                                                     let is_progress =
@@ -653,6 +788,12 @@ impl ActivityTracker {
                                                                         state.entries.push_back(entry);
                                                                         if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                             state.entries.pop_front();
+                                                                        }
+                                                                    }
+                                                                    if let Some(msg) = chat_msg {
+                                                                        state.recent_messages.push_back(msg);
+                                                                        if state.recent_messages.len() > MAX_RECENT_MESSAGES {
+                                                                            state.recent_messages.pop_front();
                                                                         }
                                                                     }
                                                                     state.last_active_at = Some(event.timestamp());
@@ -989,6 +1130,15 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             } else {
                 format!("Thinking: {oneline}")
             }
+        }
+        ThreadEvent::IncomingMessage { sender, text, .. } => {
+            let oneline = text.replace('\n', " ");
+            format!("Message from {sender}: {oneline}")
+        }
+        ThreadEvent::ReplySent { text, .. } => {
+            let oneline = text.replace('\n', " ");
+            let preview: String = oneline.chars().take(100).collect();
+            format!("Reply sent: {preview}")
         }
         ThreadEvent::SessionStatus {
             status_type,
@@ -1580,6 +1730,7 @@ mode = "agent"
             activity: vec![],
             last_active_at: None,
             skills: vec![],
+            recent_messages: vec![],
             thread_path: None,
         };
 

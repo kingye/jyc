@@ -14,6 +14,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket
+  thread (email, feishu, github) opens a detail/chat mode. Shows live incoming
+  messages and AI replies via `ThreadEvent::IncomingMessage`/`ReplySent` events
+  forwarded through `ThreadInfo.recent_messages`. Message injection uses the
+  new `inject_message` inspect protocol method, following the same
+  `ThreadManager::enqueue()` path as the `send_to_thread` tool. (#406)
+
 - **`/pin` command.** Persist an ad-hoc websocket thread's configuration to
   `config.toml`. If a websocket channel already exists, adds a pattern with
   `thread_path` pointing to the adhoc directory; otherwise creates a new

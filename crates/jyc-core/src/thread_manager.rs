@@ -217,6 +217,17 @@ impl ThreadManager {
             }
         }
 
+        // Capture data for IncomingMessage event before `message` is moved
+        let event_sender = message.sender.clone();
+        let event_text = message
+            .content
+            .text
+            .clone()
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect::<String>();
+
         let template = message
             .metadata
             .get("template")
@@ -258,6 +269,8 @@ impl ThreadManager {
             match sender.try_send(item) {
                 Ok(()) => {
                     tracing::debug!(thread = %thread_name, "Message enqueued");
+                    self.publish_incoming_message(&thread_name, &event_sender, &event_text)
+                        .await;
                     return;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -273,14 +286,18 @@ impl ThreadManager {
                         event_buses.remove(&thread_name);
                         tracing::debug!(thread = %thread_name, "Cleaned up event bus for closed queue");
                     }
-                    self.create_and_enqueue(&mut queues, thread_name, item)
+                    self.create_and_enqueue(&mut queues, thread_name.clone(), item)
+                        .await;
+                    self.publish_incoming_message(&thread_name, &event_sender, &event_text)
                         .await;
                     return;
                 }
             }
         }
 
-        self.create_and_enqueue(&mut queues, thread_name, item)
+        self.create_and_enqueue(&mut queues, thread_name.clone(), item)
+            .await;
+        self.publish_incoming_message(&thread_name, &event_sender, &event_text)
             .await;
     }
 
@@ -986,6 +1003,7 @@ impl ThreadManager {
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
+                recent_messages: vec![], // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
             });
         }
@@ -1035,6 +1053,56 @@ impl ThreadManager {
 
         event_buses.insert(thread_name.to_string(), event_bus.clone());
         Some(event_bus)
+    }
+
+    /// Publish an `IncomingMessage` event on the thread's event bus.
+    ///
+    /// Called from `enqueue()` after a message is successfully queued.
+    /// Non-blocking — failures are silently ignored (event bus may not exist
+    /// for brand-new threads until the worker creates it).
+    async fn publish_incoming_message(&self, thread_name: &str, sender: &str, text: &str) {
+        if !self.enable_events {
+            return;
+        }
+        if let Some(bus) = self.get_event_bus(thread_name).await {
+            let event = crate::thread_event::ThreadEvent::IncomingMessage {
+                thread_name: thread_name.to_string(),
+                sender: sender.to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = bus.publish(event).await {
+                tracing::trace!(
+                    thread = %thread_name,
+                    error = %e,
+                    "Failed to publish IncomingMessage event"
+                );
+            }
+        }
+    }
+
+    /// Publish a `ReplySent` event on the thread's event bus.
+    ///
+    /// Called after `outbound.send_reply()` succeeds. Enables the dashboard
+    /// to display live AI replies for non-WebSocket threads.
+    async fn publish_reply_sent(&self, thread_name: &str, text: &str) {
+        if !self.enable_events {
+            return;
+        }
+        if let Some(bus) = self.get_event_bus(thread_name).await {
+            let event = crate::thread_event::ThreadEvent::ReplySent {
+                thread_name: thread_name.to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now(),
+            };
+            if let Err(e) = bus.publish(event).await {
+                tracing::trace!(
+                    thread = %thread_name,
+                    error = %e,
+                    "Failed to publish ReplySent event"
+                );
+            }
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -1669,6 +1737,9 @@ async fn process_message(
                     )
                     .await?;
                 tracing::info!("Reply delivered via outbound adapter");
+                thread_manager
+                    .publish_reply_sent(thread_name, reply_text)
+                    .await;
                 // Clean up signal files after successful delivery to prevent re-delivery on restart
                 tokio::fs::remove_file(&signal_path).await.ok();
                 let reply_md_path = store_result.thread_path.join(".jyc").join("reply.md");
@@ -1693,6 +1764,7 @@ async fn process_message(
             )
             .await?;
         tracing::info!("Fallback reply sent");
+        thread_manager.publish_reply_sent(thread_name, text).await;
         thread_manager.metrics.reply_by_fallback(thread_name);
     } else {
         tracing::warn!("No reply text from AI");

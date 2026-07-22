@@ -2659,6 +2659,202 @@ JSON line protocol over TCP. Client sends one JSON object per line, server respo
 
 Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refresh.
 
+### Dashboard Cross-Channel Thread Chat
+
+When the user selects a non-websocket thread (email, feishu, github) in the overview pane and presses `Enter`, the dashboard enters a detail/chat mode showing live messages and allowing message injection into the thread. This closes the gap where previously only websocket threads supported interactive chat from the dashboard.
+
+#### Live Message Flow
+
+```
+                              ┌──────────────────────────────────┐
+                              │         External World            │
+                              │                                  │
+                              │  Email │ Feishu │ GitHub │ ...    │
+                              └───────┬──────┼────────┼──────────┘
+                                      │      │        │
+                       InboundAdapter │      │        │
+                       (IMAP/WS/poll) │      │        │
+                                      ▼      ▼        ▼
+                              ┌──────────────────────────────────┐
+                              │       MessageRouter              │
+                              │  match → derive_thread → route   │
+                              └───────────────┬──────────────────┘
+                                              │
+                                              ▼
+                              ┌──────────────────────────────────┐
+                              │       ThreadManager              │
+                              │                                  │
+                              │  enqueue(message)                │
+                              │    │                             │
+                              │    ├─ publish ThreadEvent::      │
+                              │    │   IncomingMessage           │
+                              │    │   on ThreadEventBus (1)     │
+                              │    │                             │
+                              │    ▼                             │
+                              │  Worker processes                │
+                              │    │                             │
+                              │    ▼                             │
+                              │  outbound.send_reply(text)       │
+                              │    │                             │
+                              │    └─ publish ThreadEvent::      │
+                              │       ReplySent                  │
+                              │       on ThreadEventBus (2)      │
+                              └───────────────┬──────────────────┘
+                                              │
+                            ThreadEventBus    │
+                                              │
+                    ┌─────────────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      ActivityTracker                               │
+│  (subscribes to ThreadEventBus per thread)                         │
+│                                                                   │
+│  ThreadEvent::IncomingMessage → store in                           │
+│    ThreadActivityState.recent_messages as ChatMessageEntry         │
+│                                                                   │
+│  ThreadEvent::ReplySent → store in                                 │
+│    ThreadActivityState.recent_messages as ChatMessageEntry         │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                  InspectServer::build_state()                      │
+│                                                                   │
+│  For each thread:                                                 │
+│    • Drain ThreadActivityState.recent_messages                     │
+│    • Populate ThreadInfo.recent_messages                           │
+│    • Return in InspectState (JSON)                                 │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                │  TCP poll (500ms)
+                                ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                  Dashboard (detail/chat mode)                      │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────────┐  │
+│  │ ● feishu_bot (feishu)    ● jin (github)  ● jiny283 (email) │  │
+│  └─────────────────────────────────────────────────────────────┘  │
+│  Thread: greenfield下单 | Channel: feishu_bot | Pattern: ...     │
+│  ┌─ Chat: greenfield下单 ──────────────────────────────────────┐  │
+│  │ ╭─ 14:32 ────────────────────────────────────────────────── │  │
+│  │ │ **You:** 帮我查一下这个订单的状态                           │  │
+│  │ ├─────────────────────────────────────────────────────────── │  │
+│  │ │ **AI:** 正在查询订单 #12345...                              │  │
+│  │ ╰─── 12s ─────────────────────────────────────────────────── │  │
+│  │                                                               │  │
+│  │ ╭─ 14:35 ────────────────────────────────────────────────── │  │
+│  │ │ **User (remote):** 订单创建好了吗？                          │  │
+│  │ │                                                             │  │
+│  │ > _                                                           │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│  [Tab]focus [↑↓]scroll [^W]split [Esc]back [^Q]quit              │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+#### ThreadEvent Additions
+
+Two new variants enable the live message feed:
+
+```rust
+pub enum ThreadEvent {
+    // ... existing variants ...
+
+    /// A new message arrived in this thread (from any source: remote user,
+    /// scheduled job, or dashboard injection).
+    IncomingMessage {
+        thread_name: String,
+        sender: String,        // "user", "job", display name, etc.
+        text: String,          // Truncated message body preview
+        timestamp: DateTime<Utc>,
+    },
+
+    /// The AI sent a reply for this thread.
+    ReplySent {
+        thread_name: String,
+        text: String,          // The AI reply text
+        timestamp: DateTime<Utc>,
+    },
+}
+```
+
+#### Dashboard Message Injection
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      Message Injection Flow                       │
+│                                                                  │
+│  Dashboard (user types message in non-WS thread detail mode)     │
+│       │                                                          │
+│       │  TCP JSON line protocol (same persistent connection)     │
+│       ▼                                                          │
+│  InspectServer::handle_request("inject_message")                  │
+│       │                                                          │
+│       │  params: { channel, thread, text }                       │
+│       ▼                                                          │
+│  Find ThreadManager by channel_name                               │
+│       │                                                          │
+│       ▼                                                          │
+│  Build synthetic InboundMessage:                                  │
+│    sender = "dashboard", topic = thread_name,                     │
+│    content.text = text, channel = channel_name                    │
+│       │                                                          │
+│       ▼                                                          │
+│  ThreadManager::enqueue(message, thread_name, pm, ...)            │
+│       │                                                          │
+│       └── follows normal processing flow (see above)             │
+│                                                                  │
+│  Note: This reuses the same enqueue path as the jyc_send_to_thread│
+│  cross-thread tool — no new code paths in the core router.        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### Component Map
+
+```
+ThreadEvent (crates/jyc-core/src/thread_event.rs)
+  ├── +IncomingMessage variant
+  └── +ReplySent variant
+
+ThreadManager (crates/jyc-core/src/thread_manager.rs)
+  ├── enqueue(): publish IncomingMessage on ThreadEventBus
+  └── worker reply path: publish ReplySent after send_reply() succeeds
+
+ThreadActivityState (crates/jyc-inspect/src/server.rs)
+  └── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
+
+ActivityTracker (crates/jyc-inspect/src/server.rs)
+  └── subscriber loop: capture IncomingMessage/ReplySent → recent_messages
+
+InspectState / ThreadInfo (crates/jyc-types/src/inspect.rs)
+  ├── +ChatMessageEntry { sender, text, timestamp }
+  └── ThreadInfo.+recent_messages: Vec<ChatMessageEntry>
+
+InspectServer (crates/jyc-inspect/src/server.rs)
+  ├── build_state(): drain recent_messages → ThreadInfo
+  └── handle_request("inject_message"): enqueue via ThreadManager
+
+InspectClient (crates/jyc-inspect/src/client.rs)
+  └── +inject_message(channel, thread, text) → Result<()>
+
+Dashboard (crates/jyc-cli/src/cli/dashboard.rs)
+  ├── Enter on non-WS thread → detail/chat mode (no WebSocket)
+  ├── Poll loop: drain ThreadInfo.recent_messages → chat_messages
+  └── send_chat_message_inner(): call InspectClient::inject_message()
+```
+
+#### Key Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| ThreadEventBus over new broadcast channel | Reuses existing infrastructure; events already scoped per-thread; ActivityTracker already subscribes |
+| `IncomingMessage` published in `ThreadManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
+| `ReplySent` published after `send_reply()` succeeds | Guarantees the reply was actually delivered; same timing as existing metrics counters |
+| `recent_messages` in `ThreadActivityState`, not `ThreadInfo` directly | ThreadInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
+| Inject via inspect TCP protocol, not WebSocket | Non-WS channels have no WebSocket handler; TCP connection already exists for polling |
+| Reuse `ThreadManager::enqueue` for injection | Same path as `send_to_thread` tool; no duplicate routing logic |
+| `ChatMessageEntry` struct shared in `jyc_types` | Lets both inspect server and dashboard use the same type without coupling |
+
 ### MetricsCollector
 
 Components report events via `MetricsHandle`:

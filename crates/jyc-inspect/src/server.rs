@@ -1840,4 +1840,94 @@ mode = "agent"
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_inject_message_missing_params() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // Missing params entirely
+        writer
+            .write_all(b"{\"method\":\"inject_message\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(response.contains("missing params"));
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inject_message_unknown_channel() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(
+                b"{\"method\":\"inject_message\",\"params\":{\"channel\":\"nonexistent\",\"thread\":\"t\",\"text\":\"x\"}}\n",
+            )
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(response.contains("no thread manager found"));
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_incoming_message() {
+        let event = ThreadEvent::IncomingMessage {
+            thread_name: "test".to_string(),
+            sender: "user".to_string(),
+            text: "hello world".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("Message from user"));
+        assert!(entry.text.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_reply_sent() {
+        let event = ThreadEvent::ReplySent {
+            thread_name: "test".to_string(),
+            text: "AI reply here".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("Reply sent"));
+        assert!(entry.text.contains("AI reply here"));
+    }
 }

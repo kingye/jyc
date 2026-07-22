@@ -217,16 +217,11 @@ impl ThreadManager {
             }
         }
 
-        // Capture data for IncomingMessage event before `message` is moved
+        // Capture data for IncomingMessage event before `message` is moved.
+        // Use full text — no truncation — so dashboard dedup between history
+        // and recent_messages works correctly.
         let event_sender = message.sender.clone();
-        let event_text = message
-            .content
-            .text
-            .clone()
-            .unwrap_or_default()
-            .chars()
-            .take(200)
-            .collect::<String>();
+        let event_text = message.content.text.clone().unwrap_or_default();
 
         let template = message
             .metadata
@@ -2409,6 +2404,89 @@ mode = "agent"
         );
 
         // Clean up
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_incoming_message_on_event_bus() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Create event bus manually so we can subscribe
+        let bus = tm.get_or_create_event_bus("test-thread").await.unwrap();
+        let mut rx = bus.subscribe().await.unwrap();
+
+        // Publish incoming message event
+        tm.publish_incoming_message("test-thread", "user", "hello world")
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive event within timeout")
+            .expect("should have an event");
+
+        match event {
+            crate::thread_event::ThreadEvent::IncomingMessage {
+                thread_name,
+                sender,
+                text,
+                ..
+            } => {
+                assert_eq!(thread_name, "test-thread");
+                assert_eq!(sender, "user");
+                assert_eq!(text, "hello world");
+            }
+            other => panic!("expected IncomingMessage, got {:?}", other),
+        }
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_reply_sent_on_event_bus() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Create event bus manually so we can subscribe
+        let bus = tm.get_or_create_event_bus("test-thread").await.unwrap();
+        let mut rx = bus.subscribe().await.unwrap();
+
+        // Publish reply sent event
+        tm.publish_reply_sent("test-thread", "AI reply here").await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive event within timeout")
+            .expect("should have an event");
+
+        match event {
+            crate::thread_event::ThreadEvent::ReplySent {
+                thread_name, text, ..
+            } => {
+                assert_eq!(thread_name, "test-thread");
+                assert_eq!(text, "AI reply here");
+            }
+            other => panic!("expected ReplySent, got {:?}", other),
+        }
+
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_incoming_message_noop_without_event_bus() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // No event bus created — publish should silently succeed (no panic)
+        tm.publish_incoming_message("test-thread", "user", "hello")
+            .await;
+
         tm.shutdown().await;
     }
 

@@ -342,7 +342,7 @@ impl App {
             }
         };
 
-        let entries = load_chat_history_from_path(&thread_path, 100);
+        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
         self.chat_messages = entries
             .into_iter()
             .map(|e| ChatMessage {
@@ -471,24 +471,22 @@ impl App {
             None => return,
         };
 
-        // Echo user message locally
-        self.chat_messages.push(ChatMessage {
-            sender: "user".to_string(),
-            text: text.clone(),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-        });
-        self.chat_editor = empty_chat_editor();
-        self.chat_scroll = 0;
-        self.chat_awaiting_response = true;
-
         if self.is_detail_mode() {
-            // Detail mode (non-WebSocket): inject via inspect protocol.
-            // The send is deferred to the main loop since we don't have
-            // a mutable InspectClient reference here. Store a pending send
-            // that the poll loop will pick up.
+            // Detail mode (non-WebSocket): do NOT echo locally — the message
+            // will appear via `recent_messages` on the next poll cycle
+            // (~500ms). Echoing locally would cause duplication because the
+            // `IncomingMessage` event publishes with sender="dashboard" and
+            // truncated text, failing the dedup check.
             self.pending_inject = Some((thread, text));
         } else {
-            // WebSocket mode: send via WebSocket
+            // WebSocket mode: echo user message locally, send via WebSocket.
+            // No duplication — the WebSocket broadcast only sends AI replies,
+            // not user messages.
+            self.chat_messages.push(ChatMessage {
+                sender: "user".to_string(),
+                text: text.clone(),
+                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            });
             let msg = serde_json::json!({
                 "type": "message",
                 "thread": thread,
@@ -499,6 +497,10 @@ impl App {
                 let _ = tx.send(msg);
             }
         }
+
+        self.chat_editor = empty_chat_editor();
+        self.chat_scroll = 0;
+        self.chat_awaiting_response = true;
     }
 
     fn handle_ws_event(&mut self, event: WsEvent) {
@@ -1179,71 +1181,6 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
     anyhow::bail!("Timeout waiting for thread {thread} to be created")
 }
 
-/// A chat history entry parsed from chat_history_*.jsonl.
-struct ChatHistoryEntry {
-    sender: String,
-    text: String,
-    timestamp: Option<String>,
-}
-
-/// Load recent chat history messages from JSONL files for a thread.
-///
-/// Reads `chat_history_*.jsonl` files in the thread directory, parses each
-/// line, and returns up to `max_messages` most recent entries.
-/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
-fn load_chat_history_from_path(
-    thread_dir: &std::path::Path,
-    max_messages: usize,
-) -> Vec<ChatHistoryEntry> {
-    if !thread_dir.exists() {
-        return vec![];
-    }
-
-    let (mut files, _dir) = jyc_core::chat_log_store::list_chat_history_files(thread_dir);
-    files.sort_by(|a, b| b.cmp(a)); // newest first
-
-    let mut entries = Vec::new();
-    for file in files {
-        if entries.len() >= max_messages {
-            break;
-        }
-        let content = match std::fs::read_to_string(&file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let mut file_entries: Vec<ChatHistoryEntry> = content
-            .lines()
-            .rev()
-            .filter_map(|line| {
-                let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
-                let msg_type = parsed.get("type")?.as_str()?;
-                let content = parsed.get("content")?.as_str()?;
-                let sender = match msg_type {
-                    "received" => "user",
-                    "reply" => "ai",
-                    _ => return None,
-                };
-                Some(ChatHistoryEntry {
-                    sender: sender.to_string(),
-                    text: content.to_string(),
-                    timestamp: parsed
-                        .get("ts")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                })
-            })
-            .collect();
-        file_entries.reverse();
-        entries.splice(0..0, file_entries);
-    }
-
-    if entries.len() > max_messages {
-        let drain_count = entries.len() - max_messages;
-        entries.drain(0..drain_count);
-    }
-    entries
-}
-
 /// Format elapsed time from an RFC 3339 timestamp to now.
 /// Returns a string like "15s" or "2m" or "" if parsing fails.
 fn format_elapsed(timestamp: &Option<String>) -> String {
@@ -1497,7 +1434,13 @@ fn handle_chat_keys(
 
             if app.chat_focus == ChatFocus::ActivityPane {
                 match key.code {
-                    KeyCode::Esc => app.go_to_pattern_select(),
+                    KeyCode::Esc => {
+                        if app.is_detail_mode() {
+                            app.close_chat();
+                        } else {
+                            app.go_to_pattern_select();
+                        }
+                    }
                     KeyCode::Up => app.scroll_up(),
                     KeyCode::Down => app.scroll_down(),
                     KeyCode::Left => app.activity_hscroll = app.activity_hscroll.saturating_sub(1),
@@ -1512,7 +1455,13 @@ fn handle_chat_keys(
             match (app.chat_editor.mode, key.code) {
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
-                (EditorMode::Normal, KeyCode::Esc) => app.go_to_pattern_select(),
+                (EditorMode::Normal, KeyCode::Esc) => {
+                    if app.is_detail_mode() {
+                        app.close_chat();
+                    } else {
+                        app.go_to_pattern_select();
+                    }
+                }
                 // Plain Enter in Insert mode inserts a newline (handled by
                 // the editor). Pasted multi-line text therefore can never
                 // trigger a send, so no paste debounce is needed.
@@ -2581,7 +2530,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let bar = Paragraph::new(Line::from({
         let mut spans = vec![Span::raw(" ")];
-        if app.chat_visible {
+        if app.chat_visible && !app.is_detail_mode() {
             if app.ws_connected {
                 spans.push(Span::styled("●", Style::default().fg(Color::Green)));
             } else {

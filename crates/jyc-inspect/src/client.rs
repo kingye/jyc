@@ -430,4 +430,42 @@ mod tests {
 
         cancel.cancel();
     }
+
+    #[tokio::test]
+    async fn test_inspect_client_inject_message_no_channel() {
+        // Server with no thread managers — inject should fail
+        let context = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: None,
+            reload_callback: None,
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
+        let _handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut client = InspectClient::new(&addr.to_string());
+        let (success, message) = client
+            .inject_message("nonexistent", "thread", "hello")
+            .await
+            .unwrap();
+
+        assert!(!success, "inject should fail for unknown channel");
+        assert!(message.contains("no thread manager found"));
+
+        cancel.cancel();
+    }
 }

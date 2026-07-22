@@ -120,6 +120,12 @@ struct App {
     status_message: Option<(String, std::time::Instant)>,
     pending_reset: Option<(String, std::time::Instant)>,
 
+    /// Chat pane state (WebSocket thread chat and non-WebSocket detail mode).
+    chat: ChatState,
+}
+
+/// Chat pane state: WebSocket thread chat and non-WebSocket detail mode.
+struct ChatState {
     // Chat pane state
     visible: bool,
     phase: ChatPhase,
@@ -147,7 +153,6 @@ struct App {
     ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     ws_connected: bool,
-
     // Detail mode (non-WebSocket thread chat) state
     /// Channel name for the thread being viewed in detail mode.
     /// Set when Enter is pressed on a non-websocket thread.
@@ -157,22 +162,15 @@ struct App {
     /// Pending message to inject via inspect protocol (detail mode).
     /// Set by `send_message_inner` and consumed by the main poll loop.
     pending_inject: Option<(String, String)>,
-
     // Command popup state
     commands: Vec<CommandInfo>,
     models: Vec<ModelInfo>,
     command_popup: Option<CommandPopupState>,
 }
 
-impl App {
+impl ChatState {
     fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>) -> Self {
         Self {
-            state: None,
-            error: None,
-            table_state: TableState::default(),
-            should_quit: false,
-            status_message: None,
-            pending_reset: None,
             visible: false,
             phase: ChatPhase::PatternSelect,
             patterns: vec![],
@@ -199,59 +197,6 @@ impl App {
             command_popup: None,
         }
     }
-
-    fn set_status(&mut self, msg: String) {
-        self.status_message = Some((msg, std::time::Instant::now()));
-    }
-
-    fn clear_pending_reset(&mut self) {
-        self.pending_reset = None;
-    }
-
-    fn tick_status(&mut self) {
-        if let Some((_, at)) = &self.status_message
-            && at.elapsed() > Duration::from_secs(5)
-        {
-            self.status_message = None;
-        }
-        if let Some((_, at)) = &self.pending_reset
-            && at.elapsed() > Duration::from_secs(3)
-        {
-            self.pending_reset = None;
-        }
-    }
-
-    fn next_thread(&mut self) {
-        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
-        if count == 0 {
-            return;
-        }
-        let i = match self.table_state.selected() {
-            Some(i) => (i + 1) % count,
-            None => 0,
-        };
-        self.table_state.select(Some(i));
-    }
-
-    fn prev_thread(&mut self) {
-        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
-        if count == 0 {
-            return;
-        }
-        let i = match self.table_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    count - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.table_state.select(Some(i));
-    }
-
-    // ── Chat pane helpers ──────────────────────────────────────────────
 
     fn open(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
         self.visible = true;
@@ -305,7 +250,12 @@ impl App {
     /// Instead, it relies on the inspect server's poll-based state (via
     /// `get_state`) for live message updates and the `inject_message`
     /// protocol method for sending messages.
-    fn open_thread_detail(&mut self, channel: &str, thread_name: &str) {
+    fn open_thread_detail(
+        &mut self,
+        channel: &str,
+        thread_name: &str,
+        state: Option<&InspectState>,
+    ) {
         self.visible = true;
         self.phase = ChatPhase::Chatting;
         self.thread = Some(thread_name.to_string());
@@ -322,18 +272,20 @@ impl App {
         self.detail_thread_path = None;
 
         // Load initial chat history from disk
-        self.load_detail_history();
+        self.load_detail_history(state);
     }
 
     /// Load chat history from the thread's chat_history_*.jsonl files.
     ///
     /// Reads up to 100 most recent entries (same limit as WebSocket adapter).
-    fn load_detail_history(&mut self) {
+    /// `state` is the latest inspect snapshot, used to resolve the thread path
+    /// when it has not been cached yet.
+    fn load_detail_history(&mut self, state: Option<&InspectState>) {
         let thread_path = match &self.detail_thread_path {
             Some(p) => p.clone(),
             None => {
                 // Try to get thread_path from the current state
-                if let Some(ref state) = self.state
+                if let Some(state) = state
                     && let Some(ref chat_name) = self.thread
                     && let Some(thread) = state.threads.iter().find(|t| t.name == *chat_name)
                     && let Some(ref path) = thread.thread_path
@@ -539,42 +491,6 @@ impl App {
         self.awaiting_response = true;
     }
 
-    fn handle_ws_event(&mut self, event: WsEvent) {
-        match event {
-            WsEvent::Connected => {
-                self.ws_connected = true;
-                // Request pattern list on connect
-                let list_msg = serde_json::json!({"type": "list_patterns"}).to_string();
-                if let Some(tx) = &self.ws_tx {
-                    let _ = tx.send(list_msg);
-                }
-
-                // Auto-re-subscribe to the previously selected thread, if any
-                if let Some(ref thread) = self.thread {
-                    let subscribe_msg = serde_json::json!({
-                        "type": "subscribe",
-                        "thread": thread,
-                    })
-                    .to_string();
-                    if let Some(tx) = &self.ws_tx {
-                        let _ = tx.send(subscribe_msg);
-                    }
-                    self.set_status(format!("Reconnected to {thread}"));
-                }
-            }
-            WsEvent::Disconnected => {
-                self.ws_connected = false;
-                self.set_status("WebSocket disconnected".to_string());
-            }
-            WsEvent::Message(text) => {
-                self.handle_ws_message(&text);
-            }
-            WsEvent::Error(err) => {
-                self.set_status(format!("WebSocket error: {err}"));
-            }
-        }
-    }
-
     fn handle_ws_message(&mut self, text: &str) {
         let parsed: serde_json::Value = match serde_json::from_str(text) {
             Ok(v) => v,
@@ -630,6 +546,107 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>) -> Self {
+        Self {
+            state: None,
+            error: None,
+            table_state: TableState::default(),
+            should_quit: false,
+            status_message: None,
+            pending_reset: None,
+            chat: ChatState::new(ws_rx),
+        }
+    }
+
+    fn set_status(&mut self, msg: String) {
+        self.status_message = Some((msg, std::time::Instant::now()));
+    }
+
+    fn clear_pending_reset(&mut self) {
+        self.pending_reset = None;
+    }
+
+    fn tick_status(&mut self) {
+        if let Some((_, at)) = &self.status_message
+            && at.elapsed() > Duration::from_secs(5)
+        {
+            self.status_message = None;
+        }
+        if let Some((_, at)) = &self.pending_reset
+            && at.elapsed() > Duration::from_secs(3)
+        {
+            self.pending_reset = None;
+        }
+    }
+
+    fn next_thread(&mut self) {
+        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => (i + 1) % count,
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn prev_thread(&mut self) {
+        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let i = match self.table_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    count - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.table_state.select(Some(i));
+    }
+
+    fn handle_ws_event(&mut self, event: WsEvent) {
+        match event {
+            WsEvent::Connected => {
+                self.chat.ws_connected = true;
+                // Request pattern list on connect
+                let list_msg = serde_json::json!({"type": "list_patterns"}).to_string();
+                if let Some(tx) = &self.chat.ws_tx {
+                    let _ = tx.send(list_msg);
+                }
+
+                // Auto-re-subscribe to the previously selected thread, if any
+                if let Some(ref thread) = self.chat.thread {
+                    let subscribe_msg = serde_json::json!({
+                        "type": "subscribe",
+                        "thread": thread,
+                    })
+                    .to_string();
+                    if let Some(tx) = &self.chat.ws_tx {
+                        let _ = tx.send(subscribe_msg);
+                    }
+                    self.set_status(format!("Reconnected to {thread}"));
+                }
+            }
+            WsEvent::Disconnected => {
+                self.chat.ws_connected = false;
+                self.set_status("WebSocket disconnected".to_string());
+            }
+            WsEvent::Message(text) => {
+                self.chat.handle_ws_message(&text);
+            }
+            WsEvent::Error(err) => {
+                self.set_status(format!("WebSocket error: {err}"));
+            }
         }
     }
 }
@@ -876,7 +893,7 @@ pub async fn run(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
-            app.open(&args.addr, initial_channel, Some(thread));
+            app.chat.open(&args.addr, initial_channel, Some(thread));
         }
 
         loop {
@@ -887,31 +904,31 @@ pub async fn run(
                         // Clear awaiting_response once the server confirms the thread
                         // is no longer processing (with a small grace period to avoid
                         // flicker between the local flag and server state).
-                        if app.awaiting_response
-                            && let Some(ref chat_name) = app.thread
+                        if app.chat.awaiting_response
+                            && let Some(ref chat_name) = app.chat.thread
                         {
                             let ct = state.threads.iter().find(|t| t.name == *chat_name);
                             if let Some(ct) = ct
                                 && ct.status != ThreadStatus::Processing
                             {
-                                app.awaiting_response = false;
+                                app.chat.awaiting_response = false;
                             }
                         }
 
                         // Detail mode: extract live chat messages from recent_messages
-                        if app.is_detail_mode()
-                            && let Some(ref chat_name) = app.thread
+                        if app.chat.is_detail_mode()
+                            && let Some(ref chat_name) = app.chat.thread
                             && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
                         {
                             let mut new_msg = false;
                             for msg in &ct.recent_messages {
                                 // Skip messages we already have (dedup by text+timestamp)
-                                let already = app
-                                    .messages
-                                    .iter()
-                                    .any(|m| m.text == msg.text && m.timestamp == msg.timestamp);
+                                let already =
+                                    app.chat.messages.iter().any(|m| {
+                                        m.text == msg.text && m.timestamp == msg.timestamp
+                                    });
                                 if !already {
-                                    app.messages.push(ChatMessage {
+                                    app.chat.messages.push(ChatMessage {
                                         sender: msg.sender.clone(),
                                         text: msg.text.clone(),
                                         timestamp: msg.timestamp.clone(),
@@ -921,14 +938,14 @@ pub async fn run(
                             }
                             // Auto-scroll to bottom only when new messages arrive
                             if new_msg {
-                                app.scroll = 0;
+                                app.chat.scroll = 0;
                             }
                         }
 
                         app.state = Some(state);
                         if let Some(ref s) = app.state {
-                            app.commands = s.commands.clone();
-                            app.models = s.models.clone();
+                            app.chat.commands = s.commands.clone();
+                            app.chat.models = s.models.clone();
                         }
                         app.error = None;
                     }
@@ -940,8 +957,8 @@ pub async fn run(
             }
 
             // Process pending message injection (detail mode)
-            if let Some((thread, text)) = app.pending_inject.take()
-                && let Some(ref channel) = app.detail_channel
+            if let Some((thread, text)) = app.chat.pending_inject.take()
+                && let Some(ref channel) = app.chat.detail_channel
             {
                 match client.inject_message(channel, &thread, &text).await {
                     Ok((true, msg)) => {
@@ -949,17 +966,17 @@ pub async fn run(
                     }
                     Ok((false, msg)) => {
                         app.set_status(format!("Inject failed: {msg}"));
-                        app.awaiting_response = false;
+                        app.chat.awaiting_response = false;
                     }
                     Err(e) => {
                         app.set_status(format!("Inject error: {e:#}"));
-                        app.awaiting_response = false;
+                        app.chat.awaiting_response = false;
                     }
                 }
             }
 
             // Check for WebSocket events
-            while let Ok(event) = app.ws_rx.try_recv() {
+            while let Ok(event) = app.chat.ws_rx.try_recv() {
                 app.handle_ws_event(event);
             }
 
@@ -972,14 +989,16 @@ pub async fn run(
             // Handle input (non-blocking, 50ms timeout)
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    Event::Paste(data) if app.visible && app.focus == ChatFocus::ChatPane => {
+                    Event::Paste(data)
+                        if app.chat.visible && app.chat.focus == ChatFocus::ChatPane =>
+                    {
                         // Bracketed paste delivers the whole pasted chunk as
                         // one event. Forward it to the editor so it never
                         // triggers Enter handling / send.
-                        app.handler.on_paste_event(data, &mut app.editor);
+                        app.chat.handler.on_paste_event(data, &mut app.chat.editor);
                     }
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if app.visible {
+                        if app.chat.visible {
                             handle_chat_keys(&mut app, key, &mut terminal);
                         } else {
                             handle_normal_keys(
@@ -1318,7 +1337,7 @@ fn edit_input_externally(
         .suffix(".md")
         .tempfile()
         .context("Failed to create temp file for external editor")?;
-    std::fs::write(tmp.path(), app.text())
+    std::fs::write(tmp.path(), app.chat.text())
         .with_context(|| format!("Failed to write {}", tmp.path().display()))?;
 
     // Suspend the TUI so the editor takes over the terminal
@@ -1344,8 +1363,8 @@ fn edit_input_externally(
                 .with_context(|| format!("Failed to read {}", tmp.path().display()))?;
             // Drop the single trailing newline editors typically append on save
             let edited = edited.strip_suffix('\n').unwrap_or(&edited);
-            app.editor = EditorState::new(Lines::from(edited));
-            app.editor.mode = EditorMode::Insert;
+            app.chat.editor = EditorState::new(Lines::from(edited));
+            app.chat.editor.mode = EditorMode::Insert;
         }
         Ok(s) => {
             app.set_status(format!("Editor exited with {s}; input unchanged"));
@@ -1372,7 +1391,7 @@ fn handle_chat_keys(
 
     // Ctrl+E opens an external editor to compose the chat input
     let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_e && app.phase == ChatPhase::Chatting && app.focus == ChatFocus::ChatPane {
+    if is_ctrl_e && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
         if let Err(e) = edit_input_externally(app, terminal) {
             app.set_status(format!("Editor error: {e:#}"));
         }
@@ -1381,22 +1400,22 @@ fn handle_chat_keys(
 
     // Ctrl+W cycles activity pane split ratio
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_w && app.phase == ChatPhase::Chatting {
-        app.activity_split = (app.activity_split + 1) % 4;
+    if is_ctrl_w && app.chat.phase == ChatPhase::Chatting {
+        app.chat.activity_split = (app.chat.activity_split + 1) % 4;
         return;
     }
 
     // ── Command popup handling ─────────────────────────────────────
-    if let Some(ref mut popup) = app.command_popup {
-        match handle_popup_key(key, popup, &app.commands, &app.models) {
+    if let Some(ref mut popup) = app.chat.command_popup {
+        match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {
             Some(cmd) if cmd.is_empty() => {
                 // Esc — close popup without action
-                app.command_popup = None;
+                app.chat.command_popup = None;
             }
             Some(cmd) => {
                 // Enter — send the command immediately
-                app.command_popup = None;
-                app.send_message_with_text(&cmd);
+                app.chat.command_popup = None;
+                app.chat.send_message_with_text(&cmd);
             }
             None => {
                 // Popup handled the key, continue
@@ -1407,39 +1426,39 @@ fn handle_chat_keys(
 
     // Check for "/" to open the command popup (before it reaches the editor)
     let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_slash && app.phase == ChatPhase::Chatting && app.focus == ChatFocus::ChatPane {
-        let should_open = match app.editor.mode {
+    if is_slash && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
+        let should_open = match app.chat.editor.mode {
             // Normal mode: "/" always opens the popup
             EditorMode::Normal => true,
             // Insert mode: only when editor is empty (first char)
-            EditorMode::Insert => app.text().trim().is_empty(),
+            EditorMode::Insert => app.chat.text().trim().is_empty(),
             _ => false,
         };
         if should_open {
-            app.command_popup = Some(CommandPopupState::new());
+            app.chat.command_popup = Some(CommandPopupState::new());
             return;
         }
     }
 
-    match app.phase {
+    match app.chat.phase {
         ChatPhase::PatternSelect => match key.code {
             KeyCode::Esc => {
-                app.close();
+                app.chat.close();
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if app.pattern_selected > 0 {
-                    app.pattern_selected -= 1;
+                if app.chat.pattern_selected > 0 {
+                    app.chat.pattern_selected -= 1;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if app.pattern_selected + 1 < app.patterns.len() {
-                    app.pattern_selected += 1;
+                if app.chat.pattern_selected + 1 < app.chat.patterns.len() {
+                    app.chat.pattern_selected += 1;
                 }
             }
             KeyCode::Enter => {
-                if let Some(pattern) = app.patterns.get(app.pattern_selected) {
+                if let Some(pattern) = app.chat.patterns.get(app.chat.pattern_selected) {
                     let pattern = pattern.clone();
-                    app.select_pattern(pattern);
+                    app.chat.select_pattern(pattern);
                 }
             }
             _ => {}
@@ -1447,49 +1466,53 @@ fn handle_chat_keys(
         ChatPhase::Chatting => {
             // `gg` sequence: a second consecutive `g` jumps to the top; any
             // other key resets the sequence state.
-            let gg_jump = app.gg_step(key.code == KeyCode::Char('g'));
+            let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
 
             // App-level keys take precedence over the vim editor.
             match key.code {
                 KeyCode::Tab => {
-                    app.toggle_focus();
+                    app.chat.toggle_focus();
                     return;
                 }
                 KeyCode::PageUp => {
-                    app.page_up();
+                    app.chat.page_up();
                     return;
                 }
                 KeyCode::PageDown => {
-                    app.page_down();
+                    app.chat.page_down();
                     return;
                 }
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.page_up();
+                    app.chat.page_up();
                     return;
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.page_down();
+                    app.chat.page_down();
                     return;
                 }
                 _ => {}
             }
 
-            if app.focus == ChatFocus::ActivityPane {
+            if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     KeyCode::Esc => {
-                        if app.is_detail_mode() {
-                            app.close();
+                        if app.chat.is_detail_mode() {
+                            app.chat.close();
                         } else {
-                            app.go_to_pattern_select();
+                            app.chat.go_to_pattern_select();
                         }
                     }
-                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                    KeyCode::Char('G') => app.scroll_to_bottom(),
-                    KeyCode::Char('g') if gg_jump => app.scroll_to_top(),
+                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
+                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
+                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    KeyCode::Left => app.activity_hscroll = app.activity_hscroll.saturating_sub(1),
-                    KeyCode::Right => app.activity_hscroll = app.activity_hscroll.saturating_add(1),
+                    KeyCode::Left => {
+                        app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_sub(1)
+                    }
+                    KeyCode::Right => {
+                        app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
+                    }
                     _ => {}
                 }
                 return;
@@ -1502,15 +1525,15 @@ fn handle_chat_keys(
             // be no-ops in the editor, so in Normal mode they scroll the
             // message history instead. With multi-line input they remain
             // editor motions.
-            let single_line_input = app.editor.lines.len() <= 1;
-            match (app.editor.mode, key.code) {
+            let single_line_input = app.chat.editor.lines.len() <= 1;
+            match (app.chat.editor.mode, key.code) {
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
                 (EditorMode::Normal, KeyCode::Esc) => {
-                    if app.is_detail_mode() {
-                        app.close();
+                    if app.chat.is_detail_mode() {
+                        app.chat.close();
                     } else {
-                        app.go_to_pattern_select();
+                        app.chat.go_to_pattern_select();
                     }
                 }
                 // Plain Enter in Insert mode inserts a newline (handled by
@@ -1520,29 +1543,33 @@ fn handle_chat_keys(
                     if !key.modifiers.contains(KeyModifiers::SHIFT)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    app.handler.on_key_event(key, &mut app.editor)
+                    app.chat.handler.on_key_event(key, &mut app.chat.editor)
                 }
                 // Shift/Alt+Enter in Insert mode sends the message.
-                (EditorMode::Insert, KeyCode::Enter) => app.send_message(),
+                (EditorMode::Insert, KeyCode::Enter) => app.chat.send_message(),
                 // Enter in Normal mode also sends (newlines come from o/O).
-                (EditorMode::Normal, KeyCode::Enter) => app.send_message(),
+                (EditorMode::Normal, KeyCode::Enter) => app.chat.send_message(),
                 // In Normal mode, Up/Down scroll the message history (cursor
                 // movement is on h/l). In other modes arrows go to the editor.
-                (EditorMode::Normal, KeyCode::Up) => app.scroll_up(),
-                (EditorMode::Normal, KeyCode::Down) => app.scroll_down(),
+                (EditorMode::Normal, KeyCode::Up) => app.chat.scroll_up(),
+                (EditorMode::Normal, KeyCode::Down) => app.chat.scroll_down(),
                 // j/k and gg/G scroll the history only when the input is a
                 // single line (where they are editor no-ops); multi-line
                 // input keeps them as editor motions.
-                (EditorMode::Normal, KeyCode::Char('k')) if single_line_input => app.scroll_up(),
-                (EditorMode::Normal, KeyCode::Char('j')) if single_line_input => app.scroll_down(),
+                (EditorMode::Normal, KeyCode::Char('k')) if single_line_input => {
+                    app.chat.scroll_up()
+                }
+                (EditorMode::Normal, KeyCode::Char('j')) if single_line_input => {
+                    app.chat.scroll_down()
+                }
                 (EditorMode::Normal, KeyCode::Char('G')) if single_line_input => {
-                    app.scroll_to_bottom()
+                    app.chat.scroll_to_bottom()
                 }
                 (EditorMode::Normal, KeyCode::Char('g')) if single_line_input && gg_jump => {
-                    app.scroll_to_top()
+                    app.chat.scroll_to_top()
                 }
                 (EditorMode::Normal, KeyCode::Char('g')) if single_line_input => {}
-                _ => app.handler.on_key_event(key, &mut app.editor),
+                _ => app.chat.handler.on_key_event(key, &mut app.chat.editor),
             }
         }
     }
@@ -1563,7 +1590,7 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            app.open(addr, None, None);
+            app.chat.open(addr, None, None);
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads
@@ -1582,9 +1609,10 @@ async fn handle_normal_keys(
             });
             if let Some((name, channel, is_ws)) = thread_info {
                 if is_ws {
-                    app.open(addr, Some(&channel), Some(&name));
+                    app.chat.open(addr, Some(&channel), Some(&name));
                 } else {
-                    app.open_thread_detail(&channel, &name);
+                    app.chat
+                        .open_thread_detail(&channel, &name, app.state.as_ref());
                 }
             }
         }
@@ -1661,7 +1689,7 @@ async fn handle_normal_keys(
 fn ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    if app.visible {
+    if app.chat.visible {
         ui_chat_mode(frame, area, app);
     } else {
         ui_normal_mode(frame, area, app);
@@ -1700,12 +1728,12 @@ fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     render_channels(frame, main_chunks[0], app);
     render_compact_info(frame, main_chunks[1], app);
 
-    match app.phase {
+    match app.chat.phase {
         ChatPhase::PatternSelect => {
             render_pattern_select(frame, main_chunks[2], app);
         }
         ChatPhase::Chatting => {
-            match app.activity_split {
+            match app.chat.activity_split {
                 1 => {
                     // 100/0 — full chat, no activity pane
                     render_chat_conversation(frame, main_chunks[2], app);
@@ -1994,8 +2022,9 @@ fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = if app.visible && app.phase == ChatPhase::Chatting {
-        app.thread
+    let selected = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+        app.chat
+            .thread
             .as_ref()
             .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
     } else {
@@ -2068,7 +2097,7 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.patterns.is_empty() {
+    if app.chat.patterns.is_empty() {
         let text = Paragraph::new(Span::styled(
             "  No patterns available",
             Style::default().fg(Color::DarkGray),
@@ -2078,11 +2107,12 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let lines: Vec<Line> = app
+        .chat
         .patterns
         .iter()
         .enumerate()
         .map(|(i, pattern)| {
-            if i == app.pattern_selected {
+            if i == app.chat.pattern_selected {
                 Line::from(vec![Span::styled(
                     format!("> {pattern}"),
                     Style::default()
@@ -2101,9 +2131,9 @@ fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
-    let title = format!(" Chat: {} ", app.thread.as_deref().unwrap_or("-"));
+    let title = format!(" Chat: {} ", app.chat.thread.as_deref().unwrap_or("-"));
     let mut block = Block::default().title(title).borders(Borders::ALL);
-    if app.focus == ChatFocus::ChatPane {
+    if app.chat.focus == ChatFocus::ChatPane {
         block = block.border_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -2117,8 +2147,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Input area grows with content (up to 11 rows) for multi-line editing:
     // wrapped text lines (1-10) + 1 status line for the vim mode indicator.
     // Subtract the 2-column "> " prompt gutter from the wrap width.
-    let input_line_count =
-        count_wrapped_lines(&app.text(), inner.width.saturating_sub(2)).clamp(1, 10) as u16 + 1;
+    let input_line_count = count_wrapped_lines(&app.chat.text(), inner.width.saturating_sub(2))
+        .clamp(1, 10) as u16
+        + 1;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -2134,12 +2165,12 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut box_open = false;
     let mut group_start_ts: Option<String> = None;
 
-    for (idx, msg) in app.messages.iter().enumerate() {
+    for (idx, msg) in app.chat.messages.iter().enumerate() {
         let is_user = msg.sender == "user";
         let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
         let prev_sender = if idx > 0 {
-            Some(app.messages[idx - 1].sender.as_str())
+            Some(app.chat.messages[idx - 1].sender.as_str())
         } else {
             None
         };
@@ -2147,7 +2178,11 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         // Close previous group box on AI → user transition
         if is_user && prev_sender == Some("ai") && box_open {
             all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-            let last_ts = app.messages.get(idx - 1).and_then(|m| m.timestamp.clone());
+            let last_ts = app
+                .chat
+                .messages
+                .get(idx - 1)
+                .and_then(|m| m.timestamp.clone());
             let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
             let width = chunks[0].width as usize;
             let close_spans = if elapsed.is_empty() {
@@ -2213,7 +2248,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Close any open box at the end
     if box_open {
         all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
-        let last_ts = app.messages.last().and_then(|m| m.timestamp.clone());
+        let last_ts = app.chat.messages.last().and_then(|m| m.timestamp.clone());
         let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
         let width = chunks[0].width as usize;
         let close_spans = if elapsed.is_empty() {
@@ -2241,14 +2276,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         .state
         .as_ref()
         .and_then(|s| {
-            let chat_name = app.thread.as_deref()?;
+            let chat_name = app.chat.thread.as_deref()?;
             s.threads.iter().find(|t| t.name == chat_name)
         })
         .is_some_and(|ct| ct.status == ThreadStatus::Processing);
 
     // Show progress if the server reports processing OR we've sent a message
     // locally and are still waiting for the server state to catch up.
-    let show_progress = server_processing || app.awaiting_response;
+    let show_progress = server_processing || app.chat.awaiting_response;
 
     if show_progress {
         // Try to get activity entries from the server
@@ -2256,7 +2291,7 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
             .state
             .as_ref()
             .and_then(|s| {
-                let chat_name = app.thread.as_deref()?;
+                let chat_name = app.chat.thread.as_deref()?;
                 s.threads.iter().find(|t| t.name == chat_name)
             })
             .filter(|ct| ct.status == ThreadStatus::Processing)
@@ -2399,8 +2434,8 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let inner_height = chunks[0].height as usize;
     let max_skip = all_lines.len().saturating_sub(inner_height);
-    app.scroll = app.scroll.min(max_skip);
-    let skip = max_skip.saturating_sub(app.scroll);
+    app.chat.scroll = app.chat.scroll.min(max_skip);
+    let skip = max_skip.saturating_sub(app.chat.scroll);
     let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
 
     let messages_para = Paragraph::new(visible_lines);
@@ -2412,9 +2447,9 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // default inverted block otherwise; hidden when the activity pane has
     // focus. A "> " prompt sits in a 2-column gutter left of the editor.
     let theme = EditorTheme::default().base(Style::default());
-    let theme = match app.focus {
+    let theme = match app.chat.focus {
         ChatFocus::ActivityPane => theme.hide_cursor(),
-        ChatFocus::ChatPane => match app.editor.mode {
+        ChatFocus::ChatPane => match app.chat.editor.mode {
             EditorMode::Insert => theme.cursor_style(
                 Style::default()
                     .add_modifier(Modifier::UNDERLINED)
@@ -2429,14 +2464,14 @@ fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new("> ").style(Style::default().fg(Color::Yellow)),
         prompt_area,
     );
-    EditorView::new(&mut app.editor)
+    EditorView::new(&mut app.chat.editor)
         .theme(theme)
         .wrap(true)
         .render(editor_area, frame.buffer_mut());
 
     // ── Command popup overlay ──
-    if let Some(ref popup) = app.command_popup {
-        render_command_popup(frame, inner, popup, &app.commands, &app.models);
+    if let Some(ref popup) = app.chat.command_popup {
+        render_command_popup(frame, inner, popup, &app.chat.commands, &app.chat.models);
     }
 }
 
@@ -2450,8 +2485,9 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     };
 
-    let selected = if app.visible && app.phase == ChatPhase::Chatting {
-        app.thread
+    let selected = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+        app.chat
+            .thread
             .as_ref()
             .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
     } else {
@@ -2469,16 +2505,16 @@ fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     };
 
-    let focused = app.visible && app.focus == ChatFocus::ActivityPane;
+    let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
     let max_skip = selected.activity.len().saturating_sub(inner_height);
-    app.activity_scroll = app.activity_scroll.min(max_skip);
+    app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
     render_activity_log_inner(
         frame,
         area,
         selected,
-        app.activity_scroll,
-        app.activity_hscroll,
+        app.chat.activity_scroll,
+        app.chat.activity_hscroll,
         focused,
     );
 }
@@ -2550,8 +2586,8 @@ fn render_activity_log_inner(
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.visible {
-        match app.phase {
+    let help_text = if app.chat.visible {
+        match app.chat.phase {
             ChatPhase::PatternSelect => "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
                 "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
@@ -2590,8 +2626,8 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let bar = Paragraph::new(Line::from({
         let mut spans = vec![Span::raw(" ")];
-        if app.visible && !app.is_detail_mode() {
-            if app.ws_connected {
+        if app.chat.visible && !app.chat.is_detail_mode() {
+            if app.chat.ws_connected {
                 spans.push(Span::styled("●", Style::default().fg(Color::Green)));
             } else {
                 spans.push(Span::styled("●", Style::default().fg(Color::Red)));
@@ -2649,24 +2685,24 @@ mod tests {
         let mut app = App::new(rx);
 
         // Simulate messages from a previous thread
-        app.messages.push(ChatMessage {
+        app.chat.messages.push(ChatMessage {
             sender: "user".to_string(),
             text: "hello from thread A".to_string(),
             timestamp: None,
         });
-        app.messages.push(ChatMessage {
+        app.chat.messages.push(ChatMessage {
             sender: "ai".to_string(),
             text: "reply from thread A".to_string(),
             timestamp: None,
         });
-        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.chat.messages.len(), 2);
 
         // Switch to a new thread
-        app.select_pattern("thread-b".to_string());
+        app.chat.select_pattern("thread-b".to_string());
 
         // Messages must be cleared so stale content doesn't leak across threads
-        assert!(app.messages.is_empty());
-        assert_eq!(app.thread.as_deref(), Some("thread-b"));
+        assert!(app.chat.messages.is_empty());
+        assert_eq!(app.chat.thread.as_deref(), Some("thread-b"));
     }
 
     #[test]
@@ -2675,20 +2711,20 @@ mod tests {
         let mut app = App::new(rx);
 
         // Chat pane focused
-        app.focus = ChatFocus::ChatPane;
-        app.scroll_to_top();
-        assert_eq!(app.scroll, usize::MAX);
-        assert_eq!(app.activity_scroll, 0);
-        app.scroll_to_bottom();
-        assert_eq!(app.scroll, 0);
+        app.chat.focus = ChatFocus::ChatPane;
+        app.chat.scroll_to_top();
+        assert_eq!(app.chat.scroll, usize::MAX);
+        assert_eq!(app.chat.activity_scroll, 0);
+        app.chat.scroll_to_bottom();
+        assert_eq!(app.chat.scroll, 0);
 
         // Activity pane focused
-        app.focus = ChatFocus::ActivityPane;
-        app.scroll_to_top();
-        assert_eq!(app.activity_scroll, usize::MAX);
-        assert_eq!(app.scroll, 0);
-        app.scroll_to_bottom();
-        assert_eq!(app.activity_scroll, 0);
+        app.chat.focus = ChatFocus::ActivityPane;
+        app.chat.scroll_to_top();
+        assert_eq!(app.chat.activity_scroll, usize::MAX);
+        assert_eq!(app.chat.scroll, 0);
+        app.chat.scroll_to_bottom();
+        assert_eq!(app.chat.activity_scroll, 0);
     }
 
     #[test]
@@ -2697,20 +2733,20 @@ mod tests {
         let mut app = App::new(rx);
 
         // Single `g` arms the sequence without jumping
-        assert!(!app.gg_step(true));
-        assert!(app.pending_g);
+        assert!(!app.chat.gg_step(true));
+        assert!(app.chat.pending_g);
         // Second consecutive `g` completes the jump and resets
-        assert!(app.gg_step(true));
-        assert!(!app.pending_g);
+        assert!(app.chat.gg_step(true));
+        assert!(!app.chat.pending_g);
         // Third `g` starts a fresh sequence
-        assert!(!app.gg_step(true));
-        assert!(app.pending_g);
+        assert!(!app.chat.gg_step(true));
+        assert!(app.chat.pending_g);
         // A non-`g` key resets the sequence
-        assert!(!app.gg_step(false));
-        assert!(!app.pending_g);
+        assert!(!app.chat.gg_step(false));
+        assert!(!app.chat.pending_g);
         // `g` after reset does not jump
-        assert!(!app.gg_step(true));
-        assert!(app.pending_g);
+        assert!(!app.chat.gg_step(true));
+        assert!(app.chat.pending_g);
     }
 
     #[test]

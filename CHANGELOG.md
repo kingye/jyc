@@ -23,7 +23,10 @@ All notable changes to JYC will be documented in this file.
   throttled `Thinking` events (at most once per 500ms, preview truncated to
   300 chars) that render in the dashboard chat pane alongside the generic
   "AI is thinking..." indicator, so users can see the chain-of-thought in real
-  time.
+  time. **`Ctrl+T` toggles** whether the full thinking preview is shown; the
+  activity pane and persisted `activity.jsonl` always show a minimal
+  "Thinking..." marker (verbose reasoning text is kept in-memory only and never
+  written to disk).
 
 ### Fixed
 

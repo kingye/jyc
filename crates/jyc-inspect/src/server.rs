@@ -814,10 +814,26 @@ impl ActivityTracker {
                                                                     let is_error = entry.severity == Severity::Error;
                                                                     let is_progress =
                                                                         matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                    if let Some(ref path) = thread_path
-                                                                        && let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                    let is_thinking =
+                                                                        matches!(&event, ThreadEvent::Thinking { .. });
+                                                                    if let Some(ref path) = thread_path {
+                                                                        // Thinking events carry a preview of the chain-of-thought
+                                                                        // for the chat pane. Persist only a minimal "Thinking..."
+                                                                        // marker to keep activity.jsonl compact and avoid leaking
+                                                                        // verbose reasoning text to disk.
+                                                                        let stored = if is_thinking {
+                                                                            ActivityEntry {
+                                                                                text: "Thinking...".to_string(),
+                                                                                timestamp: entry.timestamp.clone(),
+                                                                                severity: entry.severity,
+                                                                            }
+                                                                        } else {
+                                                                            entry.clone()
+                                                                        };
+                                                                        if let Err(e) = ActivityLogStore::append(path, &stored) {
                                                                             tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                         }
+                                                                    }
                                                                     let mut map = map.lock().await;
                                                                     let state = map
                                                                         .entry((channel_for_task.clone(), name.clone()))

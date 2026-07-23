@@ -55,6 +55,9 @@ pub(super) struct ChatState {
     pub(super) awaiting_response: bool,
     /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
     pub(super) activity_split: u8,
+    /// Whether to show full LLM thinking/reasoning in the AI progress area.
+    /// Toggle with Ctrl+T. The activity pane always shows a minimal "Thinking..." marker.
+    pub(super) show_thinking: bool,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
@@ -248,6 +251,13 @@ pub(super) fn handle_chat_keys(
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_w && app.chat.phase == ChatPhase::Chatting {
         app.chat.activity_split = (app.chat.activity_split + 1) % 4;
+        return;
+    }
+
+    // Ctrl+T toggles showing full LLM thinking/reasoning in the AI progress area.
+    let is_ctrl_t = key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_t && app.chat.phase == ChatPhase::Chatting {
+        app.chat.show_thinking = !app.chat.show_thinking;
         return;
     }
 
@@ -776,6 +786,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         } else {
             let total = activity_entries.len();
             for (idx, a) in activity_entries.iter().rev().enumerate() {
+                // Skip thinking entries when the user has toggled them off.
+                if !app.chat.show_thinking && a.text.starts_with("Thinking: ") {
+                    continue;
+                }
                 let is_last = idx == total - 1;
                 let elapsed = if is_last {
                     format_elapsed(&a.timestamp)
@@ -1034,12 +1048,19 @@ pub(super) fn render_activity_log_inner(
                 Severity::Warning => Style::default().fg(Color::Yellow),
                 Severity::Info => Style::default(),
             };
+            // The activity pane always shows a minimal "Thinking..." marker —
+            // the full reasoning preview is reserved for the chat pane progress area.
+            let display_text = if entry.text.starts_with("Thinking: ") {
+                "Thinking...".to_string()
+            } else {
+                entry.text.clone()
+            };
             Line::from(vec![
                 Span::styled(
                     format!("  {time_str} "),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(&entry.text, text_style),
+                Span::styled(display_text, text_style),
             ])
         })
         .collect();
@@ -1068,6 +1089,7 @@ impl ChatState {
             activity_hscroll: 0,
             awaiting_response: false,
             activity_split: 0,
+            show_thinking: true,
             ws_tx: None,
             ws_rx,
             ws_connected: false,

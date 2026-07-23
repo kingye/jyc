@@ -787,15 +787,50 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             ]));
         } else {
             let total = activity_entries.len();
+            let mut shown_thinking = false;
             for (idx, a) in activity_entries.iter().rev().enumerate() {
                 // Skip thinking entries when the user has toggled them off.
-                // If all entries are thinking, the loop produces no lines —
-                // the generic "⏳ AI is thinking..." indicator remains as
-                // the only progress feedback, which is the desired behavior.
                 if !app.chat.show_thinking && a.text.starts_with("Thinking: ") {
                     continue;
                 }
                 let is_last = idx == total - 1;
+
+                // Thinking entries: show full content with line breaks (only the
+                // latest one), plus a minimal status line. Older thinking entries
+                // are skipped to avoid duplicate display.
+                if a.text.starts_with("Thinking: ") {
+                    if shown_thinking {
+                        continue;
+                    }
+                    shown_thinking = true;
+                    let content = &a.text["Thinking: ".len()..];
+                    let gray_style = Style::default().fg(Color::DarkGray);
+                    for line in content.split('\n') {
+                        all_lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(line, gray_style),
+                        ]));
+                    }
+                    if is_last {
+                        let elapsed = format_elapsed(&a.timestamp);
+                        let status = if elapsed.is_empty() {
+                            "⏳ Thinking...".to_string()
+                        } else {
+                            format!("⏳ Thinking... {elapsed}")
+                        };
+                        all_lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                status,
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    }
+                    continue;
+                }
+
                 let elapsed = if is_last {
                     format_elapsed(&a.timestamp)
                 } else {

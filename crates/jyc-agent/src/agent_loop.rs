@@ -331,6 +331,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             thread_name,
             event_bus,
             sse_read_timeout,
+            &cancel,
         )
         .await?;
 
@@ -747,6 +748,8 @@ async fn generate_summary_from_joined_history(
     let user_msg = provider.format_user_message(&[ContentBlock::Text { text: joined }]);
 
     // Same transient-SSE-retry policy as the main loop call.
+    // Use a dummy cancel token — progress summaries don't need cancellation.
+    let dummy_cancel = CancellationToken::new();
     let response = complete_with_retry(
         provider,
         &[user_msg],
@@ -755,6 +758,7 @@ async fn generate_summary_from_joined_history(
         thread_name,
         event_bus,
         sse_read_timeout,
+        &dummy_cancel,
     )
     .await?;
 
@@ -999,6 +1003,7 @@ fn retry_wait_ms(class: RetryClass, attempt_idx: u32, retry_after_secs: Option<u
 /// Retries re-issue the entire request (no resume — providers don't
 /// support it). Output tokens from the failed attempt are discarded; only
 /// the successful attempt's tokens are counted by the caller.
+#[allow(clippy::too_many_arguments)]
 async fn complete_with_retry(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],
@@ -1007,18 +1012,32 @@ async fn complete_with_retry(
     thread_name: &str,
     event_bus: Option<&ThreadEventBusRef>,
     sse_read_timeout: std::time::Duration,
+    cancel: &CancellationToken,
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
 
     for attempt_idx in 0..THROTTLED_MAX_ATTEMPTS {
-        let result: Result<CollectedResponse> = async {
-            let stream = provider
-                .complete_raw(raw_context, tools, system_prompt)
-                .await?;
-            collect_response(stream, sse_read_timeout).await
+        // Check cancellation before each attempt so /cancel takes effect
+        // immediately, not just between loop iterations.
+        if cancel.is_cancelled() {
+            return Err(anyhow::anyhow!(
+                "cancelled before LLM call attempt {}",
+                attempt_idx + 1
+            ));
         }
-        .await;
+
+        let result: Result<CollectedResponse> = tokio::select! {
+            r = async {
+                let stream = provider
+                    .complete_raw(raw_context, tools, system_prompt)
+                    .await?;
+                collect_response(stream, sse_read_timeout).await
+            } => r,
+            _ = cancel.cancelled() => {
+                return Err(anyhow::anyhow!("cancelled during LLM call"));
+            }
+        };
 
         match result {
             Ok(r) => return Ok(r),
@@ -1074,7 +1093,17 @@ async fn complete_with_retry(
         )
         .await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        // Interruptible backoff: cancel takes effect immediately instead of
+        // waiting for the full sleep duration.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {}
+            _ = cancel.cancelled() => {
+                return Err(anyhow::anyhow!(
+                    "cancelled during retry backoff (attempt {}/{})",
+                    next_attempt, max_attempts
+                ));
+            }
+        }
     }
 
     Err(last_err)
@@ -1381,6 +1410,7 @@ mod retry_tests {
             "thread-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1432,6 +1462,7 @@ mod retry_tests {
             "thread-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1475,6 +1506,7 @@ mod retry_tests {
             "thread-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1528,6 +1560,7 @@ mod retry_tests {
             "thread-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
         )
         .await;
 

@@ -23,6 +23,7 @@ use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
+use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::metrics::MetricsHandle;
@@ -1480,6 +1481,7 @@ async fn process_message(
     command_registry.register(Box::new(CancelCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(PinCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(ThinkingCommandHandler));
 
     let cmd_context = CommandContext {
         args: vec![],

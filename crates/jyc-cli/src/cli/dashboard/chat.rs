@@ -783,7 +783,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
             .unwrap_or_default();
 
-        if activity_entries.is_empty() {
+        let has_thinking_text = thread_info
+            .and_then(|ct| ct.thinking_text.as_deref())
+            .is_some_and(|t| !t.is_empty());
+
+        if activity_entries.is_empty() && !has_thinking_text {
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(

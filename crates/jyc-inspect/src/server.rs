@@ -850,9 +850,17 @@ impl ActivityTracker {
                                                                                 state.recent_messages.pop_front();
                                                                             }
                                                                         }
-                                                                        // Clear thinking text when processing starts
-                                                                        // (new turn) or completes.
-                                                                        if is_processing || is_completed {
+                                                                        // Clear thinking text only when a new processing
+                                                                        // cycle starts or the current one completes.
+                                                                        // Do NOT clear on ProcessingProgress heartbeats,
+                                                                        // ToolStarted, or LLMRequestStarted — those are
+                                                                        // mid-cycle events that should keep the thinking
+                                                                        // display visible.
+                                                                        if matches!(
+                                                                            &event,
+                                                                            ThreadEvent::ProcessingStarted { .. }
+                                                                            | ThreadEvent::ProcessingCompleted { .. }
+                                                                        ) {
                                                                             state.thinking_text = None;
                                                                         }
                                                                         state.last_active_at = Some(event.timestamp());

@@ -342,11 +342,7 @@ pub(super) fn handle_chat_keys(
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     KeyCode::Esc => {
-                        if app.chat.is_detail_mode() {
-                            app.chat.close();
-                        } else {
-                            app.chat.go_to_pattern_select();
-                        }
+                        app.chat.close();
                     }
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
@@ -376,11 +372,7 @@ pub(super) fn handle_chat_keys(
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
                 (EditorMode::Normal, KeyCode::Esc) => {
-                    if app.chat.is_detail_mode() {
-                        app.chat.close();
-                    } else {
-                        app.chat.go_to_pattern_select();
-                    }
+                    app.chat.close();
                 }
                 // Plain Enter in Insert mode inserts a newline (handled by
                 // the editor). Pasted multi-line text therefore can never
@@ -1229,13 +1221,6 @@ impl ChatState {
         if let Some(tx) = &self.ws_tx {
             let _ = tx.send(subscribe_msg);
         }
-    }
-
-    pub(super) fn go_to_pattern_select(&mut self) {
-        self.phase = ChatPhase::PatternSelect;
-        self.thread = None;
-        self.editor = empty_chat_editor();
-        self.scroll = 0;
     }
 
     pub(super) fn toggle_focus(&mut self) {

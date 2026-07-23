@@ -18,6 +18,12 @@ All notable changes to JYC will be documented in this file.
 - **Chat input history with Up/Down.** When the chat input is empty, Up arrow
   recalls the last sent message. Repeated Up cycles older, Down cycles newer;
   Down at the newest clears back to empty. History is scoped per thread. (#416)
+- **Live LLM thinking preview in chat pane.** When a reasoning model (e.g.,
+  DeepSeek thinking mode) produces `reasoning_content`, the agent now publishes
+  throttled `Thinking` events (at most once per 500ms, preview truncated to
+  300 chars) that render in the dashboard chat pane alongside the generic
+  "AI is thinking..." indicator, so users can see the chain-of-thought in real
+  time.
 
 ### Fixed
 

@@ -1116,8 +1116,8 @@ async fn complete_with_retry(
 }
 
 /// Maximum length of the `text` preview in a published `ThreadEvent::Thinking` event.
-/// Keeps each event small; the full reasoning text is preserved on the response.
-const THINKING_PREVIEW_CHARS: usize = 300;
+/// Large enough to show most reasoning content in the chat pane without truncation.
+const THINKING_PREVIEW_CHARS: usize = 2000;
 
 /// Minimum interval between published `ThreadEvent::Thinking` events.
 /// Reasoning can arrive in dozens of small deltas; throttling prevents

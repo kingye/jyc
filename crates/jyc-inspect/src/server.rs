@@ -1180,11 +1180,10 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         ThreadEvent::Thinking {
             text, full_length, ..
         } => {
-            let oneline = text.replace('\n', " ");
             if *full_length > text.len() {
-                format!("Thinking: {oneline}...")
+                format!("Thinking: {text}...")
             } else {
-                format!("Thinking: {oneline}")
+                format!("Thinking: {text}")
             }
         }
         ThreadEvent::IncomingMessage { sender, text, .. } => {

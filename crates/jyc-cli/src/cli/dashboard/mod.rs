@@ -1069,13 +1069,18 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat.visible {
         match app.chat.phase {
-            ChatPhase::PatternSelect => "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit",
+            ChatPhase::PatternSelect => {
+                "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit".to_string()
+            }
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [^T]thinking [Esc]back [^Q]quit"
+                let state = if app.chat.show_thinking { "on" } else { "off" };
+                format!(
+                    "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [^T]thinking:{state} [Esc]back [^Q]quit"
+                )
             }
         }
     } else {
-        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new"
+        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new".to_string()
     };
 
     let state = match &app.state {

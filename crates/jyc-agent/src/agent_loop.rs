@@ -1115,27 +1115,10 @@ async fn complete_with_retry(
     Err(last_err)
 }
 
-/// Maximum length of the `text` preview in a published `ThreadEvent::Thinking` event.
-/// Large enough to show most reasoning content in the chat pane without truncation.
-const THINKING_PREVIEW_CHARS: usize = 2000;
-
 /// Minimum interval between published `ThreadEvent::Thinking` events.
 /// Reasoning can arrive in dozens of small deltas; throttling prevents
 /// flooding the event bus and the dashboard.
 const THINKING_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Truncate to a char boundary at or before `max_len`.
-fn truncate_preview(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        s
-    } else {
-        let mut end = max_len;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        &s[..end]
-    }
-}
 
 /// Collect a streaming response into a complete response.
 async fn collect_response(
@@ -1180,16 +1163,13 @@ async fn collect_response(
                 };
                 if should_publish {
                     last_thinking_publish = Some(now);
-                    let full_length = response.reasoning_content.len();
-                    let preview =
-                        truncate_preview(&response.reasoning_content, THINKING_PREVIEW_CHARS)
-                            .to_string();
+                    let text = response.reasoning_content.clone();
                     publish_event(
                         event_bus,
                         ThreadEvent::Thinking {
                             thread_name: thread_name.to_string(),
-                            text: preview,
-                            full_length,
+                            text,
+                            full_length: response.reasoning_content.len(),
                             timestamp: Utc::now(),
                         },
                     )
@@ -1285,40 +1265,6 @@ fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Mess
         .rev()
         .flat_map(|(user, assistant)| vec![user, assistant])
         .collect()
-}
-
-#[cfg(test)]
-mod truncate_preview_tests {
-    use super::*;
-
-    #[test]
-    fn short_string_unchanged() {
-        assert_eq!(truncate_preview("abc", 5), "abc");
-    }
-
-    #[test]
-    fn exact_length_unchanged() {
-        assert_eq!(truncate_preview("abc", 3), "abc");
-    }
-
-    #[test]
-    fn truncates_at_ascii_boundary() {
-        assert_eq!(truncate_preview("abcdef", 3), "abc");
-    }
-
-    #[test]
-    fn truncates_at_multibyte_char_boundary() {
-        // 'a' (1 byte) + '😀' (4 bytes) + 'b' (1 byte) = 6 bytes
-        // max_len=3 falls inside the emoji (bytes 1-4), so we walk back to byte 1.
-        assert_eq!(truncate_preview("a😀b", 3), "a");
-    }
-
-    #[test]
-    fn truncates_just_before_multibyte_char() {
-        // 'abc' (3 bytes) + '😀' (4 bytes) = 7 bytes
-        // max_len=3 is a valid char boundary, so we get "abc".
-        assert_eq!(truncate_preview("abc😀", 3), "abc");
-    }
 }
 
 #[cfg(test)]

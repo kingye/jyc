@@ -111,9 +111,10 @@ pub enum ThreadEvent {
     Thinking {
         /// Name of the thread
         thread_name: String,
-        /// Preview of the thinking text (truncated to ~300 chars)
+        /// Full thinking text (untruncated).
         text: String,
-        /// Full length of the thinking text in characters
+        /// Length of the thinking text in characters.
+        /// Kept for API compatibility; always equals `text.len()`.
         full_length: usize,
         /// When the thinking was received
         timestamp: DateTime<Utc>,

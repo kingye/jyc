@@ -1051,6 +1051,18 @@ impl JycAgentService {
     }
 }
 
+/// Read the thinking-display state from `.jyc/thinking-state` in the thread directory.
+///
+/// Returns `true` (default) if the file is missing or contains anything other
+/// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
+/// `/thinking show` writes `"show"`.
+fn read_thinking_enabled(thread_path: &Path) -> bool {
+    match std::fs::read_to_string(thread_path.join(".jyc").join("thinking-state")) {
+        Ok(content) => content.trim() != "hide",
+        Err(_) => true,
+    }
+}
+
 /// Expand a tilde (`~`) prefix to `$HOME`. Other paths are returned as-is.
 fn expand_path(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/")
@@ -1373,6 +1385,7 @@ impl AgentService for JycAgentService {
             outbounds,
             context_window,
             auto_reset_threshold,
+            thinking_enabled: read_thinking_enabled(thread_path),
         })
         .await?;
 

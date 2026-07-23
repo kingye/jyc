@@ -10,6 +10,7 @@ pub mod pin_handler;
 pub mod registry;
 pub mod reset_handler;
 pub mod template_handler;
+pub mod thinking_handler;
 pub mod unpin_handler;
 
 pub use model_handler::list_available_models;
@@ -67,6 +68,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/unpin".into(),
             description: "Remove pinned thread configuration from config.toml".into(),
         },
+        CommandInfo {
+            name: "/thinking".into(),
+            description: "Show or hide AI thinking/reasoning content".into(),
+        },
     ]
 }
 
@@ -93,6 +98,7 @@ mod tests {
             "/?",
             "/pin",
             "/unpin",
+            "/thinking",
         ] {
             assert!(
                 names.contains(expected),
@@ -101,7 +107,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            11,
+            12,
             "all_commands() count changed. Update this test if intentional."
         );
     }

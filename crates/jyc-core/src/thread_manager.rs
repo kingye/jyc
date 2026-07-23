@@ -23,6 +23,7 @@ use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
+use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::metrics::MetricsHandle;
@@ -1025,6 +1026,7 @@ impl ThreadManager {
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
                 recent_messages: vec![], // Filled by InspectServer from event bus
+                thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
             });
         }
@@ -1479,6 +1481,7 @@ async fn process_message(
     command_registry.register(Box::new(CancelCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(PinCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(ThinkingCommandHandler));
 
     let cmd_context = CommandContext {
         args: vec![],

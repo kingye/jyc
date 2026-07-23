@@ -384,17 +384,19 @@ pub(super) fn handle_chat_keys(
                 (EditorMode::Normal, KeyCode::Esc) => {
                     app.chat.close();
                 }
-                // Plain Enter in Insert mode inserts a newline (handled by
-                // the editor). Pasted multi-line text therefore can never
-                // trigger a send, so no paste debounce is needed.
+                // Plain Enter in Insert mode sends the message. Pasted
+                // multi-line text goes through on_paste_event (not key events),
+                // so no paste debounce is needed.
                 (EditorMode::Insert, KeyCode::Enter)
                     if !key.modifiers.contains(KeyModifiers::SHIFT)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
+                    app.chat.send_message()
+                }
+                // Shift/Alt+Enter in Insert mode inserts a newline.
+                (EditorMode::Insert, KeyCode::Enter) => {
                     app.chat.handler.on_key_event(key, &mut app.chat.editor)
                 }
-                // Shift/Alt+Enter in Insert mode sends the message.
-                (EditorMode::Insert, KeyCode::Enter) => app.chat.send_message(),
                 // Up/Down in Insert mode, when input is empty or browsing history, recall history.
                 (EditorMode::Insert, KeyCode::Up)
                     if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>

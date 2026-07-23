@@ -991,7 +991,15 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
-    let max_skip = selected.activity.len().saturating_sub(inner_height);
+    // Thinking entries are excluded from the activity pane (they flood it with
+    // identical "Thinking..." markers). They remain in the in-memory log for
+    // the chat pane's AI progress area and are persisted to activity.jsonl.
+    let visible_count = selected
+        .activity
+        .iter()
+        .filter(|e| !e.text.starts_with("Thinking: "))
+        .count();
+    let max_skip = visible_count.saturating_sub(inner_height);
     app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
     render_activity_log_inner(
         frame,
@@ -1030,12 +1038,30 @@ pub(super) fn render_activity_log_inner(
         return;
     }
 
+    // Thinking entries are excluded from the activity pane - they appear as
+    // dozens of identical "Thinking..." markers and crowd out useful events.
+    // The chat pane AI progress area handles thinking display.
+    let visible: Vec<_> = selected
+        .activity
+        .iter()
+        .filter(|e| !e.text.starts_with("Thinking: "))
+        .collect();
+
+    if visible.is_empty() {
+        let text = Paragraph::new(Span::styled(
+            "  No activity",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(block);
+        frame.render_widget(text, area);
+        return;
+    }
+
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
-    let max_skip = selected.activity.len().saturating_sub(inner_height);
+    let max_skip = visible.len().saturating_sub(inner_height);
     let skip = max_skip.saturating_sub(scroll_offset);
 
-    let activity_lines: Vec<Line> = selected
-        .activity
+    let activity_lines: Vec<Line> = visible
         .iter()
         .skip(skip)
         .map(|entry| {
@@ -1053,19 +1079,12 @@ pub(super) fn render_activity_log_inner(
                 Severity::Warning => Style::default().fg(Color::Yellow),
                 Severity::Info => Style::default(),
             };
-            // The activity pane always shows a minimal "Thinking..." marker —
-            // the full reasoning preview is reserved for the chat pane progress area.
-            let display_text = if entry.text.starts_with("Thinking: ") {
-                "Thinking...".to_string()
-            } else {
-                entry.text.clone()
-            };
             Line::from(vec![
                 Span::styled(
                     format!("  {time_str} "),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(display_text, text_style),
+                Span::styled(&entry.text, text_style),
             ])
         })
         .collect();

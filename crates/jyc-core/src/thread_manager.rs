@@ -67,8 +67,11 @@ pub struct ThreadManager {
     event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
     enable_events: bool,
 
-    // Per-thread cancellation tokens (used by close_thread to stop workers)
-    pub(crate) thread_cancels: Mutex<HashMap<String, CancellationToken>>,
+    // Per-thread cancellation tokens (used by close_thread/cancel_thread to
+    // stop workers). Shared via Arc so the per-worker ThreadManager clone
+    // sees the same map — otherwise /cancel and /close look up an empty map
+    // and silently fail to cancel the running worker.
+    pub(crate) thread_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
 
     // Template directories for thread initialization (layered: L1 global < L2 workdir)
     template_dirs: crate::template_dirs::TemplateDirs,
@@ -169,7 +172,7 @@ impl ThreadManager {
             agent,
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
-            thread_cancels: Mutex::new(HashMap::new()),
+            thread_cancels: Arc::new(Mutex::new(HashMap::new())),
             template_dirs: template_dirs.into(),
             channel_name,
             channel_type,
@@ -296,6 +299,38 @@ impl ThreadManager {
             .await;
     }
 
+    /// Build the per-worker ThreadManager clone used inside a thread worker.
+    ///
+    /// Shares `thread_cancels` (and other Arc-backed fields) with the parent
+    /// so /cancel and /close invoked through the command registry reach the
+    /// running worker's real cancellation token. A fresh empty map here made
+    /// /cancel report success without cancelling anything.
+    fn worker_clone(&self) -> ThreadManager {
+        ThreadManager {
+            thread_queues: Mutex::new(HashMap::new()),
+            semaphore: self.semaphore.clone(),
+            max_queue_size: self.max_queue_size,
+            storage: self.storage.clone(),
+            outbound: self.outbound.clone(),
+            agent: self.agent.clone(),
+            event_buses: Mutex::new(HashMap::new()),
+            enable_events: self.enable_events,
+            thread_cancels: self.thread_cancels.clone(),
+            template_dirs: self.template_dirs.clone(),
+            channel_name: self.channel_name.clone(),
+            channel_type: self.channel_type.clone(),
+            workdir: self.workdir.clone(),
+            workspace_dir: self.workspace_dir.clone(),
+            config: self.config.clone(),
+            config_path: self.config_path.clone(),
+            metrics: self.metrics.clone(),
+            cancel: self.cancel.clone(),
+            worker_handles: Mutex::new(vec![]),
+            repo_group_locks: self.repo_group_locks.clone(),
+            thread_paths: self.thread_paths.clone(),
+        }
+    }
+
     async fn create_and_enqueue(
         &self,
         queues: &mut HashMap<String, mpsc::Sender<QueueItem>>,
@@ -325,29 +360,7 @@ impl ThreadManager {
             cancels.insert(thread_name.clone(), thread_cancel.clone());
         }
 
-        let tm = Arc::new(ThreadManager {
-            thread_queues: Mutex::new(HashMap::new()),
-            semaphore: self.semaphore.clone(),
-            max_queue_size: self.max_queue_size,
-            storage: self.storage.clone(),
-            outbound: self.outbound.clone(),
-            agent: self.agent.clone(),
-            event_buses: Mutex::new(HashMap::new()),
-            enable_events: self.enable_events,
-            thread_cancels: Mutex::new(HashMap::new()),
-            template_dirs: self.template_dirs.clone(),
-            channel_name: self.channel_name.clone(),
-            channel_type: self.channel_type.clone(),
-            workdir: self.workdir.clone(),
-            workspace_dir: self.workspace_dir.clone(),
-            config: self.config.clone(),
-            config_path: self.config_path.clone(),
-            metrics: self.metrics.clone(),
-            cancel: self.cancel.clone(),
-            worker_handles: Mutex::new(vec![]),
-            repo_group_locks: self.repo_group_locks.clone(),
-            thread_paths: self.thread_paths.clone(),
-        });
+        let tm = Arc::new(self.worker_clone());
 
         // Share the event bus with the clone so publish_reply_sent() can find it.
         // The event bus was created in `self` (the original ThreadManager), but
@@ -1143,13 +1156,19 @@ impl ThreadManager {
     /// Triggers the per-thread cancellation token so the agent loop breaks
     /// at the next iteration. The worker exits, and the next message will
     /// spawn a new worker automatically. Thread directory and queue are preserved.
-    pub async fn cancel_thread(&self, thread_name: &str) {
+    ///
+    /// Returns `true` if an active token was found and cancelled, `false` if
+    /// the thread had no running worker (callers can report this honestly
+    /// instead of claiming success).
+    pub async fn cancel_thread(&self, thread_name: &str) -> bool {
         let cancels = self.thread_cancels.lock().await;
         if let Some(token) = cancels.get(thread_name) {
             token.cancel();
             tracing::info!(thread = %thread_name, "Thread AI processing cancelled via cancel_thread");
+            true
         } else {
             tracing::warn!(thread = %thread_name, "cancel_thread: no cancellation token found (thread may not be processing)");
+            false
         }
     }
 
@@ -2487,6 +2506,37 @@ mode = "agent"
 
         // Clean up
         tm.shutdown().await;
+    }
+
+    /// Regression test: the per-worker clone must share the parent's
+    /// `thread_cancels` map. Previously the clone got a fresh empty map, so
+    /// `cancel_thread` (invoked via /cancel through the command registry,
+    /// which holds the clone) never found the running worker's token — the
+    /// user got a success reply but the agent kept running.
+    #[tokio::test]
+    async fn test_cancel_thread_via_worker_clone_really_cancels() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        // Simulate an active worker token registered in the shared map
+        let token = CancellationToken::new();
+        {
+            let mut cancels = tm.thread_cancels.lock().await;
+            cancels.insert("test-thread".to_string(), token.clone());
+        }
+
+        // Cancel through the worker clone — the path /cancel actually takes
+        let clone = tm.worker_clone();
+        assert!(
+            clone.cancel_thread("test-thread").await,
+            "cancel_thread via worker clone must find the shared token"
+        );
+        assert!(token.is_cancelled());
+
+        // Unknown thread must report "nothing cancelled"
+        assert!(!clone.cancel_thread("no-such-thread").await);
     }
 
     #[tokio::test]

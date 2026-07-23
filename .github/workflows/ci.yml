@@ -1,11 +1,18 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
     # Skip draft PRs — only run when the PR is marked as ready
     # (github.event.pull_request.draft == false check via job-level if)
+
+# Only keep the latest run per ref (PR ref or branch ref)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +20,7 @@ env:
 jobs:
   # Formatting, linting, testing, and coverage enforcement
   ci:
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -73,6 +80,7 @@ jobs:
 
       - name: Post coverage comment
         uses: marocchino/sticky-pull-request-comment@v2
-        if: always()
+        # No PR context on push events — skip the comment step there
+        if: always() && github.event_name == 'pull_request'
         with:
           path: coverage.txt

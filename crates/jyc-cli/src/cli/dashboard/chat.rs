@@ -55,9 +55,6 @@ pub(super) struct ChatState {
     pub(super) awaiting_response: bool,
     /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
     pub(super) activity_split: u8,
-    /// Whether to show full LLM thinking/reasoning in the AI progress area.
-    /// Toggle with Ctrl+T. The activity pane always shows a minimal "Thinking..." marker.
-    pub(super) show_thinking: bool,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
@@ -251,13 +248,6 @@ pub(super) fn handle_chat_keys(
     let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_w && app.chat.phase == ChatPhase::Chatting {
         app.chat.activity_split = (app.chat.activity_split + 1) % 4;
-        return;
-    }
-
-    // Ctrl+T toggles showing full LLM thinking/reasoning in the AI progress area.
-    let is_ctrl_t = key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_t && app.chat.phase == ChatPhase::Chatting {
-        app.chat.show_thinking = !app.chat.show_thinking;
         return;
     }
 
@@ -763,15 +753,33 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     let show_progress = server_processing || app.chat.awaiting_response;
 
     if show_progress {
-        // Try to get activity entries from the server
-        let activity_entries: Vec<_> = app
+        // Get thread info for thinking text and activity entries
+        let thread_info = app
             .state
             .as_ref()
             .and_then(|s| {
                 let chat_name = app.chat.thread.as_deref()?;
                 s.threads.iter().find(|t| t.name == chat_name)
             })
-            .filter(|ct| ct.status == ThreadStatus::Processing)
+            .filter(|ct| ct.status == ThreadStatus::Processing);
+
+        // Show thinking text (if any) from the thread state.
+        // This comes from ThreadEvent::Thinking events and is NOT stored
+        // in the activity buffer or activity.jsonl.
+        if let Some(ct) = &thread_info
+            && let Some(thinking) = &ct.thinking_text
+            && !thinking.is_empty()
+        {
+            let gray_style = Style::default().fg(Color::DarkGray);
+            for line in thinking.lines() {
+                all_lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(line, gray_style),
+                ]));
+            }
+        }
+
+        let activity_entries: Vec<_> = thread_info
             .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
             .unwrap_or_default();
 
@@ -787,50 +795,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             ]));
         } else {
             let total = activity_entries.len();
-            let mut shown_thinking = false;
             for (idx, a) in activity_entries.iter().rev().enumerate() {
-                // Skip thinking entries when the user has toggled them off.
-                if !app.chat.show_thinking && a.text.starts_with("Thinking: ") {
-                    continue;
-                }
                 let is_last = idx == total - 1;
-
-                // Thinking entries: show full content with line breaks (only the
-                // latest one), plus a minimal status line. Older thinking entries
-                // are skipped to avoid duplicate display.
-                if a.text.starts_with("Thinking: ") {
-                    if shown_thinking {
-                        continue;
-                    }
-                    shown_thinking = true;
-                    let content = &a.text["Thinking: ".len()..];
-                    let gray_style = Style::default().fg(Color::DarkGray);
-                    for line in content.split('\n') {
-                        all_lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(line, gray_style),
-                        ]));
-                    }
-                    if is_last {
-                        let elapsed = format_elapsed(&a.timestamp);
-                        let status = if elapsed.is_empty() {
-                            "⏳ Thinking...".to_string()
-                        } else {
-                            format!("⏳ Thinking... {elapsed}")
-                        };
-                        all_lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(
-                                status,
-                                Style::default()
-                                    .fg(Color::Yellow)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ]));
-                    }
-                    continue;
-                }
-
                 let elapsed = if is_last {
                     format_elapsed(&a.timestamp)
                 } else {
@@ -1148,7 +1114,6 @@ impl ChatState {
             activity_hscroll: 0,
             awaiting_response: false,
             activity_split: 0,
-            show_thinking: true,
             ws_tx: None,
             ws_rx,
             ws_connected: false,

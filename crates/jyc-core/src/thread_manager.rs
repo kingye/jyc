@@ -1630,10 +1630,11 @@ async fn process_message(
     });
 
     // The in-process agent does not consume `pending_rx`. We monitor it
-    // ourselves for `/cancel` messages, which trigger the per-thread
-    // cancellation token and cause the agent loop to break at the next
-    // iteration. Non-cancel messages are re-enqueued so they are processed
-    // after the current AI call completes (same as before).
+    // ourselves for incoming messages during AI processing. Slash commands
+    // (e.g. /cancel, /model) are executed immediately via the command
+    // registry so the user gets instant feedback even during a 429 retry.
+    // Non-command messages are re-enqueued so they are processed after the
+    // current AI call completes (same as before).
     let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
     drop(_dummy_tx);
 
@@ -1647,7 +1648,7 @@ async fn process_message(
     );
     tokio::pin!(agent_fut);
 
-    // Buffer non-cancel messages that arrive during AI processing.
+    // Buffer non-command messages that arrive during AI processing.
     // They are re-enqueued after the agent finishes, preserving FIFO order.
     let mut buffered: Vec<QueueItem> = Vec::new();
 
@@ -1659,15 +1660,57 @@ async fn process_message(
             msg = pending_rx.recv() => match msg {
                 Some(qi) => {
                     let text = qi.message.content.text.as_deref().unwrap_or("");
-                    if text.trim() == "/cancel" {
+                    let trimmed = text.trim();
+                    if trimmed.starts_with('/') {
+                        // Execute slash command immediately via the command
+                        // registry instead of buffering — the user expects
+                        // instant feedback even during AI processing.
                         tracing::info!(
                             thread = %thread_name,
-                            "Cancel requested via /cancel during AI processing"
+                            command = %trimmed,
+                            "Executing slash command during AI processing"
                         );
-                        thread_cancel.cancel();
-                        // Continue loop — agent_fut will complete due to cancellation
+                        let cmd_ctx = CommandContext {
+                            args: vec![],
+                            thread_path: store_result.thread_path.clone(),
+                            config: config.load_full(),
+                            channel: qi.message.channel.clone(),
+                            channel_type: thread_manager.channel_type.clone(),
+                            agent: Some(agent.clone()),
+                            template_dirs: template_dirs.clone(),
+                            config_path: thread_manager.config_path.clone(),
+                        };
+                        match command_registry.process_commands(trimmed, &cmd_ctx).await {
+                            Ok(output) => {
+                                if !output.results.is_empty() {
+                                    let summary = output.results_summary();
+                                    if let Err(e) = outbound
+                                        .send_reply(
+                                            &qi.message,
+                                            &summary,
+                                            &store_result.thread_path,
+                                            &store_result.message_dir,
+                                            None,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "Failed to send command result during AI processing"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    command = %trimmed,
+                                    "Command execution failed during AI processing"
+                                );
+                            }
+                        }
                     } else {
-                        // Buffer non-cancel message for re-enqueue after AI finishes
+                        // Buffer non-command message for re-enqueue after AI finishes
                         buffered.push(qi);
                     }
                 }

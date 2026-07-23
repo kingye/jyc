@@ -787,6 +787,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             let total = activity_entries.len();
             for (idx, a) in activity_entries.iter().rev().enumerate() {
                 // Skip thinking entries when the user has toggled them off.
+                // If all entries are thinking, the loop produces no lines —
+                // the generic "⏳ AI is thinking..." indicator remains as
+                // the only progress feedback, which is the desired behavior.
                 if !app.chat.show_thinking && a.text.starts_with("Thinking: ") {
                     continue;
                 }

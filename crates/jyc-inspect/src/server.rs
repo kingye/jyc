@@ -814,14 +814,12 @@ impl ActivityTracker {
                                                                     let is_error = entry.severity == Severity::Error;
                                                                     let is_progress =
                                                                         matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                    let is_thinking =
-                                                                        matches!(&event, ThreadEvent::Thinking { .. });
                                                                     if let Some(ref path) = thread_path {
                                                                         // Thinking events carry a preview of the chain-of-thought
                                                                         // for the chat pane. Persist only a minimal "Thinking..."
                                                                         // marker to keep activity.jsonl compact and avoid leaking
                                                                         // verbose reasoning text to disk.
-                                                                        let stored = if is_thinking {
+                                                                        let stored = if matches!(&event, ThreadEvent::Thinking { .. }) {
                                                                             ActivityEntry {
                                                                                 text: "Thinking...".to_string(),
                                                                                 timestamp: entry.timestamp.clone(),

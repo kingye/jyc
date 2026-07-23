@@ -55,6 +55,8 @@ pub struct ThreadActivityState {
     pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Recent chat messages (incoming + replies) for live dashboard display.
     pub recent_messages: VecDeque<ChatMessageEntry>,
+    /// Latest AI thinking/reasoning text (full, untruncated).
+    pub thinking_text: Option<String>,
 }
 
 /// Callback invoked after config is swapped atomically during reload.
@@ -607,6 +609,7 @@ impl InspectServer {
             if let Some(state) = activity_map.get(&key) {
                 thread.activity = state.entries.iter().cloned().collect();
                 thread.recent_messages = state.recent_messages.iter().cloned().collect();
+                thread.thinking_text = state.thinking_text.clone();
                 if state.is_processing {
                     thread.status = ThreadStatus::Processing;
                 } else if state.has_error {
@@ -1786,6 +1789,7 @@ mode = "agent"
             last_active_at: None,
             skills: vec![],
             recent_messages: vec![],
+            thinking_text: None,
             thread_path: None,
         };
 

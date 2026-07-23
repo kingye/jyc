@@ -813,57 +813,68 @@ impl ActivityTracker {
                                                                         _ => None,
                                                                     };
 
-                                                                    let entry = event_to_activity(&event);
-                                                                    let is_error = entry.severity == Severity::Error;
-                                                                    let is_progress =
-                                                                        matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                    if let Some(ref path) = thread_path {
-                                                                        // Thinking events carry a preview of the chain-of-thought
-                                                                        // for the chat pane. Persist only a minimal "Thinking..."
-                                                                        // marker to keep activity.jsonl compact and avoid leaking
-                                                                        // verbose reasoning text to disk.
-                                                                        let stored = if matches!(&event, ThreadEvent::Thinking { .. }) {
-                                                                            ActivityEntry {
-                                                                                text: "Thinking...".to_string(),
-                                                                                timestamp: entry.timestamp.clone(),
-                                                                                severity: entry.severity,
+                                                                    let is_thinking =
+                                                                        matches!(&event, ThreadEvent::Thinking { .. });
+
+                                                                    // Thinking events are NOT persisted to
+                                                                    // activity.jsonl or the activity buffer.
+                                                                    // They update `thinking_text` instead
+                                                                    // (displayed in the chat pane, not the
+                                                                    // activity pane).
+                                                                    if !is_thinking {
+                                                                        let entry = event_to_activity(&event);
+                                                                        let is_error = entry.severity == Severity::Error;
+                                                                        let is_progress =
+                                                                            matches!(&event, ThreadEvent::ProcessingProgress { .. });
+                                                                        if let Some(ref path) = thread_path
+                                                                            && let Err(e) = ActivityLogStore::append(path, &entry) {
+                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                             }
-                                                                        } else {
-                                                                            entry.clone()
-                                                                        };
-                                                                        if let Err(e) = ActivityLogStore::append(path, &stored) {
-                                                                            tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                        let mut map = map.lock().await;
+                                                                        let state = map
+                                                                            .entry((channel_for_task.clone(), name.clone()))
+                                                                            .or_default();
+                                                                        // ProcessingProgress is a heartbeat, not a discrete
+                                                                        // activity. Persist it to disk but skip the in-memory
+                                                                        // activity log so it doesn't crowd out ToolStarted /
+                                                                        // ToolCompleted entries that show the actual tool name.
+                                                                        if !is_progress {
+                                                                            state.entries.push_back(entry);
+                                                                            if state.entries.len() > MAX_ACTIVITY_ENTRIES {
+                                                                                state.entries.pop_front();
+                                                                            }
                                                                         }
-                                                                    }
-                                                                    let mut map = map.lock().await;
-                                                                    let state = map
-                                                                        .entry((channel_for_task.clone(), name.clone()))
-                                                                        .or_default();
-                                                                    // ProcessingProgress is a heartbeat, not a discrete
-                                                                    // activity. Persist it to disk but skip the in-memory
-                                                                    // activity log so it doesn't crowd out ToolStarted /
-                                                                    // ToolCompleted entries that show the actual tool name.
-                                                                    if !is_progress {
-                                                                        state.entries.push_back(entry);
-                                                                        if state.entries.len() > MAX_ACTIVITY_ENTRIES {
-                                                                            state.entries.pop_front();
+                                                                        if let Some(msg) = chat_msg {
+                                                                            state.recent_messages.push_back(msg);
+                                                                            if state.recent_messages.len() > MAX_RECENT_MESSAGES {
+                                                                                state.recent_messages.pop_front();
+                                                                            }
                                                                         }
-                                                                    }
-                                                                    if let Some(msg) = chat_msg {
-                                                                        state.recent_messages.push_back(msg);
-                                                                        if state.recent_messages.len() > MAX_RECENT_MESSAGES {
-                                                                            state.recent_messages.pop_front();
+                                                                        // Clear thinking text when processing starts
+                                                                        // (new turn) or completes.
+                                                                        if is_processing || is_completed {
+                                                                            state.thinking_text = None;
                                                                         }
-                                                                    }
-                                                                    state.last_active_at = Some(event.timestamp());
-                                                                    if is_processing {
-                                                                        state.is_processing = true;
-                                                                        state.has_error = false;
-                                                                    } else if is_completed {
-                                                                        state.is_processing = false;
-                                                                    }
-                                                                    if is_error {
-                                                                        state.has_error = true;
+                                                                        state.last_active_at = Some(event.timestamp());
+                                                                        if is_processing {
+                                                                            state.is_processing = true;
+                                                                            state.has_error = false;
+                                                                        } else if is_completed {
+                                                                            state.is_processing = false;
+                                                                        }
+                                                                        if is_error {
+                                                                            state.has_error = true;
+                                                                        }
+                                                                    } else {
+                                                                        // Thinking event: update thinking_text only.
+                                                                        if let ThreadEvent::Thinking { ref text, .. } = event {
+                                                                            let mut map = map.lock().await;
+                                                                            let state = map
+                                                                                .entry((channel_for_task.clone(), name.clone()))
+                                                                                .or_default();
+                                                                            state.thinking_text = Some(text.clone());
+                                                                            state.last_active_at = Some(event.timestamp());
+                                                                        }
                                                                     }
                                                                 }
                                                                 None => break,

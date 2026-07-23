@@ -48,13 +48,24 @@ impl CommandHandler for CancelCommandHandler {
             });
         }
 
-        self.thread_manager.cancel_thread(thread_name).await;
+        let cancelled = self.thread_manager.cancel_thread(thread_name).await;
 
-        Ok(CommandResult {
-            success: true,
-            message: format!("AI processing cancelled for thread '{}'.", thread_name),
-            error: None,
-        })
+        if cancelled {
+            Ok(CommandResult {
+                success: true,
+                message: format!("AI processing cancelled for thread '{}'.", thread_name),
+                error: None,
+            })
+        } else {
+            Ok(CommandResult {
+                success: false,
+                message: format!(
+                    "No active AI processing for thread '{}' (nothing to cancel).",
+                    thread_name
+                ),
+                error: None,
+            })
+        }
     }
 }
 
@@ -235,6 +246,23 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_handler_no_active_processing_reports_failure() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path();
+        let thread_dir = workspace.join("idle-thread");
+        tokio::fs::create_dir_all(&thread_dir).await.unwrap();
+
+        let tm = make_thread_manager(workspace);
+        let handler = CancelCommandHandler::new(tm);
+        let ctx = test_context(&thread_dir);
+        let result = handler.execute(ctx).await.unwrap();
+
+        // Must NOT claim success when nothing was actually cancelled
+        assert!(!result.success);
+        assert!(result.message.contains("No active AI processing"));
     }
 
     #[tokio::test]

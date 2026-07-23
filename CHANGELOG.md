@@ -21,6 +21,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Dashboard: Esc from chat pane returns to thread overview instead of pattern select.**
+  When chatting in a WebSocket thread, pressing Esc now consistently returns to the
+  thread overview table rather than the pattern selection screen. The pattern select
+  view is now only reachable via the `c` (new chat) shortcut from the overview.
+
 - **Dashboard message injection loses routing metadata for non-websocket channels.**
   When injecting a message via dashboard into a GitHub/Gitee/WeCom/Feishu/Email
   thread, the synthetic `InboundMessage` had empty metadata, causing reply

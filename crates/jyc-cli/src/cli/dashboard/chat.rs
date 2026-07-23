@@ -342,11 +342,7 @@ pub(super) fn handle_chat_keys(
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     KeyCode::Esc => {
-                        if app.chat.is_detail_mode() {
-                            app.chat.close();
-                        } else {
-                            app.chat.go_to_pattern_select();
-                        }
+                        app.chat.close();
                     }
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
@@ -376,11 +372,7 @@ pub(super) fn handle_chat_keys(
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
                 (EditorMode::Normal, KeyCode::Esc) => {
-                    if app.chat.is_detail_mode() {
-                        app.chat.close();
-                    } else {
-                        app.chat.go_to_pattern_select();
-                    }
+                    app.chat.close();
                 }
                 // Plain Enter in Insert mode inserts a newline (handled by
                 // the editor). Pasted multi-line text therefore can never
@@ -1231,13 +1223,6 @@ impl ChatState {
         }
     }
 
-    pub(super) fn go_to_pattern_select(&mut self) {
-        self.phase = ChatPhase::PatternSelect;
-        self.thread = None;
-        self.editor = empty_chat_editor();
-        self.scroll = 0;
-    }
-
     pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             ChatFocus::ChatPane => ChatFocus::ActivityPane,
@@ -1639,5 +1624,52 @@ mod tests {
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());
         assert!(app.chat.history_pos.is_none());
+    }
+
+    #[test]
+    fn close_returns_to_overview_from_ws_chat() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Simulate post-open WS chat state (what Enter on a WS row produces).
+        // We set fields directly instead of calling open() because open()
+        // spawns a tokio task requiring a runtime.
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ChatPane;
+        app.chat.detail_channel = None;
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        app.chat.ws_tx = Some(cmd_tx);
+
+        assert!(app.chat.visible);
+        assert_eq!(app.chat.phase, ChatPhase::Chatting);
+        assert_eq!(app.chat.thread.as_deref(), Some("jyc"));
+        assert!(!app.chat.is_detail_mode());
+
+        // close() is what Esc invokes — must return to overview
+        app.chat.close();
+        assert!(!app.chat.visible);
+        assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
+        assert!(app.chat.detail_channel.is_none());
+        assert!(app.chat.ws_tx.is_none());
+    }
+
+    #[test]
+    fn close_returns_to_overview_from_detail_mode() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Simulate opening a non-WS thread in detail mode
+        app.chat.open_thread_detail("github", "issue-197", None);
+        assert!(app.chat.visible);
+        assert_eq!(app.chat.phase, ChatPhase::Chatting);
+        assert!(app.chat.is_detail_mode());
+
+        // close() must return to overview and clear detail state
+        app.chat.close();
+        assert!(!app.chat.visible);
+        assert!(app.chat.detail_channel.is_none());
+        assert!(app.chat.detail_thread_path.is_none());
     }
 }

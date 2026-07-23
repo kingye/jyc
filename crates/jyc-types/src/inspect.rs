@@ -105,6 +105,10 @@ pub struct ThreadInfo {
     /// Recent chat messages (incoming + replies) for live dashboard display
     #[serde(default)]
     pub recent_messages: Vec<ChatMessageEntry>,
+    /// Latest AI thinking/reasoning text for live dashboard display.
+    /// Set while the thread is processing and thinking is enabled; cleared on completion.
+    #[serde(default)]
+    pub thinking_text: Option<String>,
     /// Filesystem path for this thread (may differ from workspace/name when
     /// a pattern's `thread_path` override is active).
     #[serde(default)]
@@ -270,6 +274,7 @@ mod tests {
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
                 recent_messages: vec![],
+                thinking_text: None,
                 thread_path: None,
             }],
             stats: GlobalStats {

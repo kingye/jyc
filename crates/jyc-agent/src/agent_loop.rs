@@ -88,6 +88,9 @@ pub struct AgentLoopConfig<'a> {
     /// Auto-reset threshold as a fraction of context window (0.0~1.0).
     /// Default: 0.95.
     pub auto_reset_threshold: f64,
+    /// Whether to publish `ThreadEvent::Thinking` events for dashboard display.
+    /// Controlled by the `/thinking show/hide` command. Default: `true`.
+    pub thinking_enabled: bool,
 }
 
 /// Run the agent loop to completion.
@@ -117,6 +120,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         outbounds,
         context_window,
         auto_reset_threshold,
+        thinking_enabled,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -332,6 +336,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             event_bus,
             sse_read_timeout,
             &cancel,
+            thinking_enabled,
         )
         .await?;
 
@@ -759,6 +764,7 @@ async fn generate_summary_from_joined_history(
         event_bus,
         sse_read_timeout,
         &dummy_cancel,
+        false, // progress summaries don't publish thinking events
     )
     .await?;
 
@@ -1013,6 +1019,7 @@ async fn complete_with_retry(
     event_bus: Option<&ThreadEventBusRef>,
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
+    thinking_enabled: bool,
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
@@ -1037,6 +1044,7 @@ async fn complete_with_retry(
                     sse_read_timeout,
                     event_bus,
                     thread_name,
+                    thinking_enabled,
                 )
                 .await
             } => r,
@@ -1115,27 +1123,10 @@ async fn complete_with_retry(
     Err(last_err)
 }
 
-/// Maximum length of the `text` preview in a published `ThreadEvent::Thinking` event.
-/// Large enough to show most reasoning content in the chat pane without truncation.
-const THINKING_PREVIEW_CHARS: usize = 2000;
-
 /// Minimum interval between published `ThreadEvent::Thinking` events.
 /// Reasoning can arrive in dozens of small deltas; throttling prevents
 /// flooding the event bus and the dashboard.
 const THINKING_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Truncate to a char boundary at or before `max_len`.
-fn truncate_preview(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        s
-    } else {
-        let mut end = max_len;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        &s[..end]
-    }
-}
 
 /// Collect a streaming response into a complete response.
 async fn collect_response(
@@ -1143,6 +1134,7 @@ async fn collect_response(
     sse_read_timeout: std::time::Duration,
     event_bus: Option<&ThreadEventBusRef>,
     thread_name: &str,
+    thinking_enabled: bool,
 ) -> Result<CollectedResponse> {
     let mut response = CollectedResponse::default();
     let mut current_tool_id: Option<String> = None;
@@ -1173,27 +1165,27 @@ async fn collect_response(
                 response.reasoning_content.push_str(&text);
 
                 // Publish a throttled Thinking event for the dashboard chat pane.
-                let now = std::time::Instant::now();
-                let should_publish = match last_thinking_publish {
-                    None => true,
-                    Some(t) => now.duration_since(t) >= THINKING_PUBLISH_INTERVAL,
-                };
-                if should_publish {
-                    last_thinking_publish = Some(now);
-                    let full_length = response.reasoning_content.len();
-                    let preview =
-                        truncate_preview(&response.reasoning_content, THINKING_PREVIEW_CHARS)
-                            .to_string();
-                    publish_event(
-                        event_bus,
-                        ThreadEvent::Thinking {
-                            thread_name: thread_name.to_string(),
-                            text: preview,
-                            full_length,
-                            timestamp: Utc::now(),
-                        },
-                    )
-                    .await;
+                // Skipped entirely when the user has run `/thinking hide`.
+                if thinking_enabled {
+                    let now = std::time::Instant::now();
+                    let should_publish = match last_thinking_publish {
+                        None => true,
+                        Some(t) => now.duration_since(t) >= THINKING_PUBLISH_INTERVAL,
+                    };
+                    if should_publish {
+                        last_thinking_publish = Some(now);
+                        let text = response.reasoning_content.clone();
+                        publish_event(
+                            event_bus,
+                            ThreadEvent::Thinking {
+                                thread_name: thread_name.to_string(),
+                                text,
+                                full_length: response.reasoning_content.len(),
+                                timestamp: Utc::now(),
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
             StreamEvent::ToolUseStart { id, name } => {
@@ -1285,40 +1277,6 @@ fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Mess
         .rev()
         .flat_map(|(user, assistant)| vec![user, assistant])
         .collect()
-}
-
-#[cfg(test)]
-mod truncate_preview_tests {
-    use super::*;
-
-    #[test]
-    fn short_string_unchanged() {
-        assert_eq!(truncate_preview("abc", 5), "abc");
-    }
-
-    #[test]
-    fn exact_length_unchanged() {
-        assert_eq!(truncate_preview("abc", 3), "abc");
-    }
-
-    #[test]
-    fn truncates_at_ascii_boundary() {
-        assert_eq!(truncate_preview("abcdef", 3), "abc");
-    }
-
-    #[test]
-    fn truncates_at_multibyte_char_boundary() {
-        // 'a' (1 byte) + '😀' (4 bytes) + 'b' (1 byte) = 6 bytes
-        // max_len=3 falls inside the emoji (bytes 1-4), so we walk back to byte 1.
-        assert_eq!(truncate_preview("a😀b", 3), "a");
-    }
-
-    #[test]
-    fn truncates_just_before_multibyte_char() {
-        // 'abc' (3 bytes) + '😀' (4 bytes) = 7 bytes
-        // max_len=3 is a valid char boundary, so we get "abc".
-        assert_eq!(truncate_preview("abc😀", 3), "abc");
-    }
 }
 
 #[cfg(test)]
@@ -1502,6 +1460,7 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
+            true,
         )
         .await;
 
@@ -1554,6 +1513,7 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
+            true,
         )
         .await;
 
@@ -1598,6 +1558,7 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
+            true,
         )
         .await;
 
@@ -1652,6 +1613,7 @@ mod retry_tests {
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
+            true,
         )
         .await;
 

@@ -1073,10 +1073,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit".to_string()
             }
             ChatPhase::Chatting => {
-                let state = if app.chat.show_thinking { "on" } else { "off" };
-                format!(
-                    "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [^T]thinking:{state} [Esc]back [^Q]quit"
-                )
+                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit".to_string()
             }
         }
     } else {

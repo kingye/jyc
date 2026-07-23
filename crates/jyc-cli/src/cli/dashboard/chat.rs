@@ -264,6 +264,8 @@ pub(super) fn handle_chat_keys(
                 // before pressing Enter again to send.
                 app.chat.command_popup = None;
                 app.chat.editor = EditorState::new(Lines::from(cmd.as_str()));
+                app.chat.editor.cursor.row = 0;
+                app.chat.editor.cursor.col = cmd.len();
                 app.chat.editor.mode = EditorMode::Insert;
             }
             None => {

@@ -259,9 +259,12 @@ pub(super) fn handle_chat_keys(
                 app.chat.command_popup = None;
             }
             Some(cmd) => {
-                // Enter — send the command immediately
+                // Enter — populate the editor with the command text
+                // so the user can add arguments (e.g. "/thinking show")
+                // before pressing Enter again to send.
                 app.chat.command_popup = None;
-                app.chat.send_message_with_text(&cmd);
+                app.chat.editor = EditorState::new(Lines::from(cmd.as_str()));
+                app.chat.editor.mode = EditorMode::Insert;
             }
             None => {
                 // Popup handled the key, continue
@@ -1379,14 +1382,7 @@ impl ChatState {
     }
 
     /// Send a programmatic text as a chat message, echoing locally and sending
-    /// via WebSocket. Used by the command popup — preserves editor content.
-    pub(super) fn send_message_with_text(&mut self, text: &str) {
-        self.send_message_inner(text.trim().to_string());
-        // Deliberately NOT clearing the editor: the user may have been typing
-        // before opening the command popup and we don't want to lose that text.
-    }
-
-    /// Shared implementation for sending a chat message.
+    /// via WebSocket.
     pub(super) fn send_message_inner(&mut self, text: String) {
         if text.is_empty() {
             return;

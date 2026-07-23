@@ -1071,7 +1071,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         match app.chat.phase {
             ChatPhase::PatternSelect => "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit",
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [Esc]back [^Q]quit"
+                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^W]split [^T]thinking [Esc]back [^Q]quit"
             }
         }
     } else {

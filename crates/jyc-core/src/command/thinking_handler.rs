@@ -25,7 +25,11 @@ impl CommandHandler for ThinkingCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let arg = context.args.first().map(|s| s.to_lowercase()).unwrap_or_default();
+        let arg = context
+            .args
+            .first()
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
         let enabled = match arg.as_str() {
             "show" => true,
             "hide" => false,

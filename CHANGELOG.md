@@ -49,6 +49,16 @@ All notable changes to JYC will be documented in this file.
   parse failure they are replaced with `"{}"` (matching the existing Anthropic
   provider behavior), keeping the conversation context replay-safe.
 
+- **Display Anthropic extended thinking in the chat pane.** When Anthropic
+  models with extended thinking enabled (e.g. Claude Opus 4.6) produce a
+  response, the `thinking` content blocks and `thinking_delta` deltas were
+  silently dropped by the SSE parser (fell through to the wildcard arm) and
+  never reached the chat pane, even with `/thinking show` enabled. Both
+  event types are now captured and emitted as `ReasoningDelta` so the
+  thinking text streams to the dashboard in real time. `signature_delta`
+  (the cryptographic signature at the end of each thinking block) is
+  correctly ignored.
+
 - **Dashboard: Esc from chat pane returns to thread overview instead of pattern select.**
   When chatting in a WebSocket thread, pressing Esc now consistently returns to the
   thread overview table rather than the pattern selection screen. The pattern select

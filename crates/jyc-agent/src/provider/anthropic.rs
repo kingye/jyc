@@ -470,6 +470,13 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     state.tool_input_buffer.push_str(&partial);
                     Some(vec![StreamEvent::ToolInputDelta(partial)])
                 }
+                "thinking_delta" => {
+                    // Anthropic extended thinking: incremental thinking text.
+                    // Without this arm, the thinking content is silently dropped
+                    // (falls to `_ => None`) and never reaches the chat pane.
+                    let text = delta.get("thinking")?.as_str()?.to_string();
+                    Some(vec![StreamEvent::ReasoningDelta(text)])
+                }
                 _ => None,
             }
         }

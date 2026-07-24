@@ -444,20 +444,19 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         }
 
         // 5b. Guardrail: detect models that repeatedly generate tool calls
-        //     with invalid arguments (empty, whitespace-only, `{}`, or
-        //     unparseable JSON). If ALL tool calls in this iteration are
-        //     invalid, increment a counter. After
-        //     MAX_EMPTY_TOOL_CALL_ITERATIONS consecutive occurrences, abort the
-        //     loop to avoid wasting tokens.
+        //     with empty arguments. If ALL tool calls in this iteration have
+        //     empty arguments (empty string or "{}"), increment a counter.
+        //     After MAX_EMPTY_TOOL_CALL_ITERATIONS consecutive occurrences,
+        //     abort the loop to avoid wasting tokens.
         if all_tool_calls_empty(&response.tool_calls) {
             consecutive_empty_tool_iterations += 1;
             if consecutive_empty_tool_iterations >= MAX_EMPTY_TOOL_CALL_ITERATIONS {
                 tracing::warn!(
                     consecutive = consecutive_empty_tool_iterations,
-                    "Model repeatedly generated tool calls with invalid arguments, aborting loop"
+                    "Model repeatedly generated tool calls with empty arguments, aborting loop"
                 );
                 anyhow::bail!(
-                    "model generated tool calls with invalid arguments for {} consecutive \
+                    "model generated tool calls with empty arguments for {} consecutive \
                      iterations — this usually indicates the provider does not support \
                      function calling correctly",
                     consecutive_empty_tool_iterations
@@ -493,29 +492,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 break;
             }
 
-            // Parse tool arguments. Some models (notably MiniMax M3 in plan
-            // mode) occasionally emit truncated or malformed JSON. Rather than
-            // silently falling back to `{}` — which produces a confusing
-            // "Missing 'X' parameter" error that doesn't tell the model the
-            // args were broken — inject a recovery message as the tool result
-            // so the model can retry with complete arguments. The recovery
-            // path produces a synthetic ToolOutput::error, then falls through
-            // to the normal publish / reply-detection / context-add path
-            // below, so the dashboard and conversation history see a single,
-            // consistent failed tool call.
-            let parse_result: Result<serde_json::Value, _> =
-                serde_json::from_str(&tool_call.arguments);
+            let input: serde_json::Value = serde_json::from_str(&tool_call.arguments)
+                .unwrap_or(serde_json::Value::Object(Default::default()));
 
-            // Pre-compute `input` for reply-text extraction below. On parse
-            // failure we use an empty object so downstream code stays valid
-            // even though the recovery path skips tool execution.
-            let input: serde_json::Value = match &parse_result {
-                Ok(v) => v.clone(),
-                Err(_) => serde_json::Value::Object(Default::default()),
-            };
-
-            // Publish ToolStarted with the raw args (visible to the user
-            // even when args are malformed).
+            // Publish ToolStarted
             publish_event(
                 event_bus,
                 ThreadEvent::ToolStarted {
@@ -529,41 +509,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             let tool_start = Instant::now();
 
-            let output = match parse_result {
-                Ok(parsed) => match tools.execute(&tool_call.name, parsed, &ctx).await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        tracing::warn!(
-                            tool = %tool_call.name,
-                            error = %e,
-                            "Tool execution failed"
-                        );
-                        ToolOutput::error(format!("Tool error: {e}"))
-                    }
-                },
-                Err(parse_err) => {
-                    tracing::warn!(
-                        tool = %tool_call.name,
-                        error = %parse_err,
-                        args = %tool_call.arguments,
-                        "Model emitted malformed tool call arguments — injecting recovery message"
-                    );
-                    // Truncate the received args so a very long broken JSON
-                    // doesn't bloat the conversation context.
-                    let received: String = if tool_call.arguments.len() > 200 {
-                        format!("{}…", &tool_call.arguments[..200])
-                    } else {
-                        tool_call.arguments.clone()
-                    };
-                    ToolOutput::error(format!(
-                        "Your `{tool}` tool call arguments were not valid JSON. \
-                         Please regenerate the tool call with complete, valid JSON arguments. \
-                         Parse error: {err}\n\
-                         Received: {received}",
-                        tool = tool_call.name,
-                        err = parse_err,
-                        received = received,
-                    ))
+            let output = match tools.execute(&tool_call.name, input.clone(), &ctx).await {
+                Ok(output) => output,
+                Err(e) => {
+                    tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
+                    ToolOutput::error(format!("Tool error: {e}"))
                 }
             };
 
@@ -931,18 +881,14 @@ struct ToolCall {
     arguments: String,
 }
 
-/// Check if all tool calls have invalid arguments (empty string, whitespace-only,
-/// `{}`, or unparseable JSON). Used by the guardrail to detect models that keep
-/// generating tool calls without valid arguments across consecutive iterations.
-/// Returns `false` for an empty slice.
+/// Check if all tool calls have empty arguments (empty string, whitespace-only,
+/// or `{}`). Used by the guardrail to detect models that generate tool calls
+/// without proper arguments. Returns `false` for an empty slice.
 fn all_tool_calls_empty(tool_calls: &[ToolCall]) -> bool {
     !tool_calls.is_empty()
-        && tool_calls.iter().all(|tc| {
-            let trimmed = tc.arguments.trim();
-            trimmed.is_empty()
-                || trimmed == "{}"
-                || serde_json::from_str::<serde_json::Value>(trimmed).is_err()
-        })
+        && tool_calls
+            .iter()
+            .all(|tc| tc.arguments.trim().is_empty() || tc.arguments.trim() == "{}")
 }
 
 /// Collected response from streaming.
@@ -1795,32 +1741,5 @@ mod guardrail_tests {
     #[test]
     fn empty_slice_not_detected() {
         assert!(!all_tool_calls_empty(&[]));
-    }
-
-    /// Truncated JSON like MiniMax M3 produces in plan mode
-    /// (e.g. `{"file_path": "/home` without the closing brace)
-    /// must be detected as invalid so the guardrail can abort
-    /// a model that keeps generating broken output.
-    #[test]
-    fn truncated_json_args_detected() {
-        assert!(all_tool_calls_empty(&[tc(
-            "1",
-            "read",
-            r#"{"file_path": "/home"#
-        )]));
-        assert!(all_tool_calls_empty(&[tc(
-            "1",
-            "bash",
-            r#"{"command":"ls"#
-        )]));
-        assert!(all_tool_calls_empty(&[tc("1", "bash", "{")]));
-    }
-
-    /// Invalid JSON syntax (not just truncation) must also be detected.
-    #[test]
-    fn invalid_json_syntax_detected() {
-        assert!(all_tool_calls_empty(&[tc("1", "bash", "not json")]));
-        assert!(all_tool_calls_empty(&[tc("1", "bash", "{key: val}")]));
-        assert!(all_tool_calls_empty(&[tc("1", "bash", "{\"unclosed")]));
     }
 }

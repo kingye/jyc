@@ -299,12 +299,29 @@ impl Provider for OpenAiCompatProvider {
             let tc_json: Vec<serde_json::Value> = tool_calls
                 .iter()
                 .map(|(id, name, args)| {
+                    // Validate arguments JSON before embedding. Some models
+                    // (e.g. MiniMax M3) occasionally emit malformed tool call
+                    // arguments that survive the current turn but poison the
+                    // `raw_context` — replaying them on the next request
+                    // triggers a 400 with "invalid function arguments json
+                    // string". Fall back to "{}" to match the Anthropic path
+                    // and keep the conversation consistent.
+                    let safe_args = if serde_json::from_str::<serde_json::Value>(args).is_ok() {
+                        args.clone()
+                    } else {
+                        tracing::warn!(
+                            tool_name = %name,
+                            args = %args,
+                            "Malformed tool call arguments from model, replacing with empty object for replay"
+                        );
+                        "{}".to_string()
+                    };
                     serde_json::json!({
                         "id": id,
                         "type": "function",
                         "function": {
                             "name": name,
-                            "arguments": args,
+                            "arguments": safe_args,
                         }
                     })
                 })
@@ -1407,5 +1424,81 @@ mod tests {
         let msg = provider.build_raw_assistant_message("just text", "", &[]);
         assert_eq!(msg["content"].as_str().unwrap(), "just text");
         assert!(msg.get("reasoning_content").is_none());
+    }
+
+    /// Valid JSON arguments pass through untouched.
+    #[test]
+    fn build_raw_assistant_message_valid_args_passthrough() {
+        let provider = OpenAiCompatProvider::new(
+            "https://api.example.com",
+            "test",
+            Some("k"),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let calls = vec![(
+            "call_1".to_string(),
+            "bash".to_string(),
+            r#"{"command": "ls -la"}"#.to_string(),
+        )];
+        let msg = provider.build_raw_assistant_message("", "", &calls);
+        let args = msg["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments is a JSON string");
+        assert_eq!(args, r#"{"command": "ls -la"}"#);
+    }
+
+    /// Malformed JSON arguments from the model (e.g. truncated stream from
+    /// MiniMax M3) are replaced with `"{}"` so replaying the conversation
+    /// context does not trigger a 400 "invalid function arguments json
+    /// string" on the next API call.
+    #[test]
+    fn build_raw_assistant_message_replaces_malformed_args() {
+        let provider = OpenAiCompatProvider::new(
+            "https://api.example.com",
+            "test",
+            Some("k"),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        // Truncated mid-stream: missing closing brace.
+        let calls = vec![(
+            "call_1".to_string(),
+            "bash".to_string(),
+            r#"{"command": "ls"#.to_string(),
+        )];
+        let msg = provider.build_raw_assistant_message("", "", &calls);
+        let args = msg["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments is a JSON string");
+        assert_eq!(
+            args, "{}",
+            "malformed args must be replaced with empty object to avoid 400 on replay"
+        );
+    }
+
+    /// Whitespace-only / empty argument strings are also invalid JSON and
+    /// should fall back to `"{}"`.
+    #[test]
+    fn build_raw_assistant_message_replaces_empty_args() {
+        let provider = OpenAiCompatProvider::new(
+            "https://api.example.com",
+            "test",
+            Some("k"),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let calls = vec![("call_1".to_string(), "bash".to_string(), "   ".to_string())];
+        let msg = provider.build_raw_assistant_message("", "", &calls);
+        let args = msg["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments is a JSON string");
+        assert_eq!(args, "{}");
     }
 }

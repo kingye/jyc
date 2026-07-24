@@ -40,6 +40,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Sanitize malformed tool call arguments in OpenAI-compatible provider.**
+  Some models (notably MiniMax M3) occasionally emit tool call arguments that
+  are not valid JSON. The previous code embedded them as-is into the request
+  body, so the malformed arguments got persisted to `raw_context` and triggered
+  a 400 "invalid function arguments json string" on the next API call when the
+  conversation was replayed. Arguments are now validated before embedding; on
+  parse failure they are replaced with `"{}"` (matching the existing Anthropic
+  provider behavior), keeping the conversation context replay-safe.
+
 - **Dashboard: Esc from chat pane returns to thread overview instead of pattern select.**
   When chatting in a WebSocket thread, pressing Esc now consistently returns to the
   thread overview table rather than the pattern selection screen. The pattern select

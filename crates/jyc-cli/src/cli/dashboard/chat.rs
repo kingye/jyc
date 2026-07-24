@@ -53,7 +53,7 @@ pub(super) struct ChatState {
     /// the thread is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
     pub(super) awaiting_response: bool,
-    /// Activity pane split state: 0=80/20, 1=100/0, 2=20/80, 3=0/100
+    /// Activity pane split state: 0=100/0, 1=80/20, 2=20/80, 3=0/100
     pub(super) activity_split: u8,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
@@ -452,8 +452,13 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
         ChatPhase::Chatting => {
             match app.chat.activity_split {
                 1 => {
-                    // 100/0 — full chat, no activity pane
-                    render_chat_conversation(frame, main_chunks[2], app);
+                    // 80/20 — chat dominant
+                    let content = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+                        .split(main_chunks[2]);
+                    render_chat_conversation(frame, content[0], app);
+                    render_activity_log(frame, content[1], app);
                 }
                 2 => {
                     // 20/80 — activity dominant
@@ -469,13 +474,8 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
                     render_activity_log(frame, main_chunks[2], app);
                 }
                 _ => {
-                    // 0 — 80/20 (default)
-                    let content = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-                        .split(main_chunks[2]);
-                    render_chat_conversation(frame, content[0], app);
-                    render_activity_log(frame, content[1], app);
+                    // 0 — 100/0 (default) — full chat, no activity pane
+                    render_chat_conversation(frame, main_chunks[2], app);
                 }
             }
         }

@@ -11,7 +11,7 @@ use crossterm::{
 use edtui::{EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Lines};
 use ratatui::{
     Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -1080,17 +1080,25 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new".to_string()
     };
 
+    // Right-aligned vim mode chip while chatting. 8 cells = padded label width.
+    let mode_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+        8
+    } else {
+        0
+    };
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(mode_width)]).areas(area);
+
     let state = match &app.state {
         Some(s) => s,
         None => {
             let bar = Paragraph::new(format!(" {help_text}"))
                 .style(Style::default().bg(Color::DarkGray).fg(Color::White));
-            frame.render_widget(bar, area);
+            frame.render_widget(bar, left_area);
             return;
         }
     };
 
-    let uptime = format_duration(state.uptime_secs);
     let stats = &state.stats;
 
     let status_part = if let Some((msg, _)) = &app.status_message {
@@ -1102,7 +1110,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             stats.total_threads,
             stats.messages_received,
             stats.errors,
-            uptime,
+            format_duration(state.uptime_secs),
             state.version,
         ))
     };
@@ -1123,7 +1131,39 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     }))
     .style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
-    frame.render_widget(bar, area);
+    frame.render_widget(bar, left_area);
+
+    // Right-align the vim mode chip (Catppuccin Mocha palette).
+    if mode_width > 0 {
+        let (label, bg, fg) = match app.chat.editor.mode {
+            EditorMode::Normal => (
+                " NORMAL ",
+                Color::Rgb(137, 180, 250),
+                Color::Rgb(30, 30, 46),
+            ),
+            EditorMode::Insert => (
+                " INSERT ",
+                Color::Rgb(166, 227, 161),
+                Color::Rgb(30, 30, 46),
+            ),
+            EditorMode::Visual => (
+                " VISUAL ",
+                Color::Rgb(203, 166, 247),
+                Color::Rgb(30, 30, 46),
+            ),
+            _ => (
+                " NORMAL ",
+                Color::Rgb(137, 180, 250),
+                Color::Rgb(30, 30, 46),
+            ),
+        };
+        let mode_para = Paragraph::new(Span::styled(
+            label,
+            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Center);
+        frame.render_widget(mode_para, right_area);
+    }
 }
 
 fn format_duration(secs: u64) -> String {

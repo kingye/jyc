@@ -1267,8 +1267,10 @@ mod tests {
     /// helper must surface it so it isn't dropped on the floor.
     #[test]
     fn flush_think_buffer_emits_text_when_outside_think() {
-        let mut state = OpenAiStreamState::default();
-        state.tag_buffer = "trailing".to_string();
+        let mut state = OpenAiStreamState {
+            tag_buffer: "trailing".to_string(),
+            ..Default::default()
+        };
         let event = flush_think_buffer(&mut state).expect("should produce event");
         match event {
             StreamEvent::TextDelta(t) => assert_eq!(t, "trailing"),
@@ -1279,9 +1281,11 @@ mod tests {
 
     #[test]
     fn flush_think_buffer_emits_reasoning_when_inside_think() {
-        let mut state = OpenAiStreamState::default();
-        state.in_think_block = true;
-        state.tag_buffer = "still thinking".to_string();
+        let mut state = OpenAiStreamState {
+            in_think_block: true,
+            tag_buffer: "still thinking".to_string(),
+            ..Default::default()
+        };
         let event = flush_think_buffer(&mut state).expect("should produce event");
         match event {
             StreamEvent::ReasoningDelta(t) => assert_eq!(t, "still thinking"),

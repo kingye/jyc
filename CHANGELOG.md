@@ -65,6 +65,20 @@ All notable changes to JYC will be documented in this file.
   parse failure they are replaced with `"{}"` (matching the existing Anthropic
   provider behavior), keeping the conversation context replay-safe.
 
+- **Fix truncated tool call arguments when finish_reason arrives in the same
+  SSE chunk as the final argument fragment.** Some OpenAI-compatible
+  providers (notably MiniMax M3) stream the last fragment of the tool call
+  arguments JSON in the *same* SSE message as `finish_reason: "tool_calls"`.
+  The previous parser processed `finish_reason` before the `tool_calls`
+  delta, which cleared the argument accumulator and emitted `ToolUseEnd`
+  before the last fragment was appended — truncating the JSON tail (e.g.,
+  the `file_path` parameter of a `read` tool call) and producing
+  "Missing 'file_path' parameter" errors. The chunk processing order has
+  been swapped so the tool_calls delta is accumulated first and
+  `finish_reason` finalizes the call after. A safety-net flush in
+  `collect_response` also ensures any in-progress tool call is saved at
+  stream end even if `ToolUseEnd` was never emitted.
+
 - **Display Anthropic extended thinking in the chat pane.** When Anthropic
   models with extended thinking enabled (e.g. Claude Opus 4.6) produce a
   response, the `thinking` content blocks and `thinking_delta` deltas were

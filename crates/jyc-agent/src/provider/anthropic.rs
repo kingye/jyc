@@ -455,6 +455,18 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 state.tool_input_buffer.clear();
                 return Some(vec![StreamEvent::ToolUseStart { id, name }]);
             }
+            if block_type == "thinking" {
+                // Anthropic extended thinking: the block may carry initial
+                // thinking text in `thinking`. Without this arm the opening
+                // chunk of the thinking block would be lost (only the
+                // subsequent `thinking_delta` events would be captured).
+                if let Some(text) = block.get("thinking").and_then(|t| t.as_str())
+                    && !text.is_empty()
+                {
+                    return Some(vec![StreamEvent::ReasoningDelta(text.to_string())]);
+                }
+                return None;
+            }
             None
         }
         "content_block_delta" => {
@@ -469,6 +481,13 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     let partial = delta.get("partial_json")?.as_str()?.to_string();
                     state.tool_input_buffer.push_str(&partial);
                     Some(vec![StreamEvent::ToolInputDelta(partial)])
+                }
+                "thinking_delta" => {
+                    // Anthropic extended thinking: incremental thinking text.
+                    // Without this arm, the thinking content is silently dropped
+                    // (falls to `_ => None`) and never reaches the chat pane.
+                    let text = delta.get("thinking")?.as_str()?.to_string();
+                    Some(vec![StreamEvent::ReasoningDelta(text)])
                 }
                 _ => None,
             }
@@ -802,6 +821,99 @@ mod tests {
         assert!(
             msg.contains("invalid_request_error"),
             "expected upstream error type in captured body, got: {msg}"
+        );
+    }
+
+    /// Anthropic extended thinking: the opening content_block_start event
+    /// for a `thinking` block carries the initial thinking text inline.
+    /// Without this handling, the opening chunk is dropped on the floor and
+    /// the chat pane stays blank during thinking.
+    #[test]
+    fn parse_anthropic_thinking_start_emits_reasoning_delta() {
+        let mut state = StreamState::default();
+        let data = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "thinking",
+                "thinking": "Let me reason about this carefully..."
+            }
+        })
+        .to_string();
+        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        assert_eq!(events.len(), 1, "one ReasoningDelta expected");
+        match &events[0] {
+            StreamEvent::ReasoningDelta(text) => {
+                assert_eq!(text, "Let me reason about this carefully...");
+            }
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+    }
+
+    /// Anthropic extended thinking: subsequent `thinking_delta` deltas carry
+    /// incremental thinking text. These must be emitted as ReasoningDelta so
+    /// they flow to the dashboard's chat pane.
+    #[test]
+    fn parse_anthropic_thinking_delta_emits_reasoning_delta() {
+        let mut state = StreamState::default();
+        let data = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "thinking_delta",
+                "thinking": " more reasoning follows."
+            }
+        })
+        .to_string();
+        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        assert_eq!(events.len(), 1, "one ReasoningDelta expected");
+        match &events[0] {
+            StreamEvent::ReasoningDelta(text) => {
+                assert_eq!(text, " more reasoning follows.");
+            }
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+    }
+
+    /// `signature_delta` (sent at the end of a thinking block) should be
+    /// silently ignored — it's the cryptographic signature, not display text.
+    #[test]
+    fn parse_anthropic_signature_delta_is_ignored() {
+        let mut state = StreamState::default();
+        let data = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "signature_delta",
+                "signature": "abc123"
+            }
+        })
+        .to_string();
+        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        assert!(
+            events.is_empty(),
+            "signature_delta should produce no events, got {events:?}"
+        );
+    }
+
+    /// Thinking block with empty initial text must not emit an empty
+    /// ReasoningDelta (would show a blank line in the chat pane).
+    #[test]
+    fn parse_anthropic_thinking_start_empty_text_is_ignored() {
+        let mut state = StreamState::default();
+        let data = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "thinking",
+                "thinking": ""
+            }
+        })
+        .to_string();
+        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        assert!(
+            events.is_empty(),
+            "empty thinking block should produce no events, got {events:?}"
         );
     }
 }

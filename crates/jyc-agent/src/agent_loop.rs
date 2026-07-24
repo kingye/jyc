@@ -444,19 +444,20 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         }
 
         // 5b. Guardrail: detect models that repeatedly generate tool calls
-        //     with empty arguments. If ALL tool calls in this iteration have
-        //     empty arguments (empty string or "{}"), increment a counter.
-        //     After MAX_EMPTY_TOOL_CALL_ITERATIONS consecutive occurrences,
-        //     abort the loop to avoid wasting tokens.
+        //     with invalid arguments (empty, whitespace-only, `{}`, or
+        //     unparseable JSON). If ALL tool calls in this iteration are
+        //     invalid, increment a counter. After
+        //     MAX_EMPTY_TOOL_CALL_ITERATIONS consecutive occurrences, abort the
+        //     loop to avoid wasting tokens.
         if all_tool_calls_empty(&response.tool_calls) {
             consecutive_empty_tool_iterations += 1;
             if consecutive_empty_tool_iterations >= MAX_EMPTY_TOOL_CALL_ITERATIONS {
                 tracing::warn!(
                     consecutive = consecutive_empty_tool_iterations,
-                    "Model repeatedly generated tool calls with empty arguments, aborting loop"
+                    "Model repeatedly generated tool calls with invalid arguments, aborting loop"
                 );
                 anyhow::bail!(
-                    "model generated tool calls with empty arguments for {} consecutive \
+                    "model generated tool calls with invalid arguments for {} consecutive \
                      iterations — this usually indicates the provider does not support \
                      function calling correctly",
                     consecutive_empty_tool_iterations
@@ -947,14 +948,18 @@ struct ToolCall {
     arguments: String,
 }
 
-/// Check if all tool calls have empty arguments (empty string, whitespace-only,
-/// or `{}`). Used by the guardrail to detect models that generate tool calls
-/// without proper arguments. Returns `false` for an empty slice.
+/// Check if all tool calls have invalid arguments (empty string, whitespace-only,
+/// `{}`, or unparseable JSON). Used by the guardrail to detect models that keep
+/// generating tool calls without valid arguments across consecutive iterations.
+/// Returns `false` for an empty slice.
 fn all_tool_calls_empty(tool_calls: &[ToolCall]) -> bool {
     !tool_calls.is_empty()
-        && tool_calls
-            .iter()
-            .all(|tc| tc.arguments.trim().is_empty() || tc.arguments.trim() == "{}")
+        && tool_calls.iter().all(|tc| {
+            let trimmed = tc.arguments.trim();
+            trimmed.is_empty()
+                || trimmed == "{}"
+                || serde_json::from_str::<serde_json::Value>(trimmed).is_err()
+        })
 }
 
 /// Collected response from streaming.

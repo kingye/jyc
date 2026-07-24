@@ -492,8 +492,74 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 break;
             }
 
-            let input: serde_json::Value = serde_json::from_str(&tool_call.arguments)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+            // Parse tool arguments. Some models (notably MiniMax M3 in plan
+            // mode) occasionally emit truncated or malformed JSON. Rather than
+            // silently falling back to `{}` — which produces a confusing
+            // "Missing 'X' parameter" error that doesn't tell the model the
+            // args were broken — inject a recovery message so the model can
+            // retry with complete arguments.
+            let input: serde_json::Value = match serde_json::from_str(&tool_call.arguments)
+            {
+                Ok(v) => v,
+                Err(parse_err) => {
+                    tracing::warn!(
+                        tool = %tool_call.name,
+                        error = %parse_err,
+                        args = %tool_call.arguments,
+                        "Model emitted malformed tool call arguments — injecting recovery message"
+                    );
+
+                    // Publish ToolStarted so the dashboard shows the attempt.
+                    publish_event(
+                        event_bus,
+                        ThreadEvent::ToolStarted {
+                            thread_name: thread_name.to_string(),
+                            tool_name: tool_call.name.clone(),
+                            input: Some(tool_call.arguments.clone()),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await;
+
+                    let tool_start = Instant::now();
+                    let recovery_msg = format!(
+                        "Your `{tool}` tool call arguments were not valid JSON. \
+                         Please regenerate the tool call with complete, valid JSON arguments. \
+                         Parse error: {err}",
+                        tool = tool_call.name,
+                        err = parse_err,
+                    );
+
+                    // Publish ToolCompleted so the dashboard sees the result.
+                    publish_event(
+                        event_bus,
+                        ThreadEvent::ToolCompleted {
+                            thread_name: thread_name.to_string(),
+                            tool_name: tool_call.name.clone(),
+                            success: false,
+                            duration_secs: tool_start.elapsed().as_secs(),
+                            output: Some(recovery_msg.clone()),
+                            input: Some(tool_call.arguments.clone()),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await;
+
+                    // Add the recovery message as the tool result so the model
+                    // sees the feedback on its next turn and can retry.
+                    history.push(Message::tool_result(
+                        &tool_call.id,
+                        &recovery_msg,
+                        true,
+                    ));
+                    raw_context.push(provider.format_tool_result(
+                        &tool_call.id,
+                        &recovery_msg,
+                        true,
+                    ));
+                    continue;
+                }
+            };
 
             // Publish ToolStarted
             publish_event(

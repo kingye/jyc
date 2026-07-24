@@ -6,6 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
+  MiniMax M3 that emit thinking content inline in the `content` field wrapped
+  in `<think>...</think>` tags (rather than in a separate `reasoning_content`
+  field as DeepSeek does) are now correctly parsed — thinking is routed to
+  `ReasoningDelta` and shown via `/thinking show` / hidden via `/thinking
+  hide`, instead of leaking into the user-facing reply. The `\n\n` separator
+  MiniMax emits between the think block and the actual response is stripped.
+  Assistant turns are also replayed with `<think>...</think>` tags inlined
+  in `content` so multi-turn conversations with these providers keep their
+  thinking context. (#424)
 - **Dashboard vim-style pane navigation.** The chat and activity panes now
   support `j`/`k` for scrolling and `gg`/`G` for jumping to the top/bottom, in
   addition to the arrow keys. In the chat pane this applies in Normal mode when

@@ -44,6 +44,15 @@ All notable changes to JYC will be documented in this file.
   The default layout is now 100/0 (chat only, no activity pane). `Ctrl+W`
   continues to cycle through the four layouts: `100/0 → 80/20 → 20/80 → 0/100`
   and back. Previously the default was `80/20` (both panes visible).
+- **Moved vim mode indicator from the chat input area to the bottom status bar.**
+  The current editor mode (Normal/Insert/Visual) is now rendered as a
+  right-aligned, Catppuccin-colored chip on the bottom status bar while chatting,
+  freeing up one row of vertical space in the input area. The input area now
+  grows from 1 up to 10 text lines (instead of 11, previously counting an
+  in-editor mode-status row).
+- **Brighter color for AI thinking preview.** The live thinking-text lines in the
+  chat pane use `Gray` instead of `DarkGray` for better contrast against the
+  dark background.
 
 ### Fixed
 

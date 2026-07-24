@@ -1813,4 +1813,23 @@ mod guardrail_tests {
     fn empty_slice_not_detected() {
         assert!(!all_tool_calls_empty(&[]));
     }
+
+    /// Truncated JSON like MiniMax M3 produces in plan mode
+    /// (e.g. `{"file_path": "/home` without the closing brace)
+    /// must be detected as invalid so the guardrail can abort
+    /// a model that keeps generating broken output.
+    #[test]
+    fn truncated_json_args_detected() {
+        assert!(all_tool_calls_empty(&[tc("1", "read", r#"{"file_path": "/home"#)]));
+        assert!(all_tool_calls_empty(&[tc("1", "bash", r#"{"command":"ls"#)]));
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "{")]));
+    }
+
+    /// Invalid JSON syntax (not just truncation) must also be detected.
+    #[test]
+    fn invalid_json_syntax_detected() {
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "not json")]));
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "{key: val}")]));
+        assert!(all_tool_calls_empty(&[tc("1", "bash", "{\"unclosed")]));
+    }
 }

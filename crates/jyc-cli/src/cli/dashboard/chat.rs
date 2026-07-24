@@ -773,7 +773,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             && let Some(thinking) = &ct.thinking_text
             && !thinking.is_empty()
         {
-            let gray_style = Style::default().fg(Color::DarkGray);
+            let gray_style = Style::default().fg(Color::Gray);
             for line in thinking.lines() {
                 all_lines.push(Line::from(vec![
                     Span::raw("  "),

@@ -183,6 +183,12 @@ impl Provider for OpenAiCompatProvider {
                             let data = &msg.data;
 
                             if data.trim() == "[DONE]" {
+                                // Flush any remaining tag-buffered content
+                                // (e.g. response text after </think> that
+                                // didn't fit into a complete chunk boundary).
+                                if let Some(event) = flush_think_buffer(&mut state) {
+                                    state.pending_events.push_back(event);
+                                }
                                 state.pending_events.push_back(StreamEvent::Done);
                                 if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state)));
@@ -395,6 +401,9 @@ impl Provider for OpenAiCompatProvider {
                         Some(Ok(Event::Message(msg))) => {
                             let data = &msg.data;
                             if data.trim() == "[DONE]" {
+                                if let Some(event) = flush_think_buffer(&mut state) {
+                                    state.pending_events.push_back(event);
+                                }
                                 state.pending_events.push_back(StreamEvent::Done);
                                 if let Some(event) = state.pending_events.pop_front() {
                                     return Some((Ok(event), (es, state, diag)));
@@ -470,6 +479,15 @@ struct OpenAiStreamState {
     tool_calls: Vec<ToolCallAccumulator>,
     /// Events ready to be yielded (FIFO queue).
     pending_events: VecDeque<StreamEvent>,
+    /// Whether the parser is currently inside a `<think>...</think>` block.
+    /// Providers like MiniMax M3 emit thinking content inline in the `content`
+    /// field wrapped in `<think>...</think>` tags rather than in a separate
+    /// `reasoning_content` field.
+    in_think_block: bool,
+    /// Unparsed tail of the `content` stream. Holds the substring from the last
+    /// `<` onwards when no complete tag is present, so we can detect tags that
+    /// arrive split across chunks.
+    tag_buffer: String,
 }
 
 #[derive(Default, Clone)]
@@ -478,6 +496,90 @@ struct ToolCallAccumulator {
     name: String,
     arguments: String,
     started: bool,
+}
+
+/// Split the incoming `content` fragment by `<think>` / `</think>` tags,
+/// emitting `TextDelta` for text outside think blocks and `ReasoningDelta`
+/// for text inside them. Handles tags split across chunks by buffering the
+/// last unparsed `<` onwards in `state.tag_buffer`.
+///
+/// When a `</think>` tag is followed by `\n\n`, the newlines are consumed as
+/// a separator and not emitted — this matches MiniMax M3's output format.
+fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+    let mut text = std::mem::take(&mut state.tag_buffer) + content;
+
+    loop {
+        let tag = if state.in_think_block {
+            "</think>"
+        } else {
+            "<think>"
+        };
+
+        match text.find(tag) {
+            Some(pos) => {
+                let segment = &text[..pos];
+                if !segment.is_empty() {
+                    events.push(if state.in_think_block {
+                        StreamEvent::ReasoningDelta(segment.to_string())
+                    } else {
+                        StreamEvent::TextDelta(segment.to_string())
+                    });
+                }
+                text = text[pos + tag.len()..].to_string();
+                state.in_think_block = !state.in_think_block;
+                if !state.in_think_block {
+                    // Strip the "\n\n" separator that MiniMax M3 emits between
+                    // the think block and the actual response.
+                    if let Some(stripped) = text.strip_prefix("\n\n") {
+                        text = stripped.to_string();
+                    }
+                }
+            }
+            None => {
+                // No complete tag found. Buffer everything from the last `<`
+                // onwards — that substring could still become a tag once the
+                // next chunk arrives. Text before that point is safe to emit.
+                if let Some(last_angle) = text.rfind('<') {
+                    let emit = &text[..last_angle];
+                    if !emit.is_empty() {
+                        events.push(if state.in_think_block {
+                            StreamEvent::ReasoningDelta(emit.to_string())
+                        } else {
+                            StreamEvent::TextDelta(emit.to_string())
+                        });
+                    }
+                    state.tag_buffer = text[last_angle..].to_string();
+                } else {
+                    if !text.is_empty() {
+                        events.push(if state.in_think_block {
+                            StreamEvent::ReasoningDelta(text.clone())
+                        } else {
+                            StreamEvent::TextDelta(text.clone())
+                        });
+                    }
+                    state.tag_buffer.clear();
+                }
+                break;
+            }
+        }
+    }
+
+    events
+}
+
+/// Flush any remaining buffered content from `split_think_tags`. Called when
+/// the stream ends (SSE `[DONE]`) to ensure the last partial chunk is not lost.
+fn flush_think_buffer(state: &mut OpenAiStreamState) -> Option<StreamEvent> {
+    if state.tag_buffer.is_empty() {
+        return None;
+    }
+    let buf = std::mem::take(&mut state.tag_buffer);
+    Some(if state.in_think_block {
+        StreamEvent::ReasoningDelta(buf)
+    } else {
+        StreamEvent::TextDelta(buf)
+    })
 }
 
 /// Parse a single OpenAI SSE chunk into StreamEvents.
@@ -501,13 +603,21 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
         };
 
         // Text content (standard OpenAI field)
+        //
+        // Some providers (e.g. MiniMax M3) embed thinking content inline in
+        // the `content` field wrapped in `<think>...</think>` tags. Route the
+        // content through `split_think_tags` so thinking and response text are
+        // emitted as separate event types.
         if let Some(content) = delta.get("content").and_then(|c| c.as_str())
             && !content.is_empty()
         {
-            events.push(StreamEvent::TextDelta(content.to_string()));
+            events.extend(split_think_tags(content, state));
         }
 
         // Reasoning content (DeepSeek v4-pro style thinking)
+        //
+        // Providers like DeepSeek emit thinking in a separate `reasoning_content`
+        // field, which is independent of any `<think>` tags in `content`.
         if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str())
             && !reasoning.is_empty()
         {
@@ -961,5 +1071,199 @@ mod tests {
             "expected [ERROR] prefix, got: {content}"
         );
         assert!(content.contains("something failed"));
+    }
+
+    // Helper to extract just the string content from a sequence of events.
+    fn texts(events: &[StreamEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::TextDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reasonings(events: &[StreamEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ReasoningDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// MiniMax M3 streaming layout (real captured example):
+    ///   chunk 1: role only
+    ///   chunk 2: <think>... (thinking begins)
+    ///   chunk 3: ...rest of thinking</think>\n\nFour
+    /// The thinking must not leak into the reply text.
+    #[test]
+    fn split_think_tags_minimax_layout() {
+        let mut state = OpenAiStreamState::default();
+
+        // chunk 1: role only — no events
+        let chunk1 = serde_json::json!({"choices": [{"delta": {"role": "assistant"}}]}).to_string();
+        let events = parse_openai_chunk(&chunk1, &mut state).unwrap_or_default();
+        assert!(texts(&events).is_empty() && reasonings(&events).is_empty());
+
+        // chunk 2: thinking content opens
+        let chunk2 = serde_json::json!({
+            "choices": [{"delta": {"content": "<think>The user asks 2+2. Answer is Four.", "role": "assistant"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk2, &mut state).unwrap_or_default();
+        assert!(
+            texts(&events).is_empty(),
+            "no text yet, got {:?}",
+            texts(&events)
+        );
+        assert_eq!(
+            reasonings(&events),
+            vec!["The user asks 2+2. Answer is Four."],
+            "thinking should be ReasoningDelta"
+        );
+        assert!(state.in_think_block);
+
+        // chunk 3: think block closes, response follows (note "\n\n" separator)
+        let chunk3 = serde_json::json!({
+            "choices": [{"delta": {"content": "</think>\n\nFour", "role": "assistant"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk3, &mut state).unwrap_or_default();
+        assert_eq!(
+            texts(&events),
+            vec!["Four"],
+            "response should be plain TextDelta with no think tags or leading newlines"
+        );
+        assert!(
+            reasonings(&events).is_empty(),
+            "no reasoning leaked into chunk 3"
+        );
+        assert!(!state.in_think_block, "should have exited think block");
+    }
+
+    /// When the content has neither think tags nor `<` chars, the existing
+    /// OpenAI behavior must be preserved (entire content -> TextDelta).
+    #[test]
+    fn split_think_tags_plain_text_passthrough() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "Hello, world!"}}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+        assert_eq!(texts(&events), vec!["Hello, world!"]);
+        assert!(reasonings(&events).is_empty());
+        assert!(state.tag_buffer.is_empty());
+    }
+
+    /// Tags may straddle chunk boundaries. The partial "<thi" must be held
+    /// back until the next chunk completes the `<think>` token.
+    #[test]
+    fn split_think_tags_split_across_chunks() {
+        let mut state = OpenAiStreamState::default();
+
+        let chunk1 = serde_json::json!({"choices": [{"delta": {"content": "<thi"}}]}).to_string();
+        let events = parse_openai_chunk(&chunk1, &mut state).unwrap_or_default();
+        assert!(
+            events.is_empty(),
+            "partial tag must be buffered, not emitted"
+        );
+        assert_eq!(state.tag_buffer, "<thi");
+        assert!(!state.in_think_block);
+
+        let chunk2 =
+            serde_json::json!({"choices": [{"delta": {"content": "nk>thinking"}}]}).to_string();
+        let events = parse_openai_chunk(&chunk2, &mut state).unwrap_or_default();
+        assert_eq!(
+            reasonings(&events),
+            vec!["thinking"],
+            "thinking content emitted after buffered tag completes"
+        );
+        assert!(state.in_think_block);
+        assert!(state.tag_buffer.is_empty());
+    }
+
+    /// The `\n\n` separator MiniMax emits after `</think>` must be stripped
+    /// from the response text — otherwise the user sees a leading blank line.
+    #[test]
+    fn split_think_tags_strips_separator_after_close() {
+        let mut state = OpenAiStreamState::default();
+        // pre-seed as if we are mid-think
+        let chunk1 =
+            serde_json::json!({"choices": [{"delta": {"content": "<think>stuff"}}]}).to_string();
+        parse_openai_chunk(&chunk1, &mut state).unwrap_or_default();
+
+        let chunk2 = serde_json::json!({"choices": [{"delta": {"content": "</think>\n\nAnswer"}}]})
+            .to_string();
+        let events = parse_openai_chunk(&chunk2, &mut state).unwrap_or_default();
+        assert_eq!(texts(&events), vec!["Answer"]);
+    }
+
+    /// Text containing a bare `<` (not a think tag) is still emitted promptly
+    /// rather than buffered forever. Only the suffix after the last `<` is
+    /// held back.
+    #[test]
+    fn split_think_tags_buffer_only_after_last_angle_bracket() {
+        let mut state = OpenAiStreamState::default();
+        let chunk =
+            serde_json::json!({"choices": [{"delta": {"content": "Hello <world"}}]}).to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+        assert_eq!(texts(&events), vec!["Hello "]);
+        assert_eq!(state.tag_buffer, "<world");
+    }
+
+    /// When the stream ends with content still in the tag buffer, the flush
+    /// helper must surface it so it isn't dropped on the floor.
+    #[test]
+    fn flush_think_buffer_emits_text_when_outside_think() {
+        let mut state = OpenAiStreamState::default();
+        state.tag_buffer = "trailing".to_string();
+        let event = flush_think_buffer(&mut state).expect("should produce event");
+        match event {
+            StreamEvent::TextDelta(t) => assert_eq!(t, "trailing"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+        assert!(state.tag_buffer.is_empty());
+    }
+
+    #[test]
+    fn flush_think_buffer_emits_reasoning_when_inside_think() {
+        let mut state = OpenAiStreamState::default();
+        state.in_think_block = true;
+        state.tag_buffer = "still thinking".to_string();
+        let event = flush_think_buffer(&mut state).expect("should produce event");
+        match event {
+            StreamEvent::ReasoningDelta(t) => assert_eq!(t, "still thinking"),
+            other => panic!("expected ReasoningDelta, got {other:?}"),
+        }
+        assert!(state.tag_buffer.is_empty());
+    }
+
+    #[test]
+    fn flush_think_buffer_noop_when_empty() {
+        let mut state = OpenAiStreamState::default();
+        assert!(flush_think_buffer(&mut state).is_none());
+    }
+
+    /// DeepSeek-style `reasoning_content` must still work alongside the new
+    /// `<think>` tag handling — they are independent code paths.
+    #[test]
+    fn parse_openai_chunk_combines_reasoning_content_and_content() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "content": "hello",
+                    "reasoning_content": "thinking..."
+                }
+            }]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+        assert_eq!(texts(&events), vec!["hello"]);
+        assert_eq!(reasonings(&events), vec!["thinking..."]);
     }
 }

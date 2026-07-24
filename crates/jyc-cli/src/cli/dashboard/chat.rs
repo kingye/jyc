@@ -940,7 +940,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the activity pane has
     // focus. A "> " prompt sits in a 2-column gutter left of the editor.
-    let theme = EditorTheme::default().base(Style::default());
+    let theme = EditorTheme::default()
+        .base(Style::default())
+        .hide_status_line();
     let theme = match app.chat.focus {
         ChatFocus::ActivityPane => theme.hide_cursor(),
         ChatFocus::ChatPane => match app.chat.editor.mode {

@@ -530,19 +530,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let tool_start = Instant::now();
 
             let output = match parse_result {
-                Ok(parsed) => {
-                    match tools.execute(&tool_call.name, parsed, &ctx).await {
-                        Ok(output) => output,
-                        Err(e) => {
-                            tracing::warn!(
-                                tool = %tool_call.name,
-                                error = %e,
-                                "Tool execution failed"
-                            );
-                            ToolOutput::error(format!("Tool error: {e}"))
-                        }
+                Ok(parsed) => match tools.execute(&tool_call.name, parsed, &ctx).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        tracing::warn!(
+                            tool = %tool_call.name,
+                            error = %e,
+                            "Tool execution failed"
+                        );
+                        ToolOutput::error(format!("Tool error: {e}"))
                     }
-                }
+                },
                 Err(parse_err) => {
                     tracing::warn!(
                         tool = %tool_call.name,

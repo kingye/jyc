@@ -38,6 +38,13 @@ All notable changes to JYC will be documented in this file.
   "Thinking..." marker (verbose reasoning text is kept in-memory only and never
   written to disk).
 
+### Changed
+
+- **Dashboard chat pane opens with the activity pane hidden by default.**
+  The default layout is now 100/0 (chat only, no activity pane). `Ctrl+W`
+  continues to cycle through the four layouts: `100/0 → 80/20 → 20/80 → 0/100`
+  and back. Previously the default was `80/20` (both panes visible).
+
 ### Fixed
 
 - **Sanitize malformed tool call arguments in OpenAI-compatible provider.**

@@ -460,10 +460,10 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 // thinking text in `thinking`. Without this arm the opening
                 // chunk of the thinking block would be lost (only the
                 // subsequent `thinking_delta` events would be captured).
-                if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
-                    if !text.is_empty() {
-                        return Some(vec![StreamEvent::ReasoningDelta(text.to_string())]);
-                    }
+                if let Some(text) = block.get("thinking").and_then(|t| t.as_str())
+                    && !text.is_empty()
+                {
+                    return Some(vec![StreamEvent::ReasoningDelta(text.to_string())]);
                 }
                 return None;
             }

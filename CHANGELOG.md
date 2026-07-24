@@ -59,6 +59,19 @@ All notable changes to JYC will be documented in this file.
   (the cryptographic signature at the end of each thinking block) is
   correctly ignored.
 
+- **Recover from models that emit malformed tool call arguments.** Some
+  models (notably MiniMax M3 in plan mode) occasionally emit truncated or
+  invalid JSON tool call arguments (e.g. `{"file_path": "/home` with a
+  missing closing brace). Previously JYC silently fell back to `{}` and
+  executed the tool with empty args, which produced a confusing "Missing
+  'file_path' parameter" error that didn't tell the model its output was
+  broken — so the model kept generating the same malformed calls. Now a
+  recovery message explaining the parse error is injected as the tool
+  result, giving the model a clear chance to retry. The empty-tool-call
+  guardrail was also expanded to detect repeated malformed calls across
+  iterations and abort the loop, so a model that keeps producing broken
+  output doesn't waste tokens indefinitely.
+
 - **Dashboard: Esc from chat pane returns to thread overview instead of pattern select.**
   When chatting in a WebSocket thread, pressing Esc now consistently returns to the
   thread overview table rather than the pattern selection screen. The pattern select

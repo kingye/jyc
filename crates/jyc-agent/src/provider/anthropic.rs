@@ -455,6 +455,18 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                 state.tool_input_buffer.clear();
                 return Some(vec![StreamEvent::ToolUseStart { id, name }]);
             }
+            if block_type == "thinking" {
+                // Anthropic extended thinking: the block may carry initial
+                // thinking text in `thinking`. Without this arm the opening
+                // chunk of the thinking block would be lost (only the
+                // subsequent `thinking_delta` events would be captured).
+                if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        return Some(vec![StreamEvent::ReasoningDelta(text.to_string())]);
+                    }
+                }
+                return None;
+            }
             None
         }
         "content_block_delta" => {

@@ -616,12 +616,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     frame.render_widget(block, area);
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area grows with content (up to 11 rows) for multi-line editing:
-    // wrapped text lines (1-10) + 1 status line for the vim mode indicator.
+    // Input area grows with content (up to 10 rows) for multi-line editing.
     // Subtract the 2-column "> " prompt gutter from the wrap width.
-    let input_line_count = count_wrapped_lines(&app.chat.text(), inner.width.saturating_sub(2))
-        .clamp(1, 10) as u16
-        + 1;
+    let input_line_count =
+        count_wrapped_lines(&app.chat.text(), inner.width.saturating_sub(2)).clamp(1, 10) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -775,7 +773,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             && let Some(thinking) = &ct.thinking_text
             && !thinking.is_empty()
         {
-            let gray_style = Style::default().fg(Color::DarkGray);
+            let gray_style = Style::default().fg(Color::Gray);
             for line in thinking.lines() {
                 all_lines.push(Line::from(vec![
                     Span::raw("  "),
@@ -940,7 +938,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the activity pane has
     // focus. A "> " prompt sits in a 2-column gutter left of the editor.
-    let theme = EditorTheme::default().base(Style::default());
+    let theme = EditorTheme::default()
+        .base(Style::default())
+        .hide_status_line();
     let theme = match app.chat.focus {
         ChatFocus::ActivityPane => theme.hide_cursor(),
         ChatFocus::ChatPane => match app.chat.editor.mode {
@@ -1340,11 +1340,10 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // Editor rows: wrapped text lines (1-10) + 1 status line.
+                // Editor rows: wrapped text lines (1-10).
                 // Subtract the 2-column "> " prompt gutter from the width.
-                let input_lines = count_wrapped_lines(&self.text(), term_width.saturating_sub(2))
-                    .clamp(1, 10)
-                    + 1;
+                let input_lines =
+                    count_wrapped_lines(&self.text(), term_width.saturating_sub(2)).clamp(1, 10);
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),

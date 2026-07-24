@@ -499,8 +499,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // "Missing 'X' parameter" error that doesn't tell the model the
             // args were broken — inject a recovery message so the model can
             // retry with complete arguments.
-            let input: serde_json::Value = match serde_json::from_str(&tool_call.arguments)
-            {
+            let input: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
                 Ok(v) => v,
                 Err(parse_err) => {
                     tracing::warn!(
@@ -548,11 +547,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
                     // Add the recovery message as the tool result so the model
                     // sees the feedback on its next turn and can retry.
-                    history.push(Message::tool_result(
-                        &tool_call.id,
-                        &recovery_msg,
-                        true,
-                    ));
+                    history.push(Message::tool_result(&tool_call.id, &recovery_msg, true));
                     raw_context.push(provider.format_tool_result(
                         &tool_call.id,
                         &recovery_msg,
@@ -1820,8 +1815,16 @@ mod guardrail_tests {
     /// a model that keeps generating broken output.
     #[test]
     fn truncated_json_args_detected() {
-        assert!(all_tool_calls_empty(&[tc("1", "read", r#"{"file_path": "/home"#)]));
-        assert!(all_tool_calls_empty(&[tc("1", "bash", r#"{"command":"ls"#)]));
+        assert!(all_tool_calls_empty(&[tc(
+            "1",
+            "read",
+            r#"{"file_path": "/home"#
+        )]));
+        assert!(all_tool_calls_empty(&[tc(
+            "1",
+            "bash",
+            r#"{"command":"ls"#
+        )]));
         assert!(all_tool_calls_empty(&[tc("1", "bash", "{")]));
     }
 

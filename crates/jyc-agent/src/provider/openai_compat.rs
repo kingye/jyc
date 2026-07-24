@@ -299,12 +299,29 @@ impl Provider for OpenAiCompatProvider {
             let tc_json: Vec<serde_json::Value> = tool_calls
                 .iter()
                 .map(|(id, name, args)| {
+                    // Validate arguments JSON before embedding. Some models
+                    // (e.g. MiniMax M3) occasionally emit malformed tool call
+                    // arguments that survive the current turn but poison the
+                    // `raw_context` — replaying them on the next request
+                    // triggers a 400 with "invalid function arguments json
+                    // string". Fall back to "{}" to match the Anthropic path
+                    // and keep the conversation consistent.
+                    let safe_args = if serde_json::from_str::<serde_json::Value>(args).is_ok() {
+                        args.clone()
+                    } else {
+                        tracing::warn!(
+                            tool_name = %name,
+                            args = %args,
+                            "Malformed tool call arguments from model, replacing with empty object for replay"
+                        );
+                        "{}".to_string()
+                    };
                     serde_json::json!({
                         "id": id,
                         "type": "function",
                         "function": {
                             "name": name,
-                            "arguments": args,
+                            "arguments": safe_args,
                         }
                     })
                 })

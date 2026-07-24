@@ -1494,11 +1494,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let calls = vec![(
-            "call_1".to_string(),
-            "bash".to_string(),
-            "   ".to_string(),
-        )];
+        let calls = vec![("call_1".to_string(), "bash".to_string(), "   ".to_string())];
         let msg = provider.build_raw_assistant_message("", "", &calls);
         let args = msg["tool_calls"][0]["function"]["arguments"]
             .as_str()

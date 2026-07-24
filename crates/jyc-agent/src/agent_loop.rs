@@ -1231,6 +1231,19 @@ async fn collect_response(
         }
     }
 
+    // Safety net: flush any pending tool call that was started (ToolUseStart)
+    // but never ended (ToolUseEnd). Providers that omit `finish_reason` on
+    // the last chunk, or that stream the entire tool call in a single chunk
+    // without a subsequent end marker, would otherwise drop the accumulated
+    // arguments silently.
+    if let (Some(id), Some(name)) = (current_tool_id.take(), current_tool_name.take()) {
+        response.tool_calls.push(ToolCall {
+            id,
+            name,
+            arguments: std::mem::take(&mut current_tool_args),
+        });
+    }
+
     Ok(response)
 }
 

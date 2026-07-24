@@ -689,17 +689,6 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             events.push(StreamEvent::ReasoningDelta(reasoning.to_string()));
         }
 
-        // Check finish_reason and extract usage from the same chunk
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
-            && (finish_reason == "tool_calls" || finish_reason == "stop")
-        {
-            // Emit ToolUseEnd for each accumulated tool call
-            for _ in &state.tool_calls {
-                events.push(StreamEvent::ToolUseEnd);
-            }
-            state.tool_calls.clear();
-        }
-
         // Tool calls
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             tracing::trace!(
@@ -763,6 +752,24 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
                     );
                 }
             }
+        }
+
+        // Check finish_reason and emit ToolUseEnd for each accumulated tool
+        // call. This MUST run after the tool_calls delta processing above:
+        // some providers (notably MiniMax M3) send the final argument
+        // fragment in the same SSE chunk as `finish_reason: "tool_calls"`.
+        // Processing finish_reason first would clear `state.tool_calls` and
+        // emit `ToolUseEnd` before the last fragment is accumulated,
+        // truncating the arguments (e.g., the `file_path` parameter at the
+        // tail of a `read` tool call's JSON would be lost).
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str())
+            && (finish_reason == "tool_calls" || finish_reason == "stop")
+        {
+            // Emit ToolUseEnd for each accumulated tool call
+            for _ in &state.tool_calls {
+                events.push(StreamEvent::ToolUseEnd);
+            }
+            state.tool_calls.clear();
         }
     }
 
@@ -1095,6 +1102,140 @@ mod tests {
 
         assert_eq!(state.tool_calls.len(), 1);
         assert_eq!(state.tool_calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    /// Regression test: MiniMax M3 sometimes sends the final argument fragment
+    /// in the same SSE chunk as `finish_reason: "tool_calls"`. The parser must
+    /// accumulate the fragment first, then emit `ToolUseEnd` — otherwise the
+    /// tail of the arguments JSON (e.g., the `file_path` parameter of a `read`
+    /// tool call) is truncated and the tool call fails with "Missing
+    /// 'file_path' parameter".
+    #[test]
+    fn parse_tool_call_finish_reason_with_last_fragment() {
+        let mut state = OpenAiStreamState::default();
+
+        // Chunk 1: id + name + first fragment of arguments
+        let chunk1 = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "read",
+                            "arguments": r#"{"file_path":"/foo/bar""#
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let events1 = parse_openai_chunk(&chunk1, &mut state).expect("should parse chunk 1");
+        // Expect ToolUseStart + ToolInputDelta
+        assert!(
+            events1
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolUseStart { name, .. } if name == "read")),
+            "expected ToolUseStart for 'read', got {events1:?}"
+        );
+        assert!(
+            !events1.iter().any(|e| matches!(e, StreamEvent::ToolUseEnd)),
+            "no ToolUseEnd should fire yet"
+        );
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].arguments, r#"{"file_path":"/foo/bar""#);
+
+        // Chunk 2: last fragment of arguments + finish_reason="tool_calls"
+        // in the same SSE message. This is the MiniMax M3 quirk.
+        let chunk2 = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": "}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+        let events2 = parse_openai_chunk(&chunk2, &mut state).expect("should parse chunk 2");
+
+        // ToolInputDelta must come BEFORE ToolUseEnd so the agent loop appends
+        // the fragment to the accumulator before saving the tool call.
+        let delta_pos = events2
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolInputDelta(_)));
+        let end_pos = events2
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolUseEnd));
+        assert!(
+            delta_pos.is_some() && end_pos.is_some() && delta_pos.unwrap() < end_pos.unwrap(),
+            "ToolInputDelta must precede ToolUseEnd so the final fragment is \
+             accumulated before the tool call is finalized; got events={events2:?}"
+        );
+
+        // State must reflect the complete arguments — the `}` fragment must
+        // be present, and the accumulator must be cleared after finish_reason.
+        assert_eq!(
+            state.tool_calls.len(),
+            0,
+            "state cleared after finish_reason"
+        );
+    }
+
+    /// Regression test: standard OpenAI streaming where the final chunk has
+    /// `finish_reason: "tool_calls"` but no `tool_calls` delta. The reorder
+    /// (process tool_calls delta before finish_reason) must not change
+    /// behavior for this case — `ToolUseEnd` still fires once.
+    #[test]
+    fn parse_tool_call_finish_reason_without_arguments() {
+        let mut state = OpenAiStreamState::default();
+
+        let chunk1 = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        parse_openai_chunk(&chunk1, &mut state);
+
+        let chunk2 = serde_json::json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk2, &mut state).expect("should parse");
+
+        // Exactly one ToolUseEnd should fire (from finish_reason), no
+        // ToolInputDelta (no arguments in this chunk).
+        let end_count = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolUseEnd))
+            .count();
+        let delta_count = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolInputDelta(_)))
+            .count();
+        assert_eq!(end_count, 1, "expected exactly one ToolUseEnd");
+        assert_eq!(delta_count, 0, "no ToolInputDelta expected");
+        assert!(
+            state.tool_calls.is_empty(),
+            "state cleared after finish_reason"
+        );
     }
 
     #[test]

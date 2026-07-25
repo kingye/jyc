@@ -213,7 +213,6 @@ async fn auth_middleware(
 }
 
 /// Authenticate every request that arrives when a token file is configured.
-
 /// Parse `Authorization: Bearer <token>` from headers. Case-insensitive header
 /// name, case-insensitive scheme.
 pub fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
@@ -1218,53 +1217,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a default `InspectContext` for tests.
-    ///
-    /// Points `token_data_home` at a unique path under the system temp
-    /// dir that does not exist on disk — this guarantees the auth
-    /// middleware's `read_at` call returns `Ok(None)` (no token file)
-    /// and the test is hermetic regardless of whether the developer's
-    /// machine has a real token file at the platform data home.
-    ///
-    /// The nonce includes the process ID and a nanosecond timestamp so
-    /// concurrent test binaries don't collide.
-    fn test_context() -> Arc<InspectContext> {
-        Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "emf".to_string(),
-                channel_type: "github".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-            token_data_home: Some(nonexistent_token_home_path()),
-        })
-    }
-
-    /// Return a unique, never-on-disk path under the system temp dir,
-    /// used by tests to point `token_data_home` at a directory that
-    /// provably has no `inspect-token` file in it.
-    fn nonexistent_token_home_path() -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "jyc-inspect-test-nonexistent-{}-{}",
-            std::process::id(),
-            nonce
-        ))
-    }
+    use crate::test_util::{nonexistent_token_home_path, test_context};
 
     /// Bind a fresh axum server to `127.0.0.1:0` and return its base URL + handle.
     async fn spawn_test_server(

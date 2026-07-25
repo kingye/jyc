@@ -9,8 +9,8 @@
 //! so they pick up the same `Authorization: Bearer …` header as the
 //! HTTP `InspectClient` once a token file is configured.
 
-use http::header::AUTHORIZATION;
 use http::Request;
+use http::header::AUTHORIZATION;
 
 /// Build a GET upgrade request for `url`, attaching
 /// `Authorization: Bearer <token>` if a token resolves.

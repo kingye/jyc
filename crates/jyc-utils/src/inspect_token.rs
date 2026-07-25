@@ -98,21 +98,6 @@ pub fn rotate() -> Result<String> {
     generate()
 }
 
-/// Constant-time check whether `provided` matches the token at
-/// `<data_home>/inspect-token`.
-///
-/// Reads the file fresh on every call — no caching. Returns `false` if
-/// the file is missing or malformed (treated as "no token configured").
-/// Uses `subtle::ConstantTimeEq` to avoid leaking length or content via
-/// timing.
-///
-/// **Removed**: the old no-arg form `matches(provided)` has been
-/// deleted. The `jyc_inspect` HTTP auth middleware reads the file
-/// directly via `read` / `read_at`; tests that need to drive `matches`
-/// against a specific token file should use [`matches_at`].
-
-// ── Public API — explicit base directory (for tests) ─────────────────────
-
 // ── Public API — explicit base directory (for tests) ─────────────────────
 
 /// Returns `<base>/inspect-token` (Linux/macOS) or `<base>\inspect-token`

@@ -202,16 +202,17 @@ async fn test_websocket_adapter_start_and_handle() {
 async fn spawn_test_server(
     inbound: Arc<WebsocketInboundAdapter>,
     token_data_home: std::path::PathBuf,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, CancellationToken) {
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    CancellationToken,
+) {
     use std::collections::HashMap as StdHashMap;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let mut handlers: StdHashMap<String, Arc<dyn WebsocketHandler>> = StdHashMap::new();
-    handlers.insert(
-        "test_ws".to_string(),
-        inbound as Arc<dyn WebsocketHandler>,
-    );
+    handlers.insert("test_ws".to_string(), inbound as Arc<dyn WebsocketHandler>);
 
     let ctx = Arc::new(InspectContext {
         thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
@@ -248,7 +249,6 @@ async fn spawn_test_server(
 /// `Authorization: Bearer …` header. The three tests below cover the
 /// accept / reject paths. (The default-install no-token-file path is
 /// already covered by `test_websocket_adapter_start_and_handle` above.)
-
 /// Build an `http::Request<()>` for `url` with `Authorization: Bearer
 /// <token>` if `token` is `Some`. Used by the auth tests to construct
 /// upgrade requests with / without a Bearer.

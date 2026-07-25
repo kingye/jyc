@@ -1316,6 +1316,34 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             context,
             cancel.clone(),
         );
+
+        // Warn the operator if they're binding to a non-loopback address
+        // without a token file: remote connections will be rejected.
+        if let Some(bind_port) = inspect_config.bind.rsplit_once(':').map(|(_, p)| p) {
+            // Cheap "is this bind non-loopback?" check via std::net.
+            if let Ok(addr) = inspect_config.bind.parse::<std::net::SocketAddr>()
+                && !addr.ip().is_loopback()
+            {
+                let token_path = jyc_utils::inspect_token::token_path();
+                let has_token = token_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+                if !has_token {
+                    tracing::warn!(
+                        bind = %inspect_config.bind,
+                        "inspect server binding to non-loopback address without a token file; \
+                         remote connections will be rejected. Run `jyc token generate` to enable."
+                    );
+                } else if let Some(p) = token_path {
+                    tracing::info!(
+                        bind = %inspect_config.bind,
+                        token_path = %p.display(),
+                        "inspect server: token file present; remote clients must provide \
+                         matching `Authorization: Bearer <token>`"
+                    );
+                }
+            }
+            let _ = bind_port;
+        }
+
         Some(server.start())
     } else {
         None

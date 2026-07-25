@@ -7,6 +7,7 @@ description = "Runtime inspection server/client for JYC"
 [dependencies]
 jyc-types = { path = "../jyc-types" }
 jyc-core = { path = "../jyc-core" }
+jyc-utils = { path = "../jyc-utils" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,6 +19,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 async-trait = "0.1"
+subtle = "2"
 
 [dev-dependencies]
 tempfile = "3"

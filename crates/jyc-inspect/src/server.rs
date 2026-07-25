@@ -103,6 +103,126 @@ pub struct InspectServer {
     cancel: CancellationToken,
 }
 
+// ── Authentication helpers ──────────────────────────────────────────────
+
+/// Returns `true` when `ip` is a loopback address.
+///
+/// Covers IPv4 loopback (`127.0.0.0/8`), IPv6 loopback (`::1`), and the
+/// IPv4-mapped form (`::ffff:127.0.0.1`). Deliberately excludes private
+/// ranges (`10/8`, `172.16/12`, `192.168/16`) — those hit Docker bridges
+/// and corporate VPNs and would silently fail-open for a much larger
+/// surface than intended.
+pub fn is_loopback(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return true;
+            }
+            // IPv4-mapped IPv6 addresses: ::ffff:127.0.0.1 etc.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_loopback();
+            }
+            false
+        }
+    }
+}
+
+/// Reasons why a remote connection's authentication attempt failed.
+#[derive(Debug)]
+pub enum AuthError {
+    Missing,
+    NoTokenFile(String),
+    Mismatch,
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthError::Missing => f.write_str("missing or malformed Authorization header"),
+            AuthError::NoTokenFile(path) => {
+                write!(f, "token file is missing at {path}")
+            }
+            AuthError::Mismatch => f.write_str("token mismatch"),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+/// Validates a remote client's token against the on-disk token file.
+///
+/// `provided` is `Some(token)` if the client sent a token (from the
+/// `Authorization: Bearer …` header or from the JSON `auth` request),
+/// `None` otherwise. The token file is read fresh on every call.
+///
+/// Constant-time comparison via `subtle::ConstantTimeEq` is used inside
+/// `jyc_utils::inspect_token::matches` to avoid leaking length/content.
+pub fn check_remote_auth(provided: Option<&str>) -> Result<(), AuthError> {
+    let token = provided.ok_or(AuthError::Missing)?;
+    if jyc_utils::inspect_token::matches(token) {
+        Ok(())
+    } else {
+        // Distinguish "no token file configured" from "wrong token" so
+        // operators can diagnose misconfiguration vs. credential mismatch.
+        match jyc_utils::inspect_token::read() {
+            Ok(None) => {
+                let path = jyc_utils::inspect_token::token_path()
+                    .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string());
+                Err(AuthError::NoTokenFile(path))
+            }
+            _ => Err(AuthError::Mismatch),
+        }
+    }
+}
+
+/// Extracts a bearer token from an HTTP request byte buffer.
+///
+/// Looks for an `Authorization: Bearer <token>` header line. Header name
+/// match is case-insensitive. Returns `None` if absent.
+fn parse_authorization_header(buffer: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(buffer).ok()?;
+    for line in text.split("\r\n") {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("authorization") {
+            let value = value.trim();
+            let token = value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))?;
+            return Some(token.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Outcome of attempting to consume the first JSON line as an auth request.
+enum AuthOutcome {
+    /// `{"method":"auth","token":"…"}` and the token matched the on-disk file.
+    Ok,
+    /// The line was not an auth request, the token was missing, or the
+    /// token did not match.
+    BadToken,
+    /// The line was not valid JSON at all.
+    Malformed,
+}
+
+/// Parses the first JSON line and validates it as an auth request.
+fn try_handle_auth(line: &str) -> AuthOutcome {
+    let trimmed = line.trim();
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return AuthOutcome::Malformed;
+    };
+    let method = value.get("method").and_then(|v| v.as_str());
+    let token = value.get("token").and_then(|v| v.as_str());
+    if method != Some("auth") {
+        return AuthOutcome::BadToken;
+    }
+    match check_remote_auth(token) {
+        Ok(()) => AuthOutcome::Ok,
+        Err(_) => AuthOutcome::BadToken,
+    }
+}
+
 impl InspectServer {
     pub fn new(bind_addr: String, context: Arc<InspectContext>, cancel: CancellationToken) -> Self {
         Self {
@@ -158,7 +278,7 @@ impl InspectServer {
         context: Arc<InspectContext>,
         addr: std::net::SocketAddr,
     ) -> anyhow::Result<()> {
-        // Read the first line to detect protocol and extract path.
+        // Read the first line to detect protocol.
         let mut reader = tokio::io::BufReader::new(stream);
         let mut first_line = String::new();
         let bytes_read = reader.read_line(&mut first_line).await?;
@@ -166,35 +286,116 @@ impl InspectServer {
             return Ok(()); // Client disconnected immediately
         }
 
-        // Get the remaining buffered data (if any) before we inspect the stream
-        let remaining = reader.buffer().to_vec();
-        let stream = reader.into_inner();
+        if first_line.starts_with('G') {
+            // HTTP request — read full headers, authenticate, then WebSocket upgrade.
+            Self::handle_http_client(reader, first_line, context, addr).await
+        } else {
+            // JSON line protocol — first line must be an auth request from remote clients.
+            Self::handle_json_client(reader, first_line, context, addr).await
+        }
+    }
 
-        // Reconstruct the full buffer: first_line + remaining
+    async fn handle_http_client(
+        mut reader: tokio::io::BufReader<tokio::net::TcpStream>,
+        first_line: String,
+        context: Arc<InspectContext>,
+        addr: std::net::SocketAddr,
+    ) -> anyhow::Result<()> {
+        // Read remaining headers. HTTP headers end at the first empty line
+        // (`\r\n` on its own). We read line-by-line so the final byte
+        // buffer is the complete request head (status line + headers).
+        let mut buffer = first_line.into_bytes();
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            let n = reader.read_line(&mut header_line).await?;
+            if n == 0 {
+                // Client disconnected mid-headers.
+                return Ok(());
+            }
+            buffer.extend_from_slice(header_line.as_bytes());
+            // End-of-headers marker: a line that is just "\r\n" or "\n".
+            if header_line == "\r\n" || header_line == "\n" {
+                break;
+            }
+        }
+
+        // Authenticate. For loopback clients the file check is skipped entirely.
+        // For non-loopback clients the token must match the on-disk file.
+        if !is_loopback(addr.ip()) {
+            let provided = parse_authorization_header(&buffer);
+            if let Err(e) = check_remote_auth(provided.as_deref()) {
+                tracing::debug!(addr = %addr, error = %e, "WebSocket auth rejected");
+                let stream = reader.into_inner();
+                let mut s = stream;
+                use tokio::io::AsyncWriteExt;
+                s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .ok();
+                return Ok(());
+            }
+        }
+
+        let request_str = String::from_utf8_lossy(&buffer);
+        let request_line = request_str.lines().next().unwrap_or("");
+        let path = Self::extract_ws_path(request_line);
+        let handler = Self::resolve_ws_handler(&context, path);
+
+        if let Some(handler) = handler {
+            let stream = reader.into_inner();
+            let prepend_stream = PrependStream::new(stream, buffer);
+            let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
+            handler.handle(ws_stream, addr).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_json_client(
+        reader: tokio::io::BufReader<tokio::net::TcpStream>,
+        first_line: String,
+        context: Arc<InspectContext>,
+        addr: std::net::SocketAddr,
+    ) -> anyhow::Result<()> {
+        // Capture any bytes the BufReader has already buffered past the first
+        // line — they are part of the first request body and must be replayed
+        // before subsequent network reads.
+        let remaining = reader.buffer().to_vec();
         let mut prepend_bytes = first_line.into_bytes();
         prepend_bytes.extend(remaining);
 
-        if prepend_bytes.first() == Some(&b'G') {
-            // HTTP request — extract WebSocket path for multi-channel routing
-            let request_str = String::from_utf8_lossy(&prepend_bytes);
-            let first_line = request_str.lines().next().unwrap_or("");
-            let path = Self::extract_ws_path(first_line);
-            let handler = Self::resolve_ws_handler(&context, path);
-
-            if let Some(handler) = handler {
-                let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                handler.handle(ws_stream, addr).await?;
-            }
-            return Ok(());
-        }
-
-        // JSON inspect protocol
+        let stream = reader.into_inner();
         let prepend_stream = PrependStream::new(stream, prepend_bytes);
         let (reader_half, mut writer) = prepend_stream.into_split();
         let mut reader = BufReader::new(reader_half);
-        let mut line = String::new();
 
+        // Auth gate. Loopback bypasses entirely; remote clients must send
+        // `{"method":"auth","token":"..."}` as the first line.
+        let mut authenticated = is_loopback(addr.ip());
+        if !authenticated {
+            // Read the first line from the prepended buffer.
+            let mut first = String::new();
+            let n = reader.read_line(&mut first).await?;
+            if n == 0 {
+                return Ok(()); // Client disconnected
+            }
+            match try_handle_auth(&first) {
+                AuthOutcome::Ok => {
+                    authenticated = true;
+                }
+                AuthOutcome::BadToken | AuthOutcome::Malformed => {
+                    let response = InspectResponse::Error {
+                        error: "unauthorized".to_string(),
+                    };
+                    let mut json = serde_json::to_string(&response)?;
+                    json.push('\n');
+                    writer.write_all(json.as_bytes()).await.ok();
+                    writer.flush().await.ok();
+                    return Ok(());
+                }
+            }
+        }
+
+        let mut line = String::new();
         loop {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
@@ -207,11 +408,17 @@ impl InspectServer {
                 continue;
             }
 
-            let response = match serde_json::from_str::<InspectRequest>(trimmed) {
-                Ok(req) => Self::handle_request(&req, &context).await,
-                Err(e) => InspectResponse::Error {
-                    error: format!("invalid request: {e}"),
-                },
+            let response = if !authenticated {
+                InspectResponse::Error {
+                    error: "auth required".to_string(),
+                }
+            } else {
+                match serde_json::from_str::<InspectRequest>(trimmed) {
+                    Ok(req) => Self::handle_request(&req, &context).await,
+                    Err(e) => InspectResponse::Error {
+                        error: format!("invalid request: {e}"),
+                    },
+                }
             };
 
             let mut json = serde_json::to_string(&response)?;
@@ -226,8 +433,10 @@ impl InspectServer {
     /// Extract the WebSocket path from an HTTP GET request line.
     /// e.g. "GET /ws/my_channel HTTP/1.1" → Some("my_channel")
     ///      "GET /ws HTTP/1.1" → None (fallback to first handler)
+    ///      "GET /ws/my_channel?foo=bar HTTP/1.1" → Some("my_channel") (query stripped)
     fn extract_ws_path(request_line: &str) -> Option<String> {
         let path = request_line.split_whitespace().nth(1)?;
+        let path = path.split('?').next().unwrap_or(path);
         if path == "/ws" {
             return None; // No specific channel — fallback to first handler
         }
@@ -2007,5 +2216,184 @@ mode = "agent"
         let entry = event_to_activity(&event);
         assert!(entry.text.contains("Reply sent"));
         assert!(entry.text.contains("AI reply here"));
+    }
+
+    // ── Auth helpers ─────────────────────────────────────────────────
+
+    /// Serializes tests that mutate the shared `HOME` / `LOCALAPPDATA`
+    /// env vars (parallel-safe).
+    static AUTH_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_tmp_data_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
+        #[cfg(unix)]
+        {
+            let prev = std::env::var_os("HOME");
+            std::env::set_var("HOME", tmp);
+            let prev_xdg = std::env::var_os("XDG_DATA_HOME");
+            std::env::set_var("XDG_DATA_HOME", tmp);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            match prev {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_xdg {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+            if let Err(e) = result {
+                std::panic::resume_unwind(e);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let prev = std::env::var_os("LOCALAPPDATA");
+            std::env::set_var("LOCALAPPDATA", tmp);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            match prev {
+                Some(v) => std::env::set_var("LOCALAPPDATA", v),
+                None => std::env::remove_var("LOCALAPPDATA"),
+            }
+            if let Err(e) = result {
+                std::panic::resume_unwind(e);
+            }
+        }
+    }
+
+    #[test]
+    fn is_loopback_classifies_known_loopback_addresses() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert!(is_loopback(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 1, 2, 3))));
+        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 255, 255, 254))));
+        assert!(is_loopback(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_loopback(IpAddr::V6("::ffff:127.0.0.1".parse().unwrap())));
+    }
+
+    #[test]
+    fn is_loopback_rejects_non_loopback() {
+        use std::net::{IpAddr, Ipv4Addr};
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn parse_authorization_header_extracts_bearer_token() {
+        let buf =
+            b"GET /ws HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer jyc_abc123\r\n\r\n";
+        assert_eq!(
+            parse_authorization_header(buf).as_deref(),
+            Some("jyc_abc123")
+        );
+    }
+
+    #[test]
+    fn parse_authorization_header_is_case_insensitive() {
+        let buf = b"GET /ws HTTP/1.1\r\nauthorization: bearer jyc_abc123\r\n\r\n";
+        assert_eq!(
+            parse_authorization_header(buf).as_deref(),
+            Some("jyc_abc123")
+        );
+    }
+
+    #[test]
+    fn parse_authorization_header_returns_none_when_missing() {
+        let buf = b"GET /ws HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(parse_authorization_header(buf), None);
+    }
+
+    #[test]
+    fn parse_authorization_header_rejects_non_bearer_scheme() {
+        let buf = b"GET /ws HTTP/1.1\r\nAuthorization: Basic abc==\r\n\r\n";
+        assert_eq!(parse_authorization_header(buf), None);
+    }
+
+    #[test]
+    fn check_remote_auth_errors_when_token_file_missing() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            let err = check_remote_auth(Some("anything")).unwrap_err();
+            assert!(matches!(err, AuthError::NoTokenFile(_)));
+            let msg = err.to_string();
+            assert!(msg.contains("token file is missing"), "msg: {msg}");
+        });
+    }
+
+    #[test]
+    fn check_remote_auth_errors_when_no_header() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            let err = check_remote_auth(None).unwrap_err();
+            assert!(matches!(err, AuthError::Missing));
+        });
+    }
+
+    #[test]
+    fn check_remote_auth_succeeds_with_matching_token() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            let token = jyc_utils::inspect_token::generate().unwrap();
+            check_remote_auth(Some(&token)).expect("matching token should authenticate");
+        });
+    }
+
+    #[test]
+    fn check_remote_auth_rejects_mismatched_token() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            jyc_utils::inspect_token::generate().unwrap();
+            let err = check_remote_auth(Some("wrong-token")).unwrap_err();
+            assert!(matches!(err, AuthError::Mismatch));
+        });
+    }
+
+    #[test]
+    fn try_handle_auth_accepts_valid_request() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            let token = jyc_utils::inspect_token::generate().unwrap();
+            let line = format!(r#"{{"method":"auth","token":"{token}"}}"#);
+            assert!(matches!(try_handle_auth(&line), AuthOutcome::Ok));
+        });
+    }
+
+    #[test]
+    fn try_handle_auth_rejects_wrong_token() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            jyc_utils::inspect_token::generate().unwrap();
+            let line = r#"{"method":"auth","token":"nope"}"#;
+            assert!(matches!(try_handle_auth(line), AuthOutcome::BadToken));
+        });
+    }
+
+    #[test]
+    fn try_handle_auth_rejects_non_auth_method() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            let line = r#"{"method":"get_state","params":null}"#;
+            assert!(matches!(try_handle_auth(line), AuthOutcome::BadToken));
+        });
+    }
+
+    #[test]
+    fn try_handle_auth_rejects_malformed_json() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            assert!(matches!(
+                try_handle_auth("not json"),
+                AuthOutcome::Malformed
+            ));
+        });
     }
 }

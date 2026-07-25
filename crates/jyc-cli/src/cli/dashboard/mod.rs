@@ -345,12 +345,17 @@ pub async fn run(
         )
     })?;
 
-    // Build the InspectClient with the resolved auth token. If no token is
-    // available at all, fall back to `InspectClient::new` which will read
-    // the on-disk token file on every reconnect.
-    let mut client = match resolve_dashboard_token(args.auth_token.as_deref()) {
-        Some(token) => InspectClient::new_with_token(&args.addr, token),
-        None => InspectClient::new(&args.addr),
+    // Build the InspectClient. We only use `new_with_token` (which
+    // captures the token in a closure) when the user explicitly passed
+    // --auth-token — in that case the user's intent is to lock the
+    // token in for the session. For the env-var / on-disk-file paths
+    // we use `new` (no captured token), which re-reads the source on
+    // every reconnect so a `jyc token rotate` takes effect for new
+    // connections immediately.
+    let mut client = if let Some(t) = args.auth_token.as_deref() {
+        InspectClient::new_with_token(&args.addr, t.to_string())
+    } else {
+        InspectClient::new(&args.addr)
     };
 
     // Setup terminal
@@ -546,11 +551,14 @@ pub async fn run_open(
     // to avoid diverging history and storage paths.
     check_existing_thread_name(&path, &thread)?;
 
-    // Resolve websocket channel using inspect state. Use the resolved auth
-    // token so the pre-channel-discovery connection authenticates correctly.
-    let mut client = match resolve_dashboard_token(auth_token) {
-        Some(token) => InspectClient::new_with_token(addr, token),
-        None => InspectClient::new(addr),
+    // Resolve websocket channel using inspect state. Same rule as in
+    // `run`: only capture the token in a closure when the user passed
+    // `--auth-token` explicitly; for the env-var / file paths use
+    // `new` so token rotation is picked up automatically.
+    let mut client = if let Some(t) = auth_token {
+        InspectClient::new_with_token(addr, t.to_string())
+    } else {
+        InspectClient::new(addr)
     };
     let channel = resolve_websocket_channel(&mut client, channel).await?;
 

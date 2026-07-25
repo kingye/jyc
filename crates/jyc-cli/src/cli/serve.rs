@@ -1331,8 +1331,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 if jyc_inspect::server::is_remote_bind(&inspect_config.bind) {
                     tracing::warn!(
                         "no token file at {}; remote connections will be rejected. Run 'jyc token generate' to enable.",
-                        jyc_utils::inspect_token::token_path()
-                            .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string())
+                        jyc_utils::inspect_token::token_path().map_or_else(
+                            || "<unresolved>".to_string(),
+                            |p| p.display().to_string()
+                        )
                     );
                 }
             }

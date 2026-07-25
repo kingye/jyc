@@ -10,11 +10,22 @@ use jyc_types::{InspectRequest, InspectResponse, InspectState};
 /// Maintains a persistent TCP connection and reuses it across polls.
 /// Automatically reconnects if the connection drops.
 ///
-/// When constructed with an auth token, the client sends
-/// `{"method":"auth","token":"…"}` as the first line of every new TCP
-/// connection so the server's JSON-protocol auth gate lets it through.
-/// The token is re-read from `inspect_token::read()` on every reconnect,
-/// so a rotation takes effect automatically on the next reconnect.
+/// On every fresh TCP connection (i.e. after a reconnect, not on the
+/// persistent reused connection), the client writes
+/// `{"method":"auth","token":"…"}` as the first line — but only if a
+/// token can be resolved from one of these sources, in priority order:
+/// 1. The token captured by [`InspectClient::new_with_token`]
+///    (set once, used for the lifetime of the client)
+/// 2. The `JYC_INSPECT_TOKEN` environment variable (re-read on every
+///    fresh connection)
+/// 3. The on-disk token file at `<data_dir>/inspect-token` (re-read on
+///    every fresh connection)
+///
+/// Sources 2 and 3 are re-read on every reconnect so a `jyc token
+/// rotate` (which writes a new token file) takes effect for new
+/// connections without restarting the dashboard. Source 1 is fixed by
+/// design — callers that want rotation to take effect should use
+/// `InspectClient::new` instead.
 pub struct InspectClient {
     addr: String,
     conn: Option<Connection>,
@@ -51,13 +62,22 @@ impl InspectClient {
     }
 
     /// Returns the token to present on the next fresh connection, or `None`
-    /// if the server should be treated as unauthenticated (loopback-only
-    /// servers will still accept this).
+    /// if no token is configured (the server will accept loopback
+    /// connections without one and reject all others).
+    ///
+    /// Resolution order matches the dashboard's `resolve_dashboard_token`:
+    /// 1. The captured resolver (from `new_with_token`) — fixed
+    /// 2. `JYC_INSPECT_TOKEN` env var — re-read on every call
+    /// 3. `<data_dir>/inspect-token` on disk — re-read on every call
     fn token_for_connect(&self) -> Option<String> {
         if let Some(resolver) = &self.token_resolver {
             return resolver();
         }
-        // Default: read fresh from disk every reconnect so rotation works.
+        if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
+            && !t.is_empty()
+        {
+            return Some(t);
+        }
         jyc_utils::inspect_token::read().ok().flatten()
     }
 

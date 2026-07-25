@@ -40,6 +40,11 @@ const MAX_ACTIVITY_ENTRIES: usize = 180;
 /// Max recent chat messages kept per thread for live dashboard display.
 const MAX_RECENT_MESSAGES: usize = 50;
 
+/// Max idle time between HTTP header bytes before the connection is
+/// dropped. Prevents a malicious client from holding a partial header
+/// line open indefinitely to probe auth behavior.
+const HTTP_HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Per-thread activity buffer, shared between the activity tracker and the server.
 ///
 /// Key is `(channel_name, thread_name)` so that two channels with same-named
@@ -149,6 +154,7 @@ pub fn is_remote_bind(bind_addr: &str) -> bool {
 pub enum AuthError {
     Missing,
     NoTokenFile(String),
+    Malformed(String),
     Mismatch,
 }
 
@@ -158,6 +164,9 @@ impl std::fmt::Display for AuthError {
             AuthError::Missing => f.write_str("missing or malformed Authorization header"),
             AuthError::NoTokenFile(path) => {
                 write!(f, "token file is missing at {path}")
+            }
+            AuthError::Malformed(detail) => {
+                write!(f, "token file is malformed: {detail}")
             }
             AuthError::Mismatch => f.write_str("token mismatch"),
         }
@@ -172,23 +181,25 @@ impl std::error::Error for AuthError {}
 /// `Authorization: Bearer …` header or from the JSON `auth` request),
 /// `None` otherwise. The token file is read fresh on every call.
 ///
-/// Constant-time comparison via `subtle::ConstantTimeEq` is used inside
-/// `jyc_utils::inspect_token::matches` to avoid leaking length/content.
+/// Constant-time comparison via `subtle::ConstantTimeEq` is used to
+/// avoid leaking length or content via timing.
 pub fn check_remote_auth(provided: Option<&str>) -> Result<(), AuthError> {
-    let token = provided.ok_or(AuthError::Missing)?;
-    if jyc_utils::inspect_token::matches(token) {
-        Ok(())
-    } else {
-        // Distinguish "no token file configured" from "wrong token" so
-        // operators can diagnose misconfiguration vs. credential mismatch.
-        match jyc_utils::inspect_token::read() {
-            Ok(None) => {
-                let path = jyc_utils::inspect_token::token_path()
-                    .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string());
-                Err(AuthError::NoTokenFile(path))
+    use subtle::ConstantTimeEq;
+    let provided = provided.ok_or(AuthError::Missing)?;
+    match jyc_utils::inspect_token::read() {
+        Ok(Some(expected)) => {
+            if provided.as_bytes().ct_eq(expected.as_bytes()).into() {
+                Ok(())
+            } else {
+                Err(AuthError::Mismatch)
             }
-            _ => Err(AuthError::Mismatch),
         }
+        Ok(None) => {
+            let path = jyc_utils::inspect_token::token_path()
+                .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string());
+            Err(AuthError::NoTokenFile(path))
+        }
+        Err(e) => Err(AuthError::Malformed(e.to_string())),
     }
 }
 
@@ -320,11 +331,28 @@ impl InspectServer {
         // Read remaining headers. HTTP headers end at the first empty line
         // (`\r\n` on its own). We read line-by-line so the final byte
         // buffer is the complete request head (status line + headers).
+        // A per-line read timeout prevents a malicious client from
+        // holding a partial header open indefinitely.
         let mut buffer = first_line.into_bytes();
         let mut header_line = String::new();
         loop {
             header_line.clear();
-            let n = reader.read_line(&mut header_line).await?;
+            let n = match tokio::time::timeout(
+                HTTP_HEADER_READ_TIMEOUT,
+                reader.read_line(&mut header_line),
+            )
+            .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    tracing::debug!(
+                        addr = %addr,
+                        "HTTP header read timed out; closing connection"
+                    );
+                    return Ok(());
+                }
+            };
             if n == 0 {
                 // Client disconnected mid-headers.
                 return Ok(());
@@ -2384,6 +2412,32 @@ mode = "agent"
             jyc_utils::inspect_token::generate().unwrap();
             let err = check_remote_auth(Some("wrong-token")).unwrap_err();
             assert!(matches!(err, AuthError::Mismatch));
+        });
+    }
+
+    #[test]
+    fn check_remote_auth_reports_malformed_token_file() {
+        let _guard = AUTH_HOME_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        with_tmp_data_home(tmp.path(), || {
+            // Write content that doesn't match the canonical token format.
+            std::fs::create_dir_all(tmp.path().join(".local").join("share").join("jyc")).unwrap();
+            std::fs::write(
+                tmp.path()
+                    .join(".local")
+                    .join("share")
+                    .join("jyc")
+                    .join("inspect-token"),
+                "not-a-jyc-token",
+            )
+            .unwrap();
+            let err = check_remote_auth(Some("anything")).unwrap_err();
+            assert!(matches!(err, AuthError::Malformed(_)));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("token file is malformed"),
+                "msg should mention malformed file, got: {msg}"
+            );
         });
     }
 

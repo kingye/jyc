@@ -84,6 +84,17 @@ pub(super) fn empty_chat_editor() -> EditorState {
     editor
 }
 
+impl ChatState {
+    /// Replace the editor contents with `cmd`, cursor at end, Insert mode.
+    /// Used by the command popup when delivering a selected command.
+    pub(super) fn populate_editor(&mut self, cmd: &str) {
+        self.editor = EditorState::new(Lines::from(cmd));
+        self.editor.cursor.row = 0;
+        self.editor.cursor.col = cmd.len();
+        self.editor.mode = EditorMode::Insert;
+    }
+}
+
 /// Format elapsed time from an RFC 3339 timestamp to now.
 /// Returns a string like "15s" or "2m" or "" if parsing fails.
 pub(super) fn format_elapsed(timestamp: &Option<String>) -> String {
@@ -305,22 +316,22 @@ pub(super) fn handle_chat_keys(
     // ── Command popup handling ─────────────────────────────────────
     if let Some(ref mut popup) = app.chat.command_popup {
         match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {
-            Some(cmd) if cmd.is_empty() => {
-                // Esc — close popup without action
+            PopupAction::None => {}
+            PopupAction::Close => {
                 app.chat.command_popup = None;
             }
-            Some(cmd) => {
-                // Enter — populate the editor with the command text
-                // so the user can add arguments (e.g. "/thinking show")
-                // before pressing Enter again to send.
+            PopupAction::Send(cmd) => {
                 app.chat.command_popup = None;
-                app.chat.editor = EditorState::new(Lines::from(cmd.as_str()));
-                app.chat.editor.cursor.row = 0;
-                app.chat.editor.cursor.col = cmd.len();
-                app.chat.editor.mode = EditorMode::Insert;
+                app.chat.populate_editor(&cmd);
+                // ponytail: overwriting the editor (vs. send_message_inner
+                // directly) preserves the post-send empty-editor invariant;
+                // revisit if Normal-mode stale-text preservation becomes a
+                // real case.
+                app.chat.send_message();
             }
-            None => {
-                // Popup handled the key, continue
+            PopupAction::CopyToInput(cmd) => {
+                app.chat.command_popup = None;
+                app.chat.populate_editor(&cmd);
             }
         }
         return;

@@ -53,6 +53,16 @@ All notable changes to JYC will be documented in this file.
 - **Brighter color for AI thinking preview.** The live thinking-text lines in the
   chat pane use `Gray` instead of `DarkGray` for better contrast against the
   dark background.
+- **Command popup: Enter sends immediately; Tab copies to input on complete filter.**
+  Pressing Enter in the `/` command popup now sends the selected command
+  right away instead of populating the input line. Pressing Tab still
+  auto-completes an incomplete filter (e.g. `pl` → `/plan`); when the filter
+  already matches a complete command name (e.g. `thinking` or `/thinking`),
+  Tab copies the command to the input line so the user can add arguments
+  (e.g. `/thinking show`) before sending. The model-selection sub-mode follows
+  the same rules: Tab fills an incomplete filter (e.g. `model gpt` →
+  `/model gpt-4`), and Tab on a complete filter (e.g. `/model gpt-4`) copies
+  to the input line. Enter sends in both modes.
 
 ### Fixed
 

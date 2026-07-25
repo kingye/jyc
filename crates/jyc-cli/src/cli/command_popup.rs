@@ -27,6 +27,32 @@ fn model_subfilter(filter: &str) -> &str {
     f.strip_prefix("model ").unwrap_or("")
 }
 
+/// True when filter exactly matches a registered command name (with or
+/// without leading `/`). Used by Tab to pick auto-complete vs. copy.
+fn is_filter_complete(filter: &str, commands: &[CommandInfo]) -> bool {
+    if filter.is_empty() {
+        return false;
+    }
+    commands
+        .iter()
+        .any(|cmd| cmd.name == filter || skip_slash(&cmd.name) == skip_slash(filter))
+}
+
+/// Action the popup wants the caller to perform after handling a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PopupAction {
+    /// Key was handled but no action is requested (Up/Down/Backspace/Char,
+    /// or Tab on an incomplete filter). Popup stays open.
+    None,
+    /// Enter pressed — send the command immediately.
+    Send(String),
+    /// Tab pressed on a complete filter — copy the command to the chat
+    /// input line so the user can add arguments before sending.
+    CopyToInput(String),
+    /// Esc pressed — close the popup.
+    Close,
+}
+
 /// State for the `/` command popup in chat input.
 #[derive(Debug)]
 pub struct CommandPopupState {
@@ -82,19 +108,13 @@ impl CommandPopupState {
 
 /// Handle a key event for the command popup.
 ///
-/// Returns `Some(text)` if the user selected something via Enter:
-/// - In command mode: `text` is the command name (e.g., `"/plan"`)
-/// - In model mode: `text` is `"/model provider/model-id"`
-///
-/// Returns `Some("")` if Esc was pressed (close without action).
-///
-/// Returns `None` if the popup handled the key without selecting.
+/// Returns the action the caller should perform. See [`PopupAction`].
 pub fn handle_popup_key(
     key: crossterm::event::KeyEvent,
     state: &mut CommandPopupState,
     commands: &[CommandInfo],
     models: &[ModelInfo],
-) -> Option<String> {
+) -> PopupAction {
     use crossterm::event::KeyCode;
 
     let model_mode = is_model_mode(&state.filter);
@@ -112,14 +132,18 @@ pub fn handle_popup_key(
     }
 
     match key.code {
-        KeyCode::Esc => {
-            // Close without action — signal with empty string
-            return Some(String::new());
-        }
+        KeyCode::Esc => PopupAction::Close,
         KeyCode::Tab => {
-            // Auto-complete: fill the filter with the selected item's name.
-            // Popup stays open so the user can refine and press Enter.
+            // Model mode: if the sub-filter already exactly matches a real
+            // model name, copy to the input line (symmetric with command
+            // mode). Otherwise fill the filter with the selected model.
             if model_mode {
+                let sub = model_subfilter(&state.filter);
+                if !sub.is_empty()
+                    && let Some(model) = models.iter().find(|m| m.name == sub)
+                {
+                    return PopupAction::CopyToInput(format!("/model {}", model.name));
+                }
                 if let Some(model) = state
                     .filtered_models(models)
                     .into_iter()
@@ -128,32 +152,51 @@ pub fn handle_popup_key(
                     state.filter = format!("/model {}", model.name);
                     state.selected = 0;
                 }
+                PopupAction::None
             } else {
-                if let Some(cmd) = state
+                match state
                     .filtered_commands(commands)
                     .into_iter()
                     .nth(state.selected)
                 {
-                    state.filter = cmd.name.clone();
-                    state.selected = 0;
+                    Some(cmd) if is_filter_complete(&state.filter, commands) => {
+                        PopupAction::CopyToInput(cmd.name.clone())
+                    }
+                    Some(cmd) => {
+                        state.filter = cmd.name.clone();
+                        state.selected = 0;
+                        PopupAction::None
+                    }
+                    None => PopupAction::None,
                 }
             }
         }
         KeyCode::Enter => {
             if model_mode {
-                let filtered = state.filtered_models(models);
-                let selected = filtered.into_iter().nth(state.selected)?;
-                return Some(format!("/model {}", selected.name));
+                match state
+                    .filtered_models(models)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    Some(m) => PopupAction::Send(format!("/model {}", m.name)),
+                    None => PopupAction::None,
+                }
             } else {
-                let filtered = state.filtered_commands(commands);
-                let selected = filtered.into_iter().nth(state.selected)?;
-                return Some(selected.name.clone());
+                match state
+                    .filtered_commands(commands)
+                    .into_iter()
+                    .nth(state.selected)
+                {
+                    Some(cmd) => PopupAction::Send(cmd.name.clone()),
+                    None => PopupAction::None,
+                }
             }
         }
         KeyCode::Up => {
             if state.selected > 0 {
                 state.selected -= 1;
             }
+            PopupAction::None
         }
         KeyCode::Down => {
             let count = if model_mode {
@@ -164,19 +207,21 @@ pub fn handle_popup_key(
             if count > 0 && state.selected + 1 < count {
                 state.selected += 1;
             }
+            PopupAction::None
         }
         KeyCode::Backspace => {
             state.filter.pop();
             state.selected = 0;
+            PopupAction::None
         }
         KeyCode::Char(c) if !c.is_control() => {
             state.filter.push(c);
             // If we just transitioned into model mode or out of it, reset selection
             state.selected = 0;
+            PopupAction::None
         }
-        _ => {}
+        _ => PopupAction::None,
     }
-    None
 }
 
 /// Render the command/mode popup as a centered overlay.
@@ -385,7 +430,7 @@ mod tests {
         let commands = vec![make_cmd("/plan")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert!(result.is_none(), "Tab should not close popup");
+        assert_eq!(result, PopupAction::None, "Tab should not close popup");
         assert_eq!(state.filter, "/plan");
         assert_eq!(state.selected, 0);
     }
@@ -398,7 +443,7 @@ mod tests {
         let commands = vec![make_cmd("/plan"), make_cmd("/model")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert!(result.is_none());
+        assert_eq!(result, PopupAction::None);
         assert_eq!(state.filter, "/model");
     }
 
@@ -410,7 +455,7 @@ mod tests {
         let models = vec![make_model("gpt-4"), make_model("claude-3")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
-        assert!(result.is_none());
+        assert_eq!(result, PopupAction::None);
         assert_eq!(state.filter, "/model gpt-4");
     }
 
@@ -422,8 +467,99 @@ mod tests {
         let commands = vec![make_cmd("/plan")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert!(result.is_none());
+        assert_eq!(result, PopupAction::None);
         // No matching command, so filter unchanged
         assert!(!state.filter.contains("/plan"));
+    }
+
+    #[test]
+    fn enter_sends_command_in_command_mode() {
+        let mut state = CommandPopupState::new();
+        state.filter = "pl".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Enter), &mut state, &commands, &[]);
+        assert_eq!(result, PopupAction::Send("/plan".to_string()));
+    }
+
+    #[test]
+    fn enter_sends_model_in_model_mode() {
+        let mut state = CommandPopupState::new();
+        state.filter = "model ".to_string();
+        state.selected = 0;
+        let models = vec![make_model("gpt-4")];
+
+        let result = handle_popup_key(key(KeyCode::Enter), &mut state, &[], &models);
+        assert_eq!(result, PopupAction::Send("/model gpt-4".to_string()));
+    }
+
+    #[test]
+    fn enter_no_op_when_no_command_selected() {
+        let mut state = CommandPopupState::new();
+        state.filter = "zzz".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Enter), &mut state, &commands, &[]);
+        assert_eq!(result, PopupAction::None);
+    }
+
+    #[test]
+    fn esc_closes_popup() {
+        let mut state = CommandPopupState::new();
+        let commands = vec![make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Esc), &mut state, &commands, &[]);
+        assert_eq!(result, PopupAction::Close);
+    }
+
+    #[test]
+    fn tab_copies_to_input_when_filter_complete_with_slash() {
+        let mut state = CommandPopupState::new();
+        state.filter = "/thinking".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/thinking"), make_cmd("/plan")];
+
+        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert_eq!(result, PopupAction::CopyToInput("/thinking".to_string()));
+        // Filter is not mutated on the CopyToInput path
+        assert_eq!(state.filter, "/thinking");
+    }
+
+    #[test]
+    fn tab_then_tab_copies_to_input() {
+        // Simulates: type "think" + Tab → "/thinking" in filter,
+        // then Tab again → CopyToInput.
+        let mut state = CommandPopupState::new();
+        state.filter = "think".to_string();
+        state.selected = 0;
+        let commands = vec![make_cmd("/thinking")];
+
+        // First Tab fills the filter
+        let first = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert_eq!(first, PopupAction::None);
+        assert_eq!(state.filter, "/thinking");
+
+        // Second Tab on the now-complete filter copies to input line
+        let second = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
+        assert_eq!(second, PopupAction::CopyToInput("/thinking".to_string()));
+    }
+
+    #[test]
+    fn tab_then_tab_copies_to_input_in_model_mode() {
+        // Simulates: type "model gpt" + Tab → "/model gpt-4" in filter,
+        // then Tab again → CopyToInput, mirroring the command-mode flow.
+        let mut state = CommandPopupState::new();
+        state.filter = "model gpt".to_string();
+        state.selected = 0;
+        let models = vec![make_model("gpt-4"), make_model("claude-3")];
+
+        let first = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
+        assert_eq!(first, PopupAction::None);
+        assert_eq!(state.filter, "/model gpt-4");
+
+        let second = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
+        assert_eq!(second, PopupAction::CopyToInput("/model gpt-4".to_string()));
     }
 }

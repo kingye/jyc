@@ -99,6 +99,12 @@ pub struct InspectContext {
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
+    /// Optional override for the directory the auth middleware reads the
+    /// inspect token file from. Defaults to the platform data home
+    /// (`jyc_utils::paths::data_home()`). Tests use this with a per-test
+    /// `tempfile::TempDir` to drive the auth middleware without mutating
+    /// the real `HOME` / `XDG_DATA_HOME` / `LOCALAPPDATA`.
+    pub token_data_home: Option<PathBuf>,
 }
 
 /// HTTP-based inspect server.
@@ -180,30 +186,27 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
 
 // ── Auth middleware ──
 
-/// Authenticate every non-loopback request via `Authorization: Bearer <token>`.
+/// Authenticate every request that arrives when a token file is configured.
 ///
-/// - Loopback (127.0.0.0/8, ::1, ::ffff:127.0.0.1): bypass entirely, no file read.
-/// - Non-loopback: read `<data_dir>/inspect-token` fresh, constant-time compare.
+/// Rules:
 ///
-/// Loopback bypass matches the original TCP-line-protocol design.
+/// - **No token file at `<data_dir>/inspect-token`** → accept any
+///   connection (loopback or remote). Auth is opt-in via file presence.
+/// - **Token file exists** → require `Authorization: Bearer <token>`
+///   matching the file content. Applies uniformly to loopback and
+///   remote — if you've enabled auth, you must authenticate, period.
+///   The file is read fresh on every connection so `jyc token rotate`
+///   takes effect immediately for new connections.
+///
+/// The data home is taken from `InspectContext.token_data_home` when
+/// set (used by tests with a per-test `TempDir`); otherwise falls back
+/// to the platform-resolved `jyc_utils::paths::data_home()`.
 async fn auth_middleware(
-    State(_ctx): State<Arc<InspectContext>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(ctx): State<Arc<InspectContext>>,
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if is_loopback(addr.ip()) {
-        return next.run(req).await;
-    }
-
-    let token = match extract_bearer(req.headers()) {
-        Some(t) => t,
-        None => {
-            return ApiError::unauthorized("missing Authorization: Bearer header").into_response();
-        }
-    };
-
-    match verify_token(token) {
+    match verify_token(req.headers(), ctx.token_data_home.as_deref()) {
         Ok(()) => next.run(req).await,
         Err(e) => e.into_response(),
     }
@@ -212,8 +215,11 @@ async fn auth_middleware(
 /// Return true for loopback IPv4 (127.0.0.0/8) and IPv6 (`::1` and the
 /// IPv4-mapped form `::ffff:127.0.0.1`). Private ranges (10/8, 172.16/12,
 /// 192.168/16) are deliberately NOT considered loopback — those hit Docker
-/// bridges and corporate VPNs and would silently fail-open for a surprising
-/// surface.
+/// bridges and corporate VPNs.
+///
+/// Kept as a public helper because auth no longer branches on this — but
+/// it's a useful utility for downstream callers (e.g. tests, custom
+/// middleware) that want the same definition.
 pub fn is_loopback(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback(),
@@ -249,19 +255,38 @@ pub fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     Some(token)
 }
 
-/// Verify a token against the on-disk token file at `<data_dir>/inspect-token`.
+/// Verify the request's `Authorization: Bearer` header against the on-disk
+/// token file at `<data_home>/inspect-token`.
 ///
-/// Read fresh on every call so rotation takes effect immediately for new
-/// connections. Uses constant-time comparison via `subtle::ConstantTimeEq`.
-fn verify_token(provided: &str) -> Result<(), ApiError> {
-    let expected = jyc_utils::inspect_token::read()
-        .map_err(|e| ApiError::internal(format!("failed to read token file: {e}")))?;
+/// - **No token file** → `Ok(())` (auth not configured; allow).
+/// - **Token file present + missing/empty header** → `Err(unauthorized)`.
+/// - **Token file present + header present** → constant-time compare via
+///   `subtle::ConstantTimeEq`; reject on mismatch.
+///
+/// `data_home_override` is the base directory the token file lives in.
+/// When `Some`, used directly via `inspect_token::read_at`. When `None`,
+/// falls back to the platform-resolved `inspect_token::read()` (i.e.
+/// `jyc_utils::paths::data_home()`).
+///
+/// The file is read fresh on every call so rotation takes effect
+/// immediately for new connections.
+fn verify_token(
+    headers: &HeaderMap,
+    data_home_override: Option<&std::path::Path>,
+) -> Result<(), ApiError> {
+    let expected = match data_home_override {
+        Some(base) => jyc_utils::inspect_token::read_at(base),
+        None => jyc_utils::inspect_token::read(),
+    }
+    .map_err(|e| ApiError::internal(format!("failed to read token file: {e}")))?;
 
     let Some(expected) = expected else {
-        return Err(ApiError::unauthorized(
-            "no token file; run `jyc token generate` to enable remote access",
-        ));
+        // No token file → auth not configured → allow.
+        return Ok(());
     };
+
+    let provided = extract_bearer(headers)
+        .ok_or_else(|| ApiError::unauthorized("missing Authorization: Bearer header"))?;
 
     if expected.as_bytes().ct_eq(provided.as_bytes()).into() {
         Ok(())
@@ -1235,6 +1260,9 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            // Default to None so tests don't accidentally hit the real
+            // platform data home; auth tests pass an explicit override.
+            token_data_home: None,
         })
     }
 
@@ -1396,6 +1424,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1460,6 +1489,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1521,6 +1551,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         });
 
         let cancel = CancellationToken::new();
@@ -1746,16 +1777,176 @@ mode = "agent"
         }
     }
 
-    /// Auth middleware: loopback requests bypass auth even when no token file exists.
+    /// Build an `InspectContext` whose auth middleware reads the token file
+    /// from `tmp` instead of the platform data home. Used by the auth tests
+    /// below. Other fields match `test_context()`.
+    fn test_context_with_token_home(tmp: &std::path::Path) -> Arc<InspectContext> {
+        let base = test_context();
+        Arc::new(InspectContext {
+            thread_managers: base.thread_managers.clone(),
+            channels: base.channels.clone(),
+            health_stats: base.health_stats.clone(),
+            activity_map: base.activity_map.clone(),
+            start_time: base.start_time,
+            config_path: base.config_path.clone(),
+            global_config_path: base.global_config_path.clone(),
+            config: base.config.clone(),
+            workspace_dirs: base.workspace_dirs.clone(),
+            websocket_handlers: base.websocket_handlers.clone(),
+            reload_callback: base.reload_callback.clone(),
+            token_data_home: Some(tmp.to_path_buf()),
+        })
+    }
+
+    /// Auth middleware: when no token file exists at the configured data
+    /// home, requests are allowed regardless of source address. We bind to
+    /// `127.0.0.1:0` here, but the same behavior would apply for a
+    /// non-loopback bind.
     #[tokio::test]
-    async fn test_auth_bypass_loopback_no_token() {
-        // No token file exists at the data home — loopback should still get through.
+    async fn test_auth_no_token_file_allows_request() {
         let cancel = CancellationToken::new();
+        // token_data_home: None → auth middleware reads the real data home,
+        // which in this clean test environment has no inspect-token file.
         let ctx = test_context();
         let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
         let client = reqwest::Client::new();
         let resp = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Auth middleware: when a token file exists at the configured data home,
+    /// requests without `Authorization: Bearer` must be rejected (401),
+    /// regardless of source address.
+    #[tokio::test]
+    async fn test_auth_token_file_present_rejects_no_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let token = jyc_utils::inspect_token::generate_at(tmp.path()).unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(resp.status(), 401);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("missing Authorization"),
+            "unexpected error body: {body}"
+        );
+
+        // Sanity: the generated token has the expected format so the test
+        // isn't a no-op (i.e. the file actually got read).
+        assert!(token.starts_with("jyc_"));
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Auth middleware: when a token file exists, the correct Bearer token
+    /// must be accepted.
+    #[tokio::test]
+    async fn test_auth_token_file_present_accepts_correct_bearer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let token = jyc_utils::inspect_token::generate_at(tmp.path()).unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/health"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Auth middleware: when a token file exists, a wrong Bearer token
+    /// must be rejected.
+    #[tokio::test]
+    async fn test_auth_token_file_present_rejects_wrong_bearer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _token = jyc_utils::inspect_token::generate_at(tmp.path()).unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/health"))
+            .bearer_auth("not-the-real-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("invalid token"),
+            "unexpected error body: {body}"
+        );
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Auth middleware: rotation takes effect immediately. We generate a
+    /// token, request with it (success), rotate, request again with the
+    /// *old* token (now rejected), and request with the *new* token
+    /// (success). Reads happen fresh per connection, so this should work
+    /// without restarting the server.
+    #[tokio::test]
+    async fn test_auth_rotation_takes_effect_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = jyc_utils::inspect_token::generate_at(tmp.path()).unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        // Old token works.
+        let resp = client
+            .get(format!("{base}/health"))
+            .bearer_auth(&first)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Rotate (replaces the file with a new token).
+        let second = jyc_utils::inspect_token::rotate_at(tmp.path()).unwrap();
+        assert_ne!(first, second);
+
+        // Old token now rejected.
+        let resp = client
+            .get(format!("{base}/health"))
+            .bearer_auth(&first)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+
+        // New token works.
+        let resp = client
+            .get(format!("{base}/health"))
+            .bearer_auth(&second)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
 
         cancel.cancel();

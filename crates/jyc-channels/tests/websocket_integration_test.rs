@@ -151,6 +151,7 @@ async fn test_websocket_adapter_start_and_handle() {
         workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
         websocket_handlers: Some(handlers),
         reload_callback: None,
+        token_data_home: None,
     });
 
     let cancel = CancellationToken::new();

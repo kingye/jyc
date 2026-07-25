@@ -233,6 +233,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         })
     }
 
@@ -314,6 +315,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         });
 
         let cancel = CancellationToken::new();
@@ -343,6 +345,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: None,
         });
 
         let cancel = CancellationToken::new();

@@ -383,12 +383,12 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
-# Authentication for non-loopback connections:
-# Loopback (127.0.0.0/8, ::1) always bypasses auth.
-# Non-loopback connections (incl. WebSocket upgrade) require
-# `Authorization: Bearer <token>` matching the contents of
-# `<data_dir>/inspect-token`. The token is read fresh on every connection
-# — no in-memory cache — so `jyc token rotate` takes effect immediately.
+# Authentication is opt-in via file presence at `<data_dir>/inspect-token`:
+# - If the token file is absent, any connection (loopback or remote) is allowed.
+# - If the token file exists, every connection must include
+#   `Authorization: Bearer <token>` matching the file content — including
+#   loopback connections from the dashboard. The file is read fresh on every
+#   request so `jyc token rotate` takes effect immediately.
 #
 # Generate the token (writes the file and prints to stdout):
 #   $ jyc token generate

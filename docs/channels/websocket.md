@@ -173,9 +173,14 @@ The `jyc-inspect` crate provides a `reqwest`-based client (`InspectClient`) that
 
 ### Remote access & authentication
 
-**Loopback bypasses auth.** Connections from `127.0.0.0/8`, `::1`, or `::ffff:127.0.0.1` are allowed without a token, matching the original TCP-line-protocol design.
+**Auth is opt-in via file presence at `<data_dir>/inspect-token`.** There is no loopback bypass — the rules are uniform regardless of source address:
 
-**Non-loopback connections require `Authorization: Bearer <token>`.** The token lives at `<data_dir>/inspect-token` (e.g. `~/.local/share/jyc/inspect-token` on Linux, `%LOCALAPPDATA%\jyc\inspect-token` on Windows). It is **read fresh on every connection** — no in-memory cache — so `jyc token rotate` takes effect immediately for new connections.
+| `<data_dir>/inspect-token` | Source address | Behavior |
+|---|---|---|
+| missing | any (loopback or remote) | allow, no auth |
+| present | any (loopback or remote) | require `Authorization: Bearer <token>` |
+
+So enabling auth (by running `jyc token generate`) immediately requires authentication even from `localhost`. To disable, simply delete the token file. The file is read fresh on every connection — no in-memory cache — so `jyc token rotate` takes effect immediately.
 
 ```bash
 # Generate the token (writes to <data_dir>/inspect-token, prints to stdout)
@@ -194,8 +199,9 @@ Or pass `JYC_INSPECT_TOKEN=<token>` as an env var to the dashboard/client proces
 For non-loopback binds, `jyc serve` warns at startup if no token file exists:
 
 ```
-WARN inspect server binding to non-loopback address without a token file;
-     remote connections will be rejected. Run `jyc token generate` to enable.
+WARN inspect server binding to non-loopback address with no token file;
+     any client that can reach the port can use it.
+     Run `jyc token generate` to enable authentication.
 ```
 
 Clients (dashboard, MCP tools, custom integrations) should use one of:

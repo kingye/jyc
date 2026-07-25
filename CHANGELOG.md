@@ -6,14 +6,19 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Optional token authentication for the inspect server.** Non-loopback
-  HTTP requests and WebSocket upgrades now require
-  `Authorization: Bearer <token>` matching the contents of
-  `<data_dir>/inspect-token` (e.g. `~/.local/share/jyc/inspect-token`
-  on Linux). Loopback (`127.0.0.0/8`, `::1`) bypasses auth entirely.
-  Token file is read fresh on every connection — no in-memory cache —
-  so `jyc token rotate` takes effect immediately. Constant-time compare
-  via `subtle::ConstantTimeEq`.
+- **Optional token authentication for the inspect server.** Auth is
+  opt-in via file presence at `<data_dir>/inspect-token`:
+
+  | Token file | Source address | Behavior |
+  |---|---|---|
+  | missing | any (loopback or remote) | allow, no auth |
+  | present | any (loopback or remote) | require `Authorization: Bearer <token>` |
+
+  There is **no loopback bypass** — if you've enabled auth (by creating
+  the token file), you must authenticate even from `127.0.0.1`. The
+  file is read fresh on every connection so `jyc token rotate` takes
+  effect immediately for new connections. Constant-time compare via
+  `subtle::ConstantTimeEq`.
 - **`jyc token generate | show | rotate` subcommand** for managing the
   inspect-server authentication token file. The token format is
   `jyc_<64 hex chars>` (256 bits of entropy), atomic write, mode `0600`

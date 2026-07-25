@@ -27,9 +27,8 @@ fn model_subfilter(filter: &str) -> &str {
     f.strip_prefix("model ").unwrap_or("")
 }
 
-/// Returns true when the filter text exactly matches a registered command
-/// name (with or without leading `/`). Used by Tab to decide between
-/// auto-completing the filter and copying the command to the chat input.
+/// True when filter exactly matches a registered command name (with or
+/// without leading `/`). Used by Tab to pick auto-complete vs. copy.
 fn is_filter_complete(filter: &str, commands: &[CommandInfo]) -> bool {
     if filter.is_empty() {
         return false;
@@ -135,10 +134,16 @@ pub fn handle_popup_key(
     match key.code {
         KeyCode::Esc => PopupAction::Close,
         KeyCode::Tab => {
-            // In model mode, always fill the filter with the selected model.
-            // In command mode, fill the filter when incomplete, or copy to
-            // input line when the filter already matches a full command name.
+            // Model mode: if the sub-filter already exactly matches a real
+            // model name, copy to the input line (symmetric with command
+            // mode). Otherwise fill the filter with the selected model.
             if model_mode {
+                let sub = model_subfilter(&state.filter);
+                if !sub.is_empty()
+                    && let Some(model) = models.iter().find(|m| m.name == sub)
+                {
+                    return PopupAction::CopyToInput(format!("/model {}", model.name));
+                }
                 if let Some(model) = state
                     .filtered_models(models)
                     .into_iter()
@@ -523,17 +528,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_copies_to_input_when_filter_complete_without_slash() {
-        let mut state = CommandPopupState::new();
-        state.filter = "thinking".to_string();
-        state.selected = 0;
-        let commands = vec![make_cmd("/thinking"), make_cmd("/plan")];
-
-        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert_eq!(result, PopupAction::CopyToInput("/thinking".to_string()));
-    }
-
-    #[test]
     fn tab_then_tab_copies_to_input() {
         // Simulates: type "think" + Tab → "/thinking" in filter,
         // then Tab again → CopyToInput.
@@ -550,5 +544,22 @@ mod tests {
         // Second Tab on the now-complete filter copies to input line
         let second = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
         assert_eq!(second, PopupAction::CopyToInput("/thinking".to_string()));
+    }
+
+    #[test]
+    fn tab_then_tab_copies_to_input_in_model_mode() {
+        // Simulates: type "model gpt" + Tab → "/model gpt-4" in filter,
+        // then Tab again → CopyToInput, mirroring the command-mode flow.
+        let mut state = CommandPopupState::new();
+        state.filter = "model gpt".to_string();
+        state.selected = 0;
+        let models = vec![make_model("gpt-4"), make_model("claude-3")];
+
+        let first = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
+        assert_eq!(first, PopupAction::None);
+        assert_eq!(state.filter, "/model gpt-4");
+
+        let second = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
+        assert_eq!(second, PopupAction::CopyToInput("/model gpt-4".to_string()));
     }
 }

@@ -176,7 +176,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .route("/reset_session", post(handle_reset_session))
         .route("/inject_message", post(handle_inject_message))
         .route("/ws", get(ws_upgrade_root))
-        .route("/ws/{channel}", get(ws_upgrade_channel))
+        .route("/ws/:channel", get(ws_upgrade_channel))
         .layer(middleware::from_fn_with_state(
             context.clone(),
             auth_middleware,
@@ -1242,6 +1242,16 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Build a default `InspectContext` for tests.
+    ///
+    /// Points `token_data_home` at a unique path under the system temp
+    /// dir that does not exist on disk — this guarantees the auth
+    /// middleware's `read_at` call returns `Ok(None)` (no token file)
+    /// and the test is hermetic regardless of whether the developer's
+    /// machine has a real token file at the platform data home.
+    ///
+    /// The nonce includes the process ID and a nanosecond timestamp so
+    /// concurrent test binaries don't collide.
     fn test_context() -> Arc<InspectContext> {
         Arc::new(InspectContext {
             thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
@@ -1260,10 +1270,23 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
-            // Default to None so tests don't accidentally hit the real
-            // platform data home; auth tests pass an explicit override.
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         })
+    }
+
+    /// Return a unique, never-on-disk path under the system temp dir,
+    /// used by tests to point `token_data_home` at a directory that
+    /// provably has no `inspect-token` file in it.
+    fn nonexistent_token_home_path() -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "jyc-inspect-test-nonexistent-{}-{}",
+            std::process::id(),
+            nonce
+        ))
     }
 
     /// Bind a fresh axum server to `127.0.0.1:0` and return its base URL + handle.
@@ -1424,7 +1447,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
@@ -1489,7 +1512,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
@@ -1551,7 +1574,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
@@ -1802,11 +1825,12 @@ mode = "agent"
     /// home, requests are allowed regardless of source address. We bind to
     /// `127.0.0.1:0` here, but the same behavior would apply for a
     /// non-loopback bind.
+    ///
+    /// `test_context()` already points `token_data_home` at a nonexistent
+    /// path, so no token file is found and auth allows.
     #[tokio::test]
     async fn test_auth_no_token_file_allows_request() {
         let cancel = CancellationToken::new();
-        // token_data_home: None → auth middleware reads the real data home,
-        // which in this clean test environment has no inspect-token file.
         let ctx = test_context();
         let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 

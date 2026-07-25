@@ -233,8 +233,22 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            // Point at a unique nonexistent path so the test never reads
+            // the real platform token file. See server.rs `test_context`.
+            token_data_home: Some(nonexistent_token_home_path()),
         })
+    }
+
+    fn nonexistent_token_home_path() -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "jyc-inspect-test-nonexistent-{}-{}",
+            std::process::id(),
+            nonce
+        ))
     }
 
     async fn spawn_test_server(
@@ -315,7 +329,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
@@ -345,7 +359,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
-            token_data_home: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
@@ -378,8 +392,14 @@ mod tests {
         let context = test_context();
         let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
 
-        // Loopback bypasses auth — even an arbitrary token works for /health and /state
+        // No token file is configured on the server, so any token (or
+        // none) is accepted — auth is opt-in via file presence.
         let mut client = InspectClient::new_with_token(&addr, "any-token-here");
+        let state = client.get_state().await.unwrap();
+        assert_eq!(state.channels.len(), 1);
+
+        // Also works without any Authorization header.
+        let mut client = InspectClient::new(&addr);
         let state = client.get_state().await.unwrap();
         assert_eq!(state.channels.len(), 1);
 

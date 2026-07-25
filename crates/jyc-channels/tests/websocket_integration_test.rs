@@ -127,8 +127,15 @@ async fn test_websocket_adapter_start_and_handle() {
 
     // Build an axum router with the inbound adapter registered as a websocket handler.
     // This is the same flow the inspect server uses: /ws/[channel] → handler.
+    //
+    // The inspect router applies an auth middleware that reads the token
+    // file from `ctx.token_data_home`. We point it at a fresh per-test
+    // TempDir with no token file in it — equivalent to a default install
+    // with no auth configured. The test exercises the WebSocket handler
+    // logic, not auth.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let tmp_no_token = tempfile::TempDir::new().unwrap();
 
     use std::collections::HashMap as StdHashMap;
     let mut handlers: StdHashMap<String, Arc<dyn WebsocketHandler>> = StdHashMap::new();
@@ -151,7 +158,9 @@ async fn test_websocket_adapter_start_and_handle() {
         workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
         websocket_handlers: Some(handlers),
         reload_callback: None,
-        token_data_home: None,
+        // Empty per-test TempDir → auth middleware reads no token file →
+        // auth not configured → allow. See InspectContext doc comment.
+        token_data_home: Some(tmp_no_token.path().to_path_buf()),
     });
 
     let cancel = CancellationToken::new();

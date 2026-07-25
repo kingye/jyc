@@ -305,22 +305,32 @@ pub(super) fn handle_chat_keys(
     // ── Command popup handling ─────────────────────────────────────
     if let Some(ref mut popup) = app.chat.command_popup {
         match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {
-            Some(cmd) if cmd.is_empty() => {
-                // Esc — close popup without action
+            PopupAction::None => {
+                // Popup handled the key, continue
+            }
+            PopupAction::Close => {
                 app.chat.command_popup = None;
             }
-            Some(cmd) => {
-                // Enter — populate the editor with the command text
-                // so the user can add arguments (e.g. "/thinking show")
-                // before pressing Enter again to send.
+            PopupAction::Send(cmd) => {
+                // Enter — send the command immediately.
+                // Set the editor first to overwrite any stale buffer content,
+                // then send_message() reads it, transmits, and clears it.
                 app.chat.command_popup = None;
                 app.chat.editor = EditorState::new(Lines::from(cmd.as_str()));
                 app.chat.editor.cursor.row = 0;
                 app.chat.editor.cursor.col = cmd.len();
                 app.chat.editor.mode = EditorMode::Insert;
+                app.chat.send_message();
             }
-            None => {
-                // Popup handled the key, continue
+            PopupAction::CopyToInput(cmd) => {
+                // Tab on a complete filter — copy the command to the input
+                // line so the user can add arguments (e.g. "/thinking show")
+                // before pressing Enter to send.
+                app.chat.command_popup = None;
+                app.chat.editor = EditorState::new(Lines::from(cmd.as_str()));
+                app.chat.editor.cursor.row = 0;
+                app.chat.editor.cursor.col = cmd.len();
+                app.chat.editor.mode = EditorMode::Insert;
             }
         }
         return;

@@ -1,14 +1,11 @@
 use arc_swap::ArcSwap;
 use axum::{
-    extract::{
-        ws::WebSocketUpgrade,
-        ConnectInfo, Path, State,
-    },
+    Json, Router,
+    extract::{ConnectInfo, Path, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -199,7 +196,7 @@ async fn auth_middleware(
         return next.run(req).await;
     }
 
-    let token = match extract_bearer(&req.headers()) {
+    let token = match extract_bearer(req.headers()) {
         Some(t) => t,
         None => {
             return ApiError::unauthorized("missing Authorization: Bearer header").into_response();
@@ -236,7 +233,10 @@ pub fn is_loopback(ip: IpAddr) -> bool {
 /// Parse `Authorization: Bearer <token>` from headers. Case-insensitive header
 /// name, case-insensitive scheme.
 pub fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let mut parts = value.splitn(2, char::is_whitespace);
     let scheme = parts.next()?;
     let token = parts.next()?.trim();
@@ -407,10 +407,7 @@ fn resolve_ws_handler(
 ///
 /// Written by `process_message()` on the first message for a thread.
 /// Returns `None` if the file doesn't exist or can't be parsed.
-async fn load_thread_meta(
-    tm: &Arc<ThreadManager>,
-    thread_name: &str,
-) -> Option<serde_json::Value> {
+async fn load_thread_meta(tm: &Arc<ThreadManager>, thread_name: &str) -> Option<serde_json::Value> {
     let thread_path = tm.thread_path(thread_name).await?;
     let meta_path = thread_path.join(".jyc").join("thread-meta.json");
     let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
@@ -430,7 +427,10 @@ async fn inject_message_impl(
         .cloned();
     drop(tms);
     let tm = tm.ok_or_else(|| {
-        ApiError::not_found(format!("no thread manager found for channel '{}'", req.channel))
+        ApiError::not_found(format!(
+            "no thread manager found for channel '{}'",
+            req.channel
+        ))
     })?;
 
     // Load stored routing metadata for this thread (written on first message).
@@ -488,15 +488,8 @@ async fn inject_message_impl(
         matches: HashMap::new(),
     };
 
-    tm.enqueue(
-        message,
-        req.thread.clone(),
-        pattern_match,
-        None,
-        true,
-        None,
-    )
-    .await;
+    tm.enqueue(message, req.thread.clone(), pattern_match, None, true, None)
+        .await;
 
     tracing::info!(
         channel = %req.channel,
@@ -526,20 +519,18 @@ async fn reload_config_impl(context: &InspectContext) -> ReloadResult {
     tracing::info!(path = %config_path.display(), "Reloading configuration");
 
     // Load and validate new config (layered: global base + workdir overlay)
-    let new_config = match jyc_types::load_config_layered(
-        context.global_config_path.as_deref(),
-        &config_path,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("failed to load config: {e:#}");
-            tracing::warn!("{msg}");
-            return ReloadResult {
-                success: false,
-                message: msg,
-            };
-        }
-    };
+    let new_config =
+        match jyc_types::load_config_layered(context.global_config_path.as_deref(), &config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("failed to load config: {e:#}");
+                tracing::warn!("{msg}");
+                return ReloadResult {
+                    success: false,
+                    message: msg,
+                };
+            }
+        };
 
     let errors = jyc_types::validation::validate_config(&new_config);
     if !errors.is_empty() {
@@ -1283,7 +1274,9 @@ mod tests {
         // IPv4-mapped loopback
         assert!(is_loopback("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
         // Regular public IPv6
-        assert!(!is_loopback("2606:4700:4700::1111".parse::<IpAddr>().unwrap()));
+        assert!(!is_loopback(
+            "2606:4700:4700::1111".parse::<IpAddr>().unwrap()
+        ));
     }
 
     // ── extract_bearer ──
@@ -1291,7 +1284,10 @@ mod tests {
     #[test]
     fn test_extract_bearer() {
         let mut headers = HeaderMap::new();
-        headers.insert(axum::http::header::AUTHORIZATION, "Bearer abc".parse().unwrap());
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer abc".parse().unwrap(),
+        );
         assert_eq!(extract_bearer(&headers), Some("abc"));
 
         // case-insensitive scheme
@@ -1331,11 +1327,7 @@ mod tests {
         let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
         let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("{base}/health"))
-            .send()
-            .await
-            .unwrap();
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let body: HealthResponse = resp.json().await.unwrap();
         assert_eq!(body.status, "ok");
@@ -1506,10 +1498,7 @@ mode = "agent"
             .unwrap();
         assert_eq!(resp.status(), 400);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("path traversal"));
+        assert!(body["error"].as_str().unwrap().contains("path traversal"));
 
         cancel.cancel();
         handle.await.unwrap();
@@ -1572,10 +1561,12 @@ mode = "agent"
             .unwrap();
         assert_eq!(resp.status(), 404);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("no thread manager found"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no thread manager found")
+        );
 
         cancel.cancel();
         handle.await.unwrap();

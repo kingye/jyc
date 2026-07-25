@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use subtle::ConstantTimeEq;
 
-use crate::paths::{data_home, APP_DIR_NAME};
+use crate::paths::{APP_DIR_NAME, data_home};
 
 /// Number of random bytes in the token (256 bits).
 const TOKEN_BYTES: usize = 32;
@@ -184,9 +184,7 @@ fn read_at_token_path(path: &Path) -> Result<Option<String>> {
             Ok(Some(token))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => {
-            Err(anyhow::Error::new(e).context(format!("failed to read {}", path.display())))
-        }
+        Err(e) => Err(anyhow::Error::new(e).context(format!("failed to read {}", path.display()))),
     }
 }
 
@@ -380,7 +378,10 @@ mod tests {
         let first = generate_at(tmp.path()).unwrap();
         let second = rotate_at(tmp.path()).unwrap();
         assert_ne!(first, second);
-        assert_eq!(read_at(tmp.path()).unwrap().as_deref(), Some(second.as_str()));
+        assert_eq!(
+            read_at(tmp.path()).unwrap().as_deref(),
+            Some(second.as_str())
+        );
     }
 
     #[test]

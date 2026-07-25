@@ -54,10 +54,10 @@ impl InspectClient {
             return Some(t.clone());
         }
         // Flag-not-set path: prefer env var over file, matching resolve_dashboard_token
-        if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN") {
-            if !t.is_empty() {
-                return Some(t);
-            }
+        if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
+            && !t.is_empty()
+        {
+            return Some(t);
         }
         jyc_utils::inspect_token::read().ok().flatten()
     }
@@ -169,8 +169,7 @@ async fn map_json_ok<T: serde::de::DeserializeOwned>(resp: reqwest::Response) ->
     let status = resp.status();
     let text = resp.text().await.context("failed to read response body")?;
     if !status.is_success() {
-        let msg = extract_error_field(&text)
-            .unwrap_or_else(|| format!("HTTP {status}: {text}"));
+        let msg = extract_error_field(&text).unwrap_or_else(|| format!("HTTP {status}: {text}"));
         anyhow::bail!("{msg}");
     }
     serde_json::from_str(&text).with_context(|| format!("failed to parse response body: {text}"))
@@ -178,18 +177,14 @@ async fn map_json_ok<T: serde::de::DeserializeOwned>(resp: reqwest::Response) ->
 
 /// Decode a 2xx response as a `(success, message)` tuple from a struct that
 /// has those fields. Used by the action endpoints.
-async fn map_result<T>(
-    resp: reqwest::Response,
-    endpoint: &str,
-) -> Result<(bool, String)>
+async fn map_result<T>(resp: reqwest::Response, endpoint: &str) -> Result<(bool, String)>
 where
     T: serde::de::DeserializeOwned + ExtractSuccessMessage,
 {
     let status = resp.status();
     let text = resp.text().await.context("failed to read response body")?;
     if !status.is_success() {
-        let msg = extract_error_field(&text)
-            .unwrap_or_else(|| format!("HTTP {status}: {text}"));
+        let msg = extract_error_field(&text).unwrap_or_else(|| format!("HTTP {status}: {text}"));
         anyhow::bail!("{endpoint}: {msg}");
     }
     let parsed: T = serde_json::from_str(&text)
@@ -216,7 +211,7 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
-    use crate::server::{build_router, InspectContext};
+    use crate::server::{InspectContext, build_router};
     use arc_swap::ArcSwap;
     use jyc_types::ChannelInfo;
 

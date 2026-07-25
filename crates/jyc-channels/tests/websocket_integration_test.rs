@@ -132,12 +132,17 @@ async fn test_websocket_adapter_start_and_handle() {
 
     use std::collections::HashMap as StdHashMap;
     let mut handlers: StdHashMap<String, Arc<dyn WebsocketHandler>> = StdHashMap::new();
-    handlers.insert("test_ws".to_string(), inbound.clone() as Arc<dyn WebsocketHandler>);
+    handlers.insert(
+        "test_ws".to_string(),
+        inbound.clone() as Arc<dyn WebsocketHandler>,
+    );
 
     let ctx = Arc::new(InspectContext {
         thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
         channels: Arc::new(ArcSwap::from_pointee(vec![])),
-        health_stats: Arc::new(tokio::sync::Mutex::new(jyc_core::metrics::HealthStats::default())),
+        health_stats: Arc::new(tokio::sync::Mutex::new(
+            jyc_core::metrics::HealthStats::default(),
+        )),
         activity_map: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         start_time: std::time::Instant::now(),
         config_path: None,

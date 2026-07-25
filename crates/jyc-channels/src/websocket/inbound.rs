@@ -452,9 +452,7 @@ async fn handle_connection_impl(
         }
     }
 
-    let _ = ws_tx
-        .send(axum::extract::ws::Message::Close(None))
-        .await;
+    let _ = ws_tx.send(axum::extract::ws::Message::Close(None)).await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
 }

@@ -1,39 +1,66 @@
 use serde::{Deserialize, Serialize};
 
-// ── Protocol ──
+// ── HTTP API ──
+//
+// The inspect server speaks HTTP (see `jyc-inspect`). Endpoints:
+//
+//   GET  /health          → HealthResponse
+//   GET  /state           → InspectState
+//   POST /reload_config   → ReloadResult
+//   POST /reset_session   body: ResetSessionRequest → ResetSessionResult
+//   POST /inject_message  body: InjectMessageRequest → InjectMessageResult
+//   GET  /ws[/<channel>]  → WebSocket upgrade (chat)
+//
+// All non-loopback requests require `Authorization: Bearer <token>`.
 
-/// Request sent by the dashboard client to the inspect server.
+/// Body for `POST /reset_session`.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InspectRequest {
-    pub method: String,
-    /// Optional parameters for the method (unused by `get_state`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub params: Option<serde_json::Value>,
+pub struct ResetSessionRequest {
+    pub thread_name: String,
 }
 
-/// Response sent by the inspect server to the dashboard client.
+/// Body for `POST /inject_message`.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InspectResponse {
-    State(InspectState),
-    Error {
-        error: String,
-    },
-    /// Result of a `reload_config` request.
-    ReloadResult {
-        success: bool,
-        message: String,
-    },
-    /// Result of a `reset_session` request.
-    ResetSessionResult {
-        success: bool,
-        message: String,
-    },
-    /// Result of an `inject_message` request.
-    InjectMessageResult {
-        success: bool,
-        message: String,
-    },
+pub struct InjectMessageRequest {
+    pub channel: String,
+    pub thread: String,
+    pub text: String,
+}
+
+/// Response from `POST /reload_config`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Response from `POST /reset_session`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetSessionResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Response from `POST /inject_message`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InjectMessageResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Response from `GET /health`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthResponse {
+    pub status: String,
+}
+
+impl HealthResponse {
+    /// Canonical "ok" response.
+    pub fn ok() -> Self {
+        Self {
+            status: "ok".to_string(),
+        }
+    }
 }
 
 // ── State snapshot ──
@@ -232,22 +259,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_inspect_request_serialize() {
-        let req = InspectRequest {
-            method: "get_state".to_string(),
-            params: None,
+    fn test_health_response_ok() {
+        let resp = HealthResponse::ok();
+        assert_eq!(resp.status, "ok");
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r#"{"status":"ok"}"#);
+
+        let parsed: HealthResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.status, "ok");
+    }
+
+    #[test]
+    fn test_reset_session_request_serde() {
+        let req = ResetSessionRequest {
+            thread_name: "issue-42".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("get_state"));
+        assert_eq!(json, r#"{"thread_name":"issue-42"}"#);
 
-        let parsed: InspectRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.method, "get_state");
+        let parsed: ResetSessionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.thread_name, "issue-42");
+    }
 
-        // Backward compat: old requests without params still parse
-        let old_json = r#"{"method":"get_state"}"#;
-        let parsed: InspectRequest = serde_json::from_str(old_json).unwrap();
-        assert_eq!(parsed.method, "get_state");
-        assert!(parsed.params.is_none());
+    #[test]
+    fn test_inject_message_request_serde() {
+        let req = InjectMessageRequest {
+            channel: "emf".to_string(),
+            thread: "pr-43".to_string(),
+            text: "please review".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""channel":"emf""#));
+        assert!(json.contains(r#""thread":"pr-43""#));
+        assert!(json.contains(r#""text":"please review""#));
+
+        let parsed: InjectMessageRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.channel, "emf");
+        assert_eq!(parsed.thread, "pr-43");
+        assert_eq!(parsed.text, "please review");
+    }
+
+    #[test]
+    fn test_reload_result_serde() {
+        let resp = ReloadResult {
+            success: true,
+            message: "configuration reloaded".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""success":true"#));
+        assert!(json.contains(r#""message":"configuration reloaded""#));
+
+        let parsed: ReloadResult = serde_json::from_str(&json).unwrap();
+        assert!(parsed.success);
+        assert_eq!(parsed.message, "configuration reloaded");
+    }
+
+    #[test]
+    fn test_reset_session_result_serde() {
+        let ok = ResetSessionResult {
+            success: true,
+            message: "session deleted".to_string(),
+        };
+        let json = serde_json::to_string(&ok).unwrap();
+        let parsed: ResetSessionResult = serde_json::from_str(&json).unwrap();
+        assert!(parsed.success);
+        assert_eq!(parsed.message, "session deleted");
+
+        let fail = ResetSessionResult {
+            success: false,
+            message: "missing thread_name param".to_string(),
+        };
+        let json_fail = serde_json::to_string(&fail).unwrap();
+        let parsed_fail: ResetSessionResult = serde_json::from_str(&json_fail).unwrap();
+        assert!(!parsed_fail.success);
+        assert_eq!(parsed_fail.message, "missing thread_name param");
     }
 
     #[test]
@@ -304,75 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_response_error() {
-        let resp = InspectResponse::Error {
-            error: "unknown method".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("unknown method"));
-        assert!(json.contains(r#""type":"error""#));
-    }
-
-    #[test]
-    fn test_inspect_response_reload_result() {
-        let resp = InspectResponse::ReloadResult {
-            success: true,
-            message: "config reloaded".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"reload_result""#));
-        assert!(json.contains("config reloaded"));
-
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ReloadResult { success, message } => {
-                assert!(success);
-                assert_eq!(message, "config reloaded");
-            }
-            _ => panic!("expected ReloadResult"),
-        }
-    }
-
-    #[test]
     fn test_thread_status_display() {
         assert_eq!(format!("{}", ThreadStatus::Queued), "Queued");
         assert_eq!(format!("{}", ThreadStatus::Processing), "Processing");
         assert_eq!(format!("{}", ThreadStatus::Idle), "Idle");
         assert_eq!(format!("{}", ThreadStatus::WaitingForAnswer), "Waiting");
         assert_eq!(format!("{}", ThreadStatus::Error), "Error");
-    }
-
-    #[test]
-    fn test_inspect_response_reset_session_result() {
-        let resp = InspectResponse::ResetSessionResult {
-            success: true,
-            message: "session deleted".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"reset_session_result""#));
-        assert!(json.contains("session deleted"));
-
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success);
-                assert_eq!(message, "session deleted");
-            }
-            _ => panic!("expected ResetSessionResult"),
-        }
-
-        let resp_fail = InspectResponse::ResetSessionResult {
-            success: false,
-            message: "missing thread_name param".to_string(),
-        };
-        let json_fail = serde_json::to_string(&resp_fail).unwrap();
-        let parsed_fail: InspectResponse = serde_json::from_str(&json_fail).unwrap();
-        match parsed_fail {
-            InspectResponse::ResetSessionResult { success, .. } => {
-                assert!(!success);
-            }
-            _ => panic!("expected ResetSessionResult"),
-        }
     }
 
     #[test]

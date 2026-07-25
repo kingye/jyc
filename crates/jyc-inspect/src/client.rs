@@ -9,9 +9,20 @@ use jyc_types::{InspectRequest, InspectResponse, InspectState};
 ///
 /// Maintains a persistent TCP connection and reuses it across polls.
 /// Automatically reconnects if the connection drops.
+///
+/// When constructed with an auth token, the client sends
+/// `{"method":"auth","token":"…"}` as the first line of every new TCP
+/// connection so the server's JSON-protocol auth gate lets it through.
+/// The token is re-read from `inspect_token::read()` on every reconnect,
+/// so a rotation takes effect automatically on the next reconnect.
 pub struct InspectClient {
     addr: String,
     conn: Option<Connection>,
+    /// Token resolver invoked on every fresh connection. `None` means
+    /// "read from the on-disk token file" (the default). `Some(resolver)`
+    /// means "ask this closure" — used by the dashboard to honour
+    /// `--auth-token` / `JYC_INSPECT_TOKEN` env overrides.
+    token_resolver: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 struct Connection {
@@ -24,7 +35,30 @@ impl InspectClient {
         Self {
             addr: addr.to_string(),
             conn: None,
+            token_resolver: None,
         }
+    }
+
+    /// Construct a client that authenticates with an explicit token on every
+    /// fresh connection. Use this when the dashboard was started with
+    /// `--auth-token <TOKEN>` or `JYC_INSPECT_TOKEN=<TOKEN>`.
+    pub fn new_with_token(addr: &str, token: String) -> Self {
+        Self {
+            addr: addr.to_string(),
+            conn: None,
+            token_resolver: Some(Box::new(move || Some(token.clone()))),
+        }
+    }
+
+    /// Returns the token to present on the next fresh connection, or `None`
+    /// if the server should be treated as unauthenticated (loopback-only
+    /// servers will still accept this).
+    fn token_for_connect(&self) -> Option<String> {
+        if let Some(resolver) = &self.token_resolver {
+            return resolver();
+        }
+        // Default: read fresh from disk every reconnect so rotation works.
+        jyc_utils::inspect_token::read().ok().flatten()
     }
 
     /// Fetch the current state, reusing the existing connection if possible.
@@ -50,7 +84,24 @@ impl InspectClient {
             .await
             .with_context(|| format!("failed to connect to inspect server at {}", self.addr))?;
 
-        let (reader, writer) = stream.into_split();
+        let (reader, mut writer) = stream.into_split();
+
+        // Auth handshake: if a token is available, send
+        // `{"method":"auth","token":"…"}` as the first line. The server
+        // responds with `{"error":"unauthorized"}` and closes on failure.
+        let token = self.token_for_connect();
+        if let Some(token) = token {
+            let auth_line = serde_json::json!({
+                "method": "auth",
+                "token": token,
+            })
+            .to_string();
+            let mut payload = auth_line;
+            payload.push('\n');
+            writer.write_all(payload.as_bytes()).await?;
+            writer.flush().await?;
+        }
+
         self.conn = Some(Connection {
             reader: BufReader::new(reader),
             writer,

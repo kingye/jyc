@@ -6,9 +6,8 @@ use futures_util::{SinkExt, StreamExt};
 use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::message_storage::MessageStorage;
-use jyc_inspect::server::WebsocketHandler;
+use jyc_inspect::server::{InspectContext, WebsocketHandler};
 use jyc_types::{InboundAdapter, InboundAdapterOptions, InboundMessage};
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -126,28 +125,42 @@ async fn test_websocket_adapter_start_and_handle() {
         .await
         .unwrap();
 
-    // Bind a local TCP listener to simulate the inspect server
+    // Build an axum router with the inbound adapter registered as a websocket handler.
+    // This is the same flow the inspect server uses: /ws/[channel] → handler.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    use std::collections::HashMap as StdHashMap;
+    let mut handlers: StdHashMap<String, Arc<dyn WebsocketHandler>> = StdHashMap::new();
+    handlers.insert("test_ws".to_string(), inbound.clone() as Arc<dyn WebsocketHandler>);
+
+    let ctx = Arc::new(InspectContext {
+        thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        channels: Arc::new(ArcSwap::from_pointee(vec![])),
+        health_stats: Arc::new(tokio::sync::Mutex::new(jyc_core::metrics::HealthStats::default())),
+        activity_map: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        start_time: std::time::Instant::now(),
+        config_path: None,
+        global_config_path: None,
+        config: None,
+        workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+        websocket_handlers: Some(handlers),
+        reload_callback: None,
+    });
+
+    let cancel = CancellationToken::new();
+    let cancel_for_server = cancel.clone();
+    let app = jyc_inspect::server::build_router(ctx);
+    let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let server = axum::serve(listener, service).with_graceful_shutdown(async move {
+        cancel_for_server.cancelled().await;
+    });
     let server_handle = tokio::spawn(async move {
-        let (mut stream, client_addr) = listener.accept().await.unwrap();
-
-        // Read the first byte to detect protocol (same logic as inspect server)
-        let mut first_byte = [0u8; 1];
-        let n = stream.read_exact(&mut first_byte).await.unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(first_byte[0], b'G');
-
-        // Prepend the byte back and perform WebSocket handshake
-        let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
-        let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
-
-        inbound.handle(ws_stream, client_addr).await.unwrap();
+        let _ = server.await;
     });
 
     // Connect test client
-    let url = format!("ws://{}/ws", addr);
+    let url = format!("ws://{}/ws/test_ws", addr);
     let ws_stream = tokio_tungstenite::connect_async(&url).await.unwrap().0;
     let (mut write, mut read) = ws_stream.split();
 
@@ -205,6 +218,6 @@ async fn test_websocket_adapter_start_and_handle() {
         .send(tokio_tungstenite::tungstenite::Message::Close(None))
         .await;
 
-    // Wait for server to shut down
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }

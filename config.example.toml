@@ -383,6 +383,18 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
+# Authentication for non-loopback connections is managed via a separate
+# token file at <data_dir>/inspect-token. Generate it with:
+#   jyc token generate
+# Print the current value with:
+#   jyc token show
+# Rotate (delete + regenerate) with:
+#   jyc token rotate
+# Dashboard clients auto-read the file, or can pass --auth-token /
+# JYC_INSPECT_TOKEN. The server has no in-memory token cache — every
+# remote connection reads the file fresh, so rotation takes effect for
+# new connections immediately.
+
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.
 # Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).

@@ -1316,6 +1316,31 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             context,
             cancel.clone(),
         );
+
+        // Surface the token-file state on startup so operators can see
+        // at a glance whether remote dashboard clients will be allowed.
+        match jyc_utils::inspect_token::read() {
+            Ok(Some(_)) => {
+                tracing::info!(
+                    "inspect token file present at {}; remote clients must provide Authorization: Bearer <token>",
+                    jyc_utils::inspect_token::token_path()
+                        .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string())
+                );
+            }
+            Ok(None) => {
+                if jyc_inspect::server::is_remote_bind(&inspect_config.bind) {
+                    tracing::warn!(
+                        "no token file at {}; remote connections will be rejected. Run 'jyc token generate' to enable.",
+                        jyc_utils::inspect_token::token_path()
+                            .map_or_else(|| "<unresolved>".to_string(), |p| p.display().to_string())
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read inspect token file");
+            }
+        }
+
         Some(server.start())
     } else {
         None

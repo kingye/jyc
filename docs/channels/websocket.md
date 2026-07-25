@@ -55,6 +55,31 @@ bind = "127.0.0.1:9876"
 
 The WebSocket handler rides on the same port as the inspect server. Dashboard clients connect to `ws://<inspect_addr>/ws`.
 
+### Remote access and authentication
+
+Loopback connections (`127.0.0.1`, `::1`) bypass auth entirely. For remote connections (bind on `0.0.0.0`, public IP, etc.) the inspect server requires a token presented via either:
+
+- WebSocket upgrade: `Authorization: Bearer <token>` header
+- JSON protocol (first line): `{"method":"auth","token":"<token>"}`
+
+The token lives in `<data_dir>/inspect-token` (e.g. `~/.local/share/jyc/inspect-token` on Linux). Generate one with:
+
+```bash
+jyc token generate    # writes the file, prints the token to stdout
+jyc token show       # prints the current token
+jyc token rotate     # delete + regenerate (rotation; new connections only)
+```
+
+The server reads the file fresh on every non-loopback connection — no in-memory cache, no restart needed for rotation to take effect on new connections. Existing authenticated sessions remain authenticated until `jyc serve` restarts.
+
+Dashboard clients resolve the token in this order:
+
+1. `--auth-token <TOKEN>` flag
+2. `JYC_INSPECT_TOKEN` environment variable
+3. `<data_dir>/inspect-token` (re-read on every reconnect)
+
+If `bind` resolves to a non-loopback address and no token file exists, `jyc serve` logs a warning on startup and remote connections are rejected.
+
 ## Usage
 
 1. Start the server with a websocket channel configured:

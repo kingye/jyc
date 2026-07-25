@@ -6,6 +6,18 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Optional token authentication for the inspect server / WebSocket chat.**
+  Non-loopback connections now require an `Authorization: Bearer <token>` (WebSocket
+  upgrade) or `{"method":"auth","token":"…"}` (JSON protocol) line, validated against
+  `<data_dir>/inspect-token`. Generate / inspect / rotate via the new `jyc token`
+  subcommand (`generate | show | rotate`). The server holds no in-memory token cache
+  — every remote connection reads the file fresh, so rotation takes effect immediately
+  for new connections; existing authenticated sessions remain valid until `jyc serve`
+  restarts. Loopback clients continue to bypass auth. Dashboard clients resolve the
+  token in order: `--auth-token` flag → `JYC_INSPECT_TOKEN` env → on-disk file. If
+  `bind` resolves to a non-loopback address and no token file exists, `jyc serve` logs
+  a warning and remote connections are rejected.
+
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped
   in `<think>...</think>` tags (rather than in a separate `reasoning_content`

@@ -128,6 +128,22 @@ pub fn is_loopback(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// Returns `true` when `bind_addr` resolves to an address that could
+/// accept non-loopback connections (i.e. is bound to a non-loopback
+/// interface or to the wildcard address).
+///
+/// Used by startup logging to decide whether to warn the operator that
+/// a missing token file will reject remote dashboard clients.
+pub fn is_remote_bind(bind_addr: &str) -> bool {
+    match bind_addr.parse::<std::net::SocketAddr>() {
+        Ok(addr) => !is_loopback(addr.ip()),
+        Err(_) => {
+            // Unparseable bind address — conservatively assume remote.
+            true
+        }
+    }
+}
+
 /// Reasons why a remote connection's authentication attempt failed.
 #[derive(Debug)]
 pub enum AuthError {
@@ -2283,6 +2299,18 @@ mode = "agent"
         assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
         assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
         assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn is_remote_bind_classifies_bind_addresses() {
+        assert!(!is_remote_bind("127.0.0.1:9876"));
+        assert!(!is_remote_bind("127.0.0.42:9876"));
+        assert!(is_remote_bind("0.0.0.0:9876"));
+        assert!(is_remote_bind("192.168.1.10:9876"));
+        assert!(!is_remote_bind("[::1]:9876"));
+        assert!(is_remote_bind("[::]:9876"));
+        // Unparseable → conservative: treat as remote.
+        assert!(is_remote_bind("not-a-socket-addr"));
     }
 
     #[test]

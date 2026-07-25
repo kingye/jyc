@@ -1,18 +1,29 @@
 use arc_swap::ArcSwap;
+use axum::{
+    extract::{
+        ws::WebSocketUpgrade,
+        ConnectInfo, Path, State,
+    },
+    http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use jyc_core::activity_log_store::ActivityLogStore;
-use jyc_core::command::all_commands;
-use jyc_core::command::list_available_models;
+use jyc_core::command::{all_commands, list_available_models};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_manager::ThreadManager;
@@ -22,15 +33,15 @@ use jyc_types::*;
 /// Handler for WebSocket connections on the inspect server.
 ///
 /// The websocket channel registers itself as the handler. When a dashboard
-/// client connects via WebSocket upgrade on `/ws`, the inspect server hands
-/// the stream to this handler.
+/// client connects via WebSocket upgrade on `/ws[/<channel>]`, the inspect
+/// server hands the upgraded socket to this handler.
 #[async_trait::async_trait]
 pub trait WebsocketHandler: Send + Sync {
     /// Handle a single WebSocket connection.
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
-        addr: std::net::SocketAddr,
+        socket: axum::extract::ws::WebSocket,
+        addr: SocketAddr,
     ) -> anyhow::Result<()>;
 }
 
@@ -86,17 +97,27 @@ pub struct InspectContext {
     /// Per-channel workspace directories (dynamic — updated on reload)
     pub workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
     /// WebSocket handlers keyed by channel name.
-    /// `GET /ws/my_channel` routes to `handlers["my_channel"]`.
+    /// `GET /ws/<channel>` routes to `handlers[channel]`.
     /// `GET /ws` (no channel) routes to the first available handler.
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
 }
 
-/// TCP-based inspect server.
+/// HTTP-based inspect server.
 ///
-/// Listens on the configured bind address and responds to JSON requests
-/// with runtime state snapshots. Protocol: one JSON object per line.
+/// Listens on the configured bind address and serves:
+///
+/// - `GET  /health`           — liveness probe
+/// - `GET  /state`            — full runtime state snapshot
+/// - `POST /reload_config`    — reload config from disk and apply
+/// - `POST /reset_session`    — delete the session file for a thread
+/// - `POST /inject_message`   — enqueue a synthetic message into a thread
+/// - `GET  /ws[/<channel>]`   — WebSocket upgrade for chat
+///
+/// All non-loopback requests require `Authorization: Bearer <token>` matching
+/// the contents of `<data_dir>/inspect-token`. Tokens are re-read fresh on
+/// every connection so rotation takes effect immediately.
 pub struct InspectServer {
     bind_addr: String,
     context: Arc<InspectContext>,
@@ -125,541 +146,599 @@ impl InspectServer {
         let listener = TcpListener::bind(&self.bind_addr).await?;
         tracing::info!(bind = %self.bind_addr, "Inspect server started");
 
-        loop {
-            tokio::select! {
-                accept = listener.accept() => {
-                    match accept {
-                        Ok((stream, addr)) => {
-                            tracing::debug!(addr = %addr, "Inspect client connected");
-                            let ctx = self.context.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_client(stream, ctx, addr).await {
-                                    tracing::debug!(error = %e, "Inspect client disconnected");
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Inspect accept error");
-                        }
-                    }
-                }
-                _ = self.cancel.cancelled() => {
-                    tracing::debug!("Inspect server shutting down");
-                    break;
-                }
-            }
-        }
+        let app = build_router(self.context.clone());
+        let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
+        let server = axum::serve(listener, service).with_graceful_shutdown(async move {
+            self.cancel.cancelled().await;
+        });
+
+        if let Err(e) = server.await {
+            tracing::error!(error = %e, "Inspect server bind/serve error");
+        }
+        tracing::debug!("Inspect server shutting down");
         Ok(())
     }
+}
 
-    async fn handle_client(
-        stream: tokio::net::TcpStream,
-        context: Arc<InspectContext>,
-        addr: std::net::SocketAddr,
-    ) -> anyhow::Result<()> {
-        // Read the first line to detect protocol and extract path.
-        let mut reader = tokio::io::BufReader::new(stream);
-        let mut first_line = String::new();
-        let bytes_read = reader.read_line(&mut first_line).await?;
-        if bytes_read == 0 {
-            return Ok(()); // Client disconnected immediately
+/// Build the HTTP router for the inspect server.
+///
+/// Exposed for integration tests that want to drive the router directly via
+/// `axum::serve` against a random port.
+pub fn build_router(context: Arc<InspectContext>) -> Router {
+    Router::new()
+        .route("/health", get(handle_health))
+        .route("/state", get(handle_get_state))
+        .route("/reload_config", post(handle_reload_config))
+        .route("/reset_session", post(handle_reset_session))
+        .route("/inject_message", post(handle_inject_message))
+        .route("/ws", get(ws_upgrade_root))
+        .route("/ws/{channel}", get(ws_upgrade_channel))
+        .layer(middleware::from_fn_with_state(
+            context.clone(),
+            auth_middleware,
+        ))
+        .with_state(context)
+}
+
+// ── Auth middleware ──
+
+/// Authenticate every non-loopback request via `Authorization: Bearer <token>`.
+///
+/// - Loopback (127.0.0.0/8, ::1, ::ffff:127.0.0.1): bypass entirely, no file read.
+/// - Non-loopback: read `<data_dir>/inspect-token` fresh, constant-time compare.
+///
+/// Loopback bypass matches the original TCP-line-protocol design.
+async fn auth_middleware(
+    State(_ctx): State<Arc<InspectContext>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if is_loopback(addr.ip()) {
+        return next.run(req).await;
+    }
+
+    let token = match extract_bearer(&req.headers()) {
+        Some(t) => t,
+        None => {
+            return ApiError::unauthorized("missing Authorization: Bearer header").into_response();
         }
+    };
 
-        // Get the remaining buffered data (if any) before we inspect the stream
-        let remaining = reader.buffer().to_vec();
-        let stream = reader.into_inner();
+    match verify_token(token) {
+        Ok(()) => next.run(req).await,
+        Err(e) => e.into_response(),
+    }
+}
 
-        // Reconstruct the full buffer: first_line + remaining
-        let mut prepend_bytes = first_line.into_bytes();
-        prepend_bytes.extend(remaining);
-
-        if prepend_bytes.first() == Some(&b'G') {
-            // HTTP request — extract WebSocket path for multi-channel routing
-            let request_str = String::from_utf8_lossy(&prepend_bytes);
-            let first_line = request_str.lines().next().unwrap_or("");
-            let path = Self::extract_ws_path(first_line);
-            let handler = Self::resolve_ws_handler(&context, path);
-
-            if let Some(handler) = handler {
-                let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                handler.handle(ws_stream, addr).await?;
+/// Return true for loopback IPv4 (127.0.0.0/8) and IPv6 (`::1` and the
+/// IPv4-mapped form `::ffff:127.0.0.1`). Private ranges (10/8, 172.16/12,
+/// 192.168/16) are deliberately NOT considered loopback — those hit Docker
+/// bridges and corporate VPNs and would silently fail-open for a surprising
+/// surface.
+pub fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return true;
             }
-            return Ok(());
+            // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_loopback();
+            }
+            false
         }
+    }
+}
 
-        // JSON inspect protocol
-        let prepend_stream = PrependStream::new(stream, prepend_bytes);
-        let (reader_half, mut writer) = prepend_stream.into_split();
-        let mut reader = BufReader::new(reader_half);
-        let mut line = String::new();
+/// Parse `Authorization: Bearer <token>` from headers. Case-insensitive header
+/// name, case-insensitive scheme.
+pub fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let mut parts = value.splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    let token = parts.next()?.trim();
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    if token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
 
-        loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
-            if bytes_read == 0 {
-                break; // Client disconnected
-            }
+/// Verify a token against the on-disk token file at `<data_dir>/inspect-token`.
+///
+/// Read fresh on every call so rotation takes effect immediately for new
+/// connections. Uses constant-time comparison via `subtle::ConstantTimeEq`.
+fn verify_token(provided: &str) -> Result<(), ApiError> {
+    let expected = jyc_utils::inspect_token::read()
+        .map_err(|e| ApiError::internal(format!("failed to read token file: {e}")))?;
 
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+    let Some(expected) = expected else {
+        return Err(ApiError::unauthorized(
+            "no token file; run `jyc token generate` to enable remote access",
+        ));
+    };
 
-            let response = match serde_json::from_str::<InspectRequest>(trimmed) {
-                Ok(req) => Self::handle_request(&req, &context).await,
-                Err(e) => InspectResponse::Error {
-                    error: format!("invalid request: {e}"),
-                },
-            };
-
-            let mut json = serde_json::to_string(&response)?;
-            json.push('\n');
-            writer.write_all(json.as_bytes()).await?;
-            writer.flush().await?;
-        }
-
+    if expected.as_bytes().ct_eq(provided.as_bytes()).into() {
         Ok(())
+    } else {
+        Err(ApiError::unauthorized("invalid token"))
     }
+}
 
-    /// Extract the WebSocket path from an HTTP GET request line.
-    /// e.g. "GET /ws/my_channel HTTP/1.1" → Some("my_channel")
-    ///      "GET /ws HTTP/1.1" → None (fallback to first handler)
-    fn extract_ws_path(request_line: &str) -> Option<String> {
-        let path = request_line.split_whitespace().nth(1)?;
-        if path == "/ws" {
-            return None; // No specific channel — fallback to first handler
-        }
-        // Extract channel name from /ws/{channel_name}
-        path.strip_prefix("/ws/")
-            .map(|s| s.split('/').next().unwrap_or(s).to_string())
-    }
+// ── API error type ──
 
-    /// Resolve a websocket handler by path.
-    /// If path is None (bare /ws), returns the first available handler.
-    fn resolve_ws_handler(
-        context: &InspectContext,
-        path: Option<String>,
-    ) -> Option<&Arc<dyn WebsocketHandler>> {
-        let handlers = context.websocket_handlers.as_ref()?;
-        match path {
-            Some(name) => handlers.get(&name),
-            None => handlers.values().next(),
+/// Error type that maps to an HTTP status code + JSON `{"error":"…"}` body.
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
         }
     }
 
-    async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
-        match request.method.as_str() {
-            "get_state" => {
-                let state = Self::build_state(context).await;
-                InspectResponse::State(state)
-            }
-            "reload_config" => Self::handle_reload_config(context).await,
-            "reset_session" => Self::handle_reset_session(request, context).await,
-            "inject_message" => Self::handle_inject_message(request, context).await,
-            other => InspectResponse::Error {
-                error: format!("unknown method: {other}"),
-            },
-        }
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, message)
     }
 
-    /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
-    ///
-    /// Written by `process_message()` on the first message for a thread.
-    /// Returns `None` if the file doesn't exist or can't be parsed.
-    async fn load_thread_meta(
-        tm: &Arc<ThreadManager>,
-        thread_name: &str,
-    ) -> Option<serde_json::Value> {
-        let thread_path = tm.thread_path(thread_name).await?;
-        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
-        let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
-        serde_json::from_str(&content).ok()
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, message)
     }
 
-    /// Inject a message into a thread's queue for AI processing.
-    ///
-    /// Params: `channel` (channel name), `thread` (thread name), `text` (message body).
-    /// Creates a synthetic `InboundMessage` and enqueues it via `ThreadManager::enqueue()`.
-    async fn handle_inject_message(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, message)
+    }
 
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+}
 
-        let thread_name = match params.get("thread").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'thread' param".to_string(),
-                };
-            }
-        };
-
-        let text = match params.get("text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'text' param".to_string(),
-                };
-            }
-        };
-
-        // Find the ThreadManager for this channel
-        let tms = context.thread_managers.load();
-        let tm = tms.iter().find(|tm| tm.channel_name() == channel);
-        let tm = match tm {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("no thread manager found for channel '{channel}'"),
-                };
-            }
-        };
-
-        // Load stored routing metadata for this thread (written on first message).
-        // Restores channel-specific fields (github_number, chat_id, req_id,
-        // external_id, thread_refs) so the outbound adapter can route replies.
-        let thread_meta = Self::load_thread_meta(tm, thread_name).await;
-        let (channel_uid, external_id, thread_refs, metadata) = match thread_meta {
-            Some(meta) => {
-                let uid = meta
-                    .get("channel_uid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("dashboard")
-                    .to_string();
-                let ext_id = meta
-                    .get("external_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let refs = meta
-                    .get("thread_refs")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let md = meta
-                    .get("metadata")
-                    .and_then(|v| v.as_object())
-                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                    .unwrap_or_default();
-                (uid, ext_id, refs, md)
-            }
-            None => ("dashboard".to_string(), None, None, HashMap::new()),
-        };
-
-        // Build synthetic InboundMessage (same pattern as send_to_thread tool)
-        let message = InboundMessage {
-            id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
-            channel: channel.to_string(),
-            channel_uid,
-            sender: "dashboard".to_string(),
-            sender_address: "dashboard@inspect".to_string(),
-            recipients: vec![],
-            topic: thread_name.to_string(),
-            content: MessageContent {
-                text: Some(text.to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            thread_refs,
-            reply_to_id: None,
-            external_id,
-            attachments: vec![],
-            metadata,
-            matched_pattern: None,
-        };
-
-        let pattern_match = PatternMatch {
-            pattern_name: String::new(),
-            channel: channel.to_string(),
-            matches: HashMap::new(),
-        };
-
-        tm.enqueue(
-            message,
-            thread_name.to_string(),
-            pattern_match,
-            None,
-            true,
-            None,
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(serde_json::json!({ "error": self.message })),
         )
-        .await;
-
-        tracing::info!(
-            channel = %channel,
-            thread = %thread_name,
-            text_len = text.len(),
-            "Dashboard message injected"
-        );
-
-        InspectResponse::InjectMessageResult {
-            success: true,
-            message: format!("message injected into {channel}/{thread_name}"),
-        }
+            .into_response()
     }
+}
 
-    /// Reload configuration from disk and swap it atomically.
-    async fn handle_reload_config(context: &InspectContext) -> InspectResponse {
-        let (config_path, config_swap) = match (&context.config_path, &context.config) {
-            (Some(path), Some(config)) => (path, config),
-            _ => {
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: "config reload not available (no config path)".to_string(),
-                };
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::internal(format!("{e:#}"))
+    }
+}
+
+// ── HTTP handlers ──
+
+async fn handle_health() -> Json<HealthResponse> {
+    Json(HealthResponse::ok())
+}
+
+async fn handle_get_state(
+    State(ctx): State<Arc<InspectContext>>,
+) -> Result<Json<InspectState>, ApiError> {
+    let state = build_state(&ctx).await;
+    Ok(Json(state))
+}
+
+async fn handle_reload_config(
+    State(ctx): State<Arc<InspectContext>>,
+) -> Result<Json<ReloadResult>, ApiError> {
+    let result = reload_config_impl(&ctx).await;
+    Ok(Json(result))
+}
+
+async fn handle_reset_session(
+    State(ctx): State<Arc<InspectContext>>,
+    Json(req): Json<ResetSessionRequest>,
+) -> Result<Json<ResetSessionResult>, ApiError> {
+    let result = reset_session_impl(&ctx, &req.thread_name).await?;
+    Ok(Json(result))
+}
+
+async fn handle_inject_message(
+    State(ctx): State<Arc<InspectContext>>,
+    Json(req): Json<InjectMessageRequest>,
+) -> Result<Json<InjectMessageResult>, ApiError> {
+    let result = inject_message_impl(&ctx, &req).await?;
+    Ok(Json(result))
+}
+
+async fn ws_upgrade_root(
+    State(ctx): State<Arc<InspectContext>>,
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    ws_upgrade_impl(ctx, ws, addr, None).await
+}
+
+async fn ws_upgrade_channel(
+    State(ctx): State<Arc<InspectContext>>,
+    Path(channel): Path<String>,
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    ws_upgrade_impl(ctx, ws, addr, Some(channel)).await
+}
+
+async fn ws_upgrade_impl(
+    ctx: Arc<InspectContext>,
+    ws: WebSocketUpgrade,
+    addr: SocketAddr,
+    channel: Option<String>,
+) -> Response {
+    let handler = resolve_ws_handler(&ctx, channel.as_deref());
+    match handler {
+        Some(handler) => ws.on_upgrade(move |socket| async move {
+            if let Err(e) = handler.handle(socket, addr).await {
+                tracing::warn!(error = %e, addr = %addr, "websocket handler error");
             }
-        };
+        }),
+        None => ApiError::not_found("no websocket handler for this channel").into_response(),
+    }
+}
 
-        tracing::info!(path = %config_path.display(), "Reloading configuration");
+fn resolve_ws_handler(
+    context: &InspectContext,
+    channel: Option<&str>,
+) -> Option<Arc<dyn WebsocketHandler>> {
+    let handlers = context.websocket_handlers.as_ref()?;
+    match channel {
+        Some(name) => handlers.get(name).cloned(),
+        None => handlers.values().next().cloned(),
+    }
+}
 
-        // Load and validate new config (layered: global base + workdir overlay)
-        let new_config = match jyc_types::load_config_layered(
-            context.global_config_path.as_deref(),
-            config_path,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("failed to load config: {e:#}");
-                tracing::warn!("{msg}");
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: msg,
-                };
-            }
-        };
+// ── Business logic (extracted from handlers for testability) ──
 
-        let errors = jyc_types::validation::validate_config(&new_config);
-        if !errors.is_empty() {
-            let msg = errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            let msg = format!("validation failed: {msg}");
+/// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
+///
+/// Written by `process_message()` on the first message for a thread.
+/// Returns `None` if the file doesn't exist or can't be parsed.
+async fn load_thread_meta(
+    tm: &Arc<ThreadManager>,
+    thread_name: &str,
+) -> Option<serde_json::Value> {
+    let thread_path = tm.thread_path(thread_name).await?;
+    let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+    let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Inject a message into a thread's queue for AI processing.
+async fn inject_message_impl(
+    context: &InspectContext,
+    req: &InjectMessageRequest,
+) -> Result<InjectMessageResult, ApiError> {
+    // Find the ThreadManager for this channel
+    let tms = context.thread_managers.load();
+    let tm = tms
+        .iter()
+        .find(|tm| tm.channel_name() == req.channel)
+        .cloned();
+    drop(tms);
+    let tm = tm.ok_or_else(|| {
+        ApiError::not_found(format!("no thread manager found for channel '{}'", req.channel))
+    })?;
+
+    // Load stored routing metadata for this thread (written on first message).
+    let thread_meta = load_thread_meta(&tm, &req.thread).await;
+    let (channel_uid, external_id, thread_refs, metadata) = match thread_meta {
+        Some(meta) => {
+            let uid = meta
+                .get("channel_uid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("dashboard")
+                .to_string();
+            let ext_id = meta
+                .get("external_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let refs = meta
+                .get("thread_refs")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let md = meta
+                .get("metadata")
+                .and_then(|v| v.as_object())
+                .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            (uid, ext_id, refs, md)
+        }
+        None => ("dashboard".to_string(), None, None, HashMap::new()),
+    };
+
+    // Build synthetic InboundMessage (same pattern as send_to_thread tool)
+    let message = InboundMessage {
+        id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
+        channel: req.channel.clone(),
+        channel_uid,
+        sender: "dashboard".to_string(),
+        sender_address: "dashboard@inspect".to_string(),
+        recipients: vec![],
+        topic: req.thread.clone(),
+        content: MessageContent {
+            text: Some(req.text.clone()),
+            html: None,
+            markdown: None,
+        },
+        timestamp: chrono::Utc::now(),
+        thread_refs,
+        reply_to_id: None,
+        external_id,
+        attachments: vec![],
+        metadata,
+        matched_pattern: None,
+    };
+
+    let pattern_match = PatternMatch {
+        pattern_name: String::new(),
+        channel: req.channel.clone(),
+        matches: HashMap::new(),
+    };
+
+    tm.enqueue(
+        message,
+        req.thread.clone(),
+        pattern_match,
+        None,
+        true,
+        None,
+    )
+    .await;
+
+    tracing::info!(
+        channel = %req.channel,
+        thread = %req.thread,
+        text_len = req.text.len(),
+        "Dashboard message injected"
+    );
+
+    Ok(InjectMessageResult {
+        success: true,
+        message: format!("message injected into {}/{}", req.channel, req.thread),
+    })
+}
+
+/// Reload configuration from disk and swap it atomically.
+async fn reload_config_impl(context: &InspectContext) -> ReloadResult {
+    let (config_path, config_swap) = match (&context.config_path, &context.config) {
+        (Some(path), Some(config)) => (path.clone(), config.clone()),
+        _ => {
+            return ReloadResult {
+                success: false,
+                message: "config reload not available (no config path)".to_string(),
+            };
+        }
+    };
+
+    tracing::info!(path = %config_path.display(), "Reloading configuration");
+
+    // Load and validate new config (layered: global base + workdir overlay)
+    let new_config = match jyc_types::load_config_layered(
+        context.global_config_path.as_deref(),
+        &config_path,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("failed to load config: {e:#}");
             tracing::warn!("{msg}");
-            return InspectResponse::ReloadResult {
+            return ReloadResult {
                 success: false,
                 message: msg,
             };
         }
+    };
 
-        // Atomically swap the config
-        config_swap.store(Arc::new(new_config));
-        tracing::info!("Configuration reloaded successfully");
-
-        // Notify orchestrator if a reload callback is registered
-        if let Some(ref callback) = context.reload_callback {
-            tracing::debug!("Invoking reload callback");
-            if let Err(e) = callback().await {
-                let msg = format!("config reloaded, but channel reload failed: {e:#}");
-                tracing::error!(error = %e, "Channel reload failed after config swap");
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: msg,
-                };
-            }
-        }
-
-        InspectResponse::ReloadResult {
-            success: true,
-            message: "configuration reloaded".to_string(),
-        }
+    let errors = jyc_types::validation::validate_config(&new_config);
+    if !errors.is_empty() {
+        let msg = errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let msg = format!("validation failed: {msg}");
+        tracing::warn!("{msg}");
+        return ReloadResult {
+            success: false,
+            message: msg,
+        };
     }
 
-    /// Delete the agent session file for a given thread.
-    async fn handle_reset_session(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let thread_name = match request.params.as_ref().and_then(|p| p.get("thread_name")) {
-            Some(v) => match v.as_str() {
-                Some(s) => s.to_string(),
-                None => {
-                    return InspectResponse::ResetSessionResult {
-                        success: false,
-                        message: "thread_name must be a string".to_string(),
-                    };
-                }
-            },
-            None => {
-                return InspectResponse::ResetSessionResult {
-                    success: false,
-                    message: "missing thread_name param".to_string(),
-                };
-            }
-        };
+    // Atomically swap the config
+    config_swap.store(Arc::new(new_config));
+    tracing::info!("Configuration reloaded successfully");
 
-        if thread_name.contains("..") || thread_name.contains('/') || thread_name.contains('\\') {
-            return InspectResponse::ResetSessionResult {
+    // Notify orchestrator if a reload callback is registered
+    if let Some(ref callback) = context.reload_callback {
+        tracing::debug!("Invoking reload callback");
+        if let Err(e) = callback().await {
+            let msg = format!("config reloaded, but channel reload failed: {e:#}");
+            tracing::error!(error = %e, "Channel reload failed after config swap");
+            return ReloadResult {
                 success: false,
-                message: "invalid thread_name: path traversal not allowed".to_string(),
+                message: msg,
             };
         }
-
-        // Resolve compression config: check agent config for fallback
-        let config = context
-            .config
-            .as_ref()
-            .and_then(|c| {
-                let cfg = c.load();
-                cfg.agent.reset_compression.clone()
-            })
-            .unwrap_or_default();
-
-        let tms = context.thread_managers.load();
-        let mut found = false;
-        for tm in tms.iter() {
-            if let Err(e) = tm.reset_session(&thread_name, &config).await {
-                tracing::warn!(
-                    thread = %thread_name,
-                    error = %e,
-                    "Failed to reset session via thread manager"
-                );
-            }
-            found = true;
-        }
-        drop(tms);
-
-        // Fallback: if no thread managers handled the reset, delete files directly
-        // (needed during testing and when thread manager is not yet available)
-        if !found {
-            let dirs = context.workspace_dirs.load();
-            let mut deleted = false;
-            for dir in dirs.iter() {
-                let session_path = dir
-                    .join(&thread_name)
-                    .join(".jyc")
-                    .join("agent-session.json");
-                if session_path.exists() {
-                    tokio::fs::remove_file(&session_path).await.ok();
-                    deleted = true;
-                }
-                let context_path = dir
-                    .join(&thread_name)
-                    .join(".jyc")
-                    .join("agent-context.json");
-                if context_path.exists() {
-                    tokio::fs::remove_file(&context_path).await.ok();
-                    deleted = true;
-                }
-            }
-
-            if deleted {
-                tracing::info!(thread = %thread_name, "Session reset via inspect protocol (filesystem fallback)");
-                InspectResponse::ResetSessionResult {
-                    success: true,
-                    message: format!("session deleted for {thread_name}"),
-                }
-            } else {
-                InspectResponse::ResetSessionResult {
-                    success: true,
-                    message: format!("no session exists for {thread_name}"),
-                }
-            }
-        } else {
-            tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
-            InspectResponse::ResetSessionResult {
-                success: true,
-                message: format!("session reset for {thread_name}"),
-            }
-        }
     }
 
-    async fn build_state(context: &InspectContext) -> InspectState {
-        let uptime = context.start_time.elapsed().as_secs();
-
-        let mut threads = Vec::new();
-        let mut total_threads = 0;
-        let mut active_workers = 0;
-        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
-
-        let tms = context.thread_managers.load();
-        for tm in tms.iter() {
-            let tm_threads = tm.list_threads().await;
-            total_threads += tm_threads.len();
-            let stats = tm.get_stats().await;
-            active_workers += stats.active_workers;
-            per_channel_workers.insert(
-                tm.channel_name().to_string(),
-                (stats.active_workers, tm.max_concurrent()),
-            );
-            threads.extend(tm_threads);
-        }
-
-        // Merge activity logs and status into threads
-        let activity_map = context.activity_map.lock().await;
-        for thread in &mut threads {
-            let key = (thread.channel.clone(), thread.name.clone());
-            if let Some(state) = activity_map.get(&key) {
-                thread.activity = state.entries.iter().cloned().collect();
-                thread.recent_messages = state.recent_messages.iter().cloned().collect();
-                thread.thinking_text = state.thinking_text.clone();
-                if state.is_processing {
-                    thread.status = ThreadStatus::Processing;
-                } else if state.has_error {
-                    thread.status = ThreadStatus::Error;
-                }
-                if let Some(last_active) = state.last_active_at {
-                    thread.last_active_at = Some(last_active.to_rfc3339());
-                }
-            }
-        }
-        drop(activity_map);
-
-        // Read metrics
-        let health = context.health_stats.lock().await;
-        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
-        let stats = GlobalStats {
-            active_workers,
-            total_threads,
-            max_concurrent,
-            available_workers: max_concurrent.saturating_sub(active_workers),
-            messages_received: health.messages_received,
-            messages_processed: health.messages_processed,
-            errors: health.errors,
-        };
-        drop(health);
-
-        let channels = context.channels.load();
-        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
-        for ch in &mut channels {
-            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
-                ch.active_workers = *aw;
-                ch.max_concurrent = *mc;
-            }
-        }
-
-        InspectState {
-            uptime_secs: uptime,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            channels,
-            threads,
-            stats,
-            commands: all_commands(),
-            models: context
-                .config
-                .as_ref()
-                .map(|cfg| list_available_models(&cfg.load().agent.providers))
-                .unwrap_or_default(),
-        }
+    ReloadResult {
+        success: true,
+        message: "configuration reloaded".to_string(),
     }
 }
+
+/// Delete the agent session file for a given thread.
+async fn reset_session_impl(
+    context: &InspectContext,
+    thread_name: &str,
+) -> Result<ResetSessionResult, ApiError> {
+    if thread_name.contains("..") || thread_name.contains('/') || thread_name.contains('\\') {
+        return Err(ApiError::bad_request(
+            "invalid thread_name: path traversal not allowed",
+        ));
+    }
+
+    // Resolve compression config: check agent config for fallback
+    let config = context
+        .config
+        .as_ref()
+        .and_then(|c| {
+            let cfg = c.load();
+            cfg.agent.reset_compression.clone()
+        })
+        .unwrap_or_default();
+
+    let tms = context.thread_managers.load();
+    let mut found = false;
+    for tm in tms.iter() {
+        if let Err(e) = tm.reset_session(thread_name, &config).await {
+            tracing::warn!(
+                thread = %thread_name,
+                error = %e,
+                "Failed to reset session via thread manager"
+            );
+        }
+        found = true;
+    }
+    drop(tms);
+
+    // Fallback: if no thread managers handled the reset, delete files directly
+    // (needed during testing and when thread manager is not yet available)
+    if !found {
+        let dirs = context.workspace_dirs.load();
+        let mut deleted = false;
+        for dir in dirs.iter() {
+            let session_path = dir
+                .join(thread_name)
+                .join(".jyc")
+                .join("agent-session.json");
+            if session_path.exists() {
+                tokio::fs::remove_file(&session_path).await.ok();
+                deleted = true;
+            }
+            let context_path = dir
+                .join(thread_name)
+                .join(".jyc")
+                .join("agent-context.json");
+            if context_path.exists() {
+                tokio::fs::remove_file(&context_path).await.ok();
+                deleted = true;
+            }
+        }
+
+        if deleted {
+            tracing::info!(thread = %thread_name, "Session reset via inspect protocol (filesystem fallback)");
+            Ok(ResetSessionResult {
+                success: true,
+                message: format!("session deleted for {thread_name}"),
+            })
+        } else {
+            Ok(ResetSessionResult {
+                success: true,
+                message: format!("no session exists for {thread_name}"),
+            })
+        }
+    } else {
+        tracing::info!(thread = %thread_name, "Session reset via inspect protocol");
+        Ok(ResetSessionResult {
+            success: true,
+            message: format!("session reset for {thread_name}"),
+        })
+    }
+}
+
+async fn build_state(context: &InspectContext) -> InspectState {
+    let uptime = context.start_time.elapsed().as_secs();
+
+    let mut threads = Vec::new();
+    let mut total_threads = 0;
+    let mut active_workers = 0;
+    let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
+
+    let tms = context.thread_managers.load();
+    for tm in tms.iter() {
+        let tm_threads = tm.list_threads().await;
+        total_threads += tm_threads.len();
+        let stats = tm.get_stats().await;
+        active_workers += stats.active_workers;
+        per_channel_workers.insert(
+            tm.channel_name().to_string(),
+            (stats.active_workers, tm.max_concurrent()),
+        );
+        threads.extend(tm_threads);
+    }
+
+    // Merge activity logs and status into threads
+    let activity_map = context.activity_map.lock().await;
+    for thread in &mut threads {
+        let key = (thread.channel.clone(), thread.name.clone());
+        if let Some(state) = activity_map.get(&key) {
+            thread.activity = state.entries.iter().cloned().collect();
+            thread.recent_messages = state.recent_messages.iter().cloned().collect();
+            thread.thinking_text = state.thinking_text.clone();
+            if state.is_processing {
+                thread.status = ThreadStatus::Processing;
+            } else if state.has_error {
+                thread.status = ThreadStatus::Error;
+            }
+            if let Some(last_active) = state.last_active_at {
+                thread.last_active_at = Some(last_active.to_rfc3339());
+            }
+        }
+    }
+    drop(activity_map);
+
+    // Read metrics
+    let health = context.health_stats.lock().await;
+    let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
+    let stats = GlobalStats {
+        active_workers,
+        total_threads,
+        max_concurrent,
+        available_workers: max_concurrent.saturating_sub(active_workers),
+        messages_received: health.messages_received,
+        messages_processed: health.messages_processed,
+        errors: health.errors,
+    };
+    drop(health);
+
+    let channels = context.channels.load();
+    let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
+    for ch in &mut channels {
+        if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
+            ch.active_workers = *aw;
+            ch.max_concurrent = *mc;
+        }
+    }
+
+    InspectState {
+        uptime_secs: uptime,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        channels,
+        threads,
+        stats,
+        commands: all_commands(),
+        models: context
+            .config
+            .as_ref()
+            .map(|cfg| list_available_models(&cfg.load().agent.providers))
+            .unwrap_or_default(),
+    }
+}
+
+// ── Activity tracker (unchanged) ──
 
 /// Background task that subscribes to thread event buses and buffers
 /// activity entries for the inspect server.
@@ -828,8 +907,8 @@ impl ActivityTracker {
                                                                             matches!(&event, ThreadEvent::ProcessingProgress { .. });
                                                                         if let Some(ref path) = thread_path
                                                                             && let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
-                                                                            }
+                                                                            tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                        }
                                                                         let mut map = map.lock().await;
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
@@ -920,102 +999,6 @@ impl ActivityTracker {
     }
 }
 
-/// A wrapper around `tokio::net::TcpStream` that prepends buffered bytes
-/// to the beginning of the read stream. Used to "put back" the first bytes
-/// after protocol detection and path extraction.
-pub struct PrependStream {
-    inner: tokio::net::TcpStream,
-    prepend: Vec<u8>,
-    prepend_pos: usize,
-}
-
-impl PrependStream {
-    pub fn new(inner: tokio::net::TcpStream, bytes: Vec<u8>) -> Self {
-        Self {
-            inner,
-            prepend: bytes,
-            prepend_pos: 0,
-        }
-    }
-
-    fn into_split(self) -> (PrependReadHalf, tokio::net::tcp::OwnedWriteHalf) {
-        let (read, write) = self.inner.into_split();
-        (
-            PrependReadHalf {
-                inner: read,
-                prepend: self.prepend,
-                prepend_pos: self.prepend_pos,
-            },
-            write,
-        )
-    }
-}
-
-impl tokio::io::AsyncRead for PrependStream {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        // Serve prepended bytes first
-        if self.prepend_pos < self.prepend.len() {
-            let remaining = &self.prepend[self.prepend_pos..];
-            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
-            buf.put_slice(&remaining[..to_copy]);
-            self.prepend_pos += to_copy;
-            return std::task::Poll::Ready(Ok(()));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for PrependStream {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-struct PrependReadHalf {
-    inner: tokio::net::tcp::OwnedReadHalf,
-    prepend: Vec<u8>,
-    prepend_pos: usize,
-}
-
-impl tokio::io::AsyncRead for PrependReadHalf {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        if self.prepend_pos < self.prepend.len() {
-            let remaining = &self.prepend[self.prepend_pos..];
-            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
-            buf.put_slice(&remaining[..to_copy]);
-            self.prepend_pos += to_copy;
-            return std::task::Poll::Ready(Ok(()));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
 fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
     let severity = match event {
@@ -1057,9 +1040,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
             tool_name, input, ..
         } => {
             if tool_name == "edit" {
-                // Store the full edit data as JSON so consumers can render
-                // differently: activity pane shows the JSON string as-is while
-                // AI progress parses it and renders a full git diff.
                 let parsed: Option<serde_json::Value> =
                     input.as_deref().and_then(|s| serde_json::from_str(s).ok());
                 let file_path = parsed
@@ -1085,7 +1065,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 })
                 .to_string()
             } else if tool_name == "write" {
-                // Store write data as JSON for multi-line rendering in AI progress.
                 let parsed: Option<serde_json::Value> =
                     input.as_deref().and_then(|s| serde_json::from_str(s).ok());
                 let file_path = parsed
@@ -1121,9 +1100,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         } => {
             if *success {
                 if tool_name == "edit" {
-                    // Store the full edit data as JSON so consumers can render
-                    // differently: activity pane shows as-is, AI progress shows
-                    // git diff.
                     let parsed: Option<serde_json::Value> =
                         input.as_deref().and_then(|s| serde_json::from_str(s).ok());
                     let file_path = parsed
@@ -1141,8 +1117,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                         .and_then(|v| v.get("new_string"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    // Parse line number from the edit tool's output message
-                    // (format: "Edited 'file' at line N: M replacement(s) made")
                     let line_no = output.as_deref().and_then(|s| {
                         s.find("at line ")
                             .and_then(|pos| {
@@ -1161,7 +1135,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                     })
                     .to_string()
                 } else if tool_name == "write" {
-                    // Store write data as JSON for multi-line rendering in AI progress.
                     let parsed: Option<serde_json::Value> =
                         input.as_deref().and_then(|s| serde_json::from_str(s).ok());
                     let file_path = parsed
@@ -1251,10 +1224,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::sync::Mutex;
+    use std::net::Ipv4Addr;
 
     fn test_context() -> Arc<InspectContext> {
         Arc::new(InspectContext {
@@ -1277,201 +1247,123 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn test_inspect_server_responds_to_get_state() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        // Bind to random port
+    /// Bind a fresh axum server to `127.0.0.1:0` and return its base URL + handle.
+    async fn spawn_test_server(
+        context: Arc<InspectContext>,
+        cancel: CancellationToken,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-
-        // Give server time to start
+        let app = build_router(context);
+        let service = app.into_make_service_with_connect_info::<SocketAddr>();
+        let server = axum::serve(listener, service).with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+        });
+        let handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (format!("http://{addr}"), handle)
+    }
 
-        // Connect and send request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
+    // ── is_loopback ──
 
-        writer
-            .write_all(b"{\"method\":\"get_state\"}\n")
+    #[test]
+    fn test_is_loopback_ipv4() {
+        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 1, 2, 3))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn test_is_loopback_ipv6() {
+        assert!(is_loopback("::1".parse::<IpAddr>().unwrap()));
+        // IPv4-mapped loopback
+        assert!(is_loopback("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
+        // Regular public IPv6
+        assert!(!is_loopback("2606:4700:4700::1111".parse::<IpAddr>().unwrap()));
+    }
+
+    // ── extract_bearer ──
+
+    #[test]
+    fn test_extract_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::AUTHORIZATION, "Bearer abc".parse().unwrap());
+        assert_eq!(extract_bearer(&headers), Some("abc"));
+
+        // case-insensitive scheme
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "bearer xyz".parse().unwrap(),
+        );
+        assert_eq!(extract_bearer(&headers), Some("xyz"));
+
+        // missing
+        let headers = HeaderMap::new();
+        assert_eq!(extract_bearer(&headers), None);
+
+        // wrong scheme
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic abc".parse().unwrap(),
+        );
+        assert_eq!(extract_bearer(&headers), None);
+
+        // empty token
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer ".parse().unwrap(),
+        );
+        assert_eq!(extract_bearer(&headers), None);
+    }
+
+    // ── HTTP integration ──
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/health"))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::State(state) => {
-                assert_eq!(state.channels.len(), 1);
-                assert_eq!(state.channels[0].name, "emf");
-                assert_eq!(state.stats.active_workers, 0);
-                assert_eq!(state.stats.max_concurrent, 0);
-                assert_eq!(state.stats.available_workers, 0);
-                assert!(!state.version.is_empty());
-            }
-            other => panic!("expected State, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 200);
+        let body: HealthResponse = resp.json().await.unwrap();
+        assert_eq!(body.status, "ok");
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_event_to_activity_session_status_error() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: None,
-            message: Some("SMTP 535 authentication failed".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR"),
-            "Expected ERROR label, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("SMTP 535 authentication failed"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_session_status_error_with_attempt() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: Some(3),
-            message: Some("server overload".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR (attempt #3)"),
-            "Expected ERROR with attempt, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("server overload"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_handles_unknown_method() {
+    async fn test_get_state_endpoint() {
         let cancel = CancellationToken::new();
         let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"unknown\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("unknown method"));
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/state")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let state: InspectState = resp.json().await.unwrap();
+        assert_eq!(state.channels.len(), 1);
+        assert_eq!(state.channels[0].name, "emf");
+        assert!(!state.version.is_empty());
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_inspect_server_handles_invalid_json() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer.write_all(b"not json\n").await.unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("invalid request"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_multiple_requests() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Send two requests on the same connection
-        for _ in 0..2 {
-            writer
-                .write_all(b"{\"method\":\"get_state\"}\n")
-                .await
-                .unwrap();
-            writer.flush().await.unwrap();
-
-            let mut response = String::new();
-            reader.read_line(&mut response).await.unwrap();
-
-            let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-            match resp {
-                InspectResponse::State(state) => {
-                    assert_eq!(state.channels.len(), 1);
-                }
-                other => panic!("expected State, got {:?}", other),
-            }
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reload_config() {
+    async fn test_reload_config_endpoint() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
         let config_toml = r#"
@@ -1515,59 +1407,34 @@ mode = "agent"
         });
 
         let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Send reload_config request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/reload_config"))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: ReloadResult = resp.json().await.unwrap();
+        assert!(body.success, "reload should succeed: {}", body.message);
+        assert!(body.message.contains("reloaded"));
 
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ReloadResult { success, message } => {
-                assert!(success, "reload should succeed: {message}");
-                assert!(message.contains("reloaded"));
-            }
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
-
-        // Verify config was actually updated
         assert_eq!(config_swap.load().general.max_concurrent_threads, 5);
 
-        // Now modify the config on disk and reload again
+        // Modify and reload again
         let updated_toml =
             config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
         std::fs::write(&config_path, updated_toml).unwrap();
 
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
+        let resp = client
+            .post(format!("{base}/reload_config"))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response2 = String::new();
-        reader.read_line(&mut response2).await.unwrap();
-
-        let resp2: InspectResponse = serde_json::from_str(&response2).unwrap();
-        match resp2 {
-            InspectResponse::ReloadResult { success, .. } => assert!(success),
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 200);
+        let body: ReloadResult = resp.json().await.unwrap();
+        assert!(body.success);
 
         assert_eq!(config_swap.load().general.max_concurrent_threads, 10);
 
@@ -1576,7 +1443,7 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_inspect_server_reset_session() {
+    async fn test_reset_session_endpoint() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace_dir = tmp.path().to_path_buf();
         let thread_name = "test-thread";
@@ -1604,37 +1471,19 @@ mode = "agent"
         });
 
         let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"test-thread\"}}\n",
-            )
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/reset_session"))
+            .json(&serde_json::json!({ "thread_name": thread_name }))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success, "reset should succeed: {message}");
-                assert!(message.contains("session deleted"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 200);
+        let body: ResetSessionResult = resp.json().await.unwrap();
+        assert!(body.success, "reset should succeed: {}", body.message);
+        assert!(body.message.contains("session deleted"));
 
         assert!(!jyc_dir.join("agent-session.json").exists());
 
@@ -1643,46 +1492,31 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_inspect_server_reset_session_missing_param() {
-        let ctx = test_context();
-
+    async fn test_reset_session_path_traversal_rejected() {
         let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"reset_session\"}\n")
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/reset_session"))
+            .json(&serde_json::json!({ "thread_name": "../../etc" }))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(!success);
-                assert!(message.contains("missing thread_name"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 400);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("path traversal"));
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_inspect_server_reset_session_no_existing_session() {
+    async fn test_reset_session_no_existing_session() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace_dir = tmp.path().to_path_buf();
 
@@ -1701,100 +1535,130 @@ mode = "agent"
         });
 
         let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"nonexistent\"}}\n",
-            )
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/reset_session"))
+            .json(&serde_json::json!({ "thread_name": "nonexistent" }))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success, "no-session case should still succeed: {message}");
-                assert!(message.contains("no session exists"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 200);
+        let body: ResetSessionResult = resp.json().await.unwrap();
+        assert!(body.success, "no-session case should still succeed");
+        assert!(body.message.contains("no session exists"));
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_inspect_server_reset_session_path_traversal() {
-        let ctx = test_context();
-
+    async fn test_inject_message_unknown_channel() {
         let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n",
-            )
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/inject_message"))
+            .json(&serde_json::json!({
+                "channel": "nonexistent",
+                "thread": "t",
+                "text": "x"
+            }))
+            .send()
             .await
             .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(!success);
-                assert!(
-                    message.contains("path traversal"),
-                    "expected path traversal error, got: {message}"
-                );
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
+        assert_eq!(resp.status(), 404);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("no thread manager found"));
 
         cancel.cancel();
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inject_message_missing_field() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        // Missing `text` field
+        let resp = client
+            .post(format!("{base}/inject_message"))
+            .json(&serde_json::json!({
+                "channel": "emf",
+                "thread": "t"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 422);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_session_status_error() {
+        let event = ThreadEvent::SessionStatus {
+            thread_name: "test_thread".to_string(),
+            status_type: "error".to_string(),
+            attempt: None,
+            message: Some("SMTP 535 authentication failed".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(
+            entry.text.contains("ERROR"),
+            "Expected ERROR label, got: {}",
+            entry.text
+        );
+        assert!(
+            entry.text.contains("SMTP 535 authentication failed"),
+            "Expected error message, got: {}",
+            entry.text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_session_status_error_with_attempt() {
+        let event = ThreadEvent::SessionStatus {
+            thread_name: "test_thread".to_string(),
+            status_type: "error".to_string(),
+            attempt: Some(3),
+            message: Some("server overload".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("ERROR (attempt #3)"));
+        assert!(entry.text.contains("server overload"));
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_incoming_message() {
+        let event = ThreadEvent::IncomingMessage {
+            thread_name: "test".to_string(),
+            sender: "user".to_string(),
+            text: "hello world".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.text.contains("Message from user"));
+        assert!(entry.text.contains("hello world"));
     }
 
     /// Regression test for cross-channel issue collision.
     ///
-    /// Bug: when two channels both had a thread with the same name (e.g.
-    /// `issue-20`), the activity map keyed by `thread.name` alone caused
-    /// channel2's thread to share channel1's processing state and logs in
-    /// the dashboard. This test exercises the merge logic that
-    /// `build_state` performs on each `ThreadInfo`, asserting that two
-    /// same-named threads from different channels resolve to *independent*
-    /// activity-map entries.
+    /// When two channels both have a thread with the same name (e.g. `issue-20`),
+    /// the activity map keyed by `(channel, thread)` resolves them independently.
     #[tokio::test]
     async fn test_activity_map_disambiguates_same_named_threads_across_channels() {
-        // Construct two ThreadInfos with the same name but different channels,
-        // mimicking the situation where channel1 and channel2 both have an
-        // `issue-20`.
         let make_thread = |channel: &str| ThreadInfo {
             name: "issue-20".to_string(),
             channel: channel.to_string(),
@@ -1814,9 +1678,6 @@ mode = "agent"
 
         let mut threads = vec![make_thread("channel1"), make_thread("channel2")];
 
-        // Populate the activity map: only channel1's issue-20 is processing
-        // and has an activity entry. Channel2's issue-20 is idle with no
-        // activity.
         let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
         {
             let mut map = activity_map.lock().await;
@@ -1844,13 +1705,11 @@ mode = "agent"
         }
         drop(map);
 
-        // channel1 must reflect its own processing state and log.
         let ch1 = threads.iter().find(|t| t.channel == "channel1").unwrap();
         assert!(matches!(ch1.status, ThreadStatus::Processing));
         assert_eq!(ch1.activity.len(), 1);
         assert_eq!(ch1.activity[0].text, "channel1 working");
 
-        // channel2 must NOT inherit channel1's state — this is the bug.
         let ch2 = threads.iter().find(|t| t.channel == "channel2").unwrap();
         assert!(
             matches!(ch2.status, ThreadStatus::Idle),
@@ -1858,29 +1717,14 @@ mode = "agent"
         );
         assert!(
             ch2.activity.is_empty(),
-            "channel2's issue-20 leaked channel1's activity log: {:?}",
-            ch2.activity
+            "channel2's issue-20 leaked channel1's activity log"
         );
     }
 
-    /// Regression test for activity events stopping after worker exits.
-    ///
-    /// Bug: when a thread's worker finishes and the event bus is cleaned up,
-    /// the ActivityTracker's re-subscription loop kept calling
-    /// `get_event_bus()` which returned `None`, leaving the thread in a
-    /// stuck `is_processing = true` state forever. The dashboard showed
-    /// "Processing" but no activity events appeared.
-    ///
-    /// Fix: when `get_event_bus()` returns `None` and the thread has no
-    /// active queue, clear `is_processing` and mark as subscribed to stop
-    /// retrying. When a new message arrives, a new event bus is created and
-    /// the subscriber task cleanup removes the key, enabling re-subscription.
+    /// Regression test: idle threads should clear stale `is_processing`.
     #[tokio::test]
     async fn test_idle_thread_clears_stale_processing_state() {
         let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
-
-        // Simulate a thread that was previously processing but whose worker
-        // has exited (event bus cleaned up, no active queue).
         let key = ("test-channel".to_string(), "test-thread".to_string());
         {
             let mut map = activity_map.lock().await;
@@ -1893,15 +1737,11 @@ mode = "agent"
             });
         }
 
-        // Verify the stale state exists.
         {
             let map = activity_map.lock().await;
             assert!(map.get(&key).unwrap().is_processing);
         }
 
-        // Simulate the fix: clear is_processing for idle threads.
-        // This mirrors the logic in ActivityTracker::start() when
-        // get_event_bus() returns None and has_active_queue() returns false.
         {
             let mut map = activity_map.lock().await;
             if let Some(state) = map.get_mut(&key) {
@@ -1909,103 +1749,25 @@ mode = "agent"
             }
         }
 
-        // Verify the stale state was cleared.
         {
             let map = activity_map.lock().await;
-            assert!(
-                !map.get(&key).unwrap().is_processing,
-                "is_processing should be cleared for idle threads"
-            );
+            assert!(!map.get(&key).unwrap().is_processing);
         }
     }
 
+    /// Auth middleware: loopback requests bypass auth even when no token file exists.
     #[tokio::test]
-    async fn test_inject_message_missing_params() {
+    async fn test_auth_bypass_loopback_no_token() {
+        // No token file exists at the data home — loopback should still get through.
         let cancel = CancellationToken::new();
         let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Missing params entirely
-        writer
-            .write_all(b"{\"method\":\"inject_message\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("missing params"));
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
 
         cancel.cancel();
         handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_unknown_channel() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"inject_message\",\"params\":{\"channel\":\"nonexistent\",\"thread\":\"t\",\"text\":\"x\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("no thread manager found"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_incoming_message() {
-        let event = ThreadEvent::IncomingMessage {
-            thread_name: "test".to_string(),
-            sender: "user".to_string(),
-            text: "hello world".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Message from user"));
-        assert!(entry.text.contains("hello world"));
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_reply_sent() {
-        let event = ThreadEvent::ReplySent {
-            thread_name: "test".to_string(),
-            text: "AI reply here".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Reply sent"));
-        assert!(entry.text.contains("AI reply here"));
     }
 }

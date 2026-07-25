@@ -19,6 +19,13 @@ All notable changes to JYC will be documented in this file.
   file is read fresh on every connection so `jyc token rotate` takes
   effect immediately for new connections. Constant-time compare via
   `subtle::ConstantTimeEq`.
+
+  **Note:** a malformed token file (wrong prefix, wrong length,
+  non-hex chars) yields **500 Internal Server Error**, not 401.
+  This is deliberate — a corrupt token is a server-side problem,
+  not an auth failure, and silently disabling auth on corruption
+  would be a security regression. Fix the file with `jyc token
+  generate` to restore normal behavior.
 - **`jyc token generate | show | rotate` subcommand** for managing the
   inspect-server authentication token file. The token format is
   `jyc_<64 hex chars>` (256 bits of entropy), atomic write, mode `0600`

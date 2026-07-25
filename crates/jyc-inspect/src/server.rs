@@ -1976,4 +1976,45 @@ mode = "agent"
         cancel.cancel();
         handle.await.unwrap();
     }
+
+    /// Auth middleware: a malformed token file (wrong prefix, wrong
+    /// length, or non-hex chars) causes `verify_token` to fail with
+    /// `ApiError::internal` → 500 Internal Server Error. This is
+    /// deliberately distinct from 401: a corrupt token file is a
+    /// server-side problem, not an auth failure, and silently
+    /// disabling auth on corruption would be a security regression.
+    #[tokio::test]
+    async fn test_auth_malformed_token_file_returns_500() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Ensure the `<base>/jyc/` parent directory exists so the
+        // token file can be written.
+        jyc_utils::inspect_token::ensure_data_dir_in(tmp.path()).unwrap();
+        let token_path = jyc_utils::inspect_token::token_path_in(tmp.path());
+        // Write a file that fails the `jyc_<64 hex>` validation:
+        // wrong prefix.
+        std::fs::write(&token_path, b"definitely-not-a-valid-token\n").unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        // No header → middleware reads the malformed file → fails
+        // to parse → `verify_token` returns `Err(internal(...))` →
+        // 500. (Even with a valid header the parse step happens
+        // first, so the same 500 would result.)
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(resp.status(), 500);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("failed to read token file"),
+            "expected 500 body to mention 'failed to read token file', got: {body}"
+        );
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
 }

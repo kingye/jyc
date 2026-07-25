@@ -104,22 +104,34 @@ impl InspectClient {
             .await
             .with_context(|| format!("failed to connect to inspect server at {}", self.addr))?;
 
+        // Skip the auth handshake when the target is a loopback address:
+        // loopback servers bypass auth entirely (the server side has the
+        // same `is_loopback` check before the auth gate), so sending
+        // `{"method":"auth",…}` would only confuse the JSON dispatcher
+        // which does not recognize `auth` as a real method.
+        let target_is_loopback = stream
+            .peer_addr()
+            .map(|a| a.ip().is_loopback())
+            .unwrap_or(false);
+
         let (reader, mut writer) = stream.into_split();
 
-        // Auth handshake: if a token is available, send
-        // `{"method":"auth","token":"…"}` as the first line. The server
-        // responds with `{"error":"unauthorized"}` and closes on failure.
-        let token = self.token_for_connect();
-        if let Some(token) = token {
-            let auth_line = serde_json::json!({
-                "method": "auth",
-                "token": token,
-            })
-            .to_string();
-            let mut payload = auth_line;
-            payload.push('\n');
-            writer.write_all(payload.as_bytes()).await?;
-            writer.flush().await?;
+        if !target_is_loopback {
+            // Auth handshake: if a token is available, send
+            // `{"method":"auth","token":"…"}` as the first line. The server
+            // responds with `{"error":"unauthorized"}` and closes on failure.
+            let token = self.token_for_connect();
+            if let Some(token) = token {
+                let auth_line = serde_json::json!({
+                    "method": "auth",
+                    "token": token,
+                })
+                .to_string();
+                let mut payload = auth_line;
+                payload.push('\n');
+                writer.write_all(payload.as_bytes()).await?;
+                writer.flush().await?;
+            }
         }
 
         self.conn = Some(Connection {

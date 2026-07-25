@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use subtle::ConstantTimeEq;
 
-use crate::paths::data_home;
+use crate::paths::{data_home, data_home_in};
 
 /// Number of random bytes in the token (256 bits).
 const TOKEN_BYTES: usize = 32;
@@ -23,11 +23,22 @@ const TOKEN_BYTES: usize = 32;
 /// Prefix that identifies a jyc inspect-server token.
 const TOKEN_PREFIX: &str = "jyc_";
 
+/// Filename of the token file inside the data directory.
+const TOKEN_FILENAME: &str = "inspect-token";
+
 /// Returns the absolute path to the token file, or `None` if the platform
 /// data directory cannot be determined (no `HOME` / `XDG_DATA_HOME` on Unix,
 /// no `LOCALAPPDATA` on Windows).
 pub fn token_path() -> Option<PathBuf> {
-    data_home().map(|p| p.join("inspect-token"))
+    data_home().map(|p| p.join(TOKEN_FILENAME))
+}
+
+/// Build the token file path under an explicit base directory.
+///
+/// Returns `<base>/jyc/inspect-token`. Test-friendly counterpart to
+/// [`token_path`] that does not consult environment variables.
+pub fn token_path_in(base: &Path) -> PathBuf {
+    data_home_in(base).join(TOKEN_FILENAME)
 }
 
 /// Creates the platform data directory if it does not already exist.
@@ -36,6 +47,15 @@ pub fn token_path() -> Option<PathBuf> {
 /// with mode `0o700` (owner-only access) when it is newly created.
 pub fn ensure_data_dir() -> Result<PathBuf> {
     let dir = data_home().context("could not determine platform data directory")?;
+    create_dir_secure(&dir)
+        .with_context(|| format!("failed to create data directory {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Create the jyc data directory under `base` if missing. Test-friendly
+/// counterpart to [`ensure_data_dir`].
+pub fn ensure_data_dir_in(base: &Path) -> Result<PathBuf> {
+    let dir = data_home_in(base);
     create_dir_secure(&dir)
         .with_context(|| format!("failed to create data directory {}", dir.display()))?;
     Ok(dir)
@@ -50,7 +70,12 @@ pub fn read() -> Result<Option<String>> {
     let Some(path) = token_path() else {
         return Ok(None);
     };
-    match std::fs::read_to_string(&path) {
+    read_at(&path)
+}
+
+/// Read the token at `path`. Test-friendly counterpart to [`read`].
+pub fn read_at(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
         Ok(content) => {
             let token = parse_token(&content)
                 .with_context(|| format!("malformed token in {}", path.display()))?;
@@ -69,10 +94,19 @@ pub fn read() -> Result<Option<String>> {
 /// missing.
 pub fn generate() -> Result<String> {
     let dir = ensure_data_dir()?;
-    let path = dir.join("inspect-token");
-    let token = random_token()?;
+    let path = dir.join(TOKEN_FILENAME);
+    generate_at(&path)
+}
 
-    write_atomically(&path, token.as_bytes())
+/// Generate and write a token to `path`. Test-friendly counterpart to
+/// [`generate`].
+pub fn generate_at(path: &Path) -> Result<String> {
+    if let Some(parent) = path.parent() {
+        create_dir_secure(parent)
+            .with_context(|| format!("failed to create parent directory {}", parent.display()))?;
+    }
+    let token = random_token()?;
+    write_atomically(path, token.as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(token)
 }
@@ -91,22 +125,32 @@ pub fn rotate() -> Result<String> {
     generate()
 }
 
+/// Constant-time check whether `provided` matches the token at `path`.
+///
+/// Reads the file fresh on every call — no caching. Returns `false` if the
+/// file is missing or malformed (treated as "no token configured"). Uses
+/// `subtle::ConstantTimeEq` to avoid leaking length or content via timing.
+pub fn matches_at(path: &Path, provided: &str) -> bool {
+    let Ok(Some(expected)) = read_at(path) else {
+        return false;
+    };
+    // ConstantTimeEq requires equal-length slices; if lengths differ the
+    // comparison fails fast (still constant-time per length class). The
+    // length itself is not a secret in this scheme — both sides know the
+    // token is `jyc_` + 64 hex chars.
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
 /// Constant-time check whether `provided` matches the token currently on disk.
 ///
 /// Reads the file fresh on every call — no caching. Returns `false` if the
 /// file is missing or malformed (treated as "no token configured"). Uses
 /// `subtle::ConstantTimeEq` to avoid leaking length or content via timing.
 pub fn matches(provided: &str) -> bool {
-    let Ok(Some(expected)) = read() else {
+    let Some(path) = token_path() else {
         return false;
     };
-    let a = provided.as_bytes();
-    let b = expected.as_bytes();
-    // ConstantTimeEq requires equal-length slices; if lengths differ the
-    // comparison fails fast (still constant-time per length class). The
-    // length itself is not a secret in this scheme — both sides know the
-    // token is `jyc_` + 64 hex chars.
-    a.ct_eq(b).into()
+    matches_at(&path, provided)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -219,50 +263,11 @@ fn set_file_mode_0600(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Redirects the platform data dir to `tmp` for the duration of the
-    /// test, so tests don't read or write the user's real `inspect-token`.
-    /// Uses `HOME` on Unix and `LOCALAPPDATA` on Windows, matching what
-    /// `jyc_utils::paths::data_home()` consults.
-    fn with_tmp_data_home<F: FnOnce(&Path)>(tmp: &Path, f: F) {
-        #[cfg(unix)]
-        {
-            // SAFETY: tests are serialized via `HOME_LOCK` and these vars
-            // are only touched inside the lock.
-            unsafe {
-                let prev = std::env::var_os("HOME");
-                std::env::set_var("HOME", tmp);
-                let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-                std::env::set_var("XDG_DATA_HOME", tmp);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tmp)));
-                match prev {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match prev_xdg {
-                    Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                    None => std::env::remove_var("XDG_DATA_HOME"),
-                }
-                if let Err(e) = result {
-                    std::panic::resume_unwind(e);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            // SAFETY: tests are serialized via `HOME_LOCK`.
-            unsafe {
-                let prev = std::env::var_os("LOCALAPPDATA");
-                std::env::set_var("LOCALAPPDATA", tmp);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tmp)));
-                match prev {
-                    Some(v) => std::env::set_var("LOCALAPPDATA", v),
-                    None => std::env::remove_var("LOCALAPPDATA"),
-                }
-                if let Err(e) = result {
-                    std::panic::resume_unwind(e);
-                }
-            }
-        }
+    /// Tests use the parameterized APIs (no env var mutation) so they
+    /// are parallel-safe across test binaries. Each test creates its
+    /// own TempDir and operates on a path under it.
+    fn token_path_under(base: &Path) -> PathBuf {
+        token_path_in(base)
     }
 
     #[test]
@@ -314,76 +319,91 @@ mod tests {
     #[test]
     fn read_returns_none_when_file_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            assert!(read().unwrap().is_none());
-        });
+        let path = token_path_under(tmp.path());
+        assert!(read_at(&path).unwrap().is_none());
     }
 
     #[test]
     fn generate_writes_file_and_read_round_trips() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            let token = generate().unwrap();
-            let read_back = read().unwrap().expect("file should exist after generate");
-            assert_eq!(read_back, token);
-            // File should live directly in the redirected data dir.
-            let path = token_path().expect("data dir resolves");
-            assert!(path.exists());
-            assert_eq!(path.parent().unwrap(), tmp.path());
-        });
+        let path = token_path_under(tmp.path());
+        let token = generate_at(&path).unwrap();
+        let read_back = read_at(&path)
+            .unwrap()
+            .expect("file should exist after generate");
+        assert_eq!(read_back, token);
+        assert!(path.exists());
     }
 
     #[test]
     fn rotate_replaces_existing_token() {
+        // No-arg `rotate` reads from the env-var data home, so we
+        // simulate it by generating, deleting, then re-generating at
+        // the same path.
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            let first = generate().unwrap();
-            let second = rotate().unwrap();
-            assert_ne!(first, second);
-            assert_eq!(read().unwrap().as_deref(), Some(second.as_str()));
-        });
+        let path = token_path_under(tmp.path());
+        let first = generate_at(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let second = generate_at(&path).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(read_at(&path).unwrap().as_deref(), Some(second.as_str()));
     }
 
     #[test]
     fn matches_returns_true_for_correct_token() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            let token = generate().unwrap();
-            assert!(matches(&token));
-        });
+        let path = token_path_under(tmp.path());
+        let token = generate_at(&path).unwrap();
+        assert!(matches_at(&path, &token));
     }
 
     #[test]
     fn matches_returns_false_for_wrong_token() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            let token = generate().unwrap();
-            let mut wrong = token.clone();
-            // Flip the last hex character to a different valid hex char.
-            let last = wrong.pop().unwrap();
-            let replacement = if last == 'a' { 'b' } else { 'a' };
-            wrong.push(replacement);
-            assert_ne!(wrong, token);
-            assert!(!matches(&wrong));
-        });
+        let path = token_path_under(tmp.path());
+        let token = generate_at(&path).unwrap();
+        let mut wrong = token.clone();
+        let last = wrong.pop().unwrap();
+        let replacement = if last == 'a' { 'b' } else { 'a' };
+        wrong.push(replacement);
+        assert_ne!(wrong, token);
+        assert!(!matches_at(&path, &wrong));
     }
 
     #[test]
     fn matches_returns_false_when_file_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            assert!(!matches("anything"));
-        });
+        let path = token_path_under(tmp.path());
+        assert!(!matches_at(&path, "anything"));
     }
 
     #[test]
     fn matches_returns_false_for_different_length() {
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            let token = generate().unwrap();
-            let shorter = &token[..token.len() - 1];
-            assert!(!matches(shorter));
-        });
+        let path = token_path_under(tmp.path());
+        let token = generate_at(&path).unwrap();
+        let shorter = &token[..token.len() - 1];
+        assert!(!matches_at(&path, shorter));
+    }
+
+    #[test]
+    fn matches_returns_false_for_malformed_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = token_path_under(tmp.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not-a-jyc-token").unwrap();
+        assert!(!matches_at(&path, "anything"));
+    }
+
+    #[test]
+    fn read_returns_malformed_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = token_path_under(tmp.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not-a-jyc-token").unwrap();
+        let err = read_at(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("malformed token"), "msg: {msg}");
     }
 
     #[cfg(unix)]
@@ -391,11 +411,9 @@ mod tests {
     fn generated_file_has_0600_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), |_| {
-            generate().unwrap();
-            let path = token_path().unwrap();
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "expected 0o600, got {:o}", mode);
-        });
+        let path = token_path_under(tmp.path());
+        generate_at(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0o600, got {:o}", mode);
     }
 }

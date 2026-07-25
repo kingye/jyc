@@ -74,6 +74,16 @@ pub fn data_home() -> Option<PathBuf> {
     }
 }
 
+/// Build a data-home path from an explicit base directory.
+///
+/// Returns `<base>/<APP_DIR_NAME>`. This is the test-friendly counterpart
+/// to [`data_home`] that does not consult environment variables. Use it
+/// to keep tests hermetic (the project's `AGENTS.md` forbids mutating
+/// `HOME` / `XDG_DATA_HOME` from tests).
+pub fn data_home_in(base: &std::path::Path) -> PathBuf {
+    base.join(APP_DIR_NAME)
+}
+
 /// Default config file path: `<config_home>/config.toml`.
 pub fn default_config_path() -> Option<PathBuf> {
     config_home().map(|p| p.join(DEFAULT_CONFIG_FILENAME))

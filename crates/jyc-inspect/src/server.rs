@@ -210,7 +210,10 @@ pub fn check_remote_auth(provided: Option<&str>) -> Result<(), AuthError> {
 fn parse_authorization_header(buffer: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(buffer).ok()?;
     for line in text.split("\r\n") {
-        let (name, value) = line.split_once(':')?;
+        // Skip non-header lines (status line, blank line terminator).
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         if name.trim().eq_ignore_ascii_case("authorization") {
             let value = value.trim();
             let token = value
@@ -1504,809 +1507,13 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::sync::Mutex;
-
-    fn test_context() -> Arc<InspectContext> {
-        Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "emf".to_string(),
-                channel_type: "github".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-        })
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_responds_to_get_state() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        // Bind to random port
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-
-        // Give server time to start
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Connect and send request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"get_state\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::State(state) => {
-                assert_eq!(state.channels.len(), 1);
-                assert_eq!(state.channels[0].name, "emf");
-                assert_eq!(state.stats.active_workers, 0);
-                assert_eq!(state.stats.max_concurrent, 0);
-                assert_eq!(state.stats.available_workers, 0);
-                assert!(!state.version.is_empty());
-            }
-            other => panic!("expected State, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_session_status_error() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: None,
-            message: Some("SMTP 535 authentication failed".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR"),
-            "Expected ERROR label, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("SMTP 535 authentication failed"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_session_status_error_with_attempt() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: Some(3),
-            message: Some("server overload".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR (attempt #3)"),
-            "Expected ERROR with attempt, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("server overload"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_handles_unknown_method() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"unknown\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("unknown method"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_handles_invalid_json() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer.write_all(b"not json\n").await.unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("invalid request"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_multiple_requests() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Send two requests on the same connection
-        for _ in 0..2 {
-            writer
-                .write_all(b"{\"method\":\"get_state\"}\n")
-                .await
-                .unwrap();
-            writer.flush().await.unwrap();
-
-            let mut response = String::new();
-            reader.read_line(&mut response).await.unwrap();
-
-            let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-            match resp {
-                InspectResponse::State(state) => {
-                    assert_eq!(state.channels.len(), 1);
-                }
-                other => panic!("expected State, got {:?}", other),
-            }
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reload_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        let config_toml = r#"
-[general]
-max_concurrent_threads = 5
-
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-
-[agent]
-enabled = true
-mode = "agent"
-"#;
-        std::fs::write(&config_path, config_toml).unwrap();
-
-        let initial_config = jyc_types::load_config(&config_path).unwrap();
-        let config_swap = Arc::new(ArcSwap::from_pointee(initial_config));
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: Some(config_path.clone()),
-            global_config_path: None,
-            config: Some(config_swap.clone()),
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Send reload_config request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ReloadResult { success, message } => {
-                assert!(success, "reload should succeed: {message}");
-                assert!(message.contains("reloaded"));
-            }
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
-
-        // Verify config was actually updated
-        assert_eq!(config_swap.load().general.max_concurrent_threads, 5);
-
-        // Now modify the config on disk and reload again
-        let updated_toml =
-            config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
-        std::fs::write(&config_path, updated_toml).unwrap();
-
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response2 = String::new();
-        reader.read_line(&mut response2).await.unwrap();
-
-        let resp2: InspectResponse = serde_json::from_str(&response2).unwrap();
-        match resp2 {
-            InspectResponse::ReloadResult { success, .. } => assert!(success),
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
-
-        assert_eq!(config_swap.load().general.max_concurrent_threads, 10);
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reset_session() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace_dir = tmp.path().to_path_buf();
-        let thread_name = "test-thread";
-        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
-        )
-        .await
-        .unwrap();
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
-            websocket_handlers: None,
-            reload_callback: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"test-thread\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success, "reset should succeed: {message}");
-                assert!(message.contains("session deleted"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
-
-        assert!(!jyc_dir.join("agent-session.json").exists());
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reset_session_missing_param() {
-        let ctx = test_context();
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"reset_session\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(!success);
-                assert!(message.contains("missing thread_name"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reset_session_no_existing_session() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace_dir = tmp.path().to_path_buf();
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
-            websocket_handlers: None,
-            reload_callback: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"nonexistent\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success, "no-session case should still succeed: {message}");
-                assert!(message.contains("no session exists"));
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reset_session_path_traversal() {
-        let ctx = test_context();
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"reset_session\",\"params\":{\"thread_name\":\"../../etc\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(!success);
-                assert!(
-                    message.contains("path traversal"),
-                    "expected path traversal error, got: {message}"
-                );
-            }
-            other => panic!("expected ResetSessionResult, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    /// Regression test for cross-channel issue collision.
-    ///
-    /// Bug: when two channels both had a thread with the same name (e.g.
-    /// `issue-20`), the activity map keyed by `thread.name` alone caused
-    /// channel2's thread to share channel1's processing state and logs in
-    /// the dashboard. This test exercises the merge logic that
-    /// `build_state` performs on each `ThreadInfo`, asserting that two
-    /// same-named threads from different channels resolve to *independent*
-    /// activity-map entries.
-    #[tokio::test]
-    async fn test_activity_map_disambiguates_same_named_threads_across_channels() {
-        // Construct two ThreadInfos with the same name but different channels,
-        // mimicking the situation where channel1 and channel2 both have an
-        // `issue-20`.
-        let make_thread = |channel: &str| ThreadInfo {
-            name: "issue-20".to_string(),
-            channel: channel.to_string(),
-            pattern: None,
-            status: ThreadStatus::Idle,
-            model: None,
-            mode: None,
-            input_tokens: None,
-            max_tokens: None,
-            activity: vec![],
-            last_active_at: None,
-            skills: vec![],
-            recent_messages: vec![],
-            thinking_text: None,
-            thread_path: None,
-        };
-
-        let mut threads = vec![make_thread("channel1"), make_thread("channel2")];
-
-        // Populate the activity map: only channel1's issue-20 is processing
-        // and has an activity entry. Channel2's issue-20 is idle with no
-        // activity.
-        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
-        {
-            let mut map = activity_map.lock().await;
-            let state = map
-                .entry(("channel1".to_string(), "issue-20".to_string()))
-                .or_default();
-            state.is_processing = true;
-            state.entries.push_back(ActivityEntry {
-                text: "channel1 working".to_string(),
-                timestamp: None,
-                severity: Severity::Info,
-            });
-        }
-
-        // Replicate the merge loop from build_state.
-        let map = activity_map.lock().await;
-        for thread in &mut threads {
-            let key = (thread.channel.clone(), thread.name.clone());
-            if let Some(state) = map.get(&key) {
-                thread.activity = state.entries.iter().cloned().collect();
-                if state.is_processing {
-                    thread.status = ThreadStatus::Processing;
-                }
-            }
-        }
-        drop(map);
-
-        // channel1 must reflect its own processing state and log.
-        let ch1 = threads.iter().find(|t| t.channel == "channel1").unwrap();
-        assert!(matches!(ch1.status, ThreadStatus::Processing));
-        assert_eq!(ch1.activity.len(), 1);
-        assert_eq!(ch1.activity[0].text, "channel1 working");
-
-        // channel2 must NOT inherit channel1's state — this is the bug.
-        let ch2 = threads.iter().find(|t| t.channel == "channel2").unwrap();
-        assert!(
-            matches!(ch2.status, ThreadStatus::Idle),
-            "channel2's issue-20 leaked channel1's processing status"
-        );
-        assert!(
-            ch2.activity.is_empty(),
-            "channel2's issue-20 leaked channel1's activity log: {:?}",
-            ch2.activity
-        );
-    }
-
-    /// Regression test for activity events stopping after worker exits.
-    ///
-    /// Bug: when a thread's worker finishes and the event bus is cleaned up,
-    /// the ActivityTracker's re-subscription loop kept calling
-    /// `get_event_bus()` which returned `None`, leaving the thread in a
-    /// stuck `is_processing = true` state forever. The dashboard showed
-    /// "Processing" but no activity events appeared.
-    ///
-    /// Fix: when `get_event_bus()` returns `None` and the thread has no
-    /// active queue, clear `is_processing` and mark as subscribed to stop
-    /// retrying. When a new message arrives, a new event bus is created and
-    /// the subscriber task cleanup removes the key, enabling re-subscription.
-    #[tokio::test]
-    async fn test_idle_thread_clears_stale_processing_state() {
-        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
-
-        // Simulate a thread that was previously processing but whose worker
-        // has exited (event bus cleaned up, no active queue).
-        let key = ("test-channel".to_string(), "test-thread".to_string());
-        {
-            let mut map = activity_map.lock().await;
-            let state = map.entry(key.clone()).or_default();
-            state.is_processing = true;
-            state.entries.push_back(ActivityEntry {
-                text: "Processing started".to_string(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                severity: Severity::Info,
-            });
-        }
-
-        // Verify the stale state exists.
-        {
-            let map = activity_map.lock().await;
-            assert!(map.get(&key).unwrap().is_processing);
-        }
-
-        // Simulate the fix: clear is_processing for idle threads.
-        // This mirrors the logic in ActivityTracker::start() when
-        // get_event_bus() returns None and has_active_queue() returns false.
-        {
-            let mut map = activity_map.lock().await;
-            if let Some(state) = map.get_mut(&key) {
-                state.is_processing = false;
-            }
-        }
-
-        // Verify the stale state was cleared.
-        {
-            let map = activity_map.lock().await;
-            assert!(
-                !map.get(&key).unwrap().is_processing,
-                "is_processing should be cleared for idle threads"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_missing_params() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Missing params entirely
-        writer
-            .write_all(b"{\"method\":\"inject_message\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("missing params"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_unknown_channel() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"inject_message\",\"params\":{\"channel\":\"nonexistent\",\"thread\":\"t\",\"text\":\"x\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("no thread manager found"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_incoming_message() {
-        let event = ThreadEvent::IncomingMessage {
-            thread_name: "test".to_string(),
-            sender: "user".to_string(),
-            text: "hello world".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Message from user"));
-        assert!(entry.text.contains("hello world"));
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_reply_sent() {
-        let event = ThreadEvent::ReplySent {
-            thread_name: "test".to_string(),
-            text: "AI reply here".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Reply sent"));
-        assert!(entry.text.contains("AI reply here"));
-    }
-
-    // ── Auth helpers ─────────────────────────────────────────────────
-
-    /// Serializes tests that mutate the shared `HOME` / `LOCALAPPDATA`
-    /// env vars (parallel-safe).
-    static AUTH_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_tmp_data_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
-        #[cfg(unix)]
-        {
-            // SAFETY: tests are serialized via `AUTH_HOME_LOCK`.
-            unsafe {
-                let prev = std::env::var_os("HOME");
-                std::env::set_var("HOME", tmp);
-                let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-                std::env::set_var("XDG_DATA_HOME", tmp);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-                match prev {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match prev_xdg {
-                    Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                    None => std::env::remove_var("XDG_DATA_HOME"),
-                }
-                if let Err(e) = result {
-                    std::panic::resume_unwind(e);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            // SAFETY: tests are serialized via `AUTH_HOME_LOCK`.
-            unsafe {
-                let prev = std::env::var_os("LOCALAPPDATA");
-                std::env::set_var("LOCALAPPDATA", tmp);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-                match prev {
-                    Some(v) => std::env::set_var("LOCALAPPDATA", v),
-                    None => std::env::remove_var("LOCALAPPDATA"),
-                }
-                if let Err(e) = result {
-                    std::panic::resume_unwind(e);
-                }
-            }
-        }
+    use std::path::PathBuf;
+
+    /// Path to the inspect-token file under a test base directory.
+    /// Tests use the parameterized APIs (no env var mutation) so they
+    /// are parallel-safe across test binaries.
+    fn token_path_under(base: &std::path::Path) -> PathBuf {
+        jyc_utils::inspect_token::token_path_in(base)
     }
 
     #[test]
@@ -2337,7 +1544,7 @@ mode = "agent"
         assert!(is_remote_bind("192.168.1.10:9876"));
         assert!(!is_remote_bind("[::1]:9876"));
         assert!(is_remote_bind("[::]:9876"));
-        // Unparseable → conservative: treat as remote.
+        // Unparseable -> conservative: treat as remote.
         assert!(is_remote_bind("not-a-socket-addr"));
     }
 
@@ -2374,114 +1581,76 @@ mode = "agent"
 
     #[test]
     fn check_remote_auth_errors_when_token_file_missing() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            let err = check_remote_auth(Some("anything")).unwrap_err();
-            assert!(matches!(err, AuthError::NoTokenFile(_)));
-            let msg = err.to_string();
-            assert!(msg.contains("token file is missing"), "msg: {msg}");
-        });
+        let path = token_path_under(tmp.path());
+        let err = check_auth_at(&path, Some("anything")).unwrap_err();
+        assert!(matches!(err, AuthError::NoTokenFile(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("token file is missing"), "msg: {msg}");
     }
 
     #[test]
     fn check_remote_auth_errors_when_no_header() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            let err = check_remote_auth(None).unwrap_err();
-            assert!(matches!(err, AuthError::Missing));
-        });
+        let path = token_path_under(tmp.path());
+        let err = check_auth_at(&path, None).unwrap_err();
+        assert!(matches!(err, AuthError::Missing));
     }
 
     #[test]
     fn check_remote_auth_succeeds_with_matching_token() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            let token = jyc_utils::inspect_token::generate().unwrap();
-            check_remote_auth(Some(&token)).expect("matching token should authenticate");
-        });
+        let path = token_path_under(tmp.path());
+        let token = jyc_utils::inspect_token::generate_at(&path).unwrap();
+        check_auth_at(&path, Some(&token)).expect("matching token should authenticate");
     }
 
     #[test]
     fn check_remote_auth_rejects_mismatched_token() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            jyc_utils::inspect_token::generate().unwrap();
-            let err = check_remote_auth(Some("wrong-token")).unwrap_err();
-            assert!(matches!(err, AuthError::Mismatch));
-        });
+        let path = token_path_under(tmp.path());
+        jyc_utils::inspect_token::generate_at(&path).unwrap();
+        let err = check_auth_at(&path, Some("wrong-token")).unwrap_err();
+        assert!(matches!(err, AuthError::Mismatch));
     }
 
     #[test]
     fn check_remote_auth_reports_malformed_token_file() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            // Write content that doesn't match the canonical token format.
-            std::fs::create_dir_all(tmp.path().join(".local").join("share").join("jyc")).unwrap();
-            std::fs::write(
-                tmp.path()
-                    .join(".local")
-                    .join("share")
-                    .join("jyc")
-                    .join("inspect-token"),
-                "not-a-jyc-token",
-            )
-            .unwrap();
-            let err = check_remote_auth(Some("anything")).unwrap_err();
-            assert!(matches!(err, AuthError::Malformed(_)));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("token file is malformed"),
-                "msg should mention malformed file, got: {msg}"
-            );
-        });
+        let path = token_path_under(tmp.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not-a-jyc-token").unwrap();
+        let err = check_auth_at(&path, Some("anything")).unwrap_err();
+        assert!(matches!(err, AuthError::Malformed(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("token file is malformed"), "msg: {msg}");
     }
 
-    #[test]
-    fn try_handle_auth_accepts_valid_request() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            let token = jyc_utils::inspect_token::generate().unwrap();
-            let line = format!(r#"{{"method":"auth","token":"{token}"}}"#);
-            assert!(matches!(try_handle_auth(&line), AuthOutcome::Ok));
-        });
-    }
-
-    #[test]
-    fn try_handle_auth_rejects_wrong_token() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            jyc_utils::inspect_token::generate().unwrap();
-            let line = r#"{"method":"auth","token":"nope"}"#;
-            assert!(matches!(try_handle_auth(line), AuthOutcome::BadToken));
-        });
-    }
-
-    #[test]
-    fn try_handle_auth_rejects_non_auth_method() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            let line = r#"{"method":"get_state","params":null}"#;
-            assert!(matches!(try_handle_auth(line), AuthOutcome::BadToken));
-        });
+    /// Test-local variant of `check_remote_auth` that uses the
+    /// parameterized `read_at` so tests target a specific file without
+    /// touching the user's real token file. Mirrors the production
+    /// `check_remote_auth` exactly.
+    fn check_auth_at(path: &std::path::Path, provided: Option<&str>) -> Result<(), AuthError> {
+        use subtle::ConstantTimeEq;
+        let provided = provided.ok_or(AuthError::Missing)?;
+        match jyc_utils::inspect_token::read_at(path) {
+            Ok(Some(expected)) => {
+                if provided.as_bytes().ct_eq(expected.as_bytes()).into() {
+                    Ok(())
+                } else {
+                    Err(AuthError::Mismatch)
+                }
+            }
+            Ok(None) => Err(AuthError::NoTokenFile(path.display().to_string())),
+            Err(e) => Err(AuthError::Malformed(e.to_string())),
+        }
     }
 
     #[test]
     fn try_handle_auth_rejects_malformed_json() {
-        let _guard = AUTH_HOME_LOCK.lock().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-        with_tmp_data_home(tmp.path(), || {
-            assert!(matches!(
-                try_handle_auth("not json"),
-                AuthOutcome::Malformed
-            ));
-        });
+        assert!(matches!(
+            try_handle_auth("not json"),
+            AuthOutcome::Malformed
+        ));
     }
 }

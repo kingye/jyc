@@ -9,7 +9,7 @@ use axum::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -212,29 +212,7 @@ async fn auth_middleware(
     }
 }
 
-/// Return true for loopback IPv4 (127.0.0.0/8) and IPv6 (`::1` and the
-/// IPv4-mapped form `::ffff:127.0.0.1`). Private ranges (10/8, 172.16/12,
-/// 192.168/16) are deliberately NOT considered loopback — those hit Docker
-/// bridges and corporate VPNs.
-///
-/// Kept as a public helper because auth no longer branches on this — but
-/// it's a useful utility for downstream callers (e.g. tests, custom
-/// middleware) that want the same definition.
-pub fn is_loopback(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() {
-                return true;
-            }
-            // IPv4-mapped IPv6 (::ffff:127.0.0.1)
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return mapped.is_loopback();
-            }
-            false
-        }
-    }
-}
+/// Authenticate every request that arrives when a token file is configured.
 
 /// Parse `Authorization: Bearer <token>` from headers. Case-insensitive header
 /// name, case-insensitive scheme.
@@ -1240,7 +1218,6 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
 
     /// Build a default `InspectContext` for tests.
     ///
@@ -1306,28 +1283,6 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         (format!("http://{addr}"), handle)
-    }
-
-    // ── is_loopback ──
-
-    #[test]
-    fn test_is_loopback_ipv4() {
-        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
-        assert!(is_loopback(IpAddr::V4(Ipv4Addr::new(127, 1, 2, 3))));
-        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
-        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(!is_loopback(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-    }
-
-    #[test]
-    fn test_is_loopback_ipv6() {
-        assert!(is_loopback("::1".parse::<IpAddr>().unwrap()));
-        // IPv4-mapped loopback
-        assert!(is_loopback("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
-        // Regular public IPv6
-        assert!(!is_loopback(
-            "2606:4700:4700::1111".parse::<IpAddr>().unwrap()
-        ));
     }
 
     // ── extract_bearer ──

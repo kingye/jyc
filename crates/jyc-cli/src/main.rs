@@ -69,6 +69,9 @@ enum Commands {
 
     /// Stop a running jyc serve process
     Stop(cli::stop::StopArgs),
+
+    /// Manage the inspect-server authentication token
+    Token(cli::token::TokenArgs),
 }
 
 fn init_tracing(debug: bool, verbose: bool) {
@@ -150,6 +153,7 @@ async fn main() -> Result<()> {
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
         Commands::Stop(args) => cli::stop::run(args, &workdir).await,
+        Commands::Token(args) => cli::token::run(args),
     };
 
     if let Err(ref e) = result {

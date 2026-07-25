@@ -56,6 +56,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Dashboard chat pane clips long thinking content.** Thinking/reasoning
+  text wider than the chat pane was truncated at the right edge instead of
+  wrapping. The preview is now hard-wrapped to the available width
+  (Unicode-aware, preserving explicit newlines and blank lines) before being
+  added to the scroll buffer, so all content is visible and scrollable.
+
 - **Sanitize malformed tool call arguments in OpenAI-compatible provider.**
   Some models (notably MiniMax M3) occasionally emit tool call arguments that
   are not valid JSON. The previous code embedded them as-is into the request

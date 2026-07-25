@@ -169,6 +169,57 @@ pub(super) fn count_wrapped_lines(text: &str, available_width: u16) -> usize {
         .max(1)
 }
 
+/// Hard-wrap `text` to `max_width` display columns, preserving explicit
+/// newlines and blank lines so the caller can render each segment as its
+/// own row. Uses Unicode display widths (CJK, emoji) so wide characters
+/// account for the columns they occupy. Characters wider than `max_width`
+/// are placed alone on their row — a character cannot be split.
+///
+/// Zero-width characters (combining marks, ZWJ, etc.) attach to the
+/// current row without advancing the width counter, matching how the
+/// terminal renders them.
+///
+/// `max_width` is clamped to at least 1 to guarantee progress on extremely
+/// narrow panes.
+pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+
+    let max_width = max_width.max(1);
+    let mut out: Vec<String> = Vec::new();
+
+    for raw_line in text.split('\n') {
+        if raw_line.is_empty() {
+            // Preserve blank lines from explicit `\n` sequences so vertical
+            // spacing matches the source. An empty trailing segment after
+            // a final `\n` is also kept for symmetric round-tripping.
+            out.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut current_width: usize = 0;
+
+        for ch in raw_line.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+
+            // Flush before adding `ch` if it would overflow the row, but
+            // never leave the row empty when `ch` itself is wider than
+            // `max_width` — emit it on its own row instead.
+            if !current.is_empty() && current_width + ch_width > max_width {
+                out.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+
+            current.push(ch);
+            current_width += ch_width;
+        }
+
+        out.push(current);
+    }
+
+    out
+}
+
 /// Open an external editor ($VISUAL, $EDITOR, or vi) with the current chat
 /// input, then replace the input with the edited contents.
 ///
@@ -774,7 +825,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             && !thinking.is_empty()
         {
             let gray_style = Style::default().fg(Color::Gray);
-            for line in thinking.lines() {
+            // Hard-wrap long lines so nothing is clipped at the right edge.
+            // The 2 accounts for the "  " indent prefix below; each wrapped
+            // segment becomes its own `Line` so the scroll calculation sees
+            // the correct visual row count.
+            let avail = chunks[0].width.saturating_sub(2) as usize;
+            for line in wrap_text_to_width(thinking, avail) {
                 all_lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(line, gray_style),
@@ -1718,5 +1774,62 @@ mod tests {
         assert!(!app.chat.visible);
         assert!(app.chat.detail_channel.is_none());
         assert!(app.chat.detail_thread_path.is_none());
+    }
+
+    #[test]
+    fn wrap_short_text_returns_one_line() {
+        let out = wrap_text_to_width("hello", 80);
+        assert_eq!(out, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn wrap_long_ascii_text_breaks_at_width() {
+        // 30 chars, max width 10 → expect 3 wrapped rows
+        let text = "abcdefghijklmnopqrstuvwxyz0123";
+        let out = wrap_text_to_width(text, 10);
+        assert_eq!(out.len(), 3);
+        // Each row should not exceed 10 display columns
+        for row in &out {
+            assert!(
+                row.width() <= 10,
+                "row {:?} is {} cols, exceeds 10",
+                row,
+                row.width()
+            );
+        }
+        // The joined output must reconstruct the original (no chars lost)
+        let joined: String = out.join("");
+        assert_eq!(joined, text);
+    }
+
+    #[test]
+    fn wrap_preserves_explicit_newlines_and_blank_lines() {
+        let text = "first line\nsecond line\n\nfourth line";
+        let out = wrap_text_to_width(text, 80);
+        assert_eq!(
+            out,
+            vec![
+                "first line".to_string(),
+                "second line".to_string(),
+                "".to_string(),
+                "fourth line".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_wide_unicode_counts_two_columns_per_char() {
+        // Each CJK char is 2 cols. With max_width=4, each pair fits exactly.
+        let text = "你好你好";
+        let out = wrap_text_to_width(text, 4);
+        assert_eq!(out, vec!["你好".to_string(), "你好".to_string()]);
+    }
+
+    #[test]
+    fn wrap_max_width_zero_clamps_to_one() {
+        // Should not panic on zero-width panes and should still emit every char.
+        let out = wrap_text_to_width("abc", 0);
+        let joined: String = out.join("");
+        assert_eq!(joined, "abc");
     }
 }

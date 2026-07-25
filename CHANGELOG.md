@@ -6,6 +6,40 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Optional token authentication for the inspect server.** Non-loopback
+  HTTP requests and WebSocket upgrades now require
+  `Authorization: Bearer <token>` matching the contents of
+  `<data_dir>/inspect-token` (e.g. `~/.local/share/jyc/inspect-token`
+  on Linux). Loopback (`127.0.0.0/8`, `::1`) bypasses auth entirely.
+  Token file is read fresh on every connection — no in-memory cache —
+  so `jyc token rotate` takes effect immediately. Constant-time compare
+  via `subtle::ConstantTimeEq`.
+- **`jyc token generate | show | rotate` subcommand** for managing the
+  inspect-server authentication token file. The token format is
+  `jyc_<64 hex chars>` (256 bits of entropy), atomic write, mode `0600`
+  on Unix.
+
+### Changed
+
+- **Inspect server JSON protocol replaced by HTTP REST endpoints.** The
+  raw TCP line protocol (`{"method":"get_state"}\n` per request,
+  first-byte protocol sniffing) is gone. The inspect server now speaks
+  HTTP via axum on the same port (`127.0.0.1:9876` by default):
+
+  | Method | Path | Body |
+  |---|---|---|
+  | `GET` | `/health` | — |
+  | `GET` | `/state` | — |
+  | `POST` | `/reload_config` | — |
+  | `POST` | `/reset_session` | `{"thread_name":"…"}` |
+  | `POST` | `/inject_message` | `{"channel":"…","thread":"…","text":"…"}` |
+  | `GET` | `/ws[/<channel>]` | WebSocket upgrade (chat) |
+
+  The WebSocket path stays — `GET /ws/<channel>` upgrades to chat just
+  as before. Error responses use proper HTTP status codes (400/404/401/500)
+  with `{"error":"…"}` JSON bodies. The `InspectClient` public API is
+  unchanged, so the dashboard and CLI callers need zero edits.
+
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped
   in `<think>...</think>` tags (rather than in a separate `reasoning_content`

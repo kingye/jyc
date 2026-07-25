@@ -156,6 +156,52 @@ Chat mode (`c` toggled on):
 └────────────────────────┘
 ```
 
+## Inspect HTTP API
+
+The inspect server speaks HTTP on the same port as the WebSocket chat. Endpoints:
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| `GET` | `/health` | — | `{"status":"ok"}` |
+| `GET` | `/state` | — | `InspectState` |
+| `POST` | `/reload_config` | — | `ReloadResult` |
+| `POST` | `/reset_session` | `{"thread_name":"…"}` | `ResetSessionResult` |
+| `POST` | `/inject_message` | `{"channel":"…","thread":"…","text":"…"}` | `InjectMessageResult` |
+| `GET` | `/ws[/<channel>]` | — | WebSocket upgrade |
+
+The `jyc-inspect` crate provides a `reqwest`-based client (`InspectClient`) that handles auth automatically — see `crates/jyc-cli/src/cli/dashboard/` for usage.
+
+### Remote access & authentication
+
+**Loopback bypasses auth.** Connections from `127.0.0.0/8`, `::1`, or `::ffff:127.0.0.1` are allowed without a token, matching the original TCP-line-protocol design.
+
+**Non-loopback connections require `Authorization: Bearer <token>`.** The token lives at `<data_dir>/inspect-token` (e.g. `~/.local/share/jyc/inspect-token` on Linux, `%LOCALAPPDATA%\jyc\inspect-token` on Windows). It is **read fresh on every connection** — no in-memory cache — so `jyc token rotate` takes effect immediately for new connections.
+
+```bash
+# Generate the token (writes to <data_dir>/inspect-token, prints to stdout)
+$ jyc token generate
+jyc_a1b2c3d4e5f6...
+
+# Rotate (delete + generate)
+$ jyc token rotate
+
+# Show current token (errors if none)
+$ jyc token show
+```
+
+Or pass `JYC_INSPECT_TOKEN=<token>` as an env var to the dashboard/client process.
+
+For non-loopback binds, `jyc serve` warns at startup if no token file exists:
+
+```
+WARN inspect server binding to non-loopback address without a token file;
+     remote connections will be rejected. Run `jyc token generate` to enable.
+```
+
+Clients (dashboard, MCP tools, custom integrations) should use one of:
+1. `InspectClient::new(addr)` — reads `JYC_INSPECT_TOKEN` then `<data_dir>/inspect-token` per request
+2. `InspectClient::new_with_token(addr, "<token>")` — explicit, locked in
+
 ## WebSocket Protocol
 
 JSON envelope over WebSocket:

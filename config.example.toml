@@ -383,6 +383,18 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
+# Authentication for non-loopback connections:
+# Loopback (127.0.0.0/8, ::1) always bypasses auth.
+# Non-loopback connections (incl. WebSocket upgrade) require
+# `Authorization: Bearer <token>` matching the contents of
+# `<data_dir>/inspect-token`. The token is read fresh on every connection
+# — no in-memory cache — so `jyc token rotate` takes effect immediately.
+#
+# Generate the token (writes the file and prints to stdout):
+#   $ jyc token generate
+#
+# Or set JYC_INSPECT_TOKEN in the dashboard / client environment.
+
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.
 # Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).

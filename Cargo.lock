@@ -1805,6 +1805,7 @@ dependencies = [
  "crossterm",
  "edtui",
  "futures-util",
+ "http",
  "jyc-agent",
  "jyc-channels",
  "jyc-core",

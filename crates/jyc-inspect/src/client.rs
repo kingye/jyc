@@ -16,6 +16,22 @@ pub struct InspectClient {
     token: Option<String>,
 }
 
+/// Resolve the auth token using the default precedence: explicit
+/// `JYC_INSPECT_TOKEN` env var, then the on-disk
+/// `<data_dir>/inspect-token` file.
+///
+/// Shared between `InspectClient::token_for_request` and the dashboard's
+/// direct WebSocket clients (`dashboard/ws.rs` and `dashboard/mod.rs`),
+/// so both HTTP and WS paths apply the same auth header.
+pub fn resolve_token() -> Option<String> {
+    if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
+    }
+    jyc_utils::inspect_token::read().ok().flatten()
+}
+
 impl InspectClient {
     /// Create a new client targeting the inspect server at `addr` (e.g. `"127.0.0.1:9876"`).
     ///
@@ -53,13 +69,8 @@ impl InspectClient {
         if let Some(t) = &self.token {
             return Some(t.clone());
         }
-        // Flag-not-set path: prefer env var over file, matching resolve_dashboard_token
-        if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
-            && !t.is_empty()
-        {
-            return Some(t);
-        }
-        jyc_utils::inspect_token::read().ok().flatten()
+        // Flag-not-set path: defer to the shared resolver below.
+        resolve_token()
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {

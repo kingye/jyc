@@ -35,6 +35,7 @@ use super::command_popup::*;
 
 mod chat;
 mod ws;
+mod ws_auth;
 use chat::*;
 use ws::*;
 
@@ -644,7 +645,8 @@ async fn create_thread_via_websocket(
     path: &str,
 ) -> Result<()> {
     let url = format!("ws://{}/ws/{}", addr, channel);
-    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
+    let request = ws_auth::build_authenticated_ws_request(&url);
+    let (mut ws_stream, _) = tokio_tungstenite::connect_async(request)
         .await
         .with_context(|| format!("failed to connect to websocket at {url}"))?;
 

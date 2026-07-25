@@ -44,6 +44,12 @@ pub struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1:9876", global = true)]
     pub addr: String,
 
+    /// Explicit auth token for the inspect server (overrides
+    /// `JYC_INSPECT_TOKEN` and the on-disk token file). Required when
+    /// connecting to a remote inspect server that has a token file.
+    #[arg(long, global = true)]
+    pub auth_token: Option<String>,
+
     /// Subcommand for dashboard operations (defaults to opening the full dashboard)
     #[command(subcommand)]
     pub command: Option<DashboardCommand>,
@@ -72,6 +78,29 @@ pub struct OpenArgs {
     /// Thread working directory (defaults to current directory)
     #[arg(short = 'p', long)]
     pub path: Option<String>,
+
+    /// Explicit auth token (overrides `JYC_INSPECT_TOKEN` and the
+    /// on-disk token file).
+    #[arg(long)]
+    pub auth_token: Option<String>,
+}
+
+/// Resolves the auth token to use for dashboard connections, in priority
+/// order: explicit `--auth-token` flag → `JYC_INSPECT_TOKEN` env var →
+/// `<data_dir>/inspect-token` on disk. Returns `None` only when no token
+/// is configured; loopback servers will still accept the request.
+pub(super) fn resolve_dashboard_token(flag: Option<&str>) -> Option<String> {
+    if let Some(t) = flag
+        && !t.is_empty()
+    {
+        return Some(t.to_string());
+    }
+    if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
+    }
+    jyc_utils::inspect_token::read().ok().flatten()
 }
 
 /// Application state for the TUI.
@@ -316,7 +345,13 @@ pub async fn run(
         )
     })?;
 
-    let mut client = InspectClient::new(&args.addr);
+    // Build the InspectClient with the resolved auth token. If no token is
+    // available at all, fall back to `InspectClient::new` which will read
+    // the on-disk token file on every reconnect.
+    let mut client = match resolve_dashboard_token(args.auth_token.as_deref()) {
+        Some(token) => InspectClient::new_with_token(&args.addr, token),
+        None => InspectClient::new(&args.addr),
+    };
 
     // Setup terminal
     enable_raw_mode()?;
@@ -337,7 +372,12 @@ pub async fn run(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
-            app.chat.open(&args.addr, initial_channel, Some(thread));
+            app.chat.open(
+                &args.addr,
+                initial_channel,
+                Some(thread),
+                args.auth_token.clone(),
+            );
         }
 
         loop {
@@ -451,6 +491,7 @@ pub async fn run(
                                 &mut client,
                                 &mut last_poll,
                                 &args.addr,
+                                args.auth_token.as_deref(),
                             )
                             .await;
                         }
@@ -489,6 +530,7 @@ pub async fn run_open(
     thread: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
+    auth_token: Option<&str>,
 ) -> Result<()> {
     // Auto-spawn jyc serve if it's not running.
     ensure_serve_running(addr)
@@ -504,8 +546,12 @@ pub async fn run_open(
     // to avoid diverging history and storage paths.
     check_existing_thread_name(&path, &thread)?;
 
-    // Resolve websocket channel using inspect state
-    let mut client = InspectClient::new(addr);
+    // Resolve websocket channel using inspect state. Use the resolved auth
+    // token so the pre-channel-discovery connection authenticates correctly.
+    let mut client = match resolve_dashboard_token(auth_token) {
+        Some(token) => InspectClient::new_with_token(addr, token),
+        None => InspectClient::new(addr),
+    };
     let channel = resolve_websocket_channel(&mut client, channel).await?;
 
     tracing::info!(
@@ -516,7 +562,7 @@ pub async fn run_open(
     );
 
     // Send create_thread over websocket to the target channel
-    create_thread_via_websocket(addr, &channel, &thread, &path).await?;
+    create_thread_via_websocket(addr, auth_token, &channel, &thread, &path).await?;
 
     // Wait for the inspect server to report the thread
     wait_for_thread(&mut client, &thread, &channel).await?;
@@ -525,6 +571,7 @@ pub async fn run_open(
     run(
         &DashboardArgs {
             addr: addr.to_string(),
+            auth_token: auth_token.map(|s| s.to_string()),
             command: None,
         },
         Some(&thread),
@@ -639,12 +686,28 @@ async fn resolve_websocket_channel(
 /// Send a `create_thread` message over a short-lived websocket connection.
 async fn create_thread_via_websocket(
     addr: &str,
+    auth_token: Option<&str>,
     channel: &str,
     thread: &str,
     path: &str,
 ) -> Result<()> {
     let url = format!("ws://{}/ws/{}", addr, channel);
-    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
+
+    // Build the upgrade request with an `Authorization: Bearer …` header
+    // when a token is available. Read it fresh so a rotation that just
+    // happened is picked up immediately.
+    let mut builder = tokio_tungstenite::tungstenite::handshake::client::Request::builder()
+        .method("GET")
+        .uri(&url);
+    if let Some(token) = resolve_dashboard_token(auth_token) {
+        let header = format!("Bearer {token}");
+        builder = builder.header("Authorization", header);
+    }
+    let request = builder
+        .body(())
+        .context("failed to build websocket upgrade request")?;
+
+    let (mut ws_stream, _) = tokio_tungstenite::connect_async(request)
         .await
         .with_context(|| format!("failed to connect to websocket at {url}"))?;
 
@@ -688,6 +751,7 @@ async fn handle_normal_keys(
     client: &mut InspectClient,
     last_poll: &mut std::time::Instant,
     addr: &str,
+    auth_token: Option<&str>,
 ) {
     // ^Q quits the entire dashboard (consistent across all modes)
     if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -697,7 +761,8 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            app.chat.open(addr, None, None);
+            app.chat
+                .open(addr, None, None, auth_token.map(|s| s.to_string()));
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads
@@ -716,7 +781,12 @@ async fn handle_normal_keys(
             });
             if let Some((name, channel, is_ws)) = thread_info {
                 if is_ws {
-                    app.chat.open(addr, Some(&channel), Some(&name));
+                    app.chat.open(
+                        addr,
+                        Some(&channel),
+                        Some(&name),
+                        auth_token.map(|s| s.to_string()),
+                    );
                 } else {
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());

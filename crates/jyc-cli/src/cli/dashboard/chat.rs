@@ -1193,7 +1193,13 @@ impl ChatState {
         }
     }
 
-    pub(super) fn open(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
+    pub(super) fn open(
+        &mut self,
+        addr: &str,
+        channel: Option<&str>,
+        initial_thread: Option<&str>,
+        auth_token: Option<String>,
+    ) {
         self.visible = true;
         self.phase = if initial_thread.is_some() {
             ChatPhase::Chatting
@@ -1225,7 +1231,9 @@ impl ChatState {
             Some(ch) => format!("ws://{}/ws/{}", addr, ch),
             None => format!("ws://{}/ws", addr),
         };
-        tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
+        let token_resolver: ws::TokenResolver =
+            Box::new(move || super::resolve_dashboard_token(auth_token.as_deref()));
+        tokio::spawn(ws_client_task(url, token_resolver, cmd_rx, event_tx));
     }
 
     pub(super) fn close(&mut self) {

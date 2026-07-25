@@ -96,34 +96,40 @@ mod tests {
     fn with_tmp_data_home<F: FnOnce()>(tmp: &std::path::Path, f: F) {
         #[cfg(unix)]
         {
-            let prev = std::env::var_os("HOME");
-            std::env::set_var("HOME", tmp);
-            let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-            std::env::set_var("XDG_DATA_HOME", tmp);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            match prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-            if let Err(e) = result {
-                std::panic::resume_unwind(e);
+            // SAFETY: tests are serialized via `HOME_LOCK`.
+            unsafe {
+                let prev = std::env::var_os("HOME");
+                std::env::set_var("HOME", tmp);
+                let prev_xdg = std::env::var_os("XDG_DATA_HOME");
+                std::env::set_var("XDG_DATA_HOME", tmp);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                match prev {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match prev_xdg {
+                    Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                    None => std::env::remove_var("XDG_DATA_HOME"),
+                }
+                if let Err(e) = result {
+                    std::panic::resume_unwind(e);
+                }
             }
         }
         #[cfg(not(unix))]
         {
-            let prev = std::env::var_os("LOCALAPPDATA");
-            std::env::set_var("LOCALAPPDATA", tmp);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            match prev {
-                Some(v) => std::env::set_var("LOCALAPPDATA", v),
-                None => std::env::remove_var("LOCALAPPDATA"),
-            }
-            if let Err(e) = result {
-                std::panic::resume_unwind(e);
+            // SAFETY: tests are serialized via `HOME_LOCK`.
+            unsafe {
+                let prev = std::env::var_os("LOCALAPPDATA");
+                std::env::set_var("LOCALAPPDATA", tmp);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                match prev {
+                    Some(v) => std::env::set_var("LOCALAPPDATA", v),
+                    None => std::env::remove_var("LOCALAPPDATA"),
+                }
+                if let Err(e) = result {
+                    std::panic::resume_unwind(e);
+                }
             }
         }
     }

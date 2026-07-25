@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
                     open.thread.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
+                    open.auth_token.as_deref().or(args.auth_token.as_deref()),
                 )
                 .await
             }
@@ -141,6 +142,7 @@ async fn main() -> Result<()> {
                 args.thread.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
+                args.auth_token.as_deref(),
             )
             .await
         }

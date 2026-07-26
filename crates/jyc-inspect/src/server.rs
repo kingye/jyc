@@ -218,6 +218,7 @@ async fn web_thread() -> axum::response::Html<&'static str> {
 async fn web_style() -> impl axum::response::IntoResponse {
     axum::response::Response::builder()
         .header("content-type", "text/css")
+        .header("cache-control", "public, max-age=3600")
         .body(axum::body::Body::from(jyc_web::STYLE_CSS))
         .unwrap()
 }
@@ -226,6 +227,7 @@ async fn web_style() -> impl axum::response::IntoResponse {
 async fn web_app_js() -> impl axum::response::IntoResponse {
     axum::response::Response::builder()
         .header("content-type", "application/javascript")
+        .header("cache-control", "public, max-age=3600")
         .body(axum::body::Body::from(jyc_web::APP_JS))
         .unwrap()
 }
@@ -1974,6 +1976,171 @@ mode = "agent"
                 .unwrap()
                 .contains("failed to read token file"),
             "expected 500 body to mention 'failed to read token file', got: {body}"
+        );
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    // ── Web UI routes ──
+
+    /// `GET /` serves the main dashboard HTML with the correct content-type.
+    #[tokio::test]
+    async fn test_web_index_endpoint() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("text/html"), "unexpected content-type: {ct}");
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("JYC Dashboard"), "expected title in body");
+        assert!(
+            body.contains("/app.js") && body.contains("/style.css"),
+            "expected asset references in body"
+        );
+        assert!(body.contains("login-dialog"), "expected login dialog in body");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `GET /t/:thread` serves the thread chat HTML.
+    #[tokio::test]
+    async fn test_web_thread_endpoint() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/t/issue-42"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("Thread"), "expected thread title in body");
+        assert!(body.contains("login-dialog"), "expected login dialog in body");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `GET /style.css` serves the CSS with the correct content-type and
+    /// a `Cache-Control` header.
+    #[tokio::test]
+    async fn test_web_style_endpoint() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/style.css")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(
+            ct.starts_with("text/css"),
+            "unexpected content-type for style.css: {ct}"
+        );
+        let cc = resp
+            .headers()
+            .get("cache-control")
+            .map(|v| v.to_str().unwrap().to_string());
+        assert!(cc.is_some(), "expected cache-control header on style.css");
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("--accent"), "expected CSS variable in body");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `GET /app.js` serves the JS with the correct content-type and a
+    /// `Cache-Control` header.
+    #[tokio::test]
+    async fn test_web_app_js_endpoint() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("{base}/app.js")).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(
+            ct.starts_with("application/javascript"),
+            "unexpected content-type for app.js: {ct}"
+        );
+        let cc = resp
+            .headers()
+            .get("cache-control")
+            .map(|v| v.to_str().unwrap().to_string());
+        assert!(cc.is_some(), "expected cache-control header on app.js");
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("getToken"), "expected auth helper in body");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Web UI routes are public (no auth) — accessible without a token even
+    /// when a token file is configured. This is required so the login dialog
+    /// HTML can be served before the user authenticates.
+    #[tokio::test]
+    async fn test_web_routes_public_even_with_token_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _token = jyc_utils::inspect_token::generate_at(tmp.path()).unwrap();
+
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token_home(tmp.path());
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        // No Authorization header — but the web UI routes should still work,
+        // because the login dialog has to be reachable for the user to type
+        // a token in the first place.
+        let resp = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "GET / should be public");
+        let resp = client.get(format!("{base}/style.css")).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "GET /style.css should be public");
+        let resp = client.get(format!("{base}/app.js")).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "GET /app.js should be public");
+
+        // API routes still require auth.
+        let resp = client.get(format!("{base}/state")).send().await.unwrap();
+        assert_eq!(resp.status(), 401, "GET /state should require auth");
+        let resp = client
+            .get(format!("{base}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "GET /health should require auth");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Unknown public paths get the 404 HTML page.
+    #[tokio::test]
+    async fn test_web_unknown_path_returns_404_html() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/nonexistent"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("404") || body.contains("Page not found"),
+            "expected 404 page content, got: {body}"
         );
 
         cancel.cancel();

@@ -112,10 +112,7 @@ enum ServerMessage {
     /// model emits thinking chunks. The client's `thinking_text` UI replaces
     /// its content on each message.
     #[serde(rename = "thinking")]
-    Thinking {
-        thread: String,
-        text: String,
-    },
+    Thinking { thread: String, text: String },
     /// Tool start/complete events (`ThreadEvent::ToolStarted` /
     /// `ThreadEvent::ToolCompleted`). The client appends these to the
     /// activity log.
@@ -599,7 +596,9 @@ fn thread_event_to_server_message(
 ) -> Option<ServerMessage> {
     use jyc_core::thread_event::ThreadEvent;
     match event {
-        ThreadEvent::Thinking { thread_name, text, .. } => Some(ServerMessage::Thinking {
+        ThreadEvent::Thinking {
+            thread_name, text, ..
+        } => Some(ServerMessage::Thinking {
             thread: thread_name,
             text,
         }),
@@ -647,7 +646,11 @@ fn thread_event_to_server_message(
             ..
         } => Some(ServerMessage::Process {
             thread: thread_name,
-            kind: if success { "completed".to_string() } else { "failed".to_string() },
+            kind: if success {
+                "completed".to_string()
+            } else {
+                "failed".to_string()
+            },
             duration_secs: duration_secs as f64,
         }),
         ThreadEvent::IncomingMessage {
@@ -661,9 +664,7 @@ fn thread_event_to_server_message(
             text,
         }),
         ThreadEvent::ReplySent {
-            thread_name,
-            text,
-            ..
+            thread_name, text, ..
         } => Some(ServerMessage::Chat {
             thread: thread_name,
             sender: "ai".to_string(),

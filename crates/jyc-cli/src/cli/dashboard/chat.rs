@@ -1554,24 +1554,6 @@ impl ChatState {
                         .collect();
                 }
             }
-            // New: initial activity batch on subscribe. Replaces the
-            // in-memory `activity` field (which /state no longer carries).
-            Some("activity") => {
-                if let (Some(thread), Some(entries)) = (
-                    parsed.get("thread").and_then(|v| v.as_str()),
-                    parsed.get("entries").and_then(|v| v.as_array()),
-                ) && self.thread.as_deref() == Some(thread)
-                {
-                    let parsed_entries: Vec<jyc_types::inspect::ActivityEntry> = entries
-                        .iter()
-                        .filter_map(|e| serde_json::from_value(e.clone()).ok())
-                        .collect();
-                    // Replace if the WS initial batch is larger / newer.
-                    if parsed_entries.len() >= self.activity_messages.len() {
-                        self.activity_messages = parsed_entries;
-                    }
-                }
-            }
             // New: streamed AI reasoning. Replace (not append) — the
             // server emits a single `Thinking` containing the full text
             // after each thinking chunk.
@@ -1585,6 +1567,8 @@ impl ChatState {
                 }
             }
             // New: tool start/complete. Push to activity buffer.
+            // `kind` is an enum serialized as snake_case: "started",
+            // "completed", or "failed".
             Some("tool") => {
                 if let (Some(thread), Some(kind), Some(text)) = (
                     parsed.get("thread").and_then(|v| v.as_str()),
@@ -1592,14 +1576,9 @@ impl ChatState {
                     parsed.get("text").and_then(|v| v.as_str()),
                 ) && self.thread.as_deref() == Some(thread)
                 {
-                    // Convert to a tool-start or tool-complete activity entry.
-                    let severity = if kind == "completed" {
-                        // We don't know success vs failure from the kind alone;
-                        // default to Info (the WS protocol could be extended
-                        // to include success).
-                        jyc_types::Severity::Info
-                    } else {
-                        jyc_types::Severity::Info
+                    let severity = match kind {
+                        "failed" => jyc_types::Severity::Error,
+                        _ => jyc_types::Severity::Info,
                     };
                     self.activity_messages
                         .push(jyc_types::inspect::ActivityEntry {

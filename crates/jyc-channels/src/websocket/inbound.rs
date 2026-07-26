@@ -100,15 +100,6 @@ enum ServerMessage {
         thread: String,
         messages: Vec<HistoryEntry>,
     },
-    /// Initial activity batch delivered right after `subscribe`. The entries
-    /// are read from the thread's `ThreadEventBus` buffer so the client sees
-    /// recent activity events even if they fired before the WS connected.
-    #[allow(dead_code)] // reserved for future TUI reconnect use case
-    #[serde(rename = "activity")]
-    Activity {
-        thread: String,
-        entries: Vec<HistoryEntry>,
-    },
     /// Streamed AI reasoning (`ThreadEvent::Thinking`). Pushed live as the
     /// model emits thinking chunks. The client's `thinking_text` UI replaces
     /// its content on each message.
@@ -120,7 +111,7 @@ enum ServerMessage {
     #[serde(rename = "tool")]
     Tool {
         thread: String,
-        kind: String, // "started" | "completed"
+        kind: ToolEventKind,
         text: String,
     },
     /// Processing start/complete events (`ThreadEvent::ProcessingStarted`
@@ -128,7 +119,7 @@ enum ServerMessage {
     #[serde(rename = "process")]
     Process {
         thread: String,
-        kind: String, // "started" | "completed" | "failed"
+        kind: ProcessEventKind,
         duration_secs: f64,
     },
     /// Live chat message (`ThreadEvent::IncomingMessage` /
@@ -140,6 +131,24 @@ enum ServerMessage {
         sender: String,
         text: String,
     },
+}
+
+/// Lifecycle state for a tool call.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolEventKind {
+    Started,
+    Completed,
+    Failed,
+}
+
+/// Lifecycle state for processing a message.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProcessEventKind {
+    Started,
+    Completed,
+    Failed,
 }
 
 /// A single entry in chat history.
@@ -607,12 +616,11 @@ fn thread_event_to_server_message(
             thread_name,
             tool_name,
             input,
-            timestamp,
             ..
         } => Some(ServerMessage::Tool {
             thread: thread_name,
-            kind: "started".to_string(),
-            text: format_tool_text(&tool_name, input.as_deref(), Some(&timestamp)),
+            kind: ToolEventKind::Started,
+            text: format_tool_text(&tool_name, input.as_deref()),
         }),
         ThreadEvent::ToolCompleted {
             thread_name,
@@ -620,24 +628,26 @@ fn thread_event_to_server_message(
             success,
             output,
             input,
-            timestamp,
             duration_secs,
             ..
         } => Some(ServerMessage::Tool {
             thread: thread_name,
-            kind: "completed".to_string(),
+            kind: if success {
+                ToolEventKind::Completed
+            } else {
+                ToolEventKind::Failed
+            },
             text: format_tool_completed(
                 &tool_name,
                 success,
                 output.as_deref(),
                 input.as_deref(),
-                Some(&timestamp),
-                duration_secs,
+                duration_secs as f64,
             ),
         }),
         ThreadEvent::ProcessingStarted { thread_name, .. } => Some(ServerMessage::Process {
             thread: thread_name,
-            kind: "started".to_string(),
+            kind: ProcessEventKind::Started,
             duration_secs: 0.0,
         }),
         ThreadEvent::ProcessingCompleted {
@@ -648,9 +658,9 @@ fn thread_event_to_server_message(
         } => Some(ServerMessage::Process {
             thread: thread_name,
             kind: if success {
-                "completed".to_string()
+                ProcessEventKind::Completed
             } else {
-                "failed".to_string()
+                ProcessEventKind::Failed
             },
             duration_secs: duration_secs as f64,
         }),
@@ -678,16 +688,22 @@ fn thread_event_to_server_message(
     }
 }
 
+/// Truncate `s` to at most `max` bytes without splitting a UTF-8
+/// character. Panics-free equivalent of `&s[..max]` for multi-byte input.
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        &s[..s.floor_char_boundary(max)]
+    }
+}
+
 /// Format a tool start event as a short human-readable label.
-fn format_tool_text(
-    tool_name: &str,
-    input: Option<&str>,
-    _timestamp: Option<&chrono::DateTime<chrono::Utc>>,
-) -> String {
+fn format_tool_text(tool_name: &str, input: Option<&str>) -> String {
     // Truncate the input summary to keep WS messages small. The full diff
     // lives in the on-disk activity.jsonl for the TUI to inspect.
     match input {
-        Some(s) if s.len() > 80 => format!("{}: {}...", tool_name, &s[..80]),
+        Some(s) if s.len() > 80 => format!("{}: {}...", tool_name, truncate(s, 80)),
         Some(s) => format!("{}: {}", tool_name, s),
         None => format!("{}: (running)", tool_name),
     }
@@ -699,11 +715,16 @@ fn format_tool_completed(
     success: bool,
     output: Option<&str>,
     input: Option<&str>,
-    _timestamp: Option<&chrono::DateTime<chrono::Utc>>,
-    duration_secs: u64,
+    duration_secs: f64,
 ) -> String {
     let status = if success { "done" } else { "FAILED" };
-    let prefix = format!("{} ({} {}s)", tool_name, status, duration_secs);
+    // Sub-second precision: render fractional seconds when applicable.
+    let duration_label = if duration_secs.fract() == 0.0 {
+        format!("{}s", duration_secs as u64)
+    } else {
+        format!("{:.1}s", duration_secs)
+    };
+    let prefix = format!("{} ({} {})", tool_name, status, duration_label);
     match output {
         Some(s) if !s.is_empty() => format!("{}: {}", prefix, truncate(s, 80)),
         _ => match input {
@@ -711,10 +732,6 @@ fn format_tool_completed(
             None => prefix,
         },
     }
-}
-
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
 }
 
 /// Load recent chat history messages from JSONL files for a thread.

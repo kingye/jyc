@@ -70,8 +70,6 @@ pub async fn resolve_thread_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::path::Path;
 
     fn empty_thread_managers() -> Arc<ArcSwap<Vec<Arc<ThreadManager>>>> {
         Arc::new(ArcSwap::from_pointee(vec![]))
@@ -132,15 +130,4 @@ mod tests {
         let result = resolve_thread_path(&empty_thread_managers(), &dirs, "any", "shared").await;
         assert_eq!(result, Some(tmp1.path().join("shared")));
     }
-
-    // Suppress dead_code warning for the unused HashMap import; it's a
-    // useful reminder of the type that ThreadManager internally uses.
-    #[allow(dead_code)]
-    fn _suppress_unused() -> HashMap<String, PathBuf> {
-        HashMap::new()
-    }
-
-    // Suppress unused import warning for Path (kept for future tests)
-    #[allow(dead_code)]
-    fn _path_marker(_p: &Path) {}
 }

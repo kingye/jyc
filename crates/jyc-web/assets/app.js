@@ -21,7 +21,10 @@ async function apiFetch(url, opts = {}) {
 }
 
 async function apiGetState() {
-  const res = await apiFetch('/state');
+  // ?lite=1 omits per-thread activity entries (the dominant payload cost
+  // for a sidebar refresh poll). The web UI only needs status and recent
+  // messages; activity is only used by the TUI dashboard.
+  const res = await apiFetch('/state?lite=1');
   if (!res.ok) throw new Error('Failed to fetch state: ' + res.status);
   return res.json();
 }

@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Path, State, ws::WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -390,9 +390,22 @@ async fn handle_health() -> Json<HealthResponse> {
 
 async fn handle_get_state(
     State(ctx): State<Arc<InspectContext>>,
+    Query(q): Query<StateQuery>,
 ) -> Result<Json<InspectState>, ApiError> {
-    let state = build_state(&ctx).await;
+    // `?lite=1` omits per-thread activity log entries (the dominant payload
+    // cost for the sidebar refresh poll). The TUI dashboard's full view still
+    // gets activity by omitting the param.
+    let include_activity = !q.lite.unwrap_or(false);
+    let state = build_state(&ctx, include_activity).await;
     Ok(Json(state))
+}
+
+/// Query parameters for `GET /state`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct StateQuery {
+    /// When true, omit per-thread activity log entries to reduce payload size.
+    #[serde(default)]
+    lite: Option<bool>,
 }
 
 async fn handle_reload_config(
@@ -758,7 +771,7 @@ async fn reset_session_impl(
     }
 }
 
-async fn build_state(context: &InspectContext) -> InspectState {
+async fn build_state(context: &InspectContext, include_activity: bool) -> InspectState {
     let uptime = context.start_time.elapsed().as_secs();
 
     let mut threads = Vec::new();
@@ -779,12 +792,18 @@ async fn build_state(context: &InspectContext) -> InspectState {
         threads.extend(tm_threads);
     }
 
-    // Merge activity logs and status into threads
+    // Merge activity logs and status into threads.
+    // When `include_activity` is false (web UI sidebar polling), skip the
+    // activity entries — they can be ~9-18KB per thread and aren't used by
+    // the sidebar. Recent messages are still populated since the active
+    // thread's chat pane needs them.
     let activity_map = context.activity_map.lock().await;
     for thread in &mut threads {
         let key = (thread.channel.clone(), thread.name.clone());
         if let Some(state) = activity_map.get(&key) {
-            thread.activity = state.entries.iter().cloned().collect();
+            if include_activity {
+                thread.activity = state.entries.iter().cloned().collect();
+            }
             thread.recent_messages = state.recent_messages.iter().cloned().collect();
             thread.thinking_text = state.thinking_text.clone();
             if state.is_processing {
@@ -1414,6 +1433,43 @@ mod tests {
         assert_eq!(state.channels.len(), 1);
         assert_eq!(state.channels[0].name, "emf");
         assert!(!state.version.is_empty());
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `?lite=1` skips per-thread activity entries, returning a smaller payload.
+    #[tokio::test]
+    async fn test_get_state_lite_omits_activity() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+
+        // Lite request should succeed and return a valid InspectState
+        let resp_lite = client
+            .get(format!("{base}/state?lite=1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp_lite.status(), 200);
+        let lite_state: InspectState = resp_lite.json().await.unwrap();
+        // All threads have empty activity in lite mode (test_context() seeds
+        // no activity entries, but the point is that lite=1 doesn't include
+        // the field at all when the source map is empty)
+        for t in &lite_state.threads {
+            assert!(
+                t.activity.is_empty(),
+                "thread {} should have empty activity in lite mode",
+                t.name
+            );
+        }
+        // Lite=true must return the same thread count as full
+        let resp_full = client.get(format!("{base}/state")).send().await.unwrap();
+        assert_eq!(resp_full.status(), 200);
+        let full_state: InspectState = resp_full.json().await.unwrap();
+        assert_eq!(lite_state.threads.len(), full_state.threads.len());
 
         cancel.cancel();
         handle.await.unwrap();

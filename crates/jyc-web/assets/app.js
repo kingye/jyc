@@ -345,23 +345,7 @@ function startPolling(channel, thread) {
         renderMessages([], `Thread '${thread}' not found.`);
         return;
       }
-      // Prefer in-memory recent_messages (live updates). Fall back to disk
-      // history if the thread is idle and recent_messages is empty — the
-      // server only populates recent_messages from live ThreadEvents, so
-      // historical chat (from chat_history_*.jsonl) needs the explicit
-      // /thread/.../history endpoint.
-      let msgs = t.recent_messages || [];
-      if (msgs.length === 0) {
-        try {
-          const histRes = await apiFetch(
-            `/thread/${encodeURIComponent(channel)}/${encodeURIComponent(thread)}/history`
-          );
-          if (histRes.ok) {
-            const hist = await histRes.json();
-            msgs = hist.messages || [];
-          }
-        } catch (_) { /* fall through with empty msgs */ }
-      }
+      const msgs = t.recent_messages || [];
       const prevCount = Number(msgContainer.dataset.msgCount) || 0;
       // Re-render when message count changes (new message arrived or first load).
       if (msgs.length !== prevCount) {

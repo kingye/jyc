@@ -194,10 +194,6 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .route("/inject_message", post(handle_inject_message))
         .route("/ws", get(ws_upgrade_root))
         .route("/ws/:channel", get(ws_upgrade_channel))
-        .route(
-            "/thread/:channel/:name/history",
-            get(handle_thread_history),
-        )
         .layer(middleware::from_fn_with_state(
             context.clone(),
             auth_middleware,
@@ -416,52 +412,6 @@ async fn handle_inject_message(
 ) -> Result<Json<InjectMessageResult>, ApiError> {
     let result = inject_message_impl(&ctx, &req).await?;
     Ok(Json(result))
-}
-
-/// Serve the persisted chat history for a thread (from `chat_history_*.jsonl`).
-///
-/// Used by the web UI to populate the chat pane with historical messages
-/// for idle threads whose `recent_messages` in-memory buffer is empty.
-async fn handle_thread_history(
-    State(ctx): State<Arc<InspectContext>>,
-    Path((channel, name)): Path<(String, String)>,
-) -> Result<Json<ThreadHistoryResponse>, ApiError> {
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
-        return Err(ApiError::bad_request(
-            "invalid thread name: path traversal not allowed",
-        ));
-    }
-
-    // Find the thread manager for the requested channel
-    let tms = ctx.thread_managers.load();
-    let tm = tms
-        .iter()
-        .find(|tm| tm.channel_name() == channel)
-        .cloned();
-    drop(tms);
-
-    let thread_path = match tm {
-        Some(tm) => tm.thread_path(&name).await,
-        None => {
-            // Channel not found — try workspace_dirs fallback for offline threads
-            let dirs = ctx.workspace_dirs.load();
-            dirs.iter()
-                .find_map(|d| {
-                    let p = d.join(&name);
-                    if p.exists() { Some(p) } else { None }
-                })
-        }
-    }
-    .ok_or_else(|| ApiError::not_found(format!("thread '{name}' not found")))?;
-
-    // Load from disk (capped at 100 messages — matches WS adapter limit)
-    let messages = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
-
-    Ok(Json(ThreadHistoryResponse {
-        channel,
-        thread: name,
-        messages,
-    }))
 }
 
 async fn ws_upgrade_root(
@@ -1658,106 +1608,6 @@ mode = "agent"
             .await
             .unwrap();
         assert_eq!(resp.status(), 422);
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    /// `GET /thread/:channel/:name/history` reads chat history from disk
-    /// (`.jyc/chat_history_*.jsonl`).
-    #[tokio::test]
-    async fn test_thread_history_endpoint_loads_from_disk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace_dir = tmp.path().to_path_buf();
-        let thread_name = "issue-42";
-        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        // Write two JSONL lines: one incoming message, one reply
-        let chat_path = jyc_dir.join("chat_history_2026-07-26.jsonl");
-        tokio::fs::write(
-            &chat_path,
-            "{\"type\":\"received\",\"content\":\"hello\",\"ts\":\"2026-07-26T12:00:00Z\"}\n\
-             {\"type\":\"reply\",\"content\":\"hi there\",\"ts\":\"2026-07-26T12:00:05Z\"}\n",
-        )
-        .await
-        .unwrap();
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
-            websocket_handlers: None,
-            reload_callback: None,
-            token_data_home: Some(nonexistent_token_home_path()),
-        });
-
-        let cancel = CancellationToken::new();
-        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("{base}/thread/emf/{thread_name}/history"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        let body: jyc_types::ThreadHistoryResponse = resp.json().await.unwrap();
-        assert_eq!(body.channel, "emf");
-        assert_eq!(body.thread, thread_name);
-        assert_eq!(body.messages.len(), 2);
-        assert_eq!(body.messages[0].sender, "user");
-        assert_eq!(body.messages[0].text, "hello");
-        assert_eq!(body.messages[1].sender, "ai");
-        assert_eq!(body.messages[1].text, "hi there");
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    /// Path traversal in the thread name is rejected.
-    #[tokio::test]
-    async fn test_thread_history_rejects_path_traversal() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("{base}/thread/emf/..%2F..%2Fetc/history"))
-            .send()
-            .await
-            .unwrap();
-        // Either 400 (validation) or 404 (path not found after decoding)
-        assert!(
-            resp.status() == 400 || resp.status() == 404,
-            "expected 400 or 404, got {}",
-            resp.status()
-        );
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    /// Missing thread returns 404.
-    #[tokio::test]
-    async fn test_thread_history_not_found() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("{base}/thread/emf/nonexistent/history"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 404);
 
         cancel.cancel();
         handle.await.unwrap();

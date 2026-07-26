@@ -1,5 +1,29 @@
 use anyhow::{Context, Result};
 
+/// Minimal URL component encoder.
+///
+/// Encodes characters that would otherwise be interpreted as path
+/// delimiters or be unsafe in URL paths. Uses [`reqwest::Url`]'s parser so we
+/// don't pull in an extra dependency.
+fn urlencode(s: &str) -> String {
+    // Path components can't contain `/`, `?`, `#`, `[`, `]`, or control chars.
+    // `reqwest::Url::parse` requires a full URL, so we percent-encode manually
+    // using a minimal but correct subset.
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    out
+}
+
 use jyc_types::{
     HealthResponse, InjectMessageRequest, InjectMessageResult, InspectState, ReloadResult,
     ResetSessionRequest, ResetSessionResult,
@@ -184,6 +208,49 @@ impl InspectClient {
         map_result::<InjectMessageResult>(resp, "/inject_message").await
     }
 
+    /// Fetch chat history for a specific thread (from `chat_history_*.jsonl`).
+    ///
+    /// Used by the TUI to populate the chat pane on open. Returns 404 if the
+    /// thread doesn't exist on disk.
+    pub async fn get_thread_history(
+        &mut self,
+        channel: &str,
+        thread: &str,
+    ) -> Result<jyc_types::ThreadHistoryResponse> {
+        let path = format!(
+            "/thread/{}/{}/history",
+            urlencode(channel),
+            urlencode(thread)
+        );
+        let resp = self
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await
+            .context("failed to GET /thread/.../history")?;
+        map_data::<jyc_types::ThreadHistoryResponse>(resp, &path).await
+    }
+
+    /// Fetch recent activity for a specific thread (from the in-memory
+    /// `activity_map`). Returns an empty list (not 404) if the thread has
+    /// no tracked activity yet.
+    pub async fn get_thread_activity(
+        &mut self,
+        channel: &str,
+        thread: &str,
+    ) -> Result<jyc_types::ThreadActivityResponse> {
+        let path = format!(
+            "/thread/{}/{}/activity",
+            urlencode(channel),
+            urlencode(thread)
+        );
+        let resp = self
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await
+            .context("failed to GET /thread/.../activity")?;
+        map_data::<jyc_types::ThreadActivityResponse>(resp, &path).await
+    }
+
     /// Health check.
     pub async fn health(&self) -> Result<HealthResponse> {
         let resp = self
@@ -244,6 +311,22 @@ where
     let parsed: T = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {endpoint} response: {text}"))?;
     Ok(parsed.success_and_message())
+}
+
+/// Decode a 2xx response body as JSON of type `T`. Used by data endpoints
+/// (e.g. `/state`, `/thread/.../history`) where the response IS the data.
+async fn map_data<T>(resp: reqwest::Response, endpoint: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let status = resp.status();
+    let text = resp.text().await.context("failed to read response body")?;
+    if !status.is_success() {
+        let msg = extract_error_field(&text).unwrap_or_else(|| format!("HTTP {status}: {text}"));
+        anyhow::bail!("{endpoint}: {msg}");
+    }
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {endpoint} response: {text}"))
 }
 
 fn extract_error_field(body: &str) -> Option<String> {

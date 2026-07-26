@@ -194,6 +194,11 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .route("/inject_message", post(handle_inject_message))
         .route("/ws", get(ws_upgrade_root))
         .route("/ws/:channel", get(ws_upgrade_channel))
+        .route("/thread/:channel/:name/history", get(handle_thread_history))
+        .route(
+            "/thread/:channel/:name/activity",
+            get(handle_thread_activity),
+        )
         .layer(middleware::from_fn_with_state(
             context.clone(),
             auth_middleware,
@@ -420,6 +425,83 @@ async fn ws_upgrade_root(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Response {
     ws_upgrade_impl(ctx, ws, addr, None).await
+}
+
+/// Serve persisted chat history for a thread (from `chat_history_*.jsonl`).
+///
+/// Used by the TUI/Web UI to populate the chat pane with historical
+/// messages — `/state` no longer carries `recent_messages`.
+async fn handle_thread_history(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, name)): Path<(String, String)>,
+) -> Result<Json<ThreadHistoryResponse>, ApiError> {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(ApiError::bad_request(
+            "invalid thread name: path traversal not allowed",
+        ));
+    }
+
+    // Shared utility in `jyc-core` — same logic used by all thread-path
+    // lookups in the project (history endpoint, reset_session, etc.)
+    let thread_path = jyc_core::thread_path_resolver::resolve_thread_path(
+        &ctx.thread_managers,
+        &ctx.workspace_dirs,
+        &channel,
+        &name,
+    )
+    .await
+    .ok_or_else(|| ApiError::not_found(format!("thread '{name}' not found")))?;
+
+    // Cap at 100 messages — matches the WebSocket adapter's limit
+    // and the TUI's `load_detail_history` cap.
+    let messages = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
+
+    Ok(Json(ThreadHistoryResponse {
+        channel,
+        thread: name,
+        messages,
+    }))
+}
+
+/// Serve recent activity entries for a thread from the in-memory
+/// `activity_map` (populated by the ActivityTracker's subscription to
+/// `ThreadEventBus`). Used to populate the activity pane on open and to
+/// re-populate it after a WebSocket reconnect.
+async fn handle_thread_activity(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, name)): Path<(String, String)>,
+) -> Result<Json<ThreadActivityResponse>, ApiError> {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(ApiError::bad_request(
+            "invalid thread name: path traversal not allowed",
+        ));
+    }
+
+    let key = (channel.clone(), name.clone());
+    let activity_map = ctx.activity_map.lock().await;
+    let entries = activity_map
+        .get(&key)
+        .map(|state| {
+            // Cap at 50 entries (matches server's MAX_ACTIVITY_ENTRIES order
+            // of magnitude, more than enough for the activity pane).
+            state
+                .entries
+                .iter()
+                .rev()
+                .take(50)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(ThreadActivityResponse {
+        channel,
+        thread: name,
+        entries,
+    }))
 }
 
 async fn ws_upgrade_channel(
@@ -1608,6 +1690,147 @@ mode = "agent"
             .await
             .unwrap();
         assert_eq!(resp.status(), 422);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `GET /thread/:channel/:name/history` reads chat history from disk
+    /// (`.jyc/chat_history_*.jsonl`).
+    #[tokio::test]
+    async fn test_thread_history_endpoint_loads_from_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+        let thread_name = "issue-42";
+        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let chat_path = jyc_dir.join("chat_history_2026-07-26.jsonl");
+        tokio::fs::write(
+            &chat_path,
+            "{\"type\":\"received\",\"content\":\"hello\",\"ts\":\"2026-07-26T12:00:00Z\"}\n\
+             {\"type\":\"reply\",\"content\":\"hi there\",\"ts\":\"2026-07-26T12:00:05Z\"}\n",
+        )
+        .await
+        .unwrap();
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
+            websocket_handlers: None,
+            reload_callback: None,
+            token_data_home: Some(nonexistent_token_home_path()),
+        });
+
+        let cancel = CancellationToken::new();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/thread/emf/{thread_name}/history"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: jyc_types::ThreadHistoryResponse = resp.json().await.unwrap();
+        assert_eq!(body.channel, "emf");
+        assert_eq!(body.thread, thread_name);
+        assert_eq!(body.messages.len(), 2);
+        assert_eq!(body.messages[0].sender, "user");
+        assert_eq!(body.messages[0].text, "hello");
+        assert_eq!(body.messages[1].sender, "ai");
+        assert_eq!(body.messages[1].text, "hi there");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Path traversal in the thread name is rejected.
+    #[tokio::test]
+    async fn test_thread_history_rejects_path_traversal() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/thread/emf/..%2F..%2Fetc/history"))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status() == 400 || resp.status() == 404,
+            "expected 400 or 404, got {}",
+            resp.status()
+        );
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Missing thread returns 404.
+    #[tokio::test]
+    async fn test_thread_history_not_found() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/thread/emf/nonexistent/history"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// `GET /thread/:channel/:name/activity` reads from the in-memory
+    /// `activity_map`. Empty activity → empty list (not 404).
+    #[tokio::test]
+    async fn test_thread_activity_endpoint_empty() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/thread/emf/issue-197/activity"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: jyc_types::ThreadActivityResponse = resp.json().await.unwrap();
+        assert_eq!(body.channel, "emf");
+        assert_eq!(body.thread, "issue-197");
+        assert!(body.entries.is_empty());
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    /// Path traversal in the thread name is rejected for activity endpoint.
+    #[tokio::test]
+    async fn test_thread_activity_rejects_path_traversal() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+        let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/thread/emf/..%2Fbad/activity"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
 
         cancel.cancel();
         handle.await.unwrap();

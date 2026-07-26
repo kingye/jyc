@@ -48,6 +48,31 @@ pub struct InjectMessageResult {
     pub message: String,
 }
 
+/// Response from `GET /thread/{channel}/{name}/history` — persisted chat
+/// history loaded from `chat_history_*.jsonl` on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadHistoryResponse {
+    /// Channel name (echoed from path)
+    pub channel: String,
+    /// Thread name (echoed from path)
+    pub thread: String,
+    /// Chat messages ordered oldest-first, capped at the server's limit (100).
+    pub messages: Vec<ChatMessageEntry>,
+}
+
+/// Response from `GET /thread/{channel}/{name}/activity` — recent activity
+/// events for a thread from the in-memory `activity_map` (mirroring the
+/// thread's ThreadEventBus subscriptions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadActivityResponse {
+    /// Channel name (echoed from path)
+    pub channel: String,
+    /// Thread name (echoed from path)
+    pub thread: String,
+    /// Activity entries ordered oldest-first, capped at the server's limit (50).
+    pub entries: Vec<ActivityEntry>,
+}
+
 /// Response from `GET /health`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {

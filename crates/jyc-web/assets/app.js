@@ -79,7 +79,12 @@ let activeThread = null;
 let ws = null;
 let pollTimer = null;
 let statePollTimer = null;
+let wsReconnectTimer = null;
 let wsReconnectAttempts = 0;
+/** True once the active WebSocket reached OPEN state. Used to distinguish
+ * initial connection failure (no reconnect, fall through to polling) from
+ * a mid-conversation drop (reconnect with backoff). */
+let wsWasConnected = false;
 const MSG_HISTORY_LIMIT = 100;
 const WS_RECONNECT_MAX_DELAY_MS = 30000;
 
@@ -226,7 +231,9 @@ function openThread(channel, thread) {
 function disconnect() {
   if (ws) { ws.close(); ws = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   wsReconnectAttempts = 0;
+  wsWasConnected = false;
 }
 
 function connectToThread(channel, thread) {
@@ -255,6 +262,7 @@ async function tryConnectWS(channel, thread) {
     const socket = new WebSocket(url);
     socket.onopen = () => {
       wsReconnectAttempts = 0;
+      wsWasConnected = true;
       // Subscribe to thread
       socket.send(JSON.stringify({ type: 'subscribe', thread }));
       ws = socket;
@@ -269,11 +277,17 @@ async function tryConnectWS(channel, thread) {
     socket.onerror = () => { reject(new Error('WS failed')); };
     socket.onclose = () => {
       if (ws === socket) ws = null;
-      // Auto-reconnect with exponential backoff if active conversation drops
-      if (activeThread === thread && activeChannel === channel) {
+      // Only auto-reconnect when the WS was previously connected and the
+      // conversation is still active. Initial connection failures (auth,
+      // non-WS channel, 404) must NOT trigger reconnect — the caller has
+      // already fallen through to polling.
+      const wasConnected = wsWasConnected;
+      wsWasConnected = false;
+      if (wasConnected && activeThread === thread && activeChannel === channel) {
         wsReconnectAttempts += 1;
         const delay = Math.min(1000 * 2 ** wsReconnectAttempts, WS_RECONNECT_MAX_DELAY_MS);
-        setTimeout(() => {
+        wsReconnectTimer = setTimeout(() => {
+          wsReconnectTimer = null;
           if (activeThread === thread && activeChannel === channel) {
             connectToThread(channel, thread);
           }
@@ -314,8 +328,14 @@ function handleWSMessage(msg, channel, thread) {
 
 /* ── Polling for non-WS channels ── */
 function startPolling(channel, thread) {
+  // Clear any existing poll timer to prevent interval leak when startPolling
+  // is called more than once for the same thread (defensive — disconnect()
+  // should normally handle this).
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
   const msgContainer = document.getElementById('messages');
   msgContainer.innerHTML = '<div class="loading">Loading messages...</div>';
+  delete msgContainer.dataset.msgCount;
 
   async function poll() {
     try {

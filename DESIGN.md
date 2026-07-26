@@ -2892,7 +2892,7 @@ Dashboard (crates/jyc-cli/src/cli/dashboard.rs)
   ├── Poll loop: drain ThreadInfo.recent_messages → chat_messages
   └── send_chat_message_inner(): call InspectClient::inject_message()
 
-Web UIDashboard (crates/jyc-web/ + crates/jyc-inspect/src/server.rs)
+Web UI Dashboard (crates/jyc-web/ + crates/jyc-inspect/src/server.rs)
   ├── Static HTML/CSS/JS embedded via include_str! (zero deps, no Node)
   ├── Public routes at /, /t/:thread, /style.css, /app.js (before auth middleware)
   ├── JS loads GET /state → renders channel + thread list sidebar

@@ -68,6 +68,19 @@ When authentication is enabled (via `jyc token generate`):
 > (so the login dialog can be displayed). Only API endpoints and
 > WebSocket upgrades are behind the auth middleware.
 
+### WebSocket Auth Limitation
+
+The browser `WebSocket` API does **not** support custom HTTP headers
+(`Authorization: Bearer ...`). As a result, when a token file is configured:
+
+- **`fetch()` calls** send the token via the `Authorization` header — works fine
+- **`/ws/{channel}`** upgrade is rejected with 401 — chat **silently falls back
+  to polling** via `POST /inject_message` + `GET /state` every 5 seconds
+
+Messaging still works in both modes; only the real-time push channel is
+degraded. WebSocket chat without auth works normally. The WebSocket connection
+auto-reconnects on disconnect with exponential backoff (capped at 30s).
+
 ## Architecture
 
 The web UI is implemented as a pure Rust static content provider in
@@ -75,7 +88,7 @@ The web UI is implemented as a pure Rust static content provider in
 
 - **`include_str!`** — embeds HTML, CSS, and JS directly into the binary
   at compile time (no Node/npm, no build step)
-- **vanilla JavaScript** — ~150 lines, no frameworks, no dependencies
+- **vanilla JavaScript** — ~500 lines, no frameworks, no dependencies
 - **CSS Grid** — responsive layout via media queries, no JavaScript for layout
 - **Askama** — not used; all pages are fully static (rendered client-side)
 
@@ -102,3 +115,4 @@ To add a new page or asset:
 | "Failed to connect" | `jyc serve` not running, or wrong port |
 | Chat doesn't send | Ensure you've selected a thread first |
 | WS channel shows "Connecting..." then falls back | WebSocket handshake failed; falls back to polling automatically |
+| Chat is delayed ~5s | If auth is enabled, polling is used instead of WebSocket (browser API limitation) |

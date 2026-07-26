@@ -49,8 +49,13 @@ All notable changes to JYC will be documented in this file.
 
   The WebSocket path stays — `GET /ws/<channel>` upgrades to chat just
   as before. Error responses use proper HTTP status codes (400/404/401/500)
-  with `{"error":"…"}` JSON bodies. The `InspectClient` public API is
-  unchanged, so the dashboard and CLI callers need zero edits.
+  with `{"error":"…"}` JSON bodies. The HTTP `InspectClient` public API is
+  unchanged; the dashboard's direct WebSocket clients
+  (`dashboard/ws.rs` chat reconnect and `create_thread_via_websocket`)
+  pick up auth automatically via a shared
+  `build_authenticated_ws_request` helper that lives in
+  `jyc_inspect::client` (originally in `dashboard/ws_auth.rs`, moved to
+  `jyc-inspect` so the integration test exercises the same code path).
 
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped

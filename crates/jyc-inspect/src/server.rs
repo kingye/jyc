@@ -467,75 +467,14 @@ async fn handle_thread_history(
     }
     .ok_or_else(|| ApiError::not_found(format!("thread '{name}' not found")))?;
 
-    // Load from disk (capped at 100 messages — matches WS adapter limit).
-    // Two sources, merged oldest-first:
-    //   1. chat_history_*.jsonl — primary source (rich text + sender)
-    //   2. .jyc/activity.jsonl — fallback for threads whose inbound messages
-    //      were stored only as activity entries (text summaries)
-    let mut messages = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
-    if messages.is_empty() {
-        messages = load_chat_history_from_activity(&thread_path, 100);
-    }
+    // Load from disk (capped at 100 messages — matches WS adapter limit)
+    let messages = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
 
     Ok(Json(ThreadHistoryResponse {
         channel,
         thread: name,
         messages,
     }))
-}
-
-/// Load chat messages from `.jyc/activity.jsonl` by parsing activity entries
-/// that were converted from `ThreadEvent::IncomingMessage` / `ReplySent`.
-///
-/// Used as a fallback when `chat_history_*.jsonl` doesn't exist or is empty
-/// (e.g., older threads that pre-date chat log persistence, or channels
-/// that only write activity entries). Parses text descriptions like:
-///   - `Message from <sender>: <text>`  →  sender="<sender>", text="<text>"
-///   - `Reply sent: <preview>`  →  sender="ai", text="<preview>"
-fn load_chat_history_from_activity(
-    thread_path: &std::path::Path,
-    max: usize,
-) -> Vec<ChatMessageEntry> {
-    let path = thread_path.join(".jyc").join("activity.jsonl");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-
-    let mut entries: Vec<ChatMessageEntry> = content
-        .lines()
-        .rev()
-        .filter_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            let text = v.get("text")?.as_str()?;
-            let timestamp = v
-                .get("timestamp")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string());
-            let (sender, message_text) = if let Some(rest) = text.strip_prefix("Message from ") {
-                // "Message from <sender>: <text>"
-                if let Some((s, t)) = rest.split_once(": ") {
-                    (s.to_string(), t.to_string())
-                } else {
-                    return None;
-                }
-            } else if let Some(rest) = text.strip_prefix("Reply sent: ") {
-                ("ai".to_string(), rest.to_string())
-            } else {
-                return None;
-            };
-            Some(ChatMessageEntry {
-                sender,
-                text: message_text,
-                timestamp,
-            })
-        })
-        .collect();
-    entries.reverse();
-    if entries.len() > max {
-        let drain = entries.len() - max;
-        entries.drain(0..drain);
-    }
-    entries
 }
 
 async fn ws_upgrade_root(

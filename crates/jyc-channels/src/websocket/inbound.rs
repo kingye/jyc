@@ -682,9 +682,47 @@ fn thread_event_to_server_message(
             text,
         }),
         // Skip events that don't have a clean client-facing representation.
-        ThreadEvent::ProcessingProgress { .. }
-        | ThreadEvent::LLMRequestStarted { .. }
-        | ThreadEvent::SessionStatus { .. } => None,
+        ThreadEvent::LLMRequestStarted {
+            thread_name,
+            iteration,
+            ..
+        } => Some(ServerMessage::Tool {
+            thread: thread_name,
+            kind: ToolEventKind::Started,
+            text: format!("Thinking... (iteration {iteration})"),
+        }),
+        ThreadEvent::SessionStatus {
+            thread_name,
+            status_type,
+            attempt,
+            message,
+            ..
+        } => {
+            let label = match status_type.as_str() {
+                "retry" => "RETRY",
+                "error" => "ERROR",
+                "rate_limit" => "RATE LIMITED",
+                "timeout" => "TIMEOUT",
+                other => other,
+            };
+            let text = match (attempt, &message) {
+                (Some(n), Some(msg)) => format!("{label} (attempt #{n}): {msg}"),
+                (Some(n), None) => format!("{label} (attempt #{n})"),
+                (None, Some(msg)) => format!("{label}: {msg}"),
+                (None, None) => label.to_string(),
+            };
+            Some(ServerMessage::Tool {
+                thread: thread_name,
+                kind: if status_type == "error" || status_type == "timeout" {
+                    ToolEventKind::Failed
+                } else {
+                    ToolEventKind::Started
+                },
+                text,
+            })
+        }
+        // ProcessingProgress is a heartbeat (~10s); skip to avoid flooding.
+        ThreadEvent::ProcessingProgress { .. } => None,
     }
 }
 
@@ -699,17 +737,39 @@ fn truncate(s: &str, max: usize) -> &str {
 }
 
 /// Format a tool start event as a short human-readable label.
+///
+/// For `edit` and `write` tools the input is a JSON string with structured
+/// fields — emit JSON so the TUI's diff renderer can parse it.
 fn format_tool_text(tool_name: &str, input: Option<&str>) -> String {
-    // Truncate the input summary to keep WS messages small. The full diff
-    // lives in the on-disk activity.jsonl for the TUI to inspect.
-    match input {
-        Some(s) if s.len() > 80 => format!("{}: {}...", tool_name, truncate(s, 80)),
-        Some(s) => format!("{}: {}", tool_name, s),
-        None => format!("{}: (running)", tool_name),
+    match (tool_name, input) {
+        ("edit", Some(s)) => {
+            let parsed: Option<serde_json::Value> = serde_json::from_str(s).ok();
+            serde_json::json!({
+                "type": "edit",
+                "file_path": parsed.as_ref().and_then(|v| v.get("file_path")).and_then(|v| v.as_str()).unwrap_or("?"),
+                "old_string": parsed.as_ref().and_then(|v| v.get("old_string")).and_then(|v| v.as_str()).unwrap_or(""),
+                "new_string": parsed.as_ref().and_then(|v| v.get("new_string")).and_then(|v| v.as_str()).unwrap_or(""),
+            }).to_string()
+        }
+        ("write", Some(s)) => {
+            let parsed: Option<serde_json::Value> = serde_json::from_str(s).ok();
+            serde_json::json!({
+                "type": "write",
+                "file_path": parsed.as_ref().and_then(|v| v.get("file_path")).and_then(|v| v.as_str()).unwrap_or("?"),
+                "content": parsed.as_ref().and_then(|v| v.get("content")).and_then(|v| v.as_str()).unwrap_or(""),
+            }).to_string()
+        }
+        (name, Some(s)) if s.len() > 80 => format!("{}: {}...", name, truncate(s, 80)),
+        (name, Some(s)) => format!("{}: {}", name, s),
+        (name, None) => format!("{}: (running)", name),
     }
 }
 
 /// Format a tool completion event as a short human-readable label.
+///
+/// For `edit` and `write` tools the input is a JSON string with structured
+/// fields — emit JSON so the TUI's diff renderer can parse it, matching the
+/// format the old `event_to_activity` in jyc-inspect used.
 fn format_tool_completed(
     tool_name: &str,
     success: bool,
@@ -717,8 +777,68 @@ fn format_tool_completed(
     input: Option<&str>,
     duration_secs: f64,
 ) -> String {
+    if success && tool_name == "edit" {
+        // Structured JSON for the TUI's diff renderer (shared with
+        // `event_to_activity` in jyc-inspect/server.rs).
+        let input_parsed: Option<serde_json::Value> =
+            input.and_then(|s| serde_json::from_str(s).ok());
+        let file_path = input_parsed
+            .as_ref()
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let old_str = input_parsed
+            .as_ref()
+            .and_then(|v| v.get("old_string"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let new_str = input_parsed
+            .as_ref()
+            .and_then(|v| v.get("new_string"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let line_no = output.and_then(|out| {
+            out.find("at line ")
+                .and_then(|pos| {
+                    let rest = &out[pos + 8..];
+                    rest.find(':').map(|end| &rest[..end])
+                })
+                .and_then(|n| n.trim().parse::<usize>().ok())
+        });
+        return serde_json::json!({
+            "type": "edit",
+            "file_path": file_path,
+            "line_no": line_no,
+            "old_string": old_str,
+            "new_string": new_str,
+            "duration_secs": duration_secs,
+        })
+        .to_string();
+    }
+
+    if success && tool_name == "write" {
+        let input_parsed: Option<serde_json::Value> =
+            input.and_then(|s| serde_json::from_str(s).ok());
+        let file_path = input_parsed
+            .as_ref()
+            .and_then(|v| v.get("file_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let content = input_parsed
+            .as_ref()
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return serde_json::json!({
+            "type": "write",
+            "file_path": file_path,
+            "content": content,
+            "duration_secs": duration_secs,
+        })
+        .to_string();
+    }
+
     let status = if success { "done" } else { "FAILED" };
-    // Sub-second precision: render fractional seconds when applicable.
     let duration_label = if duration_secs.fract() == 0.0 {
         format!("{}s", duration_secs as u64)
     } else {

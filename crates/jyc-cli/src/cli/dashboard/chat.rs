@@ -1593,12 +1593,37 @@ impl ChatState {
                     }
                 }
             }
-            // New: processing lifecycle. Used to update the processing
-            // banner / indicator. Not currently rendered but kept for
-            // future use.
+            // New: processing lifecycle. Push to the shared activity buffer
+            // so the chat progress (last 2 entries) and the activity pane
+            // (scrollable list) both see these events.
             Some("process") => {
-                // Reserved for future UI updates (e.g. processing banner
-                // with elapsed time). For now we just acknowledge the event.
+                if let (Some(thread), Some(kind), Some(dur)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("kind").and_then(|v| v.as_str()),
+                    parsed.get("duration_secs").and_then(|v| v.as_f64()),
+                ) && self.thread.as_deref() == Some(thread)
+                {
+                    let text = match kind {
+                        "started" => "Processing started".to_string(),
+                        "completed" => format!("Completed ({:.0}s)", dur),
+                        "failed" => format!("Failed ({:.0}s)", dur),
+                        _ => format!("Processing: {kind}"),
+                    };
+                    self.activity_messages
+                        .push(jyc_types::inspect::ActivityEntry {
+                            text,
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            severity: if kind == "failed" {
+                                jyc_types::Severity::Error
+                            } else {
+                                jyc_types::Severity::Info
+                            },
+                        });
+                    if self.activity_messages.len() > 200 {
+                        let drop = self.activity_messages.len() - 200;
+                        self.activity_messages.drain(0..drop);
+                    }
+                }
             }
             // New: live chat message (replaces legacy `reply`).
             Some("chat") => {

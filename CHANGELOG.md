@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Adaptive web UI dashboard** built into the inspect server. Browser-based
+  dashboard accessible at `http://127.0.0.1:9876/` when `jyc serve` is running.
+  Provides channel + thread listing, click-to-chat pane, WebSocket real-time
+  chat for WS-capable channels, inject-message + polling fallback for non-WS
+  channels, token-based login via localStorage, and responsive layout for
+  desktop (two-column) and mobile (single-column). (#436)
 - **Optional token authentication for the inspect server.** Auth is
   opt-in via file presence at `<data_dir>/inspect-token`:
 

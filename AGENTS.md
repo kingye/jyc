@@ -27,9 +27,34 @@ and uses OpenCode to generate AI replies.
 - 测试用例不得依赖外部服务（网络、文件系统固定路径），使用 mock 或 test fixture
 
 ### 并行安全
-- `cargo test --workspace` 默认并行模式必须稳定通过
-- 测试间不得共享可变状态；如必须串行，使用 `#[serial]` 标记并在 CI 中串行执行
+- 测试必须保证 `cargo test --workspace` 默认并行模式下稳定通过；测试间不得共享可变状态；如必须串行，使用 `#[serial]` 标记并在 CI 中串行执行
 - 资源泄漏（如端口占用）的测试必须实现 `Drop` 或使用 `TempDir` 自动清理
+
+## Agent 本地验证规则（强制约束）
+
+CI 流水线（`.github/workflows/ci.yml`）会在 PR 提交后自动执行以下耗时检查。Agent **必须**遵守以下约束，避免在本地重复运行：
+
+### 禁止运行的命令
+
+- `cargo test`（任何形式：`cargo test --workspace`、`cargo test -p <crate>`、单个测试等）
+- `cargo test -p <crate> --all-targets` / `cargo test --all-targets`
+- `cargo llvm-cov`、`cargo-tarpaulin` 或其他覆盖率工具
+- 无 `-p` 参数的 `cargo clippy`（即 `cargo clippy --workspace`、`cargo clippy` 默认行为）
+- 无 `-p` 参数的 `cargo build`（即 `cargo build --workspace`、`cargo build` 默认行为）
+
+这些命令在 monorepo 上单次运行耗时数分钟，多步骤开发中累积成本极高。CI 是唯一的验证路径。
+
+### 允许运行的命令（即时反馈，CI 不替代）
+
+- `cargo fmt --check` — 格式化检查，秒级
+- `cargo check` — 全 workspace 编译期类型检查，快速（比 `cargo build` 快数倍）
+- `cargo check -p <crate>` — 针对单 crate 的类型检查
+- `cargo clippy -p <crate>` — 针对单 crate 的 lint 检查
+- `cargo build -p <crate>` — 仅在必要时（如集成测试需要外部 binary），不替代 CI 全 workspace 构建
+
+`cargo clippy -p <crate>` 允许用于针对性的 lint 验证，因为 Agent 需要在编写代码时立即发现 clippy 警告。但是 `cargo clippy --workspace`（无 `-p`）禁止，因为本质上是 CI 已覆盖的检查。`cargo build -p <crate>` 同理——仅在真的需要构建单个 crate 的 binary 时运行（例如 `cargo run -p jyc-cli -- --help` 或集成测试需要 `cargo build -p jyc-channels`）。
+
+同样的：`cargo check` / `cargo check -p <crate>` 允许（编译期类型检查，比完整构建快几个数量级）；`cargo build` / `cargo build --workspace` 禁止（完整构建，CI 覆盖）。
 
 ## 工作流约定
 
@@ -38,22 +63,27 @@ and uses OpenCode to generate AI replies.
 - 修复分支：`fix/issue-{N}-<简短描述>`（如 `fix/issue-42-fix-timeout-panic`）
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
-### PR 前检查清单
-提交 PR 前必须在本地通过以下检查：
+### PR 前检查清单（Agent 必须遵守本地验证规则）
 
-> 注意：`.github/workflows/ci.yml` 会自动执行格式化、Clippy、测试（覆盖率检查 `cargo llvm-cov` 会运行全部测试）等检查；Agent 无需在本地重复运行 CI 已覆盖的慢速检查（如 `cargo test`、`cargo llvm-cov`）。
+提交 PR 前在本地执行以下**允许的**检查即可。CI 流水线（`.github/workflows/ci.yml`）会自动运行其余检查：
 
-1. **格式化检查**
+> 完整的 CI 覆盖范围：`.github/workflows/ci.yml` 在 PR 提交后自动执行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo llvm-cov --workspace --all-targets --summary-only` 等检查。Agent 严禁在本地重复运行 `cargo test`、`cargo clippy --workspace`、`cargo llvm-cov` 等耗时检查——参见「Agent 本地验证规则」一节。
+
+1. **格式化检查**（CI 之外的本地强制项）
    ```bash
    cargo fmt --check
    ```
-2. **Clippy 静态检查**
+2. **本地类型检查**（针对受影响 crate）
    ```bash
-   cargo clippy --workspace -- -D warnings
+   cargo check -p <affected-crate>
+   # 或全 workspace 的快速类型检查（不构建）：
+   cargo check
    ```
-3. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
-4. **禁止本地运行 CI 专属检查** — `cargo llvm-cov`、`cargo-tarpaulin` 等覆盖率工具，以及 GitHub Actions 工作流中已自动执行的其他检查（包括测试），禁止在本地运行。
-   这些检查速度太慢，CI（`.github/workflows/ci.yml`）会在 PR 提交后自动运行并检查阈值。
+3. **本地 lint 检查**（仅当需要即时发现警告时）
+   ```bash
+   cargo clippy -p <affected-crate> -- -D warnings
+   ```
+4. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
 
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 格式：

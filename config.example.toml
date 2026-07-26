@@ -383,6 +383,18 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
+# Authentication is opt-in via file presence at `<data_dir>/inspect-token`:
+# - If the token file is absent, any connection (loopback or remote) is allowed.
+# - If the token file exists, every connection must include
+#   `Authorization: Bearer <token>` matching the file content — including
+#   loopback connections from the dashboard. The file is read fresh on every
+#   request so `jyc token rotate` takes effect immediately.
+#
+# Generate the token (writes the file and prints to stdout):
+#   $ jyc token generate
+#
+# Or set JYC_INSPECT_TOKEN in the dashboard / client environment.
+
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.
 # Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).

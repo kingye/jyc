@@ -1,193 +1,162 @@
 use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-use jyc_types::{InspectRequest, InspectResponse, InspectState};
+use jyc_types::{
+    HealthResponse, InjectMessageRequest, InjectMessageResult, InspectState, ReloadResult,
+    ResetSessionRequest, ResetSessionResult,
+};
 
-/// Client for connecting to the jyc inspect server.
+/// Client for connecting to the jyc inspect server over HTTP.
 ///
-/// Maintains a persistent TCP connection and reuses it across polls.
-/// Automatically reconnects if the connection drops.
+/// Holds a long-lived `reqwest::Client` (which maintains its own connection
+/// pool) and a base URL derived from the server bind address.
+#[derive(Debug, Clone)]
 pub struct InspectClient {
-    addr: String,
-    conn: Option<Connection>,
+    base_url: String,
+    http: reqwest::Client,
+    token: Option<String>,
 }
 
-struct Connection {
-    reader: BufReader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
+/// Resolve the auth token using the default precedence: explicit
+/// `JYC_INSPECT_TOKEN` env var, then the on-disk
+/// `<data_dir>/inspect-token` file.
+///
+/// Shared between `InspectClient::token_for_request` and the dashboard's
+/// direct WebSocket clients (`dashboard/ws.rs` and `dashboard/mod.rs`),
+/// so both HTTP and WS paths apply the same auth header.
+pub fn resolve_token() -> Option<String> {
+    if let Ok(t) = std::env::var("JYC_INSPECT_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
+    }
+    jyc_utils::inspect_token::read().ok().flatten()
+}
+
+/// Build a GET WebSocket upgrade request for `url` with
+/// `Authorization: Bearer <token>` attached when `token` is `Some`.
+///
+/// Starts from `url.into_client_request()` (via the `IntoClientRequest`
+/// trait) so `tungstenite` auto-fills the required WS upgrade headers
+/// — in particular `Sec-WebSocket-Key`, which axum's `WebSocketUpgrade`
+/// extractor requires. Building a `Request` from scratch with
+/// `http::Request::builder()` would NOT include these headers, and the
+/// upgrade would fail with `WebSocketKeyHeaderMissing` (400).
+///
+/// Production code paths (the dashboard's chat pane and
+/// `create_thread_via_websocket`) call this with the token resolved
+/// via [`resolve_token`]. The integration test in
+/// `crates/jyc-channels/tests/websocket_integration_test.rs` calls
+/// this directly with `Some(correct_token)` / `None` / `Some(wrong_token)`
+/// to exercise the accept / reject paths — using the same function
+/// the production dashboard uses, so the test actually covers the
+/// shipped code.
+pub fn build_ws_upgrade_request(url: &str, token: Option<&str>) -> http::Request<()> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url
+        .into_client_request()
+        .expect("WS upgrade request URI is always valid");
+    if let Some(t) = token {
+        req.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {t}")
+                .parse()
+                .expect("Bearer header is ASCII"),
+        );
+    }
+    // `into_client_request()` returns `Request<Empty>` where
+    // `Empty = ()` — `map` re-wraps it as `Request<()>`.
+    req.map(|_| ())
+}
+
+/// Convenience: build a WebSocket upgrade request with the auth token
+/// resolved via [`resolve_token`]. Used by the dashboard's direct
+/// WebSocket clients (`dashboard/ws.rs` and `create_thread_via_websocket`).
+pub fn build_authenticated_ws_request(url: &str) -> http::Request<()> {
+    build_ws_upgrade_request(url, resolve_token().as_deref())
 }
 
 impl InspectClient {
+    /// Create a new client targeting the inspect server at `addr` (e.g. `"127.0.0.1:9876"`).
+    ///
+    /// Authentication is resolved lazily on each request: the
+    /// `JYC_INSPECT_TOKEN` environment variable is checked first, then
+    /// `<data_dir>/inspect-token` is read fresh on every request. This means
+    /// `jyc token rotate` takes effect immediately on the next request.
     pub fn new(addr: &str) -> Self {
+        let base_url = if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr.to_string()
+        } else {
+            format!("http://{addr}")
+        };
         Self {
-            addr: addr.to_string(),
-            conn: None,
+            base_url,
+            http: reqwest::Client::builder()
+                .build()
+                .expect("reqwest client builder should not fail"),
+            token: None,
         }
     }
 
-    /// Fetch the current state, reusing the existing connection if possible.
+    /// Create a client that sends a specific token on every request.
+    ///
+    /// Explicit tokens lock in for the lifetime of the client — they do
+    /// NOT re-read from the env var or token file. Use `new()` if you want
+    /// rotation to take effect automatically.
+    pub fn new_with_token(addr: &str, token: impl Into<String>) -> Self {
+        let mut c = Self::new(addr);
+        c.token = Some(token.into());
+        c
+    }
+
+    fn token_for_request(&self) -> Option<String> {
+        if let Some(t) = &self.token {
+            return Some(t.clone());
+        }
+        // Flag-not-set path: defer to the shared resolver below.
+        resolve_token()
+    }
+
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = format!("{}{}", self.base_url, path);
+        let mut rb = self.http.request(method, &url);
+        if let Some(tok) = self.token_for_request() {
+            rb = rb.bearer_auth(tok);
+        }
+        rb
+    }
+
+    /// Fetch the current state.
     pub async fn get_state(&mut self) -> Result<InspectState> {
-        // Try on existing connection first
-        if self.conn.is_some() {
-            match self.send_request().await {
-                Ok(state) => return Ok(state),
-                Err(_) => {
-                    // Connection broken, drop and reconnect
-                    self.conn = None;
-                }
-            }
-        }
-
-        // Connect (or reconnect)
-        self.connect().await?;
-        self.send_request().await
-    }
-
-    async fn connect(&mut self) -> Result<()> {
-        let stream = TcpStream::connect(&self.addr)
+        let resp = self
+            .request(reqwest::Method::GET, "/state")
+            .send()
             .await
-            .with_context(|| format!("failed to connect to inspect server at {}", self.addr))?;
-
-        let (reader, writer) = stream.into_split();
-        self.conn = Some(Connection {
-            reader: BufReader::new(reader),
-            writer,
-        });
-        Ok(())
+            .context("failed to GET /state")?;
+        map_json_ok(resp).await
     }
 
-    async fn send_request(&mut self) -> Result<InspectState> {
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        // Send request
-        let request = InspectRequest {
-            method: "get_state".to_string(),
-            params: None,
-        };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        // Read response
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
-            .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::State(state) => Ok(state),
-            InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for get_state")
-            }
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for get_state")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for get_state")
-            }
-        }
-    }
-
-    /// Send a `reload_config` command to the inspect server.
+    /// Send a `reload_config` request to the inspect server.
     pub async fn reload_config(&mut self) -> Result<(bool, String)> {
-        // Ensure connected
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "reload_config".to_string(),
-            params: None,
-        };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
+        let resp = self
+            .request(reqwest::Method::POST, "/reload_config")
+            .send()
             .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::ReloadResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for reload_config")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for reload_config")
-            }
-        }
+            .context("failed to POST /reload_config")?;
+        map_result::<ReloadResult>(resp, "/reload_config").await
     }
 
-    /// Send a `reset_session` command to the inspect server.
+    /// Send a `reset_session` request to the inspect server.
     pub async fn reset_session(&mut self, thread_name: &str) -> Result<(bool, String)> {
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "reset_session".to_string(),
-            params: Some(serde_json::json!({ "thread_name": thread_name })),
+        let body = ResetSessionRequest {
+            thread_name: thread_name.to_string(),
         };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
+        let resp = self
+            .request(reqwest::Method::POST, "/reset_session")
+            .json(&body)
+            .send()
             .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => anyhow::bail!("unexpected state for reset_session"),
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for reset_session")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for reset_session")
-            }
-        }
+            .context("failed to POST /reset_session")?;
+        map_result::<ResetSessionResult>(resp, "/reset_session").await
     }
 
     /// Inject a message into a thread for AI processing.
@@ -201,53 +170,89 @@ impl InspectClient {
         thread: &str,
         text: &str,
     ) -> Result<(bool, String)> {
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "inject_message".to_string(),
-            params: Some(serde_json::json!({
-                "channel": channel,
-                "thread": thread,
-                "text": text,
-            })),
+        let body = InjectMessageRequest {
+            channel: channel.to_string(),
+            thread: thread.to_string(),
+            text: text.to_string(),
         };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
+        let resp = self
+            .request(reqwest::Method::POST, "/inject_message")
+            .json(&body)
+            .send()
             .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::InjectMessageResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => {
-                anyhow::bail!("unexpected state for inject_message")
-            }
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for inject_message")
-            }
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for inject_message")
-            }
-        }
+            .context("failed to POST /inject_message")?;
+        map_result::<InjectMessageResult>(resp, "/inject_message").await
     }
+
+    /// Health check.
+    pub async fn health(&self) -> Result<HealthResponse> {
+        let resp = self
+            .request(reqwest::Method::GET, "/health")
+            .send()
+            .await
+            .context("failed to GET /health")?;
+        map_json_ok(resp).await
+    }
+}
+
+trait ExtractSuccessMessage {
+    fn success_and_message(self) -> (bool, String);
+}
+
+impl ExtractSuccessMessage for ReloadResult {
+    fn success_and_message(self) -> (bool, String) {
+        (self.success, self.message)
+    }
+}
+
+impl ExtractSuccessMessage for ResetSessionResult {
+    fn success_and_message(self) -> (bool, String) {
+        (self.success, self.message)
+    }
+}
+
+impl ExtractSuccessMessage for InjectMessageResult {
+    fn success_and_message(self) -> (bool, String) {
+        (self.success, self.message)
+    }
+}
+
+/// Decode a 2xx response as JSON. Non-2xx becomes an `anyhow::Error` with the
+/// response body's `error` field (or status text) when available.
+async fn map_json_ok<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
+    let status = resp.status();
+    let text = resp.text().await.context("failed to read response body")?;
+    if !status.is_success() {
+        let msg = extract_error_field(&text).unwrap_or_else(|| format!("HTTP {status}: {text}"));
+        anyhow::bail!("{msg}");
+    }
+    serde_json::from_str(&text).with_context(|| format!("failed to parse response body: {text}"))
+}
+
+/// Decode a 2xx response as a `(success, message)` tuple from a struct that
+/// has those fields. Used by the action endpoints.
+async fn map_result<T>(resp: reqwest::Response, endpoint: &str) -> Result<(bool, String)>
+where
+    T: serde::de::DeserializeOwned + ExtractSuccessMessage,
+{
+    let status = resp.status();
+    let text = resp.text().await.context("failed to read response body")?;
+    if !status.is_success() {
+        let msg = extract_error_field(&text).unwrap_or_else(|| format!("HTTP {status}: {text}"));
+        anyhow::bail!("{endpoint}: {msg}");
+    }
+    let parsed: T = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {endpoint} response: {text}"))?;
+    Ok(parsed.success_and_message())
+}
+
+fn extract_error_field(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.as_str().map(|s| s.to_string()))
+        })
 }
 
 #[cfg(test)]
@@ -256,127 +261,60 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
+    use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
-    use crate::server::{InspectContext, InspectServer};
+    use crate::server::{InspectContext, build_router};
+    use crate::test_util::{nonexistent_token_home_path, test_context};
     use arc_swap::ArcSwap;
     use jyc_types::ChannelInfo;
 
-    fn test_context() -> Arc<InspectContext> {
-        Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "test-ch".to_string(),
-                channel_type: "email".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-        })
+    async fn spawn_test_server(
+        context: Arc<InspectContext>,
+        cancel: CancellationToken,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = build_router(context);
+        let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let server = axum::serve(listener, service).with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+        });
+        let handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (addr.to_string(), handle)
     }
 
     #[tokio::test]
     async fn test_inspect_client_get_state() {
         let cancel = CancellationToken::new();
         let context = test_context();
+        let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
-        let state = client.get_state().await.unwrap();
-
-        assert_eq!(state.channels.len(), 1);
-        assert_eq!(state.channels[0].name, "test-ch");
-        assert_eq!(state.stats.max_concurrent, 0);
-
-        cancel.cancel();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_client_reuses_connection() {
-        let cancel = CancellationToken::new();
-        let context = test_context();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
-
-        // Multiple requests should reuse the same connection
-        for _ in 0..5 {
-            let state = client.get_state().await.unwrap();
-            assert_eq!(state.channels.len(), 1);
-        }
-
-        // Connection should be established
-        assert!(client.conn.is_some());
-
-        cancel.cancel();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_client_reconnects_after_disconnect() {
-        let cancel = CancellationToken::new();
-        let context = test_context();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), context.clone(), cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
+        let mut client = InspectClient::new(&addr);
         let state = client.get_state().await.unwrap();
         assert_eq!(state.channels.len(), 1);
+        assert_eq!(state.channels[0].name, "emf");
 
-        // Kill server
         cancel.cancel();
         handle.await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Connection is broken — drop it so next call reconnects
-        client.conn = None;
-
-        // Restart server
-        let cancel2 = CancellationToken::new();
-        let server2 = InspectServer::new(addr.to_string(), context, cancel2.clone());
-        let _handle2 = server2.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Should reconnect automatically
-        let state = client.get_state().await.unwrap();
-        assert_eq!(state.channels.len(), 1);
-
-        cancel2.cancel();
     }
 
     #[tokio::test]
-    async fn test_inspect_client_connection_refused() {
-        let mut client = InspectClient::new("127.0.0.1:1");
-        let result = client.get_state().await;
-        assert!(result.is_err());
+    async fn test_inspect_client_health() {
+        let cancel = CancellationToken::new();
+        let context = test_context();
+        let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
+
+        let client = InspectClient::new(&addr);
+        let resp = client.health().await.unwrap();
+        assert_eq!(resp.status, "ok");
+
+        cancel.cancel();
+        handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -410,30 +348,24 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
+        let mut client = InspectClient::new(&addr);
         let (success, message) = client.reset_session("test-thread").await.unwrap();
-
         assert!(success, "reset should succeed: {message}");
         assert!(message.contains("session deleted"));
         assert!(!jyc_dir.join("agent-session.json").exists());
 
         cancel.cancel();
+        handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn test_inspect_client_inject_message_no_channel() {
-        // Server with no thread managers — inject should fail
         let context = Arc::new(InspectContext {
             thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
             channels: Arc::new(ArcSwap::from_pointee(vec![])),
@@ -446,26 +378,60 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            token_data_home: Some(nonexistent_token_home_path()),
         });
 
         let cancel = CancellationToken::new();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
 
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
-        let (success, message) = client
+        let mut client = InspectClient::new(&addr);
+        let err = client
             .inject_message("nonexistent", "thread", "hello")
             .await
-            .unwrap();
-
-        assert!(!success, "inject should fail for unknown channel");
-        assert!(message.contains("no thread manager found"));
+            .expect_err("inject should fail for unknown channel");
+        assert!(
+            err.to_string().contains("no thread manager found"),
+            "unexpected error: {err}"
+        );
 
         cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_client_connection_refused() {
+        let mut client = InspectClient::new("127.0.0.1:1");
+        let result = client.get_state().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_inspect_client_with_explicit_token() {
+        let cancel = CancellationToken::new();
+        let context = test_context();
+        let (addr, handle) = spawn_test_server(context, cancel.clone()).await;
+
+        // No token file is configured on the server, so any token (or
+        // none) is accepted — auth is opt-in via file presence.
+        let mut client = InspectClient::new_with_token(&addr, "any-token-here");
+        let state = client.get_state().await.unwrap();
+        assert_eq!(state.channels.len(), 1);
+
+        // Also works without any Authorization header.
+        let mut client = InspectClient::new(&addr);
+        let state = client.get_state().await.unwrap();
+        assert_eq!(state.channels.len(), 1);
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_base_url_construction() {
+        let c = InspectClient::new("127.0.0.1:9876");
+        assert_eq!(c.base_url, "http://127.0.0.1:9876");
+
+        let c = InspectClient::new("http://localhost:9876");
+        assert_eq!(c.base_url, "http://localhost:9876");
     }
 }

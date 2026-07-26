@@ -21,8 +21,12 @@ pub(super) async fn ws_client_task(
     let mut backoff = 1u64; // seconds
 
     'reconnect: loop {
-        // Attempt connection
-        let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
+        // Attempt connection. Attach `Authorization: Bearer <token>` if a
+        // token file (or `JYC_INSPECT_TOKEN`) is configured, so the
+        // server's auth middleware accepts the upgrade once the user has
+        // run `jyc token generate`.
+        let request = super::ws_auth::build_authenticated_ws_request(&url);
+        let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = event_tx.send(WsEvent::Error(format!("Connect failed: {e}")));

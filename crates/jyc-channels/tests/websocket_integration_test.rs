@@ -6,9 +6,8 @@ use futures_util::{SinkExt, StreamExt};
 use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::message_storage::MessageStorage;
-use jyc_inspect::server::WebsocketHandler;
+use jyc_inspect::server::{InspectContext, WebsocketHandler};
 use jyc_types::{InboundAdapter, InboundAdapterOptions, InboundMessage};
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -126,28 +125,14 @@ async fn test_websocket_adapter_start_and_handle() {
         .await
         .unwrap();
 
-    // Bind a local TCP listener to simulate the inspect server
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let server_handle = tokio::spawn(async move {
-        let (mut stream, client_addr) = listener.accept().await.unwrap();
-
-        // Read the first byte to detect protocol (same logic as inspect server)
-        let mut first_byte = [0u8; 1];
-        let n = stream.read_exact(&mut first_byte).await.unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(first_byte[0], b'G');
-
-        // Prepend the byte back and perform WebSocket handshake
-        let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
-        let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
-
-        inbound.handle(ws_stream, client_addr).await.unwrap();
-    });
+    // Spawn the inspect server with auth pointed at an empty temp dir
+    // (no token file → auth not configured → allow).
+    let token_home = tempfile::TempDir::new().unwrap();
+    let (addr, server_handle, cancel) =
+        spawn_test_server(inbound.clone(), token_home.path().to_path_buf()).await;
 
     // Connect test client
-    let url = format!("ws://{}/ws", addr);
+    let url = format!("ws://{}/ws/test_ws", addr);
     let ws_stream = tokio_tungstenite::connect_async(&url).await.unwrap().0;
     let (mut write, mut read) = ws_stream.split();
 
@@ -205,6 +190,212 @@ async fn test_websocket_adapter_start_and_handle() {
         .send(tokio_tungstenite::tungstenite::Message::Close(None))
         .await;
 
-    // Wait for server to shut down
+    cancel.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+/// Spawn an inspect server on `127.0.0.1:0` with the given `inbound`
+/// adapter registered as the websocket handler. `token_data_home`
+/// controls what the auth middleware sees — point it at a temp dir
+/// where you've generated a token file to test the auth path, or at
+/// an empty dir to test the default-install (no-auth) path.
+async fn spawn_test_server(
+    inbound: Arc<WebsocketInboundAdapter>,
+    token_data_home: std::path::PathBuf,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    CancellationToken,
+) {
+    use std::collections::HashMap as StdHashMap;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let mut handlers: StdHashMap<String, Arc<dyn WebsocketHandler>> = StdHashMap::new();
+    handlers.insert("test_ws".to_string(), inbound as Arc<dyn WebsocketHandler>);
+
+    let ctx = Arc::new(InspectContext {
+        thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        channels: Arc::new(ArcSwap::from_pointee(vec![])),
+        health_stats: Arc::new(tokio::sync::Mutex::new(
+            jyc_core::metrics::HealthStats::default(),
+        )),
+        activity_map: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        start_time: std::time::Instant::now(),
+        config_path: None,
+        global_config_path: None,
+        config: None,
+        workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+        websocket_handlers: Some(handlers),
+        reload_callback: None,
+        token_data_home: Some(token_data_home),
+    });
+
+    let cancel = CancellationToken::new();
+    let cancel_for_server = cancel.clone();
+    let app = jyc_inspect::server::build_router(ctx);
+    let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let server = axum::serve(listener, service).with_graceful_shutdown(async move {
+        cancel_for_server.cancelled().await;
+    });
+    let server_handle = tokio::spawn(async move {
+        let _ = server.await;
+    });
+    (addr, server_handle, cancel)
+}
+
+/// Auth middleware applied to `/ws/*`: when a token file exists at the
+/// configured `token_data_home`, the WS upgrade must include a valid
+/// `Authorization: Bearer …` header. The three tests below cover the
+/// accept / reject paths. (The default-install no-token-file path is
+/// already covered by `test_websocket_adapter_start_and_handle` above.)
+use jyc_inspect::client::build_ws_upgrade_request;
+
+#[tokio::test]
+async fn test_ws_upgrade_auth_correct_bearer_succeeds() {
+    let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
+    let inbound = Arc::new(WebsocketInboundAdapter::new(
+        "test_ws".to_string(),
+        None,
+        outbound.broadcast_tx(),
+    ));
+
+    let (_msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel::<InboundMessage>();
+    let options = InboundAdapterOptions {
+        on_message: Box::new(|_msg| Ok(())),
+        on_thread_close: None,
+        on_error: Box::new(|e| tracing::error!("Inbound error: {e}")),
+        attachment_config: None,
+    };
+    inbound
+        .start(options, CancellationToken::new())
+        .await
+        .unwrap();
+
+    // Generate a real token at the test's token home, then point the
+    // server at the same path.
+    let token_home = tempfile::TempDir::new().unwrap();
+    let token = jyc_utils::inspect_token::generate_at(token_home.path()).unwrap();
+
+    let (addr, server_handle, cancel) =
+        spawn_test_server(inbound.clone(), token_home.path().to_path_buf()).await;
+
+    // Upgrade with the correct Bearer — should succeed (101 Switching Protocols).
+    let url = format!("ws://{}/ws/test_ws", addr);
+    let req = build_ws_upgrade_request(&url, Some(&token));
+    let result = tokio_tungstenite::connect_async(req).await;
+    assert!(
+        result.is_ok(),
+        "WS upgrade with correct Bearer should succeed; got: {result:?}"
+    );
+
+    cancel.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+#[tokio::test]
+async fn test_ws_upgrade_auth_missing_bearer_rejected() {
+    let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
+    let inbound = Arc::new(WebsocketInboundAdapter::new(
+        "test_ws".to_string(),
+        None,
+        outbound.broadcast_tx(),
+    ));
+
+    let (_msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel::<InboundMessage>();
+    let options = InboundAdapterOptions {
+        on_message: Box::new(|_msg| Ok(())),
+        on_thread_close: None,
+        on_error: Box::new(|e| tracing::error!("Inbound error: {e}")),
+        attachment_config: None,
+    };
+    inbound
+        .start(options, CancellationToken::new())
+        .await
+        .unwrap();
+
+    let token_home = tempfile::TempDir::new().unwrap();
+    let _token = jyc_utils::inspect_token::generate_at(token_home.path()).unwrap();
+
+    let (addr, server_handle, cancel) =
+        spawn_test_server(inbound.clone(), token_home.path().to_path_buf()).await;
+
+    // No Authorization header — should be rejected (401, NOT a 101 upgrade).
+    let url = format!("ws://{}/ws/test_ws", addr);
+    let req = build_ws_upgrade_request(&url, None);
+    let err = tokio_tungstenite::connect_async(req)
+        .await
+        .expect_err("WS upgrade without Bearer should fail");
+    let http = match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => response,
+        other => panic!("expected HTTP error (401), got: {other:?}"),
+    };
+    assert_eq!(http.status(), 401);
+    let body_bytes = http.body().as_deref().unwrap_or(&[]);
+    let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
+    assert!(
+        body_str.contains("missing Authorization"),
+        "expected 401 body to mention 'missing Authorization', got: {body_str}"
+    );
+
+    cancel.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+}
+
+#[tokio::test]
+async fn test_ws_upgrade_auth_wrong_bearer_rejected() {
+    let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
+    let inbound = Arc::new(WebsocketInboundAdapter::new(
+        "test_ws".to_string(),
+        None,
+        outbound.broadcast_tx(),
+    ));
+
+    let (_msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel::<InboundMessage>();
+    let options = InboundAdapterOptions {
+        on_message: Box::new(|_msg| Ok(())),
+        on_thread_close: None,
+        on_error: Box::new(|e| tracing::error!("Inbound error: {e}")),
+        attachment_config: None,
+    };
+    inbound
+        .start(options, CancellationToken::new())
+        .await
+        .unwrap();
+
+    let token_home = tempfile::TempDir::new().unwrap();
+    let _token = jyc_utils::inspect_token::generate_at(token_home.path()).unwrap();
+
+    let (addr, server_handle, cancel) =
+        spawn_test_server(inbound.clone(), token_home.path().to_path_buf()).await;
+
+    // Wrong Bearer — should be rejected (401, NOT a 101 upgrade).
+    let url = format!("ws://{}/ws/test_ws", addr);
+    let req = build_ws_upgrade_request(&url, Some("jyc_definitely_not_the_real_token_0000"));
+    let err = tokio_tungstenite::connect_async(req)
+        .await
+        .expect_err("WS upgrade with wrong Bearer should fail");
+    let http = match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => response,
+        other => panic!("expected HTTP error (401), got: {other:?}"),
+    };
+    assert_eq!(http.status(), 401);
+    let body_bytes = http.body().as_deref().unwrap_or(&[]);
+    let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
+    assert!(
+        body_str.contains("invalid token"),
+        "expected 401 body to mention 'invalid token', got: {body_str}"
+    );
+
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }

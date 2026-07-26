@@ -208,7 +208,7 @@ impl WebsocketInboundAdapter {
 impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
+        socket: axum::extract::ws::WebSocket,
         addr: SocketAddr,
     ) -> anyhow::Result<()> {
         let pattern_names: Vec<String> = self.pattern_names();
@@ -220,7 +220,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let thread_manager = self.thread_manager.lock().unwrap().clone();
 
         handle_connection_impl(
-            ws_stream,
+            socket,
             addr,
             channel_name,
             pattern_names,
@@ -276,8 +276,8 @@ impl InboundAdapter for WebsocketInboundAdapter {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_connection_impl<S>(
-    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+async fn handle_connection_impl(
+    socket: axum::extract::ws::WebSocket,
     addr: SocketAddr,
     channel_name: String,
     pattern_names: Vec<String>,
@@ -285,11 +285,8 @@ async fn handle_connection_impl<S>(
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     workspace_dir: Option<PathBuf>,
     thread_manager: Option<Arc<jyc_core::thread_manager::ThreadManager>>,
-) -> anyhow::Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
-{
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+) -> anyhow::Result<()> {
+    let (mut ws_tx, mut ws_rx) = socket.split();
 
     tracing::info!(addr = %addr, channel = %channel_name, "WebSocket client connected");
 
@@ -308,7 +305,7 @@ where
                     }
                 };
 
-                if msg.is_close() {
+                if matches!(msg, axum::extract::ws::Message::Close(_)) {
                     tracing::info!(addr = %addr, "WebSocket client closed connection");
                     break;
                 }
@@ -332,7 +329,7 @@ where
                             patterns: pattern_names.clone(),
                         };
                         let json = serde_json::to_string(&response)?;
-                        if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
+                        if let Err(e) = ws_tx.send(axum::extract::ws::Message::Text(json)).await {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send patterns");
                             break;
                         }
@@ -349,7 +346,7 @@ where
                             };
                             let json = serde_json::to_string(&response)?;
                             if let Err(e) = ws_tx
-                                .send(tokio_tungstenite::tungstenite::Message::Text(json))
+                                .send(axum::extract::ws::Message::Text(json))
                                 .await
                             {
                                 tracing::warn!(error = %e, addr = %addr, "Failed to send history");
@@ -438,7 +435,7 @@ where
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(payload) => {
-                        if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(payload)).await {
+                        if let Err(e) = ws_tx.send(axum::extract::ws::Message::Text(payload)).await {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send broadcast");
                             break;
                         }
@@ -455,9 +452,7 @@ where
         }
     }
 
-    let _ = ws_tx
-        .send(tokio_tungstenite::tungstenite::Message::Close(None))
-        .await;
+    let _ = ws_tx.send(axum::extract::ws::Message::Close(None)).await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
 }

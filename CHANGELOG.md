@@ -6,6 +6,57 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Optional token authentication for the inspect server.** Auth is
+  opt-in via file presence at `<data_dir>/inspect-token`:
+
+  | Token file | Source address | Behavior |
+  |---|---|---|
+  | missing | any (loopback or remote) | allow, no auth |
+  | present | any (loopback or remote) | require `Authorization: Bearer <token>` |
+
+  There is **no loopback bypass** — if you've enabled auth (by creating
+  the token file), you must authenticate even from `127.0.0.1`. The
+  file is read fresh on every connection so `jyc token rotate` takes
+  effect immediately for new connections. Constant-time compare via
+  `subtle::ConstantTimeEq`.
+
+  **Note:** a malformed token file (wrong prefix, wrong length,
+  non-hex chars) yields **500 Internal Server Error**, not 401.
+  This is deliberate — a corrupt token is a server-side problem,
+  not an auth failure, and silently disabling auth on corruption
+  would be a security regression. Fix the file with `jyc token
+  generate` to restore normal behavior.
+- **`jyc token generate | show | rotate` subcommand** for managing the
+  inspect-server authentication token file. The token format is
+  `jyc_<64 hex chars>` (256 bits of entropy), atomic write, mode `0600`
+  on Unix.
+
+### Changed
+
+- **Inspect server JSON protocol replaced by HTTP REST endpoints.** The
+  raw TCP line protocol (`{"method":"get_state"}\n` per request,
+  first-byte protocol sniffing) is gone. The inspect server now speaks
+  HTTP via axum on the same port (`127.0.0.1:9876` by default):
+
+  | Method | Path | Body |
+  |---|---|---|
+  | `GET` | `/health` | — |
+  | `GET` | `/state` | — |
+  | `POST` | `/reload_config` | — |
+  | `POST` | `/reset_session` | `{"thread_name":"…"}` |
+  | `POST` | `/inject_message` | `{"channel":"…","thread":"…","text":"…"}` |
+  | `GET` | `/ws[/<channel>]` | WebSocket upgrade (chat) |
+
+  The WebSocket path stays — `GET /ws/<channel>` upgrades to chat just
+  as before. Error responses use proper HTTP status codes (400/404/401/500)
+  with `{"error":"…"}` JSON bodies. The HTTP `InspectClient` public API is
+  unchanged; the dashboard's direct WebSocket clients
+  (`dashboard/ws.rs` chat reconnect and `create_thread_via_websocket`)
+  pick up auth automatically via a shared
+  `build_authenticated_ws_request` helper that lives in
+  `jyc_inspect::client` (originally in `dashboard/ws_auth.rs`, moved to
+  `jyc-inspect` so the integration test exercises the same code path).
+
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped
   in `<think>...</think>` tags (rather than in a separate `reasoning_content`

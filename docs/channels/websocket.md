@@ -156,6 +156,58 @@ Chat mode (`c` toggled on):
 └────────────────────────┘
 ```
 
+## Inspect HTTP API
+
+The inspect server speaks HTTP on the same port as the WebSocket chat. Endpoints:
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| `GET` | `/health` | — | `{"status":"ok"}` |
+| `GET` | `/state` | — | `InspectState` |
+| `POST` | `/reload_config` | — | `ReloadResult` |
+| `POST` | `/reset_session` | `{"thread_name":"…"}` | `ResetSessionResult` |
+| `POST` | `/inject_message` | `{"channel":"…","thread":"…","text":"…"}` | `InjectMessageResult` |
+| `GET` | `/ws[/<channel>]` | — | WebSocket upgrade |
+
+The `jyc-inspect` crate provides a `reqwest`-based client (`InspectClient`) that handles auth automatically — see `crates/jyc-cli/src/cli/dashboard/` for usage.
+
+### Remote access & authentication
+
+**Auth is opt-in via file presence at `<data_dir>/inspect-token`.** There is no loopback bypass — the rules are uniform regardless of source address:
+
+| `<data_dir>/inspect-token` | Source address | Behavior |
+|---|---|---|
+| missing | any (loopback or remote) | allow, no auth |
+| present | any (loopback or remote) | require `Authorization: Bearer <token>` |
+
+So enabling auth (by running `jyc token generate`) immediately requires authentication even from `localhost`. To disable, simply delete the token file. The file is read fresh on every connection — no in-memory cache — so `jyc token rotate` takes effect immediately.
+
+```bash
+# Generate the token (writes to <data_dir>/inspect-token, prints to stdout)
+$ jyc token generate
+jyc_a1b2c3d4e5f6...
+
+# Rotate (delete + generate)
+$ jyc token rotate
+
+# Show current token (errors if none)
+$ jyc token show
+```
+
+Or pass `JYC_INSPECT_TOKEN=<token>` as an env var to the dashboard/client process.
+
+For non-loopback binds, `jyc serve` warns at startup if no token file exists:
+
+```
+WARN inspect server binding to non-loopback address with no token file;
+     any client that can reach the port can use it.
+     Run `jyc token generate` to enable authentication.
+```
+
+Clients (dashboard, MCP tools, custom integrations) should use one of:
+1. `InspectClient::new(addr)` — reads `JYC_INSPECT_TOKEN` then `<data_dir>/inspect-token` per request
+2. `InspectClient::new_with_token(addr, "<token>")` — explicit, locked in
+
 ## WebSocket Protocol
 
 JSON envelope over WebSocket:

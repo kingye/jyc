@@ -1603,6 +1603,10 @@ impl ChatState {
                     parsed.get("duration_secs").and_then(|v| v.as_f64()),
                 ) && self.thread.as_deref() == Some(thread)
                 {
+                    // Clear stale thinking text from the previous processing
+                    // cycle. New thinking arrives via WS 'thinking' events.
+                    self.thinking_text = None;
+
                     let text = match kind {
                         "started" => "Processing started".to_string(),
                         "completed" => format!("Completed ({:.0}s)", dur),

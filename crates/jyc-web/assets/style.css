@@ -1,6 +1,11 @@
 /* ── Reset & base ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Ensure the HTML `hidden` attribute always wins over our display: flex rules
+   on .chat-view, #mobile-menu-btn, etc. Without this, a CSS `display: flex`
+   rule silently overrides `hidden` and elements remain visible. */
+[hidden] { display: none !important; }
+
 :root {
   --bg: #0f0f0f;
   --surface: #1a1a1a;

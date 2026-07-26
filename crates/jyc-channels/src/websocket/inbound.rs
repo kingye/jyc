@@ -103,6 +103,7 @@ enum ServerMessage {
     /// Initial activity batch delivered right after `subscribe`. The entries
     /// are read from the thread's `ThreadEventBus` buffer so the client sees
     /// recent activity events even if they fired before the WS connected.
+    #[allow(dead_code)] // reserved for future TUI reconnect use case
     #[serde(rename = "activity")]
     Activity {
         thread: String,

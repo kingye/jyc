@@ -38,6 +38,13 @@ pub(super) struct ChatState {
     pub(super) pattern_selected: usize,
     pub(super) thread: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
+    /// Recent activity entries for the activity pane. Initially loaded via
+    /// `GET /thread/.../activity` and kept in sync via WebSocket push
+    /// (`Tool`, `Process` events).
+    pub(super) activity_messages: Vec<jyc_types::inspect::ActivityEntry>,
+    /// Latest AI thinking/reasoning text, set via WebSocket `Thinking` push.
+    /// Cleared when the thread finishes processing or the user navigates away.
+    pub(super) thinking_text: Option<String>,
     /// Vim-style editor state for the chat input (edtui).
     pub(super) editor: EditorState,
     /// Vim-mode key event handler for the chat input (edtui).
@@ -818,21 +825,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     let show_progress = server_processing || app.chat.awaiting_response;
 
     if show_progress {
-        // Get thread info for thinking text and activity entries
-        let thread_info = app
-            .state
-            .as_ref()
-            .and_then(|s| {
-                let chat_name = app.chat.thread.as_deref()?;
-                s.threads.iter().find(|t| t.name == chat_name)
-            })
-            .filter(|ct| ct.status == ThreadStatus::Processing);
+        // Thinking text and activity entries are now pushed live via
+        // WebSocket into `app.chat.thinking_text` and
+        // `app.chat.activity_messages`. We no longer read them from
+        // /state's `ct.activity` / `ct.thinking_text` (those fields are
+        // scheduled for removal in step 6 of #438).
 
-        // Show thinking text (if any) from the thread state.
-        // This comes from ThreadEvent::Thinking events and is NOT stored
-        // in the activity buffer or activity.jsonl.
-        if let Some(ct) = &thread_info
-            && let Some(thinking) = &ct.thinking_text
+        // Show thinking text (if any) from the live-updated state.
+        if let Some(thinking) = &app.chat.thinking_text
             && !thinking.is_empty()
         {
             let gray_style = Style::default().fg(Color::Gray);
@@ -849,12 +849,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             }
         }
 
-        let activity_entries: Vec<_> = thread_info
-            .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
-            .unwrap_or_default();
+        // Use the live-updated activity buffer (pushed via WebSocket).
+        // Take the last 2 entries for a compact "what's happening now" view.
+        let activity_entries: Vec<_> = app.chat.activity_messages.iter().rev().take(2).collect();
 
-        let has_thinking_text = thread_info
-            .and_then(|ct| ct.thinking_text.as_deref())
+        let has_thinking_text = app
+            .chat
+            .thinking_text
+            .as_deref()
             .is_some_and(|t| !t.is_empty());
 
         if activity_entries.is_empty() && !has_thinking_text {
@@ -1181,6 +1183,8 @@ impl ChatState {
             pattern_selected: 0,
             thread: None,
             messages: vec![],
+            activity_messages: vec![],
+            thinking_text: None,
             editor: empty_chat_editor(),
             handler: EditorEventHandler::default(),
             focus: ChatFocus::ChatPane,
@@ -1264,25 +1268,44 @@ impl ChatState {
         thread_name: &str,
         state: Option<&InspectState>,
     ) {
-        self.visible = true;
+        // Open a WebSocket connection for the channel first. Detail mode
+        // previously relied on /state polling for activity/thinking, but
+        // those are now removed from /state. The WS subscribe (with
+        // mode="chat") gives us the initial Activity batch from the
+        // ThreadEventBus buffer + live updates.
+        self.open(channel, Some(channel), Some(thread_name));
+
+        // open() set the basic chat state; layer in detail-mode specifics
+        // on top.
         self.phase = ChatPhase::Chatting;
-        self.thread = Some(thread_name.to_string());
-        self.messages.clear();
-        self.editor = empty_chat_editor();
-        self.focus = ChatFocus::ChatPane;
-        self.scroll = 0;
-        self.activity_scroll = 0;
-        self.activity_hscroll = 0;
-        self.pending_g = false;
-        self.activity_split = 0;
-        self.ws_connected = false;
-        self.input_history.clear();
-        self.history_pos = None;
+        self.activity_messages.clear();
+        self.thinking_text = None;
         self.detail_channel = Some(channel.to_string());
         self.detail_thread_path = None;
 
-        // Load initial chat history from disk
+        // Send subscribe message so the WS connection actually starts
+        // streaming events for this thread. Without this, the open()
+        // call would set up the WS but the server wouldn't know which
+        // thread to push events for.
+        self.subscribe_to_active_thread();
+
+        // Load initial chat history from disk.
         self.load_detail_history(state);
+    }
+
+    /// Send a `subscribe` message to the active WebSocket connection.
+    /// Used both by `select_pattern` (WS channels) and `open_thread_detail`
+    /// (non-WS channels, detail mode).
+    fn subscribe_to_active_thread(&self) {
+        if let (Some(thread), Some(tx)) = (&self.thread, &self.ws_tx) {
+            let subscribe_msg = serde_json::json!({
+                "type": "subscribe",
+                "thread": thread,
+                "mode": "chat",
+            })
+            .to_string();
+            let _ = tx.send(subscribe_msg);
+        }
     }
 
     /// Load chat history from the thread's chat_history_*.jsonl files.
@@ -1331,18 +1354,14 @@ impl ChatState {
         self.editor = empty_chat_editor();
         self.scroll = 0;
         self.messages.clear();
-        self.messages.clear();
+        self.activity_messages.clear();
+        self.thinking_text = None;
         self.input_history.clear();
         self.history_pos = None;
 
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "thread": pattern,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(subscribe_msg);
-        }
+        // Subscribe with mode="chat" to get history + activity + live
+        // events (thinking, tool, process, chat).
+        self.subscribe_to_active_thread();
     }
 
     pub(super) fn toggle_focus(&mut self) {
@@ -1535,6 +1554,97 @@ impl ChatState {
                         .collect();
                 }
             }
+            // New: initial activity batch on subscribe. Replaces the
+            // in-memory `activity` field (which /state no longer carries).
+            Some("activity") => {
+                if let (Some(thread), Some(entries)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("entries").and_then(|v| v.as_array()),
+                ) && self.thread.as_deref() == Some(thread)
+                {
+                    let parsed_entries: Vec<jyc_types::inspect::ActivityEntry> = entries
+                        .iter()
+                        .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                        .collect();
+                    // Replace if the WS initial batch is larger / newer.
+                    if parsed_entries.len() >= self.activity_messages.len() {
+                        self.activity_messages = parsed_entries;
+                    }
+                }
+            }
+            // New: streamed AI reasoning. Replace (not append) — the
+            // server emits a single `Thinking` containing the full text
+            // after each thinking chunk.
+            Some("thinking") => {
+                if let (Some(thread), Some(text)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("text").and_then(|v| v.as_str()),
+                ) && self.thread.as_deref() == Some(thread)
+                {
+                    self.thinking_text = Some(text.to_string());
+                }
+            }
+            // New: tool start/complete. Push to activity buffer.
+            Some("tool") => {
+                if let (Some(thread), Some(kind), Some(text)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("kind").and_then(|v| v.as_str()),
+                    parsed.get("text").and_then(|v| v.as_str()),
+                ) && self.thread.as_deref() == Some(thread)
+                {
+                    // Convert to a tool-start or tool-complete activity entry.
+                    let severity = if kind == "completed" {
+                        // We don't know success vs failure from the kind alone;
+                        // default to Info (the WS protocol could be extended
+                        // to include success).
+                        jyc_types::Severity::Info
+                    } else {
+                        jyc_types::Severity::Info
+                    };
+                    self.activity_messages
+                        .push(jyc_types::inspect::ActivityEntry {
+                            text: text.to_string(),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            severity,
+                        });
+                    // Cap the buffer to avoid unbounded growth
+                    if self.activity_messages.len() > 200 {
+                        let drop = self.activity_messages.len() - 200;
+                        self.activity_messages.drain(0..drop);
+                    }
+                }
+            }
+            // New: processing lifecycle. Used to update the processing
+            // banner / indicator. Not currently rendered but kept for
+            // future use.
+            Some("process") => {
+                // Reserved for future UI updates (e.g. processing banner
+                // with elapsed time). For now we just acknowledge the event.
+            }
+            // New: live chat message (replaces legacy `reply`).
+            Some("chat") => {
+                if let (Some(thread), Some(sender), Some(text)) = (
+                    parsed.get("thread").and_then(|v| v.as_str()),
+                    parsed.get("sender").and_then(|v| v.as_str()),
+                    parsed.get("text").and_then(|v| v.as_str()),
+                ) && self.thread.as_deref() == Some(thread)
+                {
+                    // Dedup by text only — the WS bus replays buffered events
+                    // but they typically have the same text/sender. Using
+                    // text alone is sufficient since we never display the
+                    // same user message twice in practice.
+                    let already = self.messages.iter().any(|m| m.text == text);
+                    if !already {
+                        self.messages.push(ChatMessage {
+                            sender: sender.to_string(),
+                            text: text.to_string(),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        });
+                        self.scroll = 0;
+                    }
+                }
+            }
+            // Legacy: `reply` broadcast (kept for backward compat).
             Some("reply") => {
                 if let (Some(thread), Some(text)) = (
                     parsed.get("thread").and_then(|v| v.as_str()),

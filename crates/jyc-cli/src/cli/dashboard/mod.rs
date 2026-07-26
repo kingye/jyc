@@ -333,7 +333,9 @@ pub async fn run(
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx);
-        let poll_interval = Duration::from_millis(500);
+        // 2s poll keeps the sidebar status fresh without hammering the server.
+        // Live activity/thinking/chat now comes via WebSocket push, not /state.
+        let poll_interval = Duration::from_secs(2);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
 
         // If a thread was requested on the CLI, open chat directly.
@@ -360,32 +362,11 @@ pub async fn run(
                             }
                         }
 
-                        // Detail mode: extract live chat messages from recent_messages
-                        if app.chat.is_detail_mode()
-                            && let Some(ref chat_name) = app.chat.thread
-                            && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
-                        {
-                            let mut new_msg = false;
-                            for msg in &ct.recent_messages {
-                                // Skip messages we already have (dedup by text+timestamp)
-                                let already =
-                                    app.chat.messages.iter().any(|m| {
-                                        m.text == msg.text && m.timestamp == msg.timestamp
-                                    });
-                                if !already {
-                                    app.chat.messages.push(ChatMessage {
-                                        sender: msg.sender.clone(),
-                                        text: msg.text.clone(),
-                                        timestamp: msg.timestamp.clone(),
-                                    });
-                                    new_msg = true;
-                                }
-                            }
-                            // Auto-scroll to bottom only when new messages arrive
-                            if new_msg {
-                                app.chat.scroll = 0;
-                            }
-                        }
+                        // NOTE: Live chat messages now arrive via the WebSocket
+                        // `Chat` events (and `ReplySent` broadcasts), not via
+                        // /state's recent_messages. The TUI's `chat.messages`
+                        // is updated in `handle_ws_event` instead. We deliberately
+                        // do NOT drain `ct.recent_messages` here anymore.
 
                         app.state = Some(state);
                         if let Some(ref s) = app.state {

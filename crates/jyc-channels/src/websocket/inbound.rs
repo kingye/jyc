@@ -726,16 +726,6 @@ fn thread_event_to_server_message(
     }
 }
 
-/// Truncate `s` to at most `max` bytes without splitting a UTF-8
-/// character. Panics-free equivalent of `&s[..max]` for multi-byte input.
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..s.floor_char_boundary(max)]
-    }
-}
-
 /// Format a tool start event as a short human-readable label.
 ///
 /// For `edit` and `write` tools the input is a JSON string with structured
@@ -759,9 +749,11 @@ fn format_tool_text(tool_name: &str, input: Option<&str>) -> String {
                 "content": parsed.as_ref().and_then(|v| v.get("content")).and_then(|v| v.as_str()).unwrap_or(""),
             }).to_string()
         }
-        (name, Some(s)) if s.len() > 80 => format!("{}: {}...", name, truncate(s, 80)),
-        (name, Some(s)) => format!("{}: {}", name, s),
-        (name, None) => format!("{}: (running)", name),
+        // All other tools: full untruncated text with "Tool:" prefix (same
+        // format as the OLD event_to_activity in jyc-inspect/server.rs).
+        // Truncation is handled at the display level by the TUI's layout.
+        (name, Some(s)) => format!("Tool: {name} — {s}"),
+        (name, None) => format!("Tool: {name} (running)"),
     }
 }
 
@@ -839,16 +831,18 @@ fn format_tool_completed(
     }
 
     let status = if success { "done" } else { "FAILED" };
-    let duration_label = if duration_secs.fract() == 0.0 {
+    // Use integer-second format when fractional part is zero, otherwise
+    // render sub-second precision (e.g., "0s" for 0.0, "0.3s" for 0.3).
+    let time_str = if duration_secs.fract() == 0.0 {
         format!("{}s", duration_secs as u64)
     } else {
         format!("{:.1}s", duration_secs)
     };
-    let prefix = format!("{} ({} {})", tool_name, status, duration_label);
+    let prefix = format!("Tool: {tool_name} ({status}, {time_str})");
     match output {
-        Some(s) if !s.is_empty() => format!("{}: {}", prefix, truncate(s, 80)),
+        Some(s) if !s.is_empty() => format!("{prefix} — {s}"),
         _ => match input {
-            Some(s) => format!("{}: {}", prefix, truncate(s, 60)),
+            Some(s) => format!("{prefix} — {s}"),
             None => prefix,
         },
     }

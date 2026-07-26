@@ -534,6 +534,14 @@ All notable changes to JYC will be documented in this file.
   height/scroll calculations account for visual (wrapped) line counts using
   `unicode-width` for accurate CJK character width. (#343)
 
+- **Dashboard chat pane shows stale thinking/tool content after re-entering
+  a websocket thread, and `/cancel`/follow-up messages appear lost.**
+  Re-entering an existing websocket thread (`Enter` on a row) no longer
+  reuses the previous session's `activity_messages` / `thinking_text`, and
+  the WebSocket connection now subscribes to the thread's event bus
+  immediately so live `Thinking` / `Tool` / `Process` / `Chat` events flow
+  without waiting for the first reconnect.
+
 ## [0.3.12] - 2026-06-28
 
 ### Fixed

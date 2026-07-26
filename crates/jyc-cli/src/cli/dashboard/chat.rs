@@ -1267,10 +1267,11 @@ impl ChatState {
 
     /// Open detail/chat mode for a non-WebSocket thread.
     ///
-    /// Unlike `open`, this does NOT create a WebSocket connection.
-    /// Instead, it relies on the inspect server's poll-based state (via
-    /// `get_state`) for live message updates and the `inject_message`
-    /// protocol method for sending messages.
+    /// Builds on `open()` (which resets session state and subscribes the WS
+    /// connection for live `Thinking`/`Tool`/`Process`/`Chat` events), then
+    /// layers detail-mode specifics: `detail_channel` set so the chat pane
+    /// uses `inject_message` instead of WS for outgoing messages, and the
+    /// thread's chat history loaded from disk via `load_detail_history`.
     pub(super) fn open_thread_detail(
         &mut self,
         channel: &str,
@@ -1289,8 +1290,8 @@ impl ChatState {
     }
 
     /// Send a `subscribe` message to the active WebSocket connection.
-    /// Used both by `select_pattern` (WS channels) and `open_thread_detail`
-    /// (non-WS channels, detail mode).
+    /// Used by `open`, `select_pattern`, and `open_thread_detail` to attach
+    /// the server's `event_rx` to the current thread for live event streaming.
     fn subscribe_to_active_thread(&self) {
         if let (Some(thread), Some(tx)) = (&self.thread, &self.ws_tx) {
             let subscribe_msg = serde_json::json!({

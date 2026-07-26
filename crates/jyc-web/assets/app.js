@@ -345,15 +345,14 @@ function startPolling(channel, thread) {
       const s = await apiGetState();
       const t = s.threads.find(th => th.name === thread && th.channel === channel);
       if (!t) {
+        console.warn('[poll] thread not found:', channel, thread);
         renderMessages([], `Thread '${thread}' not found.`);
         return;
       }
       // Prefer in-memory recent_messages (live updates). Fall back to disk
-      // history if the thread is idle and recent_messages is empty — the
-      // server only populates recent_messages from live ThreadEvents, so
-      // historical chat (from chat_history_*.jsonl) needs the explicit
-      // /thread/.../history endpoint.
+      // history if the thread is idle and recent_messages is empty.
       let msgs = t.recent_messages || [];
+      let source = 'state.recent_messages';
       if (msgs.length === 0) {
         try {
           const histRes = await apiFetch(
@@ -362,9 +361,15 @@ function startPolling(channel, thread) {
           if (histRes.ok) {
             const hist = await histRes.json();
             msgs = hist.messages || [];
+            source = 'history endpoint';
+          } else {
+            console.warn('[poll] history endpoint returned', histRes.status);
           }
-        } catch (_) { /* fall through with empty msgs */ }
+        } catch (e) {
+          console.warn('[poll] history fetch failed:', e);
+        }
       }
+      console.log('[poll]', channel, thread, 'msgs:', msgs.length, 'source:', source);
       const prevCount = Number(msgContainer.dataset.msgCount) || 0;
       // Re-render when message count changes (new message arrived or first load).
       if (msgs.length !== prevCount) {
@@ -375,7 +380,9 @@ function startPolling(channel, thread) {
         }
       }
       updateThreadStatus(t);
-    } catch (e) { /* ignore poll errors */ }
+    } catch (e) {
+      console.error('[poll] error:', e);
+    }
   }
 
   /** Replace messages container contents with the given list of messages, or a

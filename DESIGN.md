@@ -2891,6 +2891,17 @@ Dashboard (crates/jyc-cli/src/cli/dashboard.rs)
   ├── Enter on non-WS thread → detail/chat mode (no WebSocket)
   ├── Poll loop: drain ThreadInfo.recent_messages → chat_messages
   └── send_chat_message_inner(): call InspectClient::inject_message()
+
+Web UI Dashboard (crates/jyc-web/ + crates/jyc-inspect/src/server.rs)
+  ├── Static HTML/CSS/JS embedded via include_str! (zero deps, no Node)
+  ├── Public routes at /, /t/:thread, /style.css, /app.js (before auth middleware)
+  ├── JS loads GET /state → renders channel + thread list sidebar
+  ├── Click thread → open chat pane:
+  │   ├── WS channel → WebSocket w/ {type:"subscribe"} + {type:"message"}
+  │   └── non-WS channel → POST /inject_message + 5s poll GET /state
+  ├── Login dialog → token → localStorage → Authorization header
+  ├── Responsive CSS: desktop two-col grid, mobile single-col
+  └── 401 handling → clear token → show login dialog
 ```
 
 #### Key Design Decisions
@@ -3369,6 +3380,7 @@ Configurable per pattern via `attachments` in the pattern config.
 | `uuid`                | 1.x (features: v4)                     | Internal message IDs              |
 | `tokio-util`          | 0.7.x                                  | CancellationToken                 |
 | `async-trait`         | 0.1.x                                  | Async trait support               |
+| `jyc-web`             | workspace (no deps)                    | Adaptive web UI static content     |
 
 ## Thread Event System
 

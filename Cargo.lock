@@ -1873,6 +1873,7 @@ dependencies = [
  "jyc-core",
  "jyc-types",
  "jyc-utils",
+ "jyc-web",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1964,6 +1965,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
 ]
+
+[[package]]
+name = "jyc-web"
+version = "0.3.12"
 
 [[package]]
 name = "lark-websocket-protobuf"

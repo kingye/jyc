@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JYC Dashboard</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <button id="mobile-menu-btn" class="btn-menu" hidden>☰</button>
+  <h1>JYC Dashboard</h1>
+  <span id="status-badge" class="status-badge">Loading...</span>
+  <button id="login-btn" class="btn-login" hidden>Login</button>
+</header>
+
+<main class="dashboard">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2>Threads</h2>
+    </div>
+    <div class="thread-list" id="thread-list">
+      <div class="loading">Loading...</div>
+    </div>
+  </aside>
+
+  <section class="chat-pane" id="chat-pane">
+    <div class="welcome" id="welcome-view">
+      <h2>Select a thread</h2>
+      <p>Click a thread from the list to start chatting.</p>
+      <div class="stats" id="stats"></div>
+    </div>
+
+    <div class="chat-view" id="chat-view" hidden>
+      <div class="chat-header">
+        <h2 id="chat-thread-name">Thread</h2>
+        <span id="chat-channel-name" class="channel-tag"></span>
+        <span id="chat-thread-status" class="status-tag"></span>
+      </div>
+      <div class="messages" id="messages">
+        <div class="loading">Loading messages...</div>
+      </div>
+      <div class="input-area" id="input-area">
+        <textarea id="msg-input" placeholder="Type a message..." rows="1" disabled></textarea>
+        <button id="send-btn" disabled>Send</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="login-dialog">
+  <form method="dialog">
+    <h2>Authentication Required</h2>
+    <p>Enter your token from <code>jyc token show</code></p>
+    <label>
+      <span>Token:</span>
+      <input type="password" id="token-input" placeholder="jyc_..." autocomplete="off" required>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" id="login-cancel">Cancel</button>
+      <button type="submit" id="login-submit">Login</button>
+    </div>
+    <p id="login-error" class="error" hidden>Invalid token. Please try again.</p>
+  </form>
+</dialog>
+
+<dialog id="error-dialog">
+  <form method="dialog">
+    <h2>Error</h2>
+    <p id="error-message">Something went wrong.</p>
+    <div class="dialog-actions">
+      <button type="submit">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

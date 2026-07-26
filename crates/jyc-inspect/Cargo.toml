@@ -31,6 +31,9 @@ async-trait = "0.1"
 # Constant-time token compare (auth middleware)
 subtle = "2"
 
+# Web UI (adaptive dashboard)
+jyc-web = { path = "../jyc-web" }
+
 [dev-dependencies]
 tempfile = "3"
 http-body-util = "0.1"

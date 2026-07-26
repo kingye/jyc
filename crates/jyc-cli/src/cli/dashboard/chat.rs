@@ -1219,6 +1219,9 @@ impl ChatState {
         self.pattern_selected = 0;
         self.thread = initial_thread.map(|s| s.to_string());
         self.messages.clear();
+        self.activity_messages.clear();
+        self.thinking_text = None;
+        self.awaiting_response = false;
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
         self.scroll = 0;
@@ -1241,6 +1244,12 @@ impl ChatState {
             None => format!("ws://{}/ws", addr),
         };
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
+
+        // Subscribe immediately so the server attaches event_rx and streams
+        // live Thinking / Tool / Process / Chat events for this thread.
+        if initial_thread.is_some() {
+            self.subscribe_to_active_thread();
+        }
     }
 
     pub(super) fn close(&mut self) {
@@ -1268,26 +1277,12 @@ impl ChatState {
         thread_name: &str,
         state: Option<&InspectState>,
     ) {
-        // Open a WebSocket connection for the channel first. Detail mode
-        // previously relied on /state polling for activity/thinking, but
-        // those are now removed from /state. The WS subscribe (with
-        // mode="chat") gives us the initial Activity batch from the
-        // ThreadEventBus buffer + live updates.
+        // open() sets the basic chat state + subscribes the WS connection to
+        // the thread for live events (Thinking, Tool, Process, Chat). Layer
+        // detail-mode specifics on top.
         self.open(channel, Some(channel), Some(thread_name));
-
-        // open() set the basic chat state; layer in detail-mode specifics
-        // on top.
-        self.phase = ChatPhase::Chatting;
-        self.activity_messages.clear();
-        self.thinking_text = None;
         self.detail_channel = Some(channel.to_string());
         self.detail_thread_path = None;
-
-        // Send subscribe message so the WS connection actually starts
-        // streaming events for this thread. Without this, the open()
-        // call would set up the WS but the server wouldn't know which
-        // thread to push events for.
-        self.subscribe_to_active_thread();
 
         // Load initial chat history from disk.
         self.load_detail_history(state);
@@ -1965,5 +1960,66 @@ mod tests {
         let out = wrap_text_to_width("abc", 0);
         let joined: String = out.join("");
         assert_eq!(joined, "abc");
+    }
+
+    #[test]
+    fn open_clears_activity_messages_thinking_and_awaiting_on_reentry() {
+        // Regression: open() must clear session state so stale content
+        // from the previous session does not leak into the re-entered thread.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // First open: simulate a session with activity state
+        app.chat
+            .open("127.0.0.1:9999", Some("ws"), Some("thread-a"));
+        app.chat
+            .activity_messages
+            .push(jyc_types::inspect::ActivityEntry {
+                text: "stale tool call".into(),
+                timestamp: None,
+                severity: jyc_types::Severity::Info,
+            });
+        app.chat.thinking_text = Some("stale thinking".into());
+        app.chat.awaiting_response = true;
+
+        // Second open: re-enter a different thread — must clear all stale state
+        app.chat
+            .open("127.0.0.1:9999", Some("ws"), Some("thread-b"));
+
+        assert!(
+            app.chat.activity_messages.is_empty(),
+            "activity_messages must be cleared on re-entry"
+        );
+        assert!(
+            app.chat.thinking_text.is_none(),
+            "thinking_text must be cleared on re-entry"
+        );
+        assert!(
+            !app.chat.awaiting_response,
+            "awaiting_response must be cleared on re-entry"
+        );
+        assert_eq!(app.chat.thread.as_deref(), Some("thread-b"));
+        assert_eq!(app.chat.phase, ChatPhase::Chatting);
+    }
+
+    #[test]
+    fn open_without_initial_thread_goes_to_pattern_select() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // open without initial_thread → pattern select mode
+        app.chat.open("127.0.0.1:9999", None, None);
+        assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
+        assert!(app.chat.thread.is_none());
     }
 }

@@ -40,6 +40,7 @@ CI 流水线（`.github/workflows/ci.yml`）会在 PR 提交后自动执行以�
 - `cargo test -p <crate> --all-targets` / `cargo test --all-targets`
 - `cargo llvm-cov`、`cargo-tarpaulin` 或其他覆盖率工具
 - 无 `-p` 参数的 `cargo clippy`（即 `cargo clippy --workspace`、`cargo clippy` 默认行为）
+- 无 `-p` 参数的 `cargo build`（即 `cargo build --workspace`、`cargo build` 默认行为）
 
 这些命令在 monorepo 上单次运行耗时数分钟，多步骤开发中累积成本极高。CI 是唯一的验证路径。
 
@@ -49,9 +50,11 @@ CI 流水线（`.github/workflows/ci.yml`）会在 PR 提交后自动执行以�
 - `cargo check` — 全 workspace 编译期类型检查，快速（比 `cargo build` 快数倍）
 - `cargo check -p <crate>` — 针对单 crate 的类型检查
 - `cargo clippy -p <crate>` — 针对单 crate 的 lint 检查
-- `cargo build -p <crate>` — 仅在必要时（如集成测试需要外部 binary）
+- `cargo build -p <crate>` — 仅在必要时（如集成测试需要外部 binary），不替代 CI 全 workspace 构建
 
-`cargo clippy -p <crate>` 允许用于针对性的 lint 验证，因为 Agent 需要在编写代码时立即发现 clippy 警告。但是 `cargo clippy --workspace`（无 `-p`）禁止，因为本质上是 CI 已覆盖的检查。
+`cargo clippy -p <crate>` 允许用于针对性的 lint 验证，因为 Agent 需要在编写代码时立即发现 clippy 警告。但是 `cargo clippy --workspace`（无 `-p`）禁止，因为本质上是 CI 已覆盖的检查。`cargo build -p <crate>` 同理——仅在真的需要构建单个 crate 的 binary 时运行（例如 `cargo run -p jyc-cli -- --help` 或集成测试需要 `cargo build -p jyc-channels`）。
+
+同样的：`cargo check` / `cargo check -p <crate>` 允许（编译期类型检查，比完整构建快几个数量级）；`cargo build` / `cargo build --workspace` 禁止（完整构建，CI 覆盖）。
 
 ## 工作流约定
 

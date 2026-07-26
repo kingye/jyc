@@ -341,24 +341,40 @@ function startPolling(channel, thread) {
     try {
       const s = await apiGetState();
       const t = s.threads.find(th => th.name === thread && th.channel === channel);
-      if (!t) return;
+      if (!t) {
+        renderMessages([], `Thread '${thread}' not found.`);
+        return;
+      }
       const msgs = t.recent_messages || [];
-
-      // Only update if we have messages
-      if (msgs.length > 0) {
-        const prevCount = msgContainer.dataset.msgCount;
-        const count = msgs.length;
-        if (count !== Number(prevCount) || !prevCount) {
-          msgContainer.innerHTML = '';
-          for (const m of msgs.slice(-MSG_HISTORY_LIMIT)) {
-            addMessage(m.sender === 'ai' ? 'ai' : 'user', m.text, m.timestamp);
-          }
-          msgContainer.dataset.msgCount = String(count);
-          msgContainer.scrollTop = msgContainer.scrollHeight;
+      const prevCount = Number(msgContainer.dataset.msgCount) || 0;
+      // Re-render when message count changes (new message arrived or first load).
+      if (msgs.length !== prevCount) {
+        if (msgs.length === 0) {
+          renderMessages([], 'No messages yet. Start the conversation!');
+        } else {
+          renderMessages(msgs.slice(-MSG_HISTORY_LIMIT));
         }
       }
       updateThreadStatus(t);
     } catch (e) { /* ignore poll errors */ }
+  }
+
+  /** Replace messages container contents with the given list of messages, or a
+   *  placeholder when empty. */
+  function renderMessages(msgs, placeholder) {
+    msgContainer.innerHTML = '';
+    if (msgs.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'loading';
+      empty.textContent = placeholder || 'No messages yet.';
+      msgContainer.appendChild(empty);
+    } else {
+      for (const m of msgs) {
+        addMessage(m.sender === 'ai' ? 'ai' : 'user', m.text, m.timestamp);
+      }
+      msgContainer.scrollTop = msgContainer.scrollHeight;
+    }
+    msgContainer.dataset.msgCount = String(msgs.length);
   }
 
   // Initial load

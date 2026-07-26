@@ -1994,7 +1994,12 @@ mode = "agent"
         let client = reqwest::Client::new();
         let resp = client.get(format!("{base}/")).send().await.unwrap();
         assert_eq!(resp.status(), 200);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.starts_with("text/html"), "unexpected content-type: {ct}");
         let body = resp.text().await.unwrap();
         assert!(body.contains("JYC Dashboard"), "expected title in body");
@@ -2002,7 +2007,10 @@ mode = "agent"
             body.contains("/app.js") && body.contains("/style.css"),
             "expected asset references in body"
         );
-        assert!(body.contains("login-dialog"), "expected login dialog in body");
+        assert!(
+            body.contains("login-dialog"),
+            "expected login dialog in body"
+        );
 
         cancel.cancel();
         handle.await.unwrap();
@@ -2024,7 +2032,10 @@ mode = "agent"
         assert_eq!(resp.status(), 200);
         let body = resp.text().await.unwrap();
         assert!(body.contains("Thread"), "expected thread title in body");
-        assert!(body.contains("login-dialog"), "expected login dialog in body");
+        assert!(
+            body.contains("login-dialog"),
+            "expected login dialog in body"
+        );
 
         cancel.cancel();
         handle.await.unwrap();
@@ -2039,9 +2050,18 @@ mode = "agent"
         let (base, handle) = spawn_test_server(ctx, cancel.clone()).await;
 
         let client = reqwest::Client::new();
-        let resp = client.get(format!("{base}/style.css")).send().await.unwrap();
+        let resp = client
+            .get(format!("{base}/style.css"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(
             ct.starts_with("text/css"),
             "unexpected content-type for style.css: {ct}"
@@ -2069,7 +2089,12 @@ mode = "agent"
         let client = reqwest::Client::new();
         let resp = client.get(format!("{base}/app.js")).send().await.unwrap();
         assert_eq!(resp.status(), 200);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(
             ct.starts_with("application/javascript"),
             "unexpected content-type for app.js: {ct}"
@@ -2104,7 +2129,11 @@ mode = "agent"
         // a token in the first place.
         let resp = client.get(format!("{base}/")).send().await.unwrap();
         assert_eq!(resp.status(), 200, "GET / should be public");
-        let resp = client.get(format!("{base}/style.css")).send().await.unwrap();
+        let resp = client
+            .get(format!("{base}/style.css"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200, "GET /style.css should be public");
         let resp = client.get(format!("{base}/app.js")).send().await.unwrap();
         assert_eq!(resp.status(), 200, "GET /app.js should be public");
@@ -2112,11 +2141,7 @@ mode = "agent"
         // API routes still require auth.
         let resp = client.get(format!("{base}/state")).send().await.unwrap();
         assert_eq!(resp.status(), 401, "GET /state should require auth");
-        let resp = client
-            .get(format!("{base}/health"))
-            .send()
-            .await
-            .unwrap();
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
         assert_eq!(resp.status(), 401, "GET /health should require auth");
 
         cancel.cancel();

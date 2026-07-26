@@ -232,7 +232,10 @@ async fn web_app_js() -> impl axum::response::IntoResponse {
 
 /// Serve the 404 page for unmatched public routes.
 async fn web_not_found() -> impl axum::response::IntoResponse {
-    (axum::http::StatusCode::NOT_FOUND, axum::response::Html(jyc_web::NOT_FOUND_HTML))
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        axum::response::Html(jyc_web::NOT_FOUND_HTML),
+    )
 }
 
 // ── Auth middleware ──

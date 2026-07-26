@@ -100,6 +100,48 @@ enum ServerMessage {
         thread: String,
         messages: Vec<HistoryEntry>,
     },
+    /// Initial activity batch delivered right after `subscribe`. The entries
+    /// are read from the thread's `ThreadEventBus` buffer so the client sees
+    /// recent activity events even if they fired before the WS connected.
+    #[serde(rename = "activity")]
+    Activity {
+        thread: String,
+        entries: Vec<HistoryEntry>,
+    },
+    /// Streamed AI reasoning (`ThreadEvent::Thinking`). Pushed live as the
+    /// model emits thinking chunks. The client's `thinking_text` UI replaces
+    /// its content on each message.
+    #[serde(rename = "thinking")]
+    Thinking {
+        thread: String,
+        text: String,
+    },
+    /// Tool start/complete events (`ThreadEvent::ToolStarted` /
+    /// `ThreadEvent::ToolCompleted`). The client appends these to the
+    /// activity log.
+    #[serde(rename = "tool")]
+    Tool {
+        thread: String,
+        kind: String, // "started" | "completed"
+        text: String,
+    },
+    /// Processing start/complete events (`ThreadEvent::ProcessingStarted`
+    /// / `ProcessingCompleted`). The client updates the processing banner.
+    #[serde(rename = "process")]
+    Process {
+        thread: String,
+        kind: String, // "started" | "completed" | "failed"
+        duration_secs: f64,
+    },
+    /// Live chat message (`ThreadEvent::IncomingMessage` /
+    /// `ThreadEvent::ReplySent`). Replaces the legacy `"reply"` broadcast.
+    /// `sender` is `"user"` for inbound, `"ai"` for replies.
+    #[serde(rename = "chat")]
+    Chat {
+        thread: String,
+        sender: String,
+        text: String,
+    },
 }
 
 /// A single entry in chat history.
@@ -117,8 +159,22 @@ struct HistoryEntry {
 enum ClientMessage {
     #[serde(rename = "list_patterns")]
     ListPatterns,
+    /// Subscribe to a thread.
+    ///
+    /// `mode` controls the initial sync bundle:
+    /// - `"chat"` (default): send `history` + `activity` + start streaming all
+    ///   events (thinking, tool, process, chat).
+    /// - `"activity"`: only send `activity` and start streaming tool/process
+    ///   events (no chat content).
+    ///
+    /// `mode` defaults to `"chat"` when omitted, preserving backward compat
+    /// with existing WS clients that only send `{type:"subscribe", thread}`.
     #[serde(rename = "subscribe")]
-    Subscribe { thread: String },
+    Subscribe {
+        thread: String,
+        #[serde(default)]
+        mode: Option<String>,
+    },
     #[serde(rename = "create_thread")]
     CreateThread {
         thread: String,
@@ -290,8 +346,24 @@ async fn handle_connection_impl(
 
     tracing::info!(addr = %addr, channel = %channel_name, "WebSocket client connected");
 
+    // After subscribe, this holds the receiver for the thread's event bus.
+    // `None` until the client subscribes; select-branch below polls it
+    // as `pending()` when `None`.
+    let mut event_rx: Option<tokio::sync::mpsc::Receiver<jyc_core::thread_event::ThreadEvent>> =
+        None;
+
     loop {
+        // Conditional select branch for the event bus. When `event_rx` is
+        // `None`, this future never resolves so it doesn't win the race.
+        let event_branch = async {
+            match event_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending::<Option<jyc_core::thread_event::ThreadEvent>>().await,
+            }
+        };
+
         tokio::select! {
+            biased;
             msg = ws_rx.next() => {
                 let msg = match msg {
                     Some(Ok(m)) => m,
@@ -334,23 +406,65 @@ async fn handle_connection_impl(
                             break;
                         }
                     }
-                    ClientMessage::Subscribe { thread } => {
-                        tracing::info!(addr = %addr, thread = %thread, "Client subscribed to thread");
+                    ClientMessage::Subscribe { thread, mode } => {
+                        let sub_mode = mode.as_deref().unwrap_or("chat").to_string();
+                        tracing::info!(
+                            addr = %addr,
+                            thread = %thread,
+                            mode = %sub_mode,
+                            "Client subscribed to thread"
+                        );
 
-                        // Load and send chat history
-                        let history = load_chat_history(&thread, &workspace_dir, &thread_manager).await;
-                        if !history.is_empty() {
-                            let response = ServerMessage::History {
-                                thread: thread.clone(),
-                                messages: history,
-                            };
-                            let json = serde_json::to_string(&response)?;
-                            if let Err(e) = ws_tx
-                                .send(axum::extract::ws::Message::Text(json))
-                                .await
+                        // Send chat history (only for chat mode)
+                        if sub_mode == "chat" {
+                            let history = load_chat_history(
+                                &thread,
+                                &workspace_dir,
+                                &thread_manager,
+                            )
+                            .await;
+                            if !history.is_empty() {
+                                let response = ServerMessage::History {
+                                    thread: thread.clone(),
+                                    messages: history,
+                                };
+                                let json = serde_json::to_string(&response)?;
+                                if let Err(e) = ws_tx
+                                    .send(axum::extract::ws::Message::Text(json))
+                                    .await
+                                {
+                                    tracing::warn!(error = %e, addr = %addr, "Failed to send history");
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Subscribe to the thread's event bus. The bus replays
+                        // buffered events to the new subscriber, providing the
+                        // initial `Activity` batch automatically. The bus may
+                        // not exist yet if the thread is offline / never had
+                        // a worker; in that case we just don't forward events.
+                        if let Some(tm) = &thread_manager {
+                            if let Some(bus) =
+                                tm.get_or_create_event_bus(&thread).await
                             {
-                                tracing::warn!(error = %e, addr = %addr, "Failed to send history");
-                                break;
+                                match bus.subscribe().await {
+                                    Ok(rx) => {
+                                        event_rx = Some(rx);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            thread = %thread,
+                                            "Failed to subscribe to event bus"
+                                        );
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    thread = %thread,
+                                    "Event bus unavailable for thread (events disabled or offline)"
+                                );
                             }
                         }
                     }
@@ -435,6 +549,9 @@ async fn handle_connection_impl(
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(payload) => {
+                        // Legacy `reply` broadcast: keep emitting for backward
+                        // compat with existing WS clients that listen for
+                        // `{type:"reply", ...}`.
                         if let Err(e) = ws_tx.send(axum::extract::ws::Message::Text(payload)).await {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send broadcast");
                             break;
@@ -449,12 +566,153 @@ async fn handle_connection_impl(
                     }
                 }
             }
+            event = event_branch => {
+                let Some(event) = event else { break; };
+                if let Some(msg) = thread_event_to_server_message(event) {
+                    let json = match serde_json::to_string(&msg) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to serialize WS event");
+                            continue;
+                        }
+                    };
+                    if let Err(e) = ws_tx.send(axum::extract::ws::Message::Text(json)).await {
+                        tracing::warn!(error = %e, addr = %addr, "Failed to send WS event");
+                        break;
+                    }
+                }
+            }
         }
     }
 
     let _ = ws_tx.send(axum::extract::ws::Message::Close(None)).await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
+}
+
+/// Convert a `ThreadEvent` from the bus into a `ServerMessage` for WS push.
+///
+/// Returns `None` for events that don't translate to a client-facing message
+/// (e.g. `SessionStatus`, `LLMRequestStarted`, `ProcessingProgress`).
+fn thread_event_to_server_message(
+    event: jyc_core::thread_event::ThreadEvent,
+) -> Option<ServerMessage> {
+    use jyc_core::thread_event::ThreadEvent;
+    match event {
+        ThreadEvent::Thinking { thread_name, text, .. } => Some(ServerMessage::Thinking {
+            thread: thread_name,
+            text,
+        }),
+        ThreadEvent::ToolStarted {
+            thread_name,
+            tool_name,
+            input,
+            timestamp,
+            ..
+        } => Some(ServerMessage::Tool {
+            thread: thread_name,
+            kind: "started".to_string(),
+            text: format_tool_text(&tool_name, input.as_deref(), Some(&timestamp)),
+        }),
+        ThreadEvent::ToolCompleted {
+            thread_name,
+            tool_name,
+            success,
+            output,
+            input,
+            timestamp,
+            duration_secs,
+            ..
+        } => Some(ServerMessage::Tool {
+            thread: thread_name,
+            kind: "completed".to_string(),
+            text: format_tool_completed(
+                &tool_name,
+                success,
+                output.as_deref(),
+                input.as_deref(),
+                Some(&timestamp),
+                duration_secs,
+            ),
+        }),
+        ThreadEvent::ProcessingStarted { thread_name, .. } => Some(ServerMessage::Process {
+            thread: thread_name,
+            kind: "started".to_string(),
+            duration_secs: 0.0,
+        }),
+        ThreadEvent::ProcessingCompleted {
+            thread_name,
+            success,
+            duration_secs,
+            ..
+        } => Some(ServerMessage::Process {
+            thread: thread_name,
+            kind: if success { "completed".to_string() } else { "failed".to_string() },
+            duration_secs: duration_secs as f64,
+        }),
+        ThreadEvent::IncomingMessage {
+            thread_name,
+            sender,
+            text,
+            ..
+        } => Some(ServerMessage::Chat {
+            thread: thread_name,
+            sender,
+            text,
+        }),
+        ThreadEvent::ReplySent {
+            thread_name,
+            text,
+            ..
+        } => Some(ServerMessage::Chat {
+            thread: thread_name,
+            sender: "ai".to_string(),
+            text,
+        }),
+        // Skip events that don't have a clean client-facing representation.
+        ThreadEvent::ProcessingProgress { .. }
+        | ThreadEvent::LLMRequestStarted { .. }
+        | ThreadEvent::SessionStatus { .. } => None,
+    }
+}
+
+/// Format a tool start event as a short human-readable label.
+fn format_tool_text(
+    tool_name: &str,
+    input: Option<&str>,
+    _timestamp: Option<&chrono::DateTime<chrono::Utc>>,
+) -> String {
+    // Truncate the input summary to keep WS messages small. The full diff
+    // lives in the on-disk activity.jsonl for the TUI to inspect.
+    match input {
+        Some(s) if s.len() > 80 => format!("{}: {}...", tool_name, &s[..80]),
+        Some(s) => format!("{}: {}", tool_name, s),
+        None => format!("{}: (running)", tool_name),
+    }
+}
+
+/// Format a tool completion event as a short human-readable label.
+fn format_tool_completed(
+    tool_name: &str,
+    success: bool,
+    output: Option<&str>,
+    input: Option<&str>,
+    _timestamp: Option<&chrono::DateTime<chrono::Utc>>,
+    duration_secs: u64,
+) -> String {
+    let status = if success { "done" } else { "FAILED" };
+    let prefix = format!("{} ({} {}s)", tool_name, status, duration_secs);
+    match output {
+        Some(s) if !s.is_empty() => format!("{}: {}", prefix, truncate(s, 80)),
+        _ => match input {
+            Some(s) => format!("{}: {}", prefix, truncate(s, 60)),
+            None => prefix,
+        },
+    }
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 /// Load recent chat history messages from JSONL files for a thread.

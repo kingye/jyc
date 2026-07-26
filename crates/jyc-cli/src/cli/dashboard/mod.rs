@@ -162,8 +162,12 @@ impl App {
                     let _ = tx.send(list_msg);
                 }
 
-                // Auto-re-subscribe to the previously selected thread, if any
-                if let Some(ref thread) = self.chat.thread {
+                // Re-subscribe to the active thread only on reconnect —
+                // `open()` already subscribes on initial entry, and the
+                // `subscribed` flag tracks that. Reset on Disconnected below.
+                if !self.chat.subscribed
+                    && let Some(ref thread) = self.chat.thread
+                {
                     let subscribe_msg = serde_json::json!({
                         "type": "subscribe",
                         "thread": thread,
@@ -172,11 +176,13 @@ impl App {
                     if let Some(tx) = &self.chat.ws_tx {
                         let _ = tx.send(subscribe_msg);
                     }
+                    self.chat.subscribed = true;
                     self.set_status(format!("Reconnected to {thread}"));
                 }
             }
             WsEvent::Disconnected => {
                 self.chat.ws_connected = false;
+                self.chat.subscribed = false;
                 self.set_status("WebSocket disconnected".to_string());
             }
             WsEvent::Message(text) => {

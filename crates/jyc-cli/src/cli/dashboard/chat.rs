@@ -65,6 +65,12 @@ pub(super) struct ChatState {
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
+    /// Whether we've sent a subscribe message for the current thread this
+    /// session. Reset on `open()` (new thread / new WS) and on WS disconnect;
+    /// set after `subscribe_to_active_thread()`. The `WsEvent::Connected`
+    /// handler only re-subscribes when this is false, which is what we want:
+    /// `open()` subscribes on initial entry, `Connected` handles reconnects.
+    pub(super) subscribed: bool,
     // Detail mode (non-WebSocket thread chat) state
     /// Channel name for the thread being viewed in detail mode.
     /// Set when Enter is pressed on a non-websocket thread.
@@ -1197,6 +1203,7 @@ impl ChatState {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
+            subscribed: false,
             detail_channel: None,
             detail_thread_path: None,
             pending_inject: None,
@@ -1230,6 +1237,7 @@ impl ChatState {
         self.pending_g = false;
         self.activity_split = 0;
         self.ws_connected = false;
+        self.subscribed = false;
         self.input_history.clear();
         self.history_pos = None;
 
@@ -1292,7 +1300,8 @@ impl ChatState {
     /// Send a `subscribe` message to the active WebSocket connection.
     /// Used by `open`, `select_pattern`, and `open_thread_detail` to attach
     /// the server's `event_rx` to the current thread for live event streaming.
-    fn subscribe_to_active_thread(&self) {
+    fn subscribe_to_active_thread(&mut self) {
+        self.subscribed = true;
         if let (Some(thread), Some(tx)) = (&self.thread, &self.ws_tx) {
             let subscribe_msg = serde_json::json!({
                 "type": "subscribe",
@@ -2004,6 +2013,10 @@ mod tests {
             !app.chat.awaiting_response,
             "awaiting_response must be cleared on re-entry"
         );
+        assert!(
+            app.chat.subscribed,
+            "open() must mark the session as subscribed after subscribe_to_active_thread()"
+        );
         assert_eq!(app.chat.thread.as_deref(), Some("thread-b"));
         assert_eq!(app.chat.phase, ChatPhase::Chatting);
     }
@@ -2022,5 +2035,34 @@ mod tests {
         app.chat.open("127.0.0.1:9999", None, None);
         assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
         assert!(app.chat.thread.is_none());
+        assert!(
+            !app.chat.subscribed,
+            "pattern-select open must NOT mark the session as subscribed"
+        );
+    }
+
+    #[test]
+    fn open_resets_subscribed_flag_for_reentry() {
+        // Regression: the `subscribed` flag must reset on re-entry so the
+        // WsEvent::Connected re-subscribe path fires correctly on the next
+        // WS reconnect (and doesn't double-subscribe on initial connect).
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        app.chat
+            .open("127.0.0.1:9999", Some("ws"), Some("thread-a"));
+        assert!(app.chat.subscribed);
+
+        // Re-enter: open() resets subscribed so the Connected handler can
+        // re-subscribe after the new WS handshake.
+        app.chat
+            .open("127.0.0.1:9999", Some("ws"), Some("thread-b"));
+        assert!(app.chat.subscribed);
+        assert_eq!(app.chat.thread.as_deref(), Some("thread-b"));
     }
 }

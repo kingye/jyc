@@ -1881,6 +1881,11 @@ mod tests {
 
     #[test]
     fn close_returns_to_overview_from_detail_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx);
 

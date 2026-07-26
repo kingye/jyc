@@ -427,35 +427,6 @@ async fn ws_upgrade_root(
     ws_upgrade_impl(ctx, ws, addr, None).await
 }
 
-/// Look up the on-disk `thread_path` for a (channel, name) pair.
-///
-/// Tries the channel's `ThreadManager` first (covers live threads), then
-/// falls back to the workspace directories for offline/archived threads.
-async fn resolve_thread_path(
-    context: &InspectContext,
-    channel: &str,
-    name: &str,
-) -> Option<std::path::PathBuf> {
-    // Look up the ThreadManager for this channel. Cloning the Arc drops the
-    // ArcSwap guard so we can await `thread_path` without holding the lock.
-    let tm = {
-        let tms = context.thread_managers.load();
-        tms.iter().find(|tm| tm.channel_name() == channel).cloned()
-    };
-
-    if let Some(tm) = tm
-        && let Some(path) = tm.thread_path(name).await
-    {
-        return Some(path);
-    }
-
-    let dirs = context.workspace_dirs.load();
-    dirs.iter().find_map(|d| {
-        let p = d.join(name);
-        if p.exists() { Some(p) } else { None }
-    })
-}
-
 /// Serve persisted chat history for a thread (from `chat_history_*.jsonl`).
 ///
 /// Used by the TUI/Web UI to populate the chat pane with historical
@@ -470,9 +441,16 @@ async fn handle_thread_history(
         ));
     }
 
-    let thread_path = resolve_thread_path(&ctx, &channel, &name)
-        .await
-        .ok_or_else(|| ApiError::not_found(format!("thread '{name}' not found")))?;
+    // Shared utility in `jyc-core` — same logic used by all thread-path
+    // lookups in the project (history endpoint, reset_session, etc.)
+    let thread_path = jyc_core::thread_path_resolver::resolve_thread_path(
+        &ctx.thread_managers,
+        &ctx.workspace_dirs,
+        &channel,
+        &name,
+    )
+    .await
+    .ok_or_else(|| ApiError::not_found(format!("thread '{name}' not found")))?;
 
     // Cap at 100 messages — matches the WebSocket adapter's limit
     // and the TUI's `load_detail_history` cap.

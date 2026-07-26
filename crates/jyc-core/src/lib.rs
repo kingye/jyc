@@ -21,3 +21,4 @@ pub mod thread_event_bus;
 pub mod thread_json;
 pub mod thread_manager;
 pub mod thread_path;
+pub mod thread_path_resolver;

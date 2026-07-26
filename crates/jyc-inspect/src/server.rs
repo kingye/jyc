@@ -168,8 +168,25 @@ impl InspectServer {
 ///
 /// Exposed for integration tests that want to drive the router directly via
 /// `axum::serve` against a random port.
+///
+/// Routes are split into two groups:
+///
+/// - **Public** (no auth): Web UI static pages and assets (`/`, `/t/:thread`,
+///   `/style.css`, `/app.js`). The JS handles token-based auth via localStorage.
+/// - **Protected** (with auth middleware): All API endpoints (`/health`,
+///   `/state`, `/reload_config`, `/reset_session`, `/inject_message`,
+///   `/ws`, `/ws/:channel`).
 pub fn build_router(context: Arc<InspectContext>) -> Router {
-    Router::new()
+    // Public web UI routes (no auth — user needs to load the page first)
+    let public = Router::new()
+        .route("/", get(web_index))
+        .route("/t/:thread", get(web_thread))
+        .route("/style.css", get(web_style))
+        .route("/app.js", get(web_app_js))
+        .fallback(web_not_found);
+
+    // Protected API routes (behind auth middleware)
+    let protected = Router::new()
         .route("/health", get(handle_health))
         .route("/state", get(handle_get_state))
         .route("/reload_config", post(handle_reload_config))
@@ -180,8 +197,42 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .layer(middleware::from_fn_with_state(
             context.clone(),
             auth_middleware,
-        ))
-        .with_state(context)
+        ));
+
+    public.merge(protected).with_state(context)
+}
+
+// ── Web UI handlers ──
+
+/// Serve the main dashboard page.
+async fn web_index() -> axum::response::Html<&'static str> {
+    axum::response::Html(jyc_web::INDEX_HTML)
+}
+
+/// Serve the thread chat page.
+async fn web_thread() -> axum::response::Html<&'static str> {
+    axum::response::Html(jyc_web::THREAD_HTML)
+}
+
+/// Serve the CSS stylesheet.
+async fn web_style() -> impl axum::response::IntoResponse {
+    axum::response::Response::builder()
+        .header("content-type", "text/css")
+        .body(axum::body::Body::from(jyc_web::STYLE_CSS))
+        .unwrap()
+}
+
+/// Serve the JavaScript application.
+async fn web_app_js() -> impl axum::response::IntoResponse {
+    axum::response::Response::builder()
+        .header("content-type", "application/javascript")
+        .body(axum::body::Body::from(jyc_web::APP_JS))
+        .unwrap()
+}
+
+/// Serve the 404 page for unmatched public routes.
+async fn web_not_found() -> impl axum::response::IntoResponse {
+    (axum::http::StatusCode::NOT_FOUND, axum::response::Html(jyc_web::NOT_FOUND_HTML))
 }
 
 // ── Auth middleware ──

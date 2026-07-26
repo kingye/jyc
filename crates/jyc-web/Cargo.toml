@@ -1,0 +1,5 @@
+[package]
+name = "jyc-web"
+version.workspace = true
+edition.workspace = true
+description = "Adaptive web UI for the JYC dashboard (static content provider)"

@@ -78,7 +78,10 @@ let activeChannel = null;
 let activeThread = null;
 let ws = null;
 let pollTimer = null;
+let statePollTimer = null;
+let wsReconnectAttempts = 0;
 const MSG_HISTORY_LIMIT = 100;
+const WS_RECONNECT_MAX_DELAY_MS = 30000;
 
 /* ── Main init ── */
 async function init() {
@@ -97,9 +100,11 @@ async function initDashboard() {
     renderSidebar();
     renderStats();
     showLogin(false);
+    showMobileMenuButton();
 
-    // Auto-poll for state updates
-    setInterval(async () => {
+    // Auto-poll for state updates (clear any previous interval to avoid leak)
+    if (statePollTimer) clearInterval(statePollTimer);
+    statePollTimer = setInterval(async () => {
       try {
         state = await apiGetState();
         renderSidebar();
@@ -112,6 +117,15 @@ async function initDashboard() {
     showError('Failed to connect: ' + e.message);
   }
 }
+
+/** Show the mobile menu button only on small screens. */
+function showMobileMenuButton() {
+  const btn = document.getElementById('mobile-menu-btn');
+  if (btn) btn.hidden = window.innerWidth >= 768;
+}
+
+/** Re-evaluate mobile menu button visibility on resize. */
+window.addEventListener('resize', showMobileMenuButton);
 
 function renderSidebar() {
   const list = document.getElementById('thread-list');
@@ -137,7 +151,7 @@ function renderSidebar() {
       const statusClass = t.status === 'processing' ? 'processing' : t.status === 'error' ? 'error' : t.status === 'queued' ? 'queued' : t.status === 'waiting_for_answer' ? 'waiting' : 'idle';
       html += `<div class="thread-item${active}" data-channel="${escHtml(chName)}" data-thread="${escHtml(t.name)}">`;
       html += `<span class="thread-name">${escHtml(t.name)}</span>`;
-      html += `<div class="thread-meta"><span class="status-dot ${statusClass}"></span> ${t.status}`;
+      html += `<div class="thread-meta"><span class="status-dot ${statusClass}"></span> ${escHtml(t.status)}`;
       if (t.last_active_at) html += ` · ${timeAgo(t.last_active_at)}`;
       html += '</div></div>';
     }
@@ -212,6 +226,7 @@ function openThread(channel, thread) {
 function disconnect() {
   if (ws) { ws.close(); ws = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  wsReconnectAttempts = 0;
 }
 
 function connectToThread(channel, thread) {
@@ -230,14 +245,18 @@ async function tryConnectWS(channel, thread) {
   return new Promise((resolve, reject) => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const token = getToken();
     const url = `${proto}//${host}/ws/${encodeURIComponent(channel)}`;
 
+    // NOTE: The browser WebSocket API does NOT support custom headers
+    // (Authorization, etc.). When the server has auth enabled, the WS
+    // upgrade will be rejected with 401 and the caller falls back to
+    // polling (which uses the token via fetch headers). State-based chat
+    // still works; only the real-time push channel is degraded.
     const socket = new WebSocket(url);
     socket.onopen = () => {
+      wsReconnectAttempts = 0;
       // Subscribe to thread
       socket.send(JSON.stringify({ type: 'subscribe', thread }));
-      // Set up periodic ping
       ws = socket;
       resolve();
     };
@@ -250,6 +269,16 @@ async function tryConnectWS(channel, thread) {
     socket.onerror = () => { reject(new Error('WS failed')); };
     socket.onclose = () => {
       if (ws === socket) ws = null;
+      // Auto-reconnect with exponential backoff if active conversation drops
+      if (activeThread === thread && activeChannel === channel) {
+        wsReconnectAttempts += 1;
+        const delay = Math.min(1000 * 2 ** wsReconnectAttempts, WS_RECONNECT_MAX_DELAY_MS);
+        setTimeout(() => {
+          if (activeThread === thread && activeChannel === channel) {
+            connectToThread(channel, thread);
+          }
+        }, delay);
+      }
     };
 
     // Timeout: if WS doesn't open in 2s, fall back to polling

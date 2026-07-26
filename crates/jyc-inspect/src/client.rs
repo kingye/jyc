@@ -32,6 +32,49 @@ pub fn resolve_token() -> Option<String> {
     jyc_utils::inspect_token::read().ok().flatten()
 }
 
+/// Build a GET WebSocket upgrade request for `url` with
+/// `Authorization: Bearer <token>` attached when `token` is `Some`.
+///
+/// Starts from `url.into_client_request()` (via the `IntoClientRequest`
+/// trait) so `tungstenite` auto-fills the required WS upgrade headers
+/// — in particular `Sec-WebSocket-Key`, which axum's `WebSocketUpgrade`
+/// extractor requires. Building a `Request` from scratch with
+/// `http::Request::builder()` would NOT include these headers, and the
+/// upgrade would fail with `WebSocketKeyHeaderMissing` (400).
+///
+/// Production code paths (the dashboard's chat pane and
+/// `create_thread_via_websocket`) call this with the token resolved
+/// via [`resolve_token`]. The integration test in
+/// `crates/jyc-channels/tests/websocket_integration_test.rs` calls
+/// this directly with `Some(correct_token)` / `None` / `Some(wrong_token)`
+/// to exercise the accept / reject paths — using the same function
+/// the production dashboard uses, so the test actually covers the
+/// shipped code.
+pub fn build_ws_upgrade_request(url: &str, token: Option<&str>) -> http::Request<()> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url
+        .into_client_request()
+        .expect("WS upgrade request URI is always valid");
+    if let Some(t) = token {
+        req.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {t}")
+                .parse()
+                .expect("Bearer header is ASCII"),
+        );
+    }
+    // `into_client_request()` returns `Request<Empty>` where
+    // `Empty = ()` — `map` re-wraps it as `Request<()>`.
+    req.map(|_| ())
+}
+
+/// Convenience: build a WebSocket upgrade request with the auth token
+/// resolved via [`resolve_token`]. Used by the dashboard's direct
+/// WebSocket clients (`dashboard/ws.rs` and `create_thread_via_websocket`).
+pub fn build_authenticated_ws_request(url: &str) -> http::Request<()> {
+    build_ws_upgrade_request(url, resolve_token().as_deref())
+}
+
 impl InspectClient {
     /// Create a new client targeting the inspect server at `addr` (e.g. `"127.0.0.1:9876"`).
     ///

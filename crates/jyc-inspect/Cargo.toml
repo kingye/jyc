@@ -23,6 +23,9 @@ tower = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # WebSocket upgrade (already used by the chat path)
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# HTTP types used by `build_authenticated_ws_request` for building
+# authenticated WebSocket upgrade requests.
+http = "1"
 futures-util = "0.3"
 async-trait = "0.1"
 # Constant-time token compare (auth middleware)

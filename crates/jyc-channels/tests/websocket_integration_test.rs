@@ -249,27 +249,7 @@ async fn spawn_test_server(
 /// `Authorization: Bearer …` header. The three tests below cover the
 /// accept / reject paths. (The default-install no-token-file path is
 /// already covered by `test_websocket_adapter_start_and_handle` above.)
-/// Build an `http::Request<()>` for `url` with `Authorization: Bearer
-/// <token>` if `token` is `Some`. Used by the auth tests to construct
-/// upgrade requests with / without a Bearer.
-///
-/// We start from `url.into_client_request()` (via the `IntoClientRequest`
-/// trait) so tungstenite auto-fills the `Sec-WebSocket-Key` and other
-/// required upgrade headers, then add our `Authorization` if requested.
-fn build_ws_request(url: &str, token: Option<&str>) -> http::Request<()> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let mut req = url
-        .into_client_request()
-        .expect("WS upgrade request URI is always valid");
-    if let Some(t) = token {
-        req.headers_mut().insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {t}").parse().unwrap(),
-        );
-    }
-    // into_client_request() returns Request<Empty>; map to Request<()>
-    req.map(|_| ())
-}
+use jyc_inspect::client::build_ws_upgrade_request;
 
 #[tokio::test]
 async fn test_ws_upgrade_auth_correct_bearer_succeeds() {
@@ -305,7 +285,7 @@ async fn test_ws_upgrade_auth_correct_bearer_succeeds() {
 
     // Upgrade with the correct Bearer — should succeed (101 Switching Protocols).
     let url = format!("ws://{}/ws/test_ws", addr);
-    let req = build_ws_request(&url, Some(&token));
+    let req = build_ws_upgrade_request(&url, Some(&token));
     let result = tokio_tungstenite::connect_async(req).await;
     assert!(
         result.is_ok(),
@@ -348,7 +328,7 @@ async fn test_ws_upgrade_auth_missing_bearer_rejected() {
 
     // No Authorization header — should be rejected (401, NOT a 101 upgrade).
     let url = format!("ws://{}/ws/test_ws", addr);
-    let req = build_ws_request(&url, None);
+    let req = build_ws_upgrade_request(&url, None);
     let err = tokio_tungstenite::connect_async(req)
         .await
         .expect_err("WS upgrade without Bearer should fail");
@@ -400,7 +380,7 @@ async fn test_ws_upgrade_auth_wrong_bearer_rejected() {
 
     // Wrong Bearer — should be rejected (401, NOT a 101 upgrade).
     let url = format!("ws://{}/ws/test_ws", addr);
-    let req = build_ws_request(&url, Some("jyc_definitely_not_the_real_token_0000"));
+    let req = build_ws_upgrade_request(&url, Some("jyc_definitely_not_the_real_token_0000"));
     let err = tokio_tungstenite::connect_async(req)
         .await
         .expect_err("WS upgrade with wrong Bearer should fail");

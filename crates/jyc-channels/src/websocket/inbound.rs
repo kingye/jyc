@@ -382,13 +382,13 @@ where
                     Ok(payload) => {
                         // Only forward events for our channel. If the
                         // connection is thread-scoped, also filter by thread.
-                        if should_forward_inspect(&payload, &channel_name, scoped_thread) {
-                            if let Err(e) = ws_tx.send(
+                        if should_forward_inspect(&payload, &channel_name, scoped_thread)
+                            && let Err(e) = ws_tx.send(
                                 tokio_tungstenite::tungstenite::Message::Text(payload)
-                            ).await {
-                                tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
-                                break;
-                            }
+                            ).await
+                        {
+                            tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
+                            break;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -427,12 +427,12 @@ fn should_forward_inspect(payload: &str, channel_name: &str, scoped_thread: Opti
     if p_channel != channel_name {
         return false;
     }
-    if let Some(st) = scoped_thread {
-        if let Some(p_thread) = v.get("thread").and_then(|t| t.as_str()) {
-            if p_thread != st {
-                return false;
-            }
-        }
+    // If thread-scoped and the payload specifies a thread, reject mismatches.
+    if let Some(st) = scoped_thread
+        && let Some(p_thread) = v.get("thread").and_then(|t| t.as_str())
+        && p_thread != st
+    {
+        return false;
     }
     true
 }

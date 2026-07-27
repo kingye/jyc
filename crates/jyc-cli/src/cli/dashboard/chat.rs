@@ -912,7 +912,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             ]));
         } else {
             let total = activity_entries.len();
-            for (idx, a) in activity_entries.iter().rev().enumerate() {
+            for (idx, a) in activity_entries.iter().enumerate() {
                 let is_last = idx == total - 1;
                 let elapsed = if is_last {
                     format_elapsed(&a.timestamp)
@@ -1762,11 +1762,16 @@ impl ChatState {
                     .get("has_error")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                self.live_processing.insert(key, (is_processing, has_error));
+                self.live_processing
+                    .insert(key.clone(), (is_processing, has_error));
                 // Processing finished (or errored) — clear local waiting flag
                 // so the progress indicator hides immediately.
                 if !is_processing {
                     self.awaiting_response = false;
+                } else {
+                    // New processing round started — clear the previous
+                    // round's thinking text from the chat progress area.
+                    self.live_thinking.remove(&key);
                 }
             }
             "resync" => {

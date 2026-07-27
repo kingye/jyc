@@ -788,11 +788,7 @@ impl ThreadManager {
     /// Subsequent calls to `thread_path(thread_name)` will return this path
     /// instead of the default `<workspace>/<thread_name>/`. The directory
     /// is created if it does not already exist.
-    pub async fn set_thread_path(
-        &self,
-        thread_name: &str,
-        path: PathBuf,
-    ) -> std::io::Result<()> {
+    pub async fn set_thread_path(&self, thread_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
         let mut paths = self.thread_paths.lock().await;
         paths.insert(thread_name.to_string(), path);

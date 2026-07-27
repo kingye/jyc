@@ -724,14 +724,12 @@ async fn handle_normal_keys(
             // mode. After the user picks a pattern, `select_pattern` opens
             // a scoped WS to `/ws/<channel>/<thread>`.
             let overview = app.state.clone();
-            let channel = overview
-                .as_ref()
-                .and_then(|o| {
-                    o.channels
-                        .iter()
-                        .find(|c| c.channel_type == "websocket")
-                        .map(|c| c.name.clone())
-                });
+            let channel = overview.as_ref().and_then(|o| {
+                o.channels
+                    .iter()
+                    .find(|c| c.channel_type == "websocket")
+                    .map(|c| c.name.clone())
+            });
             if let Some(channel) = channel {
                 app.chat.open_pattern_select(addr, &channel, client).await;
             } else {

@@ -1401,11 +1401,6 @@ impl ChatState {
     }
 
     pub(super) fn select_pattern(&mut self, pattern: String) {
-        // Open a scoped WS to /ws/<channel>/<thread>. The URL carries the
-        // thread name; the server-side ScopedWsHandler propagates it to the
-        // inner WebsocketInboundAdapter via the scoped_thread parameter.
-        // History is loaded via REST `get_thread_chat` (via seed_live
-        // triggered on thread selection).
         let channel = match &self.channel {
             Some(c) => c.clone(),
             None => return,
@@ -1415,14 +1410,7 @@ impl ChatState {
             None => return,
         };
 
-        self.phase = ChatPhase::Chatting;
-        self.thread = Some(pattern.clone());
-        self.editor = empty_chat_editor();
-        self.scroll = 0;
-        self.messages.clear();
-        self.input_history.clear();
-        self.history_pos = None;
-        self.last_hydrated_key = None;
+        self.select_pattern_inner(pattern.clone());
 
         let url = format!("ws://{}/ws/{}/{}", addr, channel, pattern);
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -1430,6 +1418,19 @@ impl ChatState {
         self.ws_tx = Some(cmd_tx);
         self.ws_rx = event_rx;
         tokio::spawn(super::ws::ws_client_task(url, cmd_rx, event_tx));
+    }
+
+    /// Clear state and set thread — used by `select_pattern` for the WS flow
+    /// and directly by tests to verify state-clearing without a tokio runtime.
+    fn select_pattern_inner(&mut self, pattern: String) {
+        self.phase = ChatPhase::Chatting;
+        self.thread = Some(pattern);
+        self.editor = empty_chat_editor();
+        self.scroll = 0;
+        self.messages.clear();
+        self.input_history.clear();
+        self.history_pos = None;
+        self.last_hydrated_key = None;
     }
 
     pub(super) fn toggle_focus(&mut self) {
@@ -1857,7 +1858,7 @@ mod tests {
         assert_eq!(app.chat.messages.len(), 2);
 
         // Switch to a new thread
-        app.chat.select_pattern("thread-b".to_string());
+        app.chat.select_pattern_inner("thread-b".to_string());
 
         // Messages must be cleared so stale content doesn't leak across threads
         assert!(app.chat.messages.is_empty());
@@ -1976,7 +1977,7 @@ mod tests {
         app.chat.history_pos = Some(0);
 
         // Switch to a new thread
-        app.chat.select_pattern("thread-b".to_string());
+        app.chat.select_pattern_inner("thread-b".to_string());
 
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());

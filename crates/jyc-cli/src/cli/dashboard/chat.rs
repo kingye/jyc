@@ -1297,9 +1297,11 @@ impl ChatState {
         self.load_detail_history(state);
     }
 
-    /// Send a `subscribe` message to the active WebSocket connection.
-    /// Used by `open`, `select_pattern`, and `open_thread_detail` to attach
-    /// the server's `event_rx` to the current thread for live event streaming.
+    /// Send a `{type:"subscribe", thread, mode:"chat"}` message over the
+    /// active WebSocket connection and mark the session as subscribed
+    /// (`subscribed = true`) so the `WsEvent::Connected` handler skips
+    /// a duplicate resubscribe. Called from `open` (when `initial_thread`
+    /// is `Some`), `select_pattern`, and `open_thread_detail`.
     fn subscribe_to_active_thread(&mut self) {
         self.subscribed = true;
         if let (Some(thread), Some(tx)) = (&self.thread, &self.ws_tx) {
@@ -2042,10 +2044,11 @@ mod tests {
     }
 
     #[test]
-    fn open_resets_subscribed_flag_for_reentry() {
-        // Regression: the `subscribed` flag must reset on re-entry so the
-        // WsEvent::Connected re-subscribe path fires correctly on the next
-        // WS reconnect (and doesn't double-subscribe on initial connect).
+    fn open_resets_subscribed_flag() {
+        // Regression: the `subscribed` flag must reset on `open()` so the
+        // `WsEvent::Connected` re-subscribe path fires correctly on the
+        // next WS reconnect (and doesn't double-subscribe on initial
+        // connect).
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2054,12 +2057,26 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx);
 
+        // First open sets subscribed via subscribe_to_active_thread.
         app.chat
             .open("127.0.0.1:9999", Some("ws"), Some("thread-a"));
         assert!(app.chat.subscribed);
 
-        // Re-enter: open() resets subscribed so the Connected handler can
-        // re-subscribe after the new WS handshake.
+        // Pre-set subscribed=true to prove `open()` actually resets it.
+        // Without the reset line in open(), this assertion would fail:
+        // subscribe_to_active_thread is not called for `initial_thread=None`,
+        // so a stale `true` would survive and the guard in
+        // `WsEvent::Connected` would skip a needed resubscribe on the
+        // next reconnect.
+        app.chat.subscribed = true;
+        app.chat.open("127.0.0.1:9999", None, None);
+        assert!(
+            !app.chat.subscribed,
+            "open() must reset subscribed even when no subscribe is sent"
+        );
+
+        // Re-enter with thread: subscribed is reset, then
+        // subscribe_to_active_thread sets it back to true.
         app.chat
             .open("127.0.0.1:9999", Some("ws"), Some("thread-b"));
         assert!(app.chat.subscribed);

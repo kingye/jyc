@@ -39,7 +39,13 @@ impl WebsocketHandler for ScopedWsHandler {
         &self,
         mut ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
         addr: SocketAddr,
+        _scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
+        // `self.thread` already carries the URL-scoped name; the legacy
+        // `WebsocketInboundAdapter` used below reads it from the URL-bound
+        // subscribe message we pre-send. No need to pass scoped_thread
+        // separately.
+        //
         // Pre-send a subscribe message so the inner adapter binds the
         // session to our thread. The inner adapter treats this like any
         // other client message and loads history for the thread.
@@ -59,7 +65,7 @@ impl WebsocketHandler for ScopedWsHandler {
         );
 
         // Delegate the rest of the connection to the wrapped handler.
-        self.inner.handle(ws_stream, addr).await
+        self.inner.handle(ws_stream, addr, None).await
     }
 }
 
@@ -76,6 +82,7 @@ mod tests {
             &self,
             _ws: tokio_tungstenite::WebSocketStream<PrependStream>,
             _addr: SocketAddr,
+            _scoped_thread: Option<&str>,
         ) -> anyhow::Result<()> {
             Ok(())
         }

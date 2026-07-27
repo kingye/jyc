@@ -143,7 +143,7 @@ async fn test_websocket_adapter_start_and_handle() {
         let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
         let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
 
-        inbound.handle(ws_stream, client_addr).await.unwrap();
+        inbound.handle(ws_stream, client_addr, None).await.unwrap();
     });
 
     // Connect test client

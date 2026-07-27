@@ -1485,24 +1485,18 @@ impl ChatState {
         }
 
         // WebSocket-only flow: echo user message locally, send via WebSocket.
-        let thread = match &self.thread {
-            Some(t) => t.clone(),
-            None => return,
-        };
-
-        // The /ws/<channel>/<thread> endpoint routes to either ScopedWsHandler
-        // (websocket channel → WebsocketInboundAdapter) or ThreadProxyHandler
-        // (any other channel). Both accept {type:"message", thread, text}.
-        // The ThreadProxyHandler ignores `thread` (it's already in the URL)
-        // but the WebsocketInboundAdapter needs it for routing.
+        let _ = self.thread.as_ref(); // thread must be set before send
         self.messages.push(ChatMessage {
             sender: "user".to_string(),
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
         });
+        // The /ws/<channel>/<thread> URL already carries the thread name.
+        // Both ScopedWsHandler (websocket channel) and ThreadProxyHandler
+        // (any other channel) bind the thread from the URL, so the payload
+        // doesn't need a `thread` field.
         let msg = serde_json::json!({
             "type": "message",
-            "thread": thread,
             "text": text,
         })
         .to_string();

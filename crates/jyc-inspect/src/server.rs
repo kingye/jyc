@@ -30,10 +30,17 @@ use jyc_types::*;
 #[async_trait::async_trait]
 pub trait WebsocketHandler: Send + Sync {
     /// Handle a single WebSocket connection.
+    ///
+    /// `scoped_thread` is the thread name bound from the URL path
+    /// (`/ws/<channel>/<thread>`). Handlers that route by URL may use
+    /// this to populate per-connection state without requiring the client
+    /// to repeat the thread name in the payload. Pass-through handlers
+    /// (e.g. `WebsocketInboundAdapter`) can ignore it.
     async fn handle(
         &self,
         ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
         addr: std::net::SocketAddr,
+        scoped_thread: Option<&str>,
     ) -> anyhow::Result<()>;
 }
 
@@ -204,13 +211,22 @@ impl InspectServer {
             let request_str = String::from_utf8_lossy(&prepend_bytes);
             let first_line = request_str.lines().next().unwrap_or("");
             let route = Self::extract_ws_route(first_line);
+            // If the route is a thread-scoped path, propagate the thread
+            // name to the handler so it doesn't have to be repeated in the
+            // payload.
+            let scoped_thread: Option<String> = match &route {
+                Some(WsRoute::Thread { name, .. }) => Some(name.clone()),
+                _ => None,
+            };
             let handler = Self::resolve_ws_handler(&context, route);
 
             match handler {
                 Ok(handler) => {
                     let prepend_stream = PrependStream::new(stream, prepend_bytes);
                     let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                    handler.handle(ws_stream, addr).await?;
+                    handler
+                        .handle(ws_stream, addr, scoped_thread.as_deref())
+                        .await?;
                 }
                 Err(e) => {
                     tracing::debug!(addr = %addr, error = %e, "WebSocket route resolution failed");
@@ -2487,6 +2503,7 @@ mode = "agent"
                 &self,
                 _ws: tokio_tungstenite::WebSocketStream<PrependStream>,
                 _addr: std::net::SocketAddr,
+                _scoped_thread: Option<&str>,
             ) -> anyhow::Result<()> {
                 Ok(())
             }

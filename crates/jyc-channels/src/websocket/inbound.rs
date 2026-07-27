@@ -125,7 +125,16 @@ enum ClientMessage {
         path: Option<String>,
     },
     #[serde(rename = "message")]
-    Message { thread: String, text: String },
+    Message {
+        /// Optional: when the connection is scoped to a single thread via
+        /// `/ws/<channel>/<thread>`, the inspect server propagates the URL
+        /// thread name here so the client doesn't need to include it in
+        /// the payload. Clients connecting to `/ws/<channel>` (no thread
+        /// scope) must still include `thread` here.
+        #[serde(default)]
+        thread: Option<String>,
+        text: String,
+    },
 }
 
 /// WebSocket inbound adapter.
@@ -210,6 +219,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         &self,
         ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
         addr: SocketAddr,
+        scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
         let pattern_names: Vec<String> = self.pattern_names();
 
@@ -228,6 +238,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             on_message,
             workspace_dir,
             thread_manager,
+            scoped_thread,
         )
         .await
     }
@@ -285,6 +296,7 @@ async fn handle_connection_impl<S>(
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     workspace_dir: Option<PathBuf>,
     thread_manager: Option<Arc<jyc_core::thread_manager::ThreadManager>>,
+    scoped_thread: Option<&str>,
 ) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
@@ -402,6 +414,21 @@ where
                         }
                     }
                     ClientMessage::Message { thread, text } => {
+                        // Prefer the URL-scoped thread; fall back to the
+                        // payload's `thread` field for `/ws/<channel>`
+                        // connections where no scope was set.
+                        let thread_name = match thread
+                            .or_else(|| scoped_thread.map(|s| s.to_string()))
+                        {
+                            Some(t) => t,
+                            None => {
+                                tracing::warn!(
+                                    channel = %channel_name,
+                                    "WebSocket Message without thread; ignoring"
+                                );
+                                continue;
+                            }
+                        };
                         let message = InboundMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             channel: channel_name.clone(),
@@ -409,7 +436,7 @@ where
                             sender: "user".to_string(),
                             sender_address: addr.to_string(),
                             recipients: vec![],
-                            topic: thread.clone(),
+                            topic: thread_name,
                             content: MessageContent {
                                 text: Some(text),
                                 html: None,

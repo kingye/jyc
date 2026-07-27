@@ -41,6 +41,15 @@ pub enum InspectResponse {
     ChatHistory {
         entries: Vec<ChatMessageEntry>,
     },
+    /// Pattern names for a channel (returned by `list_patterns`).
+    Patterns {
+        patterns: Vec<String>,
+    },
+    /// Result of a `create_thread` request.
+    CreateThreadResult {
+        success: bool,
+        message: String,
+    },
 }
 
 // ── State snapshot ──

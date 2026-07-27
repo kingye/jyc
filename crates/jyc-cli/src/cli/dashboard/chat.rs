@@ -90,6 +90,9 @@ pub(super) struct ChatState {
     /// Used to avoid re-hydrating the same thread on every poll when the
     /// user is browsing the overview.
     pub(super) last_hydrated_key: Option<(String, String)>,
+    /// Address stash for `select_pattern` to call back into `open` when
+    /// the user picks a pattern from the `c`-key pattern-select UI.
+    pub(super) open_addr: Option<String>,
     // Command popup state
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
@@ -1241,6 +1244,7 @@ impl ChatState {
             live_processing: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
             last_hydrated_key: None,
+            open_addr: None,
             commands: vec![],
             models: vec![],
             command_popup: None,
@@ -1275,6 +1279,17 @@ impl ChatState {
         // when we switch back to overview later.
         self.last_hydrated_key = None;
 
+        // No WS yet — the chat starts in PatternSelect (if no initial thread)
+        // and opens a scoped WS only after the user picks a pattern
+        // (see `open_pattern_select` + `select_pattern`).
+        if initial_thread.is_none() {
+            // Drop any stale WS connection from a prior chat.
+            if let Some(tx) = self.ws_tx.take() {
+                let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+            }
+            return;
+        }
+
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         self.ws_tx = Some(cmd_tx);
@@ -1287,6 +1302,44 @@ impl ChatState {
             (None, _) => format!("ws://{}/ws", addr),
         };
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
+    }
+
+    /// Open the chat pane in PatternSelect mode for the `c` key.
+    /// Fetches enabled pattern names via REST (replaces the old WebSocket
+    /// `list_patterns` command). No WS is opened until the user picks a
+    /// pattern (then `select_pattern` opens a scoped WS).
+    pub(super) async fn open_pattern_select(
+        &mut self,
+        addr: &str,
+        channel: &str,
+        client: &mut InspectClient,
+    ) {
+        self.visible = true;
+        self.phase = ChatPhase::PatternSelect;
+        self.channel = Some(channel.to_string());
+        self.thread = None;
+        self.patterns = client.list_patterns(channel).await.unwrap_or_default();
+        self.pattern_selected = 0;
+        self.messages.clear();
+        self.editor = empty_chat_editor();
+        self.focus = ChatFocus::ChatPane;
+        self.scroll = 0;
+        self.activity_scroll = 0;
+        self.activity_hscroll = 0;
+        self.pending_g = false;
+        self.activity_split = 0;
+        self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
+        self.last_hydrated_key = None;
+        // Drop any stale WS connection from a prior chat.
+        if let Some(tx) = self.ws_tx.take() {
+            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+        }
+        // Stash addr for the eventual `select_pattern` call. The polling
+        // loop in mod.rs owns the actual `addr` parameter; here we just
+        // store it so select_pattern can call back into open.
+        self.open_addr = Some(addr.to_string());
     }
 
     pub(super) fn close(&mut self) {
@@ -1348,23 +1401,35 @@ impl ChatState {
     }
 
     pub(super) fn select_pattern(&mut self, pattern: String) {
+        // Open a scoped WS to /ws/<channel>/<thread>. The URL carries the
+        // thread name; the server-side ScopedWsHandler propagates it to the
+        // inner WebsocketInboundAdapter via the scoped_thread parameter.
+        // History is loaded via REST `get_thread_chat` (via seed_live
+        // triggered on thread selection).
+        let channel = match &self.channel {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let addr = match &self.open_addr {
+            Some(a) => a.clone(),
+            None => return,
+        };
+
         self.phase = ChatPhase::Chatting;
         self.thread = Some(pattern.clone());
         self.editor = empty_chat_editor();
         self.scroll = 0;
         self.messages.clear();
-        self.messages.clear();
         self.input_history.clear();
         self.history_pos = None;
+        self.last_hydrated_key = None;
 
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "thread": pattern,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(subscribe_msg);
-        }
+        let url = format!("ws://{}/ws/{}/{}", addr, channel, pattern);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        self.ws_tx = Some(cmd_tx);
+        self.ws_rx = event_rx;
+        tokio::spawn(super::ws::ws_client_task(url, cmd_rx, event_tx));
     }
 
     pub(super) fn toggle_focus(&mut self) {
@@ -1527,57 +1592,25 @@ impl ChatState {
             _ => {}
         }
 
-        // The legacy WebsocketInboundAdapter protocol (kept for the
-        // /ws/<channel> path used by `c` to start a fresh chat).
-        match event_type {
-            Some("patterns") => {
-                if let Some(patterns) = parsed.get("patterns").and_then(|v| v.as_array()) {
-                    self.patterns = patterns
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    self.pattern_selected = 0;
-                }
-            }
-            Some("history") => {
-                if let (Some(thread), Some(messages)) = (
-                    parsed.get("thread").and_then(|v| v.as_str()),
-                    parsed.get("messages").and_then(|v| v.as_array()),
-                ) && self.thread.as_deref() == Some(thread)
-                {
-                    self.messages = messages
-                        .iter()
-                        .filter_map(|m| {
-                            Some(ChatMessage {
-                                sender: m.get("sender")?.as_str()?.to_string(),
-                                text: m.get("text")?.as_str()?.to_string(),
-                                timestamp: m
-                                    .get("timestamp")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                            })
-                        })
-                        .collect();
-                }
-            }
-            Some("reply") => {
-                if let (Some(thread), Some(text)) = (
-                    parsed.get("thread").and_then(|v| v.as_str()),
-                    parsed.get("text").and_then(|v| v.as_str()),
-                ) {
-                    // Only append if it matches our subscribed thread
-                    if self.thread.as_deref() == Some(thread) {
-                        self.messages.push(ChatMessage {
-                            sender: "ai".to_string(),
-                            text: text.to_string(),
-                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                        });
-                        self.scroll = 0;
-                        self.awaiting_response = false;
-                    }
-                }
-            }
-            _ => {}
+        // The legacy WebsocketInboundAdapter protocol — kept for the
+        // `reply` event (chat messages from the per-channel broadcast_tx
+        // on websocket channels). `list_patterns` and `subscribe` have
+        // moved to REST; `history` is no longer needed because chat
+        // history is loaded via REST `get_thread_chat`.
+        if let Some("reply") = event_type
+            && let (Some(thread), Some(text)) = (
+                parsed.get("thread").and_then(|v| v.as_str()),
+                parsed.get("text").and_then(|v| v.as_str()),
+            )
+            && self.thread.as_deref() == Some(thread)
+        {
+            self.messages.push(ChatMessage {
+                sender: "ai".to_string(),
+                text: text.to_string(),
+                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            });
+            self.scroll = 0;
+            self.awaiting_response = false;
         }
     }
 

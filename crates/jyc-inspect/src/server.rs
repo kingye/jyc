@@ -327,7 +327,7 @@ impl InspectServer {
                 if let Some(handlers) = handlers
                     && let Some(handler) = handlers.get(&channel)
                 {
-                    return Ok(Arc::new(ScopedWsHandler::new(handler.clone(), name)));
+                    return Ok(Arc::new(ScopedWsHandler::new(handler.clone())));
                 }
                 Ok(Arc::new(ThreadProxyHandler::new(
                     channel,
@@ -367,6 +367,8 @@ impl InspectServer {
             }
             "get_thread_activity" => Self::handle_get_thread_activity(request, context).await,
             "get_thread_chat" => Self::handle_get_thread_chat(request, context).await,
+            "list_patterns" => Self::handle_list_patterns(request, context).await,
+            "create_thread" => Self::handle_create_thread(request, context).await,
             "reload_config" => Self::handle_reload_config(context).await,
             "reset_session" => Self::handle_reset_session(request, context).await,
             other => InspectResponse::Error {
@@ -605,6 +607,122 @@ impl InspectServer {
         let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, limit);
         let entries = filter_chat_by_since(entries, since.as_deref());
         InspectResponse::ChatHistory { entries }
+    }
+
+    /// Handle `list_patterns {channel}` — returns the enabled pattern
+    /// names for the given channel. Used by the dashboard's `c` key to
+    /// populate the pattern-select UI.
+    async fn handle_list_patterns(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+
+        let tms = context.thread_managers.load();
+        match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(tm) => {
+                let patterns = tm.pattern_names().await;
+                InspectResponse::Patterns { patterns }
+            }
+            None => InspectResponse::Error {
+                error: format!("no thread manager found for channel '{channel}'"),
+            },
+        }
+    }
+
+    /// Handle `create_thread {channel, thread, path}` — registers a new
+    /// ad-hoc thread with a custom workspace path. Used by
+    /// `jyc dashboard open <path>` (replaces the old WebSocket
+    /// `create_thread` command).
+    async fn handle_create_thread(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+        let path_str = match params.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'path' param".to_string(),
+                };
+            }
+        };
+        let path = PathBuf::from(path_str);
+
+        if thread.contains("..") || thread.contains('/') || thread.contains('\\') {
+            return InspectResponse::CreateThreadResult {
+                success: false,
+                message: "invalid thread_name: path traversal not allowed".to_string(),
+            };
+        }
+
+        let tms = context.thread_managers.load();
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::CreateThreadResult {
+                    success: false,
+                    message: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+
+        match tm.set_thread_path(thread, path.clone()).await {
+            Ok(()) => {
+                tracing::info!(
+                    channel = %channel,
+                    thread = %thread,
+                    path = %path.display(),
+                    "Dashboard thread created via REST"
+                );
+                InspectResponse::CreateThreadResult {
+                    success: true,
+                    message: format!("thread '{thread}' registered at {}", path.display()),
+                }
+            }
+            Err(e) => InspectResponse::CreateThreadResult {
+                success: false,
+                message: format!("failed to create thread: {e}"),
+            },
+        }
     }
 
     /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.

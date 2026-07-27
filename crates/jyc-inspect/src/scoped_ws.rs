@@ -15,21 +15,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::SinkExt;
 
 use crate::server::{PrependStream, WebsocketHandler};
 
-/// A wrapper around a channel-specific `WebsocketInboundAdapter` that
-/// auto-injects a `subscribe` message on connect, binding the WebSocket
-/// session to a specific thread.
+/// A wrapper around a channel-specific `WebsocketHandler` that propagates
+/// the URL-scoped thread name from `/ws/<channel>/<thread>` to the inner
+/// handler. The inner handler can use the `scoped_thread` parameter to
+/// populate per-connection state (e.g. `Message.topic` fallback) without
+/// requiring the client to repeat the thread in the payload.
 pub struct ScopedWsHandler {
     inner: Arc<dyn WebsocketHandler>,
-    thread: String,
 }
 
 impl ScopedWsHandler {
-    pub fn new(inner: Arc<dyn WebsocketHandler>, thread: String) -> Self {
-        Self { inner, thread }
+    pub fn new(inner: Arc<dyn WebsocketHandler>) -> Self {
+        Self { inner }
     }
 }
 
@@ -37,35 +37,17 @@ impl ScopedWsHandler {
 impl WebsocketHandler for ScopedWsHandler {
     async fn handle(
         &self,
-        mut ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
+        ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
         addr: SocketAddr,
-        _scoped_thread: Option<&str>,
+        scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
-        // `self.thread` already carries the URL-scoped name; the legacy
-        // `WebsocketInboundAdapter` used below reads it from the URL-bound
-        // subscribe message we pre-send. No need to pass scoped_thread
-        // separately.
-        //
-        // Pre-send a subscribe message so the inner adapter binds the
-        // session to our thread. The inner adapter treats this like any
-        // other client message and loads history for the thread.
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "thread": self.thread,
-        })
-        .to_string();
-        ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(subscribe_msg))
-            .await?;
-
         tracing::debug!(
             addr = %addr,
-            thread = %self.thread,
-            "ScopedWsHandler: pre-sent subscribe, delegating to inner handler"
+            thread = scoped_thread.unwrap_or("?"),
+            "ScopedWsHandler: delegating to inner handler with scoped_thread"
         );
 
-        // Delegate the rest of the connection to the wrapped handler.
-        self.inner.handle(ws_stream, addr, None).await
+        self.inner.handle(ws_stream, addr, scoped_thread).await
     }
 }
 
@@ -89,10 +71,14 @@ mod tests {
     }
 
     #[test]
-    fn scoped_ws_handler_stores_thread() {
+    fn scoped_ws_handler_stores_inner() {
+        // The scoped handler now just wraps the inner handler. The thread
+        // name comes from the URL via scoped_thread; we don't store it
+        // on the struct.
         let stub: Arc<dyn WebsocketHandler> = Arc::new(StubHandler);
-        let scoped = ScopedWsHandler::new(stub, "my-thread".to_string());
-        assert_eq!(scoped.thread, "my-thread");
+        let scoped = ScopedWsHandler::new(stub);
+        // Verify the handler can be constructed and Arc-shared.
+        let _shared: Arc<ScopedWsHandler> = Arc::new(scoped);
     }
 
     #[test]
@@ -101,6 +87,6 @@ mod tests {
         // real WebsocketInboundAdapter). ScopedWsHandler is a transparent
         // wrapper.
         let stub: Arc<dyn WebsocketHandler> = Arc::new(StubHandler);
-        let _scoped: ScopedWsHandler = ScopedWsHandler::new(stub, "x".to_string());
+        let _scoped: ScopedWsHandler = ScopedWsHandler::new(stub);
     }
 }

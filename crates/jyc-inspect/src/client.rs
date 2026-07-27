@@ -126,6 +126,40 @@ impl InspectClient {
         }
     }
 
+    /// Fetch enabled pattern names for a channel. Used by the dashboard's
+    /// `c` key to populate the pattern-select UI.
+    pub async fn list_patterns(&mut self, channel: &str) -> Result<Vec<String>> {
+        let params = serde_json::json!({ "channel": channel });
+        let resp = self.send_request("list_patterns", Some(params)).await?;
+        match resp {
+            InspectResponse::Patterns { patterns } => Ok(patterns),
+            InspectResponse::Error { error } => Err(anyhow::anyhow!("server error: {error}")),
+            other => Err(unexpected("list_patterns", &other)),
+        }
+    }
+
+    /// Register a new ad-hoc thread with a custom workspace path. Used by
+    /// `jyc dashboard open <path>`. Replaces the old WebSocket
+    /// `create_thread` command.
+    pub async fn create_thread(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        path: &str,
+    ) -> Result<(bool, String)> {
+        let params = serde_json::json!({
+            "channel": channel,
+            "thread": thread,
+            "path": path,
+        });
+        let resp = self.send_request("create_thread", Some(params)).await?;
+        match resp {
+            InspectResponse::CreateThreadResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            other => Err(unexpected("create_thread", &other)),
+        }
+    }
+
     /// Send a request and return the raw response. Reuses the persistent connection.
     async fn send_request(
         &mut self,
@@ -201,6 +235,8 @@ fn unexpected(method: &str, resp: &InspectResponse) -> anyhow::Error {
         InspectResponse::ResetSessionResult { .. } => "reset_session_result",
         InspectResponse::ActivityHistory { .. } => "activity_history",
         InspectResponse::ChatHistory { .. } => "chat_history",
+        InspectResponse::Patterns { .. } => "patterns",
+        InspectResponse::CreateThreadResult { .. } => "create_thread_result",
     };
     anyhow::anyhow!("unexpected {variant} response for {method}")
 }

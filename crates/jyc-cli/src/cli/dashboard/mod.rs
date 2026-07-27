@@ -155,24 +155,9 @@ impl App {
         match event {
             WsEvent::Connected => {
                 self.chat.ws_connected = true;
-                // Request pattern list on connect
-                let list_msg = serde_json::json!({"type": "list_patterns"}).to_string();
-                if let Some(tx) = &self.chat.ws_tx {
-                    let _ = tx.send(list_msg);
-                }
-
-                // Auto-re-subscribe to the previously selected thread, if any
-                if let Some(ref thread) = self.chat.thread {
-                    let subscribe_msg = serde_json::json!({
-                        "type": "subscribe",
-                        "thread": thread,
-                    })
-                    .to_string();
-                    if let Some(tx) = &self.chat.ws_tx {
-                        let _ = tx.send(subscribe_msg);
-                    }
-                    self.set_status(format!("Reconnected to {thread}"));
-                }
+                // The WS protocol no longer carries `list_patterns` or
+                // `subscribe` commands — history is loaded via REST and
+                // thread scope comes from the URL. Nothing to do here.
             }
             WsEvent::Disconnected => {
                 self.chat.ws_connected = false;
@@ -524,8 +509,19 @@ pub async fn run_open(
         "Opening directory as ad-hoc thread via dashboard CLI"
     );
 
-    // Send create_thread over websocket to the target channel
-    create_thread_via_websocket(addr, &channel, &thread, &path).await?;
+    // Register the ad-hoc thread via REST. Replaces the old WebSocket
+    // `create_thread` command.
+    match client.create_thread(&channel, &thread, &path).await {
+        Ok((true, msg)) => {
+            tracing::debug!(message = %msg, "Thread created via REST");
+        }
+        Ok((false, msg)) => {
+            anyhow::bail!("create_thread failed: {msg}");
+        }
+        Err(e) => {
+            anyhow::bail!("create_thread error: {e:#}");
+        }
+    }
 
     // Wait for the inspect server to report the thread
     wait_for_thread(&mut client, &thread, &channel).await?;
@@ -645,36 +641,6 @@ async fn resolve_websocket_channel(
     }
 }
 
-/// Send a `create_thread` message over a short-lived websocket connection.
-async fn create_thread_via_websocket(
-    addr: &str,
-    channel: &str,
-    thread: &str,
-    path: &str,
-) -> Result<()> {
-    let url = format!("ws://{}/ws/{}", addr, channel);
-    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .with_context(|| format!("failed to connect to websocket at {url}"))?;
-
-    let msg = serde_json::json!({
-        "type": "create_thread",
-        "thread": thread,
-        "path": path,
-    });
-    use futures_util::SinkExt;
-    ws_stream
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            msg.to_string(),
-        ))
-        .await
-        .context("failed to send create_thread message")?;
-
-    // Graceful close; best-effort only.
-    let _ = ws_stream.close(None).await;
-    Ok(())
-}
-
 /// Poll the inspect server until the newly created thread appears in state.
 async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
@@ -753,7 +719,24 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            app.chat.open(addr, None, None);
+            // Fetch patterns via REST (replaces the old WebSocket
+            // `list_patterns` command) and open the chat in pattern-select
+            // mode. After the user picks a pattern, `select_pattern` opens
+            // a scoped WS to `/ws/<channel>/<thread>`.
+            let overview = app.state.clone();
+            let channel = overview
+                .as_ref()
+                .and_then(|o| {
+                    o.channels
+                        .iter()
+                        .find(|c| c.channel_type == "websocket")
+                        .map(|c| c.name.clone())
+                });
+            if let Some(channel) = channel {
+                app.chat.open_pattern_select(addr, &channel, client).await;
+            } else {
+                app.set_status("No websocket channel configured".to_string());
+            }
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads

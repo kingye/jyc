@@ -782,6 +782,41 @@ impl ThreadManager {
         self.thread_paths.lock().await.clone()
     }
 
+    /// Register a custom thread path (e.g. from `jyc dashboard open <path>`
+    /// or REST `create_thread`).
+    ///
+    /// Subsequent calls to `thread_path(thread_name)` will return this path
+    /// instead of the default `<workspace>/<thread_name>/`. The directory
+    /// is created if it does not already exist.
+    pub async fn set_thread_path(
+        &self,
+        thread_name: &str,
+        path: PathBuf,
+    ) -> std::io::Result<()> {
+        tokio::fs::create_dir_all(&path).await?;
+        let mut paths = self.thread_paths.lock().await;
+        paths.insert(thread_name.to_string(), path);
+        Ok(())
+    }
+
+    /// Names of enabled patterns for this channel.
+    ///
+    /// Used by the inspect server's `list_patterns` REST handler to
+    /// populate the dashboard's pattern-select UI.
+    pub async fn pattern_names(&self) -> Vec<String> {
+        let cfg = self.config.load();
+        cfg.channels
+            .get(&self.channel_name)
+            .and_then(|c| c.patterns.as_ref())
+            .map(|pats| {
+                pats.iter()
+                    .filter(|p| p.enabled)
+                    .map(|p| p.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Restore custom `thread_path` mappings from disk.
     ///
     /// Scans this ThreadManager's channel patterns for `thread_path` overrides.

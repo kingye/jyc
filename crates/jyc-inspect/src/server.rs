@@ -318,20 +318,20 @@ impl InspectServer {
 
     /// Extract a bearer token from an HTTP upgrade request.
     fn extract_bearer_token(request: &str) -> Option<&str> {
-    request
-        .lines()
-        .skip(1)
-        .take_while(|line| !line.is_empty())
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.trim().eq_ignore_ascii_case("authorization") {
-                value.trim().strip_prefix("Bearer ")
-            } else {
-                None
-            }
-        })
-        .map(str::trim)
-}
+        request
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case("authorization") {
+                    value.trim().strip_prefix("Bearer ")
+                } else {
+                    None
+                }
+            })
+            .map(str::trim)
+    }
 
     ///
     /// - `WsRoute::Thread { channel, name }`:

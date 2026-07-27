@@ -101,6 +101,8 @@ pub(super) struct ChatState {
     pub(super) input_history: Vec<String>,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
+    /// Authorization token to attach to WebSocket upgrade requests.
+    pub(super) token: Option<String>,
 }
 
 /// Creates a fresh, empty chat input editor in Insert mode.
@@ -1250,10 +1252,17 @@ impl ChatState {
             command_popup: None,
             input_history: vec![],
             history_pos: None,
+            token: None,
         }
     }
 
-    pub(super) fn open(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
+    pub(super) fn open(
+        &mut self,
+        addr: &str,
+        channel: Option<&str>,
+        initial_thread: Option<&str>,
+        token: Option<String>,
+    ) {
         self.visible = true;
         self.phase = if initial_thread.is_some() {
             ChatPhase::Chatting
@@ -1264,6 +1273,7 @@ impl ChatState {
         self.pattern_selected = 0;
         self.channel = channel.map(|s| s.to_string());
         self.thread = initial_thread.map(|s| s.to_string());
+        self.token = token;
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
@@ -1301,7 +1311,7 @@ impl ChatState {
             (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
             (None, _) => format!("ws://{}/ws", addr),
         };
-        tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
+        tokio::spawn(ws_client_task(url, cmd_rx, event_tx, self.token.clone()));
     }
 
     /// Open the chat pane in PatternSelect mode for the `c` key.
@@ -1417,7 +1427,12 @@ impl ChatState {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         self.ws_tx = Some(cmd_tx);
         self.ws_rx = event_rx;
-        tokio::spawn(super::ws::ws_client_task(url, cmd_rx, event_tx));
+        tokio::spawn(super::ws::ws_client_task(
+            url,
+            cmd_rx,
+            event_tx,
+            self.token.clone(),
+        ));
     }
 
     /// Clear state and set thread — used by `select_pattern` for the WS flow

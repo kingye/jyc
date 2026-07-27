@@ -18,7 +18,7 @@ jyc-inspect = { path = "../jyc-inspect" }
 jyc-mcp = { path = "../jyc-mcp" }
 jyc-agent = { path = "../jyc-agent" }
 tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"

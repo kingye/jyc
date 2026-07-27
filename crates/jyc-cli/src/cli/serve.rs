@@ -1262,6 +1262,20 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let activity_map: jyc_inspect::server::SharedActivityMap =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+        // Generate and persist the dashboard authorization token. The file
+        // is created with owner-only permissions; its path is logged so the
+        // user can retrieve the token via `jyc token show`.
+        let auth_token = jyc_utils::auth_token::generate_token();
+        let token_path = jyc_utils::auth_token::token_path(workdir);
+        if let Err(e) = jyc_utils::auth_token::write_token(&token_path, &auth_token) {
+            tracing::warn!(path = %token_path.display(), error = %e, "Failed to write authorization token");
+        } else {
+            tracing::info!(
+                path = %token_path.display(),
+                "Authorization token written; retrieve with `jyc token show`"
+            );
+        }
+
         let context = Arc::new(jyc_inspect::server::InspectContext {
             thread_managers: orchestrator.thread_managers(),
             channels: orchestrator.channel_infos(),
@@ -1299,7 +1313,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 }) as jyc_inspect::server::ReloadCallback)
             },
             inspect_broadcast: inspect_broadcast.clone(),
-            auth_token: None,
+            auth_token: Some(auth_token.clone()),
         });
 
         // Restore custom thread_path mappings from disk so threads with

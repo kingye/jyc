@@ -127,20 +127,24 @@ async fn main() -> Result<()> {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
                     &args.addr,
+                    &workdir,
                     open.thread.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
+                    args.token.as_deref(),
                 )
                 .await
             }
-            None => cli::dashboard::run(args, None, None).await,
+            None => cli::dashboard::run(args, &workdir, None, None).await,
         },
         Commands::Open { addr, args } => {
             cli::dashboard::run_open(
                 addr,
+                &workdir,
                 args.thread.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
+                None,
             )
             .await
         }

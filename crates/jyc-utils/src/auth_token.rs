@@ -13,7 +13,11 @@ pub fn token_path(workdir: &Path) -> PathBuf {
 
 /// Generate a random 256-bit authorization token encoded as hexadecimal.
 pub fn generate_token() -> String {
-    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 /// Write an authorization token with owner-only permissions on Unix.

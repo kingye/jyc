@@ -44,6 +44,10 @@ pub struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1:9876", global = true)]
     pub addr: String,
 
+    /// Authorization token (defaults to `<workdir>/auth.token`)
+    #[arg(long, env = "JYC_DASHBOARD_TOKEN", global = true)]
+    pub token: Option<String>,
+
     /// Subcommand for dashboard operations (defaults to opening the full dashboard)
     #[command(subcommand)]
     pub command: Option<DashboardCommand>,
@@ -83,12 +87,15 @@ struct App {
     status_message: Option<(String, std::time::Instant)>,
     pending_reset: Option<(String, std::time::Instant)>,
 
+    /// Authorization token propagated to the WebSocket upgrade requests.
+    token: Option<String>,
+
     /// Chat pane state (WebSocket thread chat and non-WebSocket detail mode).
     chat: ChatState,
 }
 
 impl App {
-    fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>) -> Self {
+    fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>, token: Option<String>) -> Self {
         Self {
             state: None,
             error: None,
@@ -96,6 +103,7 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_reset: None,
+            token,
             chat: ChatState::new(ws_rx),
         }
     }
@@ -290,9 +298,14 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
 
 pub async fn run(
     args: &DashboardArgs,
+    workdir: &std::path::Path,
     initial_thread: Option<&str>,
     initial_channel: Option<&str>,
 ) -> Result<()> {
+    // Resolve the auth token: explicit flag/env wins, otherwise read it
+    // from `<workdir>/auth.token` (which `jyc serve` writes on startup).
+    let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
+
     // Auto-spawn jyc serve if it's not running.
     ensure_serve_running(&args.addr).await.with_context(|| {
         format!(
@@ -301,7 +314,10 @@ pub async fn run(
         )
     })?;
 
-    let mut client = InspectClient::new(&args.addr);
+    let mut client = match &token {
+        Some(t) => InspectClient::with_token(&args.addr, t.clone()),
+        None => InspectClient::new(&args.addr),
+    };
 
     // Setup terminal
     enable_raw_mode()?;
@@ -316,14 +332,15 @@ pub async fn run(
         let mut terminal = Terminal::new(backend)?;
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(ws_rx);
+        let mut app = App::new(ws_rx, token);
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
             let channel = initial_channel.unwrap_or("");
-            app.chat.open(&args.addr, initial_channel, Some(thread));
+            app.chat
+                .open(&args.addr, initial_channel, Some(thread), app.token.clone());
             hydrate_live(&mut client, &mut app, channel, thread).await;
         }
 
@@ -488,14 +505,18 @@ pub async fn run(
 /// working directory.
 pub async fn run_open(
     addr: &str,
+    workdir: &std::path::Path,
     thread: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
+    explicit_token: Option<&str>,
 ) -> Result<()> {
     // Auto-spawn jyc serve if it's not running.
     ensure_serve_running(addr)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
+
+    let token = resolve_dashboard_token(explicit_token, workdir)?;
 
     // Resolve thread path and name
     let path = resolve_thread_path(path)?;
@@ -507,7 +528,10 @@ pub async fn run_open(
     check_existing_thread_name(&path, &thread)?;
 
     // Resolve websocket channel using inspect state
-    let mut client = InspectClient::new(addr);
+    let mut client = match &token {
+        Some(t) => InspectClient::with_token(addr, t.clone()),
+        None => InspectClient::new(addr),
+    };
     let channel = resolve_websocket_channel(&mut client, channel).await?;
 
     tracing::info!(
@@ -538,12 +562,29 @@ pub async fn run_open(
     run(
         &DashboardArgs {
             addr: addr.to_string(),
+            token,
             command: None,
         },
+        workdir,
         Some(&thread),
         Some(&channel),
     )
     .await
+}
+
+/// Resolve the dashboard authorization token from explicit input or workdir.
+fn resolve_dashboard_token(
+    explicit: Option<&str>,
+    workdir: &std::path::Path,
+) -> Result<Option<String>> {
+    if let Some(token) = explicit {
+        return Ok(Some(token.to_string()));
+    }
+    let path = jyc_utils::auth_token::token_path(workdir);
+    match jyc_utils::auth_token::read_token(&path) {
+        Ok(token) => Ok(Some(token)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Resolve the thread path to an absolute filesystem path.
@@ -761,7 +802,8 @@ async fn handle_normal_keys(
             });
             if let Some((name, channel, is_ws)) = thread_info {
                 if is_ws {
-                    app.chat.open(addr, Some(&channel), Some(&name));
+                    app.chat
+                        .open(addr, Some(&channel), Some(&name), app.token.clone());
                 } else {
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());

@@ -1412,8 +1412,9 @@ async fn process_message(
 
     // ── 1.2. WRITE THREAD ROUTING METADATA ────────────────────────────
     // Persist routing metadata on the first message for a thread so that
-    // dashboard message injection (handle_inject_message) can restore it.
-    // Without this, the synthetic InboundMessage has empty metadata and
+    // the dashboard's `ThreadProxyHandler` (via /ws/<channel>/<thread>)
+    // can restore it when constructing a synthetic InboundMessage.
+    // Without this, the proxy's InboundMessage has empty metadata and
     // channel-specific reply routing fails (e.g., github_number missing → 404).
     let thread_meta_path = store_result
         .thread_path

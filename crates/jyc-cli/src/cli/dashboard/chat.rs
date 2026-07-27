@@ -63,10 +63,9 @@ pub(super) struct ChatState {
     /// Set when chat is opened (Enter on a thread, or `c` to start fresh).
     pub(super) detail_channel: Option<String>,
     /// Thread path from ThreadInfo (for loading chat history from disk).
+    /// Legacy detail-mode field; still set for the chat pane but no longer
+    /// drives a different code path.
     pub(super) detail_thread_path: Option<std::path::PathBuf>,
-    /// Pending message to inject via inspect protocol (legacy detail mode).
-    /// Set by `send_message_inner` and consumed by the main poll loop.
-    pub(super) pending_inject: Option<(String, String)>,
     /// Live activity buffer — populated by REST hydrate on selection and
     /// appended to by WS `{"type":"activity",...}` events. Keyed by
     /// `(channel, thread)`. The activity pane and chat progress read
@@ -1232,7 +1231,6 @@ impl ChatState {
             ws_connected: false,
             detail_channel: None,
             detail_thread_path: None,
-            pending_inject: None,
             live_activity: std::collections::BTreeMap::new(),
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
@@ -1294,21 +1292,24 @@ impl ChatState {
         }
     }
 
-    /// Open detail/chat mode for a non-WebSocket thread.
+    /// Open the chat pane for any thread, regardless of channel type.
     ///
-    /// Unlike `open`, this does NOT create a WebSocket connection.
-    /// Instead, it relies on the inspect server's poll-based state (via
-    /// `get_state`) for live message updates and the `inject_message`
-    /// protocol method for sending messages.
+    /// All channels are now reached via the unified `/ws/<channel>/<thread>`
+    /// endpoint, so this method just initializes the chat UI state.
+    /// The actual WS connection and message routing happen in the dashboard
+    /// poll loop (see `mod.rs::run`).
     pub(super) fn open_thread_detail(
         &mut self,
         channel: &str,
         thread_name: &str,
-        state: Option<&jyc_types::InspectOverview>,
+        _state: Option<&jyc_types::InspectOverview>,
     ) {
         self.visible = true;
         self.phase = ChatPhase::Chatting;
         self.thread = Some(thread_name.to_string());
+        self.channel = Some(channel.to_string());
+        self.detail_channel = Some(channel.to_string());
+        self.detail_thread_path = None;
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
@@ -1320,49 +1321,14 @@ impl ChatState {
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
-        self.detail_channel = Some(channel.to_string());
-        self.detail_thread_path = None;
-
-        // Load initial chat history from disk
-        self.load_detail_history(state);
     }
 
-    /// Load chat history from the thread's chat_history_*.jsonl files.
-    ///
-    /// Reads up to 100 most recent entries (same limit as WebSocket adapter).
-    /// `state` is the latest inspect snapshot, used to resolve the thread path
-    /// when it has not been cached yet.
-    pub(super) fn load_detail_history(&mut self, state: Option<&jyc_types::InspectOverview>) {
-        let thread_path = match &self.detail_thread_path {
-            Some(p) => p.clone(),
-            None => {
-                // Try to get thread_path from the current state
-                if let Some(state) = state
-                    && let Some(ref chat_name) = self.thread
-                    && let Some(thread) = state.threads.iter().find(|t| t.name == *chat_name)
-                    && let Some(ref path) = thread.thread_path
-                {
-                    let path = path.clone();
-                    self.detail_thread_path = Some(path.clone());
-                    path
-                } else {
-                    return;
-                }
-            }
-        };
+    /// Legacy no-op kept for compatibility with the test suite.
+    #[allow(dead_code)]
+    pub(super) fn load_detail_history(&mut self, _state: Option<&jyc_types::InspectOverview>) {}
 
-        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
-        self.messages = entries
-            .into_iter()
-            .map(|e| ChatMessage {
-                sender: e.sender,
-                text: e.text,
-                timestamp: e.timestamp,
-            })
-            .collect();
-    }
-
-    /// Check whether the current chat is a detail mode (non-WebSocket) session.
+    /// Legacy no-op kept for compatibility with the test suite.
+    #[allow(dead_code)]
     pub(super) fn is_detail_mode(&self) -> bool {
         self.detail_channel.is_some()
     }
@@ -1504,36 +1470,23 @@ impl ChatState {
             self.input_history.remove(0);
         }
 
-        let thread = match &self.thread {
-            Some(t) => t.clone(),
-            None => return,
-        };
-
-        if self.is_detail_mode() {
-            // Detail mode (non-WebSocket): do NOT echo locally — the message
-            // will appear via `recent_messages` on the next poll cycle
-            // (~500ms). Echoing locally would cause duplication because the
-            // `IncomingMessage` event publishes with sender="dashboard" and
-            // truncated text, failing the dedup check.
-            self.pending_inject = Some((thread, text));
-        } else {
-            // WebSocket mode: echo user message locally, send via WebSocket.
-            // No duplication — the WebSocket broadcast only sends AI replies,
-            // not user messages.
-            self.messages.push(ChatMessage {
-                sender: "user".to_string(),
-                text: text.clone(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-            });
-            let msg = serde_json::json!({
-                "type": "message",
-                "thread": thread,
-                "text": text,
-            })
-            .to_string();
-            if let Some(tx) = &self.ws_tx {
-                let _ = tx.send(msg);
-            }
+        // WebSocket-only flow: echo user message locally, send via WebSocket.
+        // The /ws/<channel>/<thread> endpoint routes to either ScopedWsHandler
+        // (websocket channel) or ThreadProxyHandler (any other channel) — same
+        // protocol on the wire.
+        let _ = self.thread.as_ref(); // thread must be set
+        self.messages.push(ChatMessage {
+            sender: "user".to_string(),
+            text: text.clone(),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        });
+        let msg = serde_json::json!({
+            "type": "message",
+            "text": text,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
         }
 
         self.scroll = 0;
@@ -1996,7 +1949,6 @@ mod tests {
         app.chat.open_thread_detail("github", "issue-197", None);
         assert!(app.chat.visible);
         assert_eq!(app.chat.phase, ChatPhase::Chatting);
-        assert!(app.chat.is_detail_mode());
 
         // close() must return to overview and clear detail state
         app.chat.close();

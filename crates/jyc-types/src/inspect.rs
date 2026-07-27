@@ -33,11 +33,6 @@ pub enum InspectResponse {
         success: bool,
         message: String,
     },
-    /// Result of an `inject_message` request.
-    InjectMessageResult {
-        success: bool,
-        message: String,
-    },
     /// Recent activity entries for a single thread (returned by `get_thread_activity`).
     ActivityHistory {
         entries: Vec<ActivityEntry>,

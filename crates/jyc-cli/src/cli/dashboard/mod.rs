@@ -405,25 +405,6 @@ pub async fn run(
                 last_poll = std::time::Instant::now();
             }
 
-            // Process pending message injection (detail mode)
-            if let Some((thread, text)) = app.chat.pending_inject.take()
-                && let Some(ref channel) = app.chat.detail_channel
-            {
-                match client.inject_message(channel, &thread, &text).await {
-                    Ok((true, msg)) => {
-                        tracing::debug!("Message injected: {msg}");
-                    }
-                    Ok((false, msg)) => {
-                        app.set_status(format!("Inject failed: {msg}"));
-                        app.chat.awaiting_response = false;
-                    }
-                    Err(e) => {
-                        app.set_status(format!("Inject error: {e:#}"));
-                        app.chat.awaiting_response = false;
-                    }
-                }
-            }
-
             // Check for WebSocket events
             while let Ok(event) = app.chat.ws_rx.try_recv() {
                 app.handle_ws_event(event);

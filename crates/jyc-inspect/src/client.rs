@@ -126,30 +126,6 @@ impl InspectClient {
         }
     }
 
-    /// Inject a message into a thread for AI processing.
-    ///
-    /// The server creates a synthetic `InboundMessage` and enqueues it via
-    /// `ThreadManager::enqueue()`, following the same path as cross-thread
-    /// message injection from the `jyc_send_to_thread` tool.
-    pub async fn inject_message(
-        &mut self,
-        channel: &str,
-        thread: &str,
-        text: &str,
-    ) -> Result<(bool, String)> {
-        let params = serde_json::json!({
-            "channel": channel,
-            "thread": thread,
-            "text": text,
-        });
-        let resp = self.send_request("inject_message", Some(params)).await?;
-        match resp {
-            InspectResponse::InjectMessageResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            other => Err(unexpected("inject_message", &other)),
-        }
-    }
-
     /// Send a request and return the raw response. Reuses the persistent connection.
     async fn send_request(
         &mut self,
@@ -223,7 +199,6 @@ fn unexpected(method: &str, resp: &InspectResponse) -> anyhow::Error {
         InspectResponse::Error { .. } => "error",
         InspectResponse::ReloadResult { .. } => "reload_result",
         InspectResponse::ResetSessionResult { .. } => "reset_session_result",
-        InspectResponse::InjectMessageResult { .. } => "inject_message_result",
         InspectResponse::ActivityHistory { .. } => "activity_history",
         InspectResponse::ChatHistory { .. } => "chat_history",
     };
@@ -432,45 +407,6 @@ mod tests {
         assert!(success, "reset should succeed: {message}");
         assert!(message.contains("session deleted"));
         assert!(!jyc_dir.join("agent-session.json").exists());
-
-        cancel.cancel();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_client_inject_message_no_channel() {
-        // Server with no thread managers — inject should fail
-        let context = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
-        let (success, message) = client
-            .inject_message("nonexistent", "thread", "hello")
-            .await
-            .unwrap();
-
-        assert!(!success, "inject should fail for unknown channel");
-        assert!(message.contains("no thread manager found"));
 
         cancel.cancel();
     }

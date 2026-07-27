@@ -353,7 +353,6 @@ impl InspectServer {
             "get_thread_chat" => Self::handle_get_thread_chat(request, context).await,
             "reload_config" => Self::handle_reload_config(context).await,
             "reset_session" => Self::handle_reset_session(request, context).await,
-            "inject_message" => Self::handle_inject_message(request, context).await,
             other => InspectResponse::Error {
                 error: format!("unknown method: {other}"),
             },
@@ -596,6 +595,7 @@ impl InspectServer {
     ///
     /// Written by `process_message()` on the first message for a thread.
     /// Returns `None` if the file doesn't exist or can't be parsed.
+    #[allow(dead_code)] // retained for future use; currently consumed by ThreadProxyHandler directly
     async fn load_thread_meta(
         tm: &Arc<ThreadManager>,
         thread_name: &str,
@@ -604,142 +604,6 @@ impl InspectServer {
         let meta_path = thread_path.join(".jyc").join("thread-meta.json");
         let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
         serde_json::from_str(&content).ok()
-    }
-
-    /// Inject a message into a thread's queue for AI processing.
-    ///
-    /// Params: `channel` (channel name), `thread` (thread name), `text` (message body).
-    /// Creates a synthetic `InboundMessage` and enqueues it via `ThreadManager::enqueue()`.
-    async fn handle_inject_message(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
-
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
-
-        let thread_name = match params.get("thread").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'thread' param".to_string(),
-                };
-            }
-        };
-
-        let text = match params.get("text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'text' param".to_string(),
-                };
-            }
-        };
-
-        // Find the ThreadManager for this channel
-        let tms = context.thread_managers.load();
-        let tm = tms.iter().find(|tm| tm.channel_name() == channel);
-        let tm = match tm {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("no thread manager found for channel '{channel}'"),
-                };
-            }
-        };
-
-        // Load stored routing metadata for this thread (written on first message).
-        // Restores channel-specific fields (github_number, chat_id, req_id,
-        // external_id, thread_refs) so the outbound adapter can route replies.
-        let thread_meta = Self::load_thread_meta(tm, thread_name).await;
-        let (channel_uid, external_id, thread_refs, metadata) = match thread_meta {
-            Some(meta) => {
-                let uid = meta
-                    .get("channel_uid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("dashboard")
-                    .to_string();
-                let ext_id = meta
-                    .get("external_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let refs = meta
-                    .get("thread_refs")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let md = meta
-                    .get("metadata")
-                    .and_then(|v| v.as_object())
-                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                    .unwrap_or_default();
-                (uid, ext_id, refs, md)
-            }
-            None => ("dashboard".to_string(), None, None, HashMap::new()),
-        };
-
-        // Build synthetic InboundMessage (same pattern as send_to_thread tool)
-        let message = InboundMessage {
-            id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
-            channel: channel.to_string(),
-            channel_uid,
-            sender: "dashboard".to_string(),
-            sender_address: "dashboard@inspect".to_string(),
-            recipients: vec![],
-            topic: thread_name.to_string(),
-            content: MessageContent {
-                text: Some(text.to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            thread_refs,
-            reply_to_id: None,
-            external_id,
-            attachments: vec![],
-            metadata,
-            matched_pattern: None,
-        };
-
-        let pattern_match = PatternMatch {
-            pattern_name: String::new(),
-            channel: channel.to_string(),
-            matches: HashMap::new(),
-        };
-
-        tm.enqueue(
-            message,
-            thread_name.to_string(),
-            pattern_match,
-            None,
-            true,
-            None,
-        )
-        .await;
-
-        tracing::info!(
-            channel = %channel,
-            thread = %thread_name,
-            text_len = text.len(),
-            "Dashboard message injected"
-        );
-
-        InspectResponse::InjectMessageResult {
-            success: true,
-            message: format!("message injected into {channel}/{thread_name}"),
-        }
     }
 
     /// Reload configuration from disk and swap it atomically.
@@ -2401,71 +2265,6 @@ mode = "agent"
                 "is_processing should be cleared for idle threads"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_missing_params() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Missing params entirely
-        writer
-            .write_all(b"{\"method\":\"inject_message\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("missing params"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_unknown_channel() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"inject_message\",\"params\":{\"channel\":\"nonexistent\",\"thread\":\"t\",\"text\":\"x\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("no thread manager found"));
-
-        cancel.cancel();
-        handle.await.unwrap();
     }
 
     #[tokio::test]

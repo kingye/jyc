@@ -1,4 +1,5 @@
 use arc_swap::ArcSwap;
+use futures_util::SinkExt;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
@@ -10,6 +11,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::scoped_ws::ScopedWsHandler;
+use crate::thread_proxy::ThreadProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::all_commands;
 use jyc_core::command::list_available_models;
@@ -32,6 +35,21 @@ pub trait WebsocketHandler: Send + Sync {
         ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
         addr: std::net::SocketAddr,
     ) -> anyhow::Result<()>;
+}
+
+/// Parsed WebSocket URL route. Determines which handler the inspect server
+/// dispatches to for an incoming upgrade request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsRoute {
+    /// `GET /ws` — use the first available websocket channel's handler.
+    Bare,
+    /// `GET /ws/<channel>` — adhoc thread on a websocket-type channel.
+    Channel(String),
+    /// `GET /ws/<channel>/<thread>` — proxy to a specific thread. For
+    /// websocket-type channels, the inner handler is wrapped in
+    /// `ScopedWsHandler` to auto-subscribe. For other channels, a
+    /// `ThreadProxyHandler` is used.
+    Thread { channel: String, name: String },
 }
 
 /// Max activity entries kept per thread.
@@ -179,16 +197,28 @@ impl InspectServer {
         prepend_bytes.extend(remaining);
 
         if prepend_bytes.first() == Some(&b'G') {
-            // HTTP request — extract WebSocket path for multi-channel routing
+            // HTTP request — extract WebSocket path for routing
             let request_str = String::from_utf8_lossy(&prepend_bytes);
             let first_line = request_str.lines().next().unwrap_or("");
-            let path = Self::extract_ws_path(first_line);
-            let handler = Self::resolve_ws_handler(&context, path);
+            let route = Self::extract_ws_route(first_line);
+            let handler = Self::resolve_ws_handler(&context, route);
 
-            if let Some(handler) = handler {
-                let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                handler.handle(ws_stream, addr).await?;
+            match handler {
+                Ok(handler) => {
+                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
+                    let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
+                    handler.handle(ws_stream, addr).await?;
+                }
+                Err(e) => {
+                    tracing::debug!(addr = %addr, error = %e, "WebSocket route resolution failed");
+                    // Connection is already upgraded at the WS level; send a
+                    // close frame so the client gets a clean disconnect.
+                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
+                    let mut ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
+                    let _ = ws_stream
+                        .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                        .await;
+                }
             }
             return Ok(());
         }
@@ -227,29 +257,82 @@ impl InspectServer {
         Ok(())
     }
 
-    /// Extract the WebSocket path from an HTTP GET request line.
-    /// e.g. "GET /ws/my_channel HTTP/1.1" → Some("my_channel")
-    ///      "GET /ws HTTP/1.1" → None (fallback to first handler)
-    fn extract_ws_path(request_line: &str) -> Option<String> {
+    /// Parse the WebSocket path from an HTTP GET request line into a `WsRoute`.
+    ///
+    /// `GET /ws` → `WsRoute::Bare` (use the first available websocket channel)
+    /// `GET /ws/<channel>` → `WsRoute::Channel(name)` (adhoc thread on that channel)
+    /// `GET /ws/<channel>/<thread>` → `WsRoute::Thread { channel, name }`
+    ///   (proxy to that thread regardless of channel type)
+    fn extract_ws_route(request_line: &str) -> Option<WsRoute> {
         let path = request_line.split_whitespace().nth(1)?;
         if path == "/ws" {
-            return None; // No specific channel — fallback to first handler
+            return Some(WsRoute::Bare);
         }
-        // Extract channel name from /ws/{channel_name}
-        path.strip_prefix("/ws/")
-            .map(|s| s.split('/').next().unwrap_or(s).to_string())
+        let rest = path.strip_prefix("/ws/")?;
+        let mut parts = rest.splitn(3, '/');
+        let channel = parts.next()?.to_string();
+        match parts.next() {
+            Some(thread) => Some(WsRoute::Thread {
+                channel,
+                name: thread.to_string(),
+            }),
+            None => Some(WsRoute::Channel(channel)),
+        }
     }
 
-    /// Resolve a websocket handler by path.
-    /// If path is None (bare /ws), returns the first available handler.
+    /// Resolve a `WsRoute` to a concrete `WebsocketHandler`.
+    ///
+    /// - `WsRoute::Thread { channel, name }`:
+    ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
+    ///     to wrap its `WebsocketInboundAdapter` and pre-send `subscribe`.
+    ///   - Otherwise, construct a `ThreadProxyHandler` that routes through
+    ///     the channel's `ThreadManager` and the inspect-broadcast bus.
+    /// - `WsRoute::Channel(name)`: use the channel's own handler (must be a
+    ///   websocket-type channel, else error).
+    /// - `WsRoute::Bare`: use the first available handler; error if none.
     fn resolve_ws_handler(
         context: &InspectContext,
-        path: Option<String>,
-    ) -> Option<&Arc<dyn WebsocketHandler>> {
-        let handlers = context.websocket_handlers.as_ref()?;
-        match path {
-            Some(name) => handlers.get(&name),
-            None => handlers.values().next(),
+        route: Option<WsRoute>,
+    ) -> anyhow::Result<Arc<dyn WebsocketHandler>> {
+        let route = match route {
+            Some(r) => r,
+            None => return Err(anyhow::anyhow!("could not parse WebSocket path")),
+        };
+
+        let handlers = context.websocket_handlers.as_ref();
+
+        match route {
+            WsRoute::Thread { channel, name } => {
+                // If the channel has a websocket handler, use the scoped wrapper.
+                // Otherwise, fall through to the proxy (works for any channel type).
+                if let Some(handlers) = handlers
+                    && let Some(handler) = handlers.get(&channel)
+                {
+                    return Ok(Arc::new(ScopedWsHandler::new(handler.clone(), name)));
+                }
+                Ok(Arc::new(ThreadProxyHandler::new(
+                    channel,
+                    name,
+                    context.thread_managers.clone(),
+                    context.inspect_broadcast.clone(),
+                )))
+            }
+            WsRoute::Channel(name) => {
+                let handlers =
+                    handlers.ok_or_else(|| anyhow::anyhow!("no WebSocket handlers registered"))?;
+                handlers.get(&name).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("channel '{}' not found or not a websocket channel", name)
+                })
+            }
+            WsRoute::Bare => {
+                let handlers =
+                    handlers.ok_or_else(|| anyhow::anyhow!("no WebSocket handlers registered"))?;
+                handlers
+                    .values()
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no websocket channel configured"))
+            }
         }
     }
 
@@ -2419,5 +2502,109 @@ mode = "agent"
 
         let all = filter_by_since(entries, None);
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_ws_route_bare() {
+        let route = InspectServer::extract_ws_route("GET /ws HTTP/1.1");
+        assert_eq!(route, Some(WsRoute::Bare));
+    }
+
+    #[test]
+    fn test_extract_ws_route_channel() {
+        let route = InspectServer::extract_ws_route("GET /ws/local_dev HTTP/1.1");
+        assert_eq!(route, Some(WsRoute::Channel("local_dev".to_string())));
+    }
+
+    #[test]
+    fn test_extract_ws_route_thread() {
+        let route = InspectServer::extract_ws_route("GET /ws/jiny283/invoice-2024 HTTP/1.1");
+        assert_eq!(
+            route,
+            Some(WsRoute::Thread {
+                channel: "jiny283".to_string(),
+                name: "invoice-2024".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_ws_route_invalid() {
+        assert_eq!(InspectServer::extract_ws_route(""), None);
+        assert_eq!(InspectServer::extract_ws_route("GET /other HTTP/1.1"), None);
+    }
+
+    /// `/ws/<non_websocket_channel>/<thread>` must resolve to a
+    /// `ThreadProxyHandler` (since the channel isn't in the ws handlers map).
+    #[tokio::test]
+    async fn test_resolve_ws_handler_uses_proxy_for_non_ws_channel() {
+        let ctx = test_context(); // no websocket_handlers set
+        let route = WsRoute::Thread {
+            channel: "github".to_string(),
+            name: "pr-42".to_string(),
+        };
+        // Resolution must succeed — exact handler type is verified by
+        // end-to-end integration tests in Commit 4.
+        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
+    }
+
+    /// `/ws/<websocket_channel>/<thread>` must resolve (handler type checked
+    /// by integration tests).
+    #[tokio::test]
+    async fn test_resolve_ws_handler_uses_scoped_for_ws_channel() {
+        use async_trait::async_trait;
+
+        struct Stub;
+        #[async_trait]
+        impl WebsocketHandler for Stub {
+            async fn handle(
+                &self,
+                _ws: tokio_tungstenite::WebSocketStream<PrependStream>,
+                _addr: std::net::SocketAddr,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let stub: Arc<dyn WebsocketHandler> = Arc::new(Stub);
+        let mut handlers: HashMap<String, Arc<dyn WebsocketHandler>> = HashMap::new();
+        handlers.insert("local_dev".to_string(), stub);
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: Some(handlers),
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+        });
+
+        let route = WsRoute::Thread {
+            channel: "local_dev".to_string(),
+            name: "dotfiles".to_string(),
+        };
+        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
+    }
+
+    /// `/ws/<non_ws_channel>` must error.
+    #[tokio::test]
+    async fn test_resolve_ws_handler_channel_route_rejects_non_ws() {
+        let ctx = test_context(); // no websocket_handlers
+        let route = WsRoute::Channel("github".to_string());
+        let result = InspectServer::resolve_ws_handler(&ctx, Some(route));
+        assert!(result.is_err());
+    }
+
+    /// `/ws` with no handlers must error.
+    #[tokio::test]
+    async fn test_resolve_ws_handler_bare_rejects_when_empty() {
+        let ctx = test_context();
+        let result = InspectServer::resolve_ws_handler(&ctx, Some(WsRoute::Bare));
+        assert!(result.is_err());
     }
 }

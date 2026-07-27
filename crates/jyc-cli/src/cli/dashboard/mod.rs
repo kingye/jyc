@@ -337,7 +337,9 @@ pub async fn run(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
+            let channel = initial_channel.unwrap_or("");
             app.chat.open(&args.addr, initial_channel, Some(thread));
+            hydrate_live(&mut client, &mut app, channel, thread).await;
         }
 
         loop {
@@ -395,6 +397,27 @@ pub async fn run(
                         if let Some(ref s) = app.state {
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
+
+                            // Hydrate the live buffers when the table-selected
+                            // thread changes (so the overview's activity pane
+                            // shows recent entries without requiring the user
+                            // to open chat first). Skip if we're in chat mode
+                            // — the open() flow already triggered hydrate.
+                            if !app.chat.visible {
+                                let selected_idx = app.table_state.selected();
+                                if let Some(idx) = selected_idx
+                                    && let Some(t) = s.threads.get(idx)
+                                {
+                                    let key = (t.channel.clone(), t.name.clone());
+                                    if app.chat.last_hydrated_key.as_ref() != Some(&key) {
+                                        let channel = t.channel.clone();
+                                        let thread = t.name.clone();
+                                        app.chat.last_hydrated_key = Some(key);
+                                        hydrate_live(&mut client, &mut app, &channel, &thread)
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                         app.error = None;
                     }
@@ -668,6 +691,53 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
     anyhow::bail!("Timeout waiting for thread {thread} to be created")
 }
 
+/// REST hydrate the live activity + chat buffers for the given thread.
+///
+/// Called after the user opens a chat (Enter on a thread, `c` to start fresh,
+/// or `--thread` on the CLI). Subsequent live updates arrive over the
+/// WebSocket and are appended to the same buffers; the activity pane and
+/// chat progress read exclusively from these buffers.
+///
+/// Errors are logged but not propagated — the buffers will simply be empty
+/// (the activity pane shows "No activity" until the next WS event arrives).
+async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, thread: &str) {
+    // Activity first (chat pane progress depends on it).
+    match client
+        .get_thread_activity(channel, thread, None, Some(180))
+        .await
+    {
+        Ok(activity) => {
+            // Chat second.
+            match client
+                .get_thread_chat(channel, thread, None, Some(100))
+                .await
+            {
+                Ok(chat) => {
+                    app.chat.seed_live(channel, thread, activity, chat);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %channel,
+                        thread = %thread,
+                        error = %e,
+                        "failed to hydrate chat history (activity pane may be empty)"
+                    );
+                    // Still seed activity so the activity pane at least has entries.
+                    app.chat.seed_live(channel, thread, activity, Vec::new());
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                channel = %channel,
+                thread = %thread,
+                error = %e,
+                "failed to hydrate activity (activity pane will be empty until WS events arrive)"
+            );
+        }
+    }
+}
+
 async fn handle_normal_keys(
     app: &mut App,
     key: event::KeyEvent,
@@ -707,6 +777,10 @@ async fn handle_normal_keys(
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());
                 }
+                // REST hydrate the live buffers (activity + chat) so the
+                // activity pane and chat progress show recent entries
+                // immediately. WS events append to the same buffers.
+                hydrate_live(client, app, &channel, &name).await;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {

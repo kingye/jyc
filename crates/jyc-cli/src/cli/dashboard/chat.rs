@@ -86,6 +86,10 @@ pub(super) struct ChatState {
     /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
+    /// Last (channel, thread) that was REST-hydrated by the poll loop.
+    /// Used to avoid re-hydrating the same thread on every poll when the
+    /// user is browsing the overview.
+    pub(super) last_hydrated_key: Option<(String, String)>,
     // Command popup state
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
@@ -1236,6 +1240,7 @@ impl ChatState {
             live_thinking: std::collections::BTreeMap::new(),
             live_processing: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
+            last_hydrated_key: None,
             commands: vec![],
             models: vec![],
             command_popup: None,
@@ -1253,6 +1258,7 @@ impl ChatState {
         };
         self.patterns.clear();
         self.pattern_selected = 0;
+        self.channel = channel.map(|s| s.to_string());
         self.thread = initial_thread.map(|s| s.to_string());
         self.messages.clear();
         self.editor = empty_chat_editor();
@@ -1265,6 +1271,9 @@ impl ChatState {
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
+        // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
+        // when we switch back to overview later.
+        self.last_hydrated_key = None;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1272,9 +1281,10 @@ impl ChatState {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
-        let url = match channel {
-            Some(ch) => format!("ws://{}/ws/{}", addr, ch),
-            None => format!("ws://{}/ws", addr),
+        let url = match (channel, initial_thread) {
+            (Some(ch), Some(th)) => format!("ws://{}/ws/{}/{}", addr, ch, th),
+            (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
+            (None, _) => format!("ws://{}/ws", addr),
         };
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
     }
@@ -1286,6 +1296,7 @@ impl ChatState {
         self.command_popup = None;
         self.detail_channel = None;
         self.detail_thread_path = None;
+        self.last_hydrated_key = None;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -1321,6 +1332,9 @@ impl ChatState {
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
+        // The mod.rs Enter handler triggers hydrate_live after this; clear
+        // the last-hydrated key so the poll loop doesn't re-hydrate over us.
+        self.last_hydrated_key = None;
     }
 
     /// Legacy no-op kept for compatibility with the test suite.
@@ -1499,7 +1513,22 @@ impl ChatState {
             Err(_) => return,
         };
 
-        match parsed.get("type").and_then(|v| v.as_str()) {
+        // The new ThreadProxyHandler / ScopedWsHandler publish these events
+        // on the inspect-broadcast bus. Forward them to the live buffers
+        // (activity pane, chat progress, chat message stream).
+        let event_type = parsed.get("type").and_then(|v| v.as_str());
+        match event_type {
+            Some("activity") | Some("chat_message") | Some("thinking") | Some("processing")
+            | Some("resync") => {
+                self.handle_live_event(&parsed);
+                return;
+            }
+            _ => {}
+        }
+
+        // The legacy WebsocketInboundAdapter protocol (kept for the
+        // /ws/<channel> path used by `c` to start a fresh chat).
+        match event_type {
             Some("patterns") => {
                 if let Some(patterns) = parsed.get("patterns").and_then(|v| v.as_array()) {
                     self.patterns = patterns
@@ -1705,6 +1734,15 @@ impl ChatState {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 self.live_processing.insert(key, (is_processing, has_error));
+            }
+            "resync" => {
+                // Server fell behind (Lagged); clear local state so the
+                // caller re-hydrates via REST.
+                self.live_activity.remove(&key);
+                self.live_chat.remove(&key);
+                self.live_thinking.remove(&key);
+                self.live_processing.remove(&key);
+                self.last_seen_id.remove(&key);
             }
             _ => {}
         }
@@ -2012,5 +2050,123 @@ mod tests {
         let out = wrap_text_to_width("abc", 0);
         let joined: String = out.join("");
         assert_eq!(joined, "abc");
+    }
+
+    #[test]
+    fn handle_ws_message_routes_activity_events_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Simulate hydrate: seed an activity entry, then a WS event with
+        // the same id arrives — should be deduped (id <= last_seen_id).
+        let entry = jyc_types::ActivityEntry {
+            text: "Tool: bash".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: jyc_types::Severity::Info,
+            id: 42,
+        };
+        app.chat.seed_live("github", "pr-1", vec![entry], vec![]);
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
+
+        // WS event with NEW id should be appended.
+        let payload = serde_json::json!({
+            "type": "activity",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 43,
+            "entry": {
+                "text": "Completed",
+                "timestamp": "2026-01-01T00:00:05Z",
+                "severity": "info",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 2);
+
+        // WS event with OLD id should be deduped.
+        let payload = serde_json::json!({
+            "type": "activity",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 42,
+            "entry": {
+                "text": "Old",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "severity": "info",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 2);
+    }
+
+    #[test]
+    fn handle_ws_message_routes_chat_message_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        let payload = serde_json::json!({
+            "type": "chat_message",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 1,
+            "entry": {
+                "sender": "ai",
+                "text": "Hello",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_chat_for("github", "pr-1").count(), 1);
+    }
+
+    #[test]
+    fn handle_ws_message_routes_thinking_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        let payload = serde_json::json!({
+            "type": "thinking",
+            "channel": "github",
+            "thread": "pr-1",
+            "text": "I am thinking about the problem"
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(
+            app.chat.live_thinking_for("github", "pr-1"),
+            Some("I am thinking about the problem")
+        );
+    }
+
+    #[test]
+    fn handle_ws_message_routes_resync_clears_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Seed first
+        app.chat.seed_live(
+            "github",
+            "pr-1",
+            vec![jyc_types::ActivityEntry {
+                text: "old".to_string(),
+                timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+                severity: jyc_types::Severity::Info,
+                id: 1,
+            }],
+            vec![],
+        );
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
+
+        // Resync event should clear the live buffer
+        let payload = serde_json::json!({
+            "type": "resync",
+            "channel": "github",
+            "thread": "pr-1",
+            "dropped": 5
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 0);
     }
 }

@@ -28,14 +28,22 @@ use crate::server::{PrependStream, WebsocketHandler};
 
 /// WebSocket messages accepted by `ThreadProxyHandler`.
 ///
-/// `channel` and `thread` are NOT in the payload — they are bound at handler
-/// construction time from the URL path.
+/// `channel` and `thread` are bound at handler construction time from
+/// the URL path. The optional `thread` field in `Message` is accepted for
+/// protocol compatibility with `WebsocketInboundAdapter` but ignored.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     /// Inject a message into the thread for AI processing.
     #[serde(rename = "message")]
-    Message { text: String },
+    Message {
+        text: String,
+        /// Accepted for protocol compatibility with `WebsocketInboundAdapter`;
+        /// ignored by ThreadProxyHandler (the thread is already in the URL).
+        #[serde(default)]
+        #[allow(dead_code)]
+        thread: Option<String>,
+    },
     /// Reset the agent session for this thread.
     #[serde(rename = "reset_session")]
     ResetSession,
@@ -208,7 +216,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                             let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
                             match parsed {
-                                Ok(ClientMessage::Message { text }) => {
+                                Ok(ClientMessage::Message { text, .. }) => {
                                     if let Err(e) = self.handle_inbound_message(&tm, text).await {
                                         tracing::warn!(error = %e, "handle_inbound_message failed");
                                     }

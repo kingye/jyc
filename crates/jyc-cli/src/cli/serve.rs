@@ -1292,6 +1292,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                     fut
                 }) as jyc_inspect::server::ReloadCallback)
             },
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         // Restore custom thread_path mappings from disk so threads with

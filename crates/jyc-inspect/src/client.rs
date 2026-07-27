@@ -3,7 +3,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-use jyc_types::{InspectRequest, InspectResponse, InspectState};
+use jyc_types::{
+    ActivityEntry, ChatMessageEntry, InspectOverview, InspectRequest, InspectResponse, InspectState,
+};
 
 /// Client for connecting to the jyc inspect server.
 ///
@@ -27,12 +29,137 @@ impl InspectClient {
         }
     }
 
-    /// Fetch the current state, reusing the existing connection if possible.
+    /// Fetch the current full state (with activity, recent_messages, thinking_text).
+    /// Retained for backward compatibility — new clients should prefer `get_overview`
+    /// for the polling loop and `get_thread_activity` / `get_thread_chat` for
+    /// per-thread fetches.
     pub async fn get_state(&mut self) -> Result<InspectState> {
+        let resp = self.send_request("get_state", None).await?;
+        match resp {
+            InspectResponse::State(state) => Ok(state),
+            InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
+            other => Err(unexpected("get_state", &other)),
+        }
+    }
+
+    /// Fetch the slim overview payload (thread list + status, no activity/messages).
+    /// Used by the dashboard's polling loop to keep payloads small.
+    pub async fn get_overview(&mut self) -> Result<InspectOverview> {
+        let resp = self.send_request("get_state_overview", None).await?;
+        match resp {
+            InspectResponse::Overview(overview) => Ok(overview),
+            InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
+            other => Err(unexpected("get_state_overview", &other)),
+        }
+    }
+
+    /// Fetch recent activity entries for a single thread from `.jyc/activity.jsonl`.
+    ///
+    /// - `since`: optional RFC 3339 timestamp; only entries with timestamp >= since are returned.
+    /// - `limit`: maximum number of entries to return (default 180).
+    pub async fn get_thread_activity(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        since: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ActivityEntry>> {
+        let params = serde_json::json!({
+            "channel": channel,
+            "thread": thread,
+            "since": since,
+            "limit": limit,
+        });
+        let resp = self
+            .send_request("get_thread_activity", Some(params))
+            .await?;
+        match resp {
+            InspectResponse::ActivityHistory { entries } => Ok(entries),
+            InspectResponse::Error { error } => Err(anyhow::anyhow!("server error: {error}")),
+            other => Err(unexpected("get_thread_activity", &other)),
+        }
+    }
+
+    /// Fetch recent chat messages for a single thread from `chat_history_*.jsonl`.
+    ///
+    /// - `since`: optional RFC 3339 timestamp; only entries with timestamp >= since are returned.
+    /// - `limit`: maximum number of entries to return (default 100).
+    pub async fn get_thread_chat(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        since: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ChatMessageEntry>> {
+        let params = serde_json::json!({
+            "channel": channel,
+            "thread": thread,
+            "since": since,
+            "limit": limit,
+        });
+        let resp = self.send_request("get_thread_chat", Some(params)).await?;
+        match resp {
+            InspectResponse::ChatHistory { entries } => Ok(entries),
+            InspectResponse::Error { error } => Err(anyhow::anyhow!("server error: {error}")),
+            other => Err(unexpected("get_thread_chat", &other)),
+        }
+    }
+
+    /// Send a `reload_config` command to the inspect server.
+    pub async fn reload_config(&mut self) -> Result<(bool, String)> {
+        let resp = self.send_request("reload_config", None).await?;
+        match resp {
+            InspectResponse::ReloadResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            other => Err(unexpected("reload_config", &other)),
+        }
+    }
+
+    /// Send a `reset_session` command to the inspect server.
+    pub async fn reset_session(&mut self, thread_name: &str) -> Result<(bool, String)> {
+        let params = serde_json::json!({ "thread_name": thread_name });
+        let resp = self.send_request("reset_session", Some(params)).await?;
+        match resp {
+            InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            other => Err(unexpected("reset_session", &other)),
+        }
+    }
+
+    /// Inject a message into a thread for AI processing.
+    ///
+    /// The server creates a synthetic `InboundMessage` and enqueues it via
+    /// `ThreadManager::enqueue()`, following the same path as cross-thread
+    /// message injection from the `jyc_send_to_thread` tool.
+    pub async fn inject_message(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        text: &str,
+    ) -> Result<(bool, String)> {
+        let params = serde_json::json!({
+            "channel": channel,
+            "thread": thread,
+            "text": text,
+        });
+        let resp = self.send_request("inject_message", Some(params)).await?;
+        match resp {
+            InspectResponse::InjectMessageResult { success, message } => Ok((success, message)),
+            InspectResponse::Error { error } => Ok((false, error)),
+            other => Err(unexpected("inject_message", &other)),
+        }
+    }
+
+    /// Send a request and return the raw response. Reuses the persistent connection.
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<InspectResponse> {
         // Try on existing connection first
-        if self.conn.is_some() {
-            match self.send_request().await {
-                Ok(state) => return Ok(state),
+        if let Some(conn) = self.conn.as_mut() {
+            match Self::write_and_read(conn, method, params.clone()).await {
+                Ok(resp) => return Ok(resp),
                 Err(_) => {
                     // Connection broken, drop and reconnect
                     self.conn = None;
@@ -42,7 +169,8 @@ impl InspectClient {
 
         // Connect (or reconnect)
         self.connect().await?;
-        self.send_request().await
+        let conn = self.conn.as_mut().context("not connected")?;
+        Self::write_and_read(conn, method, params).await
     }
 
     async fn connect(&mut self) -> Result<()> {
@@ -58,61 +186,14 @@ impl InspectClient {
         Ok(())
     }
 
-    async fn send_request(&mut self) -> Result<InspectState> {
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        // Send request
+    async fn write_and_read(
+        conn: &mut Connection,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<InspectResponse> {
         let request = InspectRequest {
-            method: "get_state".to_string(),
-            params: None,
-        };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        // Read response
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
-            .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::State(state) => Ok(state),
-            InspectResponse::Error { error } => anyhow::bail!("server error: {error}"),
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for get_state")
-            }
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for get_state")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for get_state")
-            }
-        }
-    }
-
-    /// Send a `reload_config` command to the inspect server.
-    pub async fn reload_config(&mut self) -> Result<(bool, String)> {
-        // Ensure connected
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "reload_config".to_string(),
-            params: None,
+            method: method.to_string(),
+            params,
         };
         let mut json = serde_json::to_string(&request)?;
         json.push('\n');
@@ -130,124 +211,23 @@ impl InspectClient {
             anyhow::bail!("server closed connection");
         }
 
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::ReloadResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => anyhow::bail!("unexpected state for reload_config"),
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for reload_config")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for reload_config")
-            }
-        }
+        serde_json::from_str(response_line.trim()).context("failed to parse inspect response")
     }
+}
 
-    /// Send a `reset_session` command to the inspect server.
-    pub async fn reset_session(&mut self, thread_name: &str) -> Result<(bool, String)> {
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "reset_session".to_string(),
-            params: Some(serde_json::json!({ "thread_name": thread_name })),
-        };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
-            .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => anyhow::bail!("unexpected state for reset_session"),
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for reset_session")
-            }
-            InspectResponse::InjectMessageResult { .. } => {
-                anyhow::bail!("unexpected inject_message_result for reset_session")
-            }
-        }
-    }
-
-    /// Inject a message into a thread for AI processing.
-    ///
-    /// The server creates a synthetic `InboundMessage` and enqueues it via
-    /// `ThreadManager::enqueue()`, following the same path as cross-thread
-    /// message injection from the `jyc_send_to_thread` tool.
-    pub async fn inject_message(
-        &mut self,
-        channel: &str,
-        thread: &str,
-        text: &str,
-    ) -> Result<(bool, String)> {
-        if self.conn.is_none() {
-            self.connect().await?;
-        }
-
-        let conn = self.conn.as_mut().context("not connected")?;
-
-        let request = InspectRequest {
-            method: "inject_message".to_string(),
-            params: Some(serde_json::json!({
-                "channel": channel,
-                "thread": thread,
-                "text": text,
-            })),
-        };
-        let mut json = serde_json::to_string(&request)?;
-        json.push('\n');
-        conn.writer.write_all(json.as_bytes()).await?;
-        conn.writer.flush().await?;
-
-        let mut response_line = String::new();
-        let bytes = conn
-            .reader
-            .read_line(&mut response_line)
-            .await
-            .context("failed to read response")?;
-
-        if bytes == 0 {
-            anyhow::bail!("server closed connection");
-        }
-
-        let resp: InspectResponse = serde_json::from_str(response_line.trim())
-            .context("failed to parse inspect response")?;
-
-        match resp {
-            InspectResponse::InjectMessageResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            InspectResponse::State(_) => {
-                anyhow::bail!("unexpected state for inject_message")
-            }
-            InspectResponse::ReloadResult { .. } => {
-                anyhow::bail!("unexpected reload_result for inject_message")
-            }
-            InspectResponse::ResetSessionResult { .. } => {
-                anyhow::bail!("unexpected reset_session_result for inject_message")
-            }
-        }
-    }
+/// Build a descriptive error message for an unexpected response variant.
+fn unexpected(method: &str, resp: &InspectResponse) -> anyhow::Error {
+    let variant = match resp {
+        InspectResponse::State(_) => "state",
+        InspectResponse::Overview(_) => "overview",
+        InspectResponse::Error { .. } => "error",
+        InspectResponse::ReloadResult { .. } => "reload_result",
+        InspectResponse::ResetSessionResult { .. } => "reset_session_result",
+        InspectResponse::InjectMessageResult { .. } => "inject_message_result",
+        InspectResponse::ActivityHistory { .. } => "activity_history",
+        InspectResponse::ChatHistory { .. } => "chat_history",
+    };
+    anyhow::anyhow!("unexpected {variant} response for {method}")
 }
 
 #[cfg(test)]
@@ -281,6 +261,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         })
     }
 
@@ -303,6 +284,29 @@ mod tests {
         assert_eq!(state.channels.len(), 1);
         assert_eq!(state.channels[0].name, "test-ch");
         assert_eq!(state.stats.max_concurrent, 0);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn test_inspect_client_get_overview() {
+        let cancel = CancellationToken::new();
+        let context = test_context();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
+        let _handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut client = InspectClient::new(&addr.to_string());
+        let overview = client.get_overview().await.unwrap();
+
+        assert_eq!(overview.channels.len(), 1);
+        assert_eq!(overview.threads.len(), 0);
+        assert_eq!(overview.stats.max_concurrent, 0);
 
         cancel.cancel();
     }
@@ -410,6 +414,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -446,6 +451,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -465,6 +471,37 @@ mod tests {
 
         assert!(!success, "inject should fail for unknown channel");
         assert!(message.contains("no thread manager found"));
+
+        cancel.cancel();
+    }
+
+    /// Overview payload should be much smaller than the full state payload
+    /// because it strips activity/messages/thinking from each thread.
+    #[tokio::test]
+    async fn test_overview_payload_is_smaller_than_state() {
+        let cancel = CancellationToken::new();
+        let context = test_context();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
+        let _handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut client = InspectClient::new(&addr.to_string());
+
+        let state_json = serde_json::to_string(&client.get_state().await.unwrap()).unwrap();
+        let overview_json = serde_json::to_string(&client.get_overview().await.unwrap()).unwrap();
+
+        // Overview should never be larger than the full state for the same data.
+        assert!(
+            overview_json.len() <= state_json.len(),
+            "overview ({}) should be <= state ({})",
+            overview_json.len(),
+            state_json.len()
+        );
 
         cancel.cancel();
     }

@@ -91,6 +91,10 @@ pub struct InspectContext {
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
+    /// Per-channel broadcast bus fed by `ActivityTracker` — used by
+    /// `ThreadProxyHandler` to forward activity/chat/thinking events to
+    /// dashboard WebSocket clients. Capacity 256 (configured at creation).
+    pub inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
 }
 
 /// TCP-based inspect server.
@@ -255,6 +259,12 @@ impl InspectServer {
                 let state = Self::build_state(context).await;
                 InspectResponse::State(state)
             }
+            "get_state_overview" => {
+                let overview = Self::build_overview_state(context).await;
+                InspectResponse::Overview(overview)
+            }
+            "get_thread_activity" => Self::handle_get_thread_activity(request, context).await,
+            "get_thread_chat" => Self::handle_get_thread_chat(request, context).await,
             "reload_config" => Self::handle_reload_config(context).await,
             "reset_session" => Self::handle_reset_session(request, context).await,
             "inject_message" => Self::handle_inject_message(request, context).await,
@@ -262,6 +272,238 @@ impl InspectServer {
                 error: format!("unknown method: {other}"),
             },
         }
+    }
+
+    /// Build a slim overview snapshot — same shape as `build_state` but with
+    /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`, `recent_messages`,
+    /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
+    async fn build_overview_state(context: &InspectContext) -> InspectOverview {
+        let uptime = context.start_time.elapsed().as_secs();
+
+        let mut threads = Vec::new();
+        let mut total_threads = 0;
+        let mut active_workers = 0;
+        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
+
+        let tms = context.thread_managers.load();
+        for tm in tms.iter() {
+            let tm_threads = tm.list_threads().await;
+            total_threads += tm_threads.len();
+            let stats = tm.get_stats().await;
+            active_workers += stats.active_workers;
+            per_channel_workers.insert(
+                tm.channel_name().to_string(),
+                (stats.active_workers, tm.max_concurrent()),
+            );
+            threads.extend(tm_threads);
+        }
+
+        // Override status from activity_map (Processing / Error flags) but skip
+        // copying activity/messages/thinking — that's the whole point.
+        let activity_map = context.activity_map.lock().await;
+        for thread in &mut threads {
+            let key = (thread.channel.clone(), thread.name.clone());
+            if let Some(state) = activity_map.get(&key) {
+                if state.is_processing {
+                    thread.status = ThreadStatus::Processing;
+                } else if state.has_error {
+                    thread.status = ThreadStatus::Error;
+                }
+                if let Some(last_active) = state.last_active_at {
+                    thread.last_active_at = Some(last_active.to_rfc3339());
+                }
+            }
+        }
+        drop(activity_map);
+
+        // Slim each ThreadInfo down to a ThreadSummary.
+        let summaries: Vec<ThreadSummary> = threads
+            .into_iter()
+            .map(|t| ThreadSummary {
+                name: t.name,
+                channel: t.channel,
+                pattern: t.pattern,
+                status: t.status,
+                model: t.model,
+                mode: t.mode,
+                input_tokens: t.input_tokens,
+                max_tokens: t.max_tokens,
+                last_active_at: t.last_active_at,
+                skills: t.skills,
+                thread_path: t.thread_path,
+            })
+            .collect();
+
+        let health = context.health_stats.lock().await;
+        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
+        let stats = GlobalStats {
+            active_workers,
+            total_threads,
+            max_concurrent,
+            available_workers: max_concurrent.saturating_sub(active_workers),
+            messages_received: health.messages_received,
+            messages_processed: health.messages_processed,
+            errors: health.errors,
+        };
+        drop(health);
+
+        let channels = context.channels.load();
+        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
+        for ch in &mut channels {
+            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
+                ch.active_workers = *aw;
+                ch.max_concurrent = *mc;
+            }
+        }
+
+        InspectOverview {
+            uptime_secs: uptime,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            channels,
+            threads: summaries,
+            stats,
+            commands: all_commands(),
+            models: context
+                .config
+                .as_ref()
+                .map(|cfg| list_available_models(&cfg.load().agent.providers))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Handle `get_thread_activity {channel, thread, since?, limit?}` — returns
+    /// recent activity entries from `.jyc/activity.jsonl`.
+    async fn handle_get_thread_activity(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+        let since = params
+            .get("since")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(180);
+
+        let tms = context.thread_managers.load();
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+        let thread_path = match tm.thread_path(thread).await {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("thread '{thread}' not found in channel '{channel}'"),
+                };
+            }
+        };
+
+        let entries = match ActivityLogStore::load_recent(&thread_path, limit) {
+            Ok(e) => e,
+            Err(e) => {
+                return InspectResponse::Error {
+                    error: format!("failed to load activity: {e}"),
+                };
+            }
+        };
+        let entries = filter_by_since(entries, since.as_deref());
+        InspectResponse::ActivityHistory { entries }
+    }
+
+    /// Handle `get_thread_chat {channel, thread, since?, limit?}` — returns
+    /// recent chat messages from `chat_history_*.jsonl`.
+    async fn handle_get_thread_chat(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+        let since = params
+            .get("since")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(100);
+
+        let tms = context.thread_managers.load();
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+        let thread_path = match tm.thread_path(thread).await {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("thread '{thread}' not found in channel '{channel}'"),
+                };
+            }
+        };
+
+        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, limit);
+        let entries = filter_chat_by_since(entries, since.as_deref());
+        InspectResponse::ChatHistory { entries }
     }
 
     /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
@@ -659,6 +901,37 @@ impl InspectServer {
                 .unwrap_or_default(),
         }
     }
+}
+
+/// Filter activity entries by `since` timestamp (RFC 3339 string).
+/// Returns entries whose timestamp is `>= since`. If `since` is None,
+/// returns all entries unchanged.
+fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<ActivityEntry> {
+    if let Some(since_ts) = since {
+        entries.retain(|e| {
+            e.timestamp
+                .as_deref()
+                .map(|t| t >= since_ts)
+                .unwrap_or(false)
+        });
+    }
+    entries
+}
+
+/// Filter chat messages by `since` timestamp (RFC 3339 string).
+fn filter_chat_by_since(
+    mut entries: Vec<ChatMessageEntry>,
+    since: Option<&str>,
+) -> Vec<ChatMessageEntry> {
+    if let Some(since_ts) = since {
+        entries.retain(|e| {
+            e.timestamp
+                .as_deref()
+                .map(|t| t >= since_ts)
+                .unwrap_or(false)
+        });
+    }
+    entries
 }
 
 /// Background task that subscribes to thread event buses and buffers
@@ -1274,6 +1547,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         })
     }
 
@@ -1512,6 +1786,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -1601,6 +1876,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -1698,6 +1974,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -2007,5 +2284,140 @@ mode = "agent"
         let entry = event_to_activity(&event);
         assert!(entry.text.contains("Reply sent"));
         assert!(entry.text.contains("AI reply here"));
+    }
+
+    #[tokio::test]
+    async fn test_get_state_overview_returns_slim_payload() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state_overview\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+
+        match resp {
+            InspectResponse::Overview(overview) => {
+                assert_eq!(overview.channels.len(), 1);
+                assert_eq!(overview.threads.len(), 0);
+                // The slim payload should NOT contain activity / recent_messages / thinking_text
+                let json = serde_json::to_string(&overview).unwrap();
+                assert!(!json.contains("activity"));
+                assert!(!json.contains("recent_messages"));
+                assert!(!json.contains("thinking_text"));
+            }
+            other => panic!("expected Overview, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_activity_reads_activity_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+        let thread_name = "activity-test";
+        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let activity_path = jyc_dir.join("activity.jsonl");
+        let entries = vec![
+            r#"{"text":"Tool: bash","timestamp":"2026-07-01T10:00:00Z","severity":"info"}"#,
+            r#"{"text":"Completed (5s)","timestamp":"2026-07-01T10:00:05Z","severity":"info"}"#,
+        ];
+        let content = entries.join("\n") + "\n";
+        tokio::fs::write(&activity_path, content).await.unwrap();
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir.clone()])),
+            websocket_handlers: None,
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // No thread managers registered → should return "no thread manager" error
+        writer
+            .write_all(
+                b"{\"method\":\"get_thread_activity\",\"params\":{\"channel\":\"any\",\"thread\":\"any\"}}\n",
+            )
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(response.contains("no thread manager"), "got: {response}");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_activity_filters_by_since() {
+        // Verify the filter_by_since helper used by the handler.
+        use jyc_types::Severity;
+        let entries = vec![
+            ActivityEntry {
+                text: "old".to_string(),
+                timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+            },
+            ActivityEntry {
+                text: "mid".to_string(),
+                timestamp: Some("2026-02-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+            },
+            ActivityEntry {
+                text: "new".to_string(),
+                timestamp: Some("2026-03-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+            },
+        ];
+
+        let filtered = filter_by_since(entries.clone(), Some("2026-02-01T00:00:00Z"));
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].text, "mid");
+        assert_eq!(filtered[1].text, "new");
+
+        let all = filter_by_since(entries, None);
+        assert_eq!(all.len(), 3);
     }
 }

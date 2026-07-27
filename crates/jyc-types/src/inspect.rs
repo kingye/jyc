@@ -16,6 +16,10 @@ pub struct InspectRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InspectResponse {
     State(InspectState),
+    /// Slim overview payload — same shape as `InspectState` but with
+    /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`,
+    /// `recent_messages`, and `thinking_text`.
+    Overview(InspectOverview),
     Error {
         error: String,
     },
@@ -29,8 +33,20 @@ pub enum InspectResponse {
         success: bool,
         message: String,
     },
-    /// Result of an `inject_message` request.
-    InjectMessageResult {
+    /// Recent activity entries for a single thread (returned by `get_thread_activity`).
+    ActivityHistory {
+        entries: Vec<ActivityEntry>,
+    },
+    /// Recent chat messages for a single thread (returned by `get_thread_chat`).
+    ChatHistory {
+        entries: Vec<ChatMessageEntry>,
+    },
+    /// Pattern names for a channel (returned by `list_patterns`).
+    Patterns {
+        patterns: Vec<String>,
+    },
+    /// Result of a `create_thread` request.
+    CreateThreadResult {
         success: bool,
         message: String,
     },
@@ -57,6 +73,66 @@ pub struct InspectState {
     /// Available models (name only), populated from agent config providers
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+}
+
+/// Slim overview payload returned by `get_state_overview`.
+///
+/// Same shape as `InspectState` but with `ThreadSummary` instead of `ThreadInfo`,
+/// dropping `activity`, `recent_messages`, and `thinking_text` to keep the
+/// per-poll payload small.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InspectOverview {
+    /// Seconds since monitor started
+    pub uptime_secs: u64,
+    /// JYC version
+    pub version: String,
+    /// Configured channels
+    pub channels: Vec<ChannelInfo>,
+    /// Active threads across all channels (lazy summary — no activity/messages)
+    pub threads: Vec<ThreadSummary>,
+    /// Aggregate statistics
+    pub stats: GlobalStats,
+    /// Available commands (name + description), populated from server-side CommandRegistry
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
+    /// Available models (name only), populated from agent config providers
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
+}
+
+/// Information about an active thread — slim form for the overview page.
+///
+/// Excludes `activity`, `recent_messages`, and `thinking_text` so the
+/// per-poll payload stays small. Use `get_thread_activity` / `get_thread_chat`
+/// to fetch these on demand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    /// Thread name (e.g., "issue-42", "pr-43", "support-ticket")
+    pub name: String,
+    /// Channel this thread belongs to
+    pub channel: String,
+    /// Pattern that created this thread (from `.jyc/pattern`)
+    pub pattern: Option<String>,
+    /// Current processing status
+    pub status: ThreadStatus,
+    /// AI model in use (from model-override or default)
+    pub model: Option<String>,
+    /// Current mode (plan/build)
+    pub mode: Option<String>,
+    /// Current input tokens used in this session
+    pub input_tokens: Option<u64>,
+    /// Max input tokens for this session
+    pub max_tokens: Option<u64>,
+    /// Last activity timestamp (RFC 3339), if known
+    #[serde(default)]
+    pub last_active_at: Option<String>,
+    /// Skills loaded for this thread
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Filesystem path for this thread (may differ from workspace/name when
+    /// a pattern's `thread_path` override is active).
+    #[serde(default)]
+    pub thread_path: Option<std::path::PathBuf>,
 }
 
 /// Information about a configured channel.
@@ -137,6 +213,12 @@ pub struct ActivityEntry {
     /// Severity level (defaults to Info for backward compat)
     #[serde(default)]
     pub severity: Severity,
+    /// Monotonic per-thread sequence number assigned by the inspect server's
+    /// `ActivityTracker` on push. Used by WS clients to drop duplicate events
+    /// after a reconnect / Lagged recovery. Defaults to 0 for entries from
+    /// `.jyc/activity.jsonl` that predate the seq field.
+    #[serde(default)]
+    pub id: u64,
 }
 
 /// A chat message entry for live display in the dashboard.
@@ -152,6 +234,9 @@ pub struct ChatMessageEntry {
     /// RFC 3339 timestamp
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Monotonic per-thread sequence number (see `ActivityEntry::id`).
+    #[serde(default)]
+    pub id: u64,
 }
 
 /// Thread processing status.
@@ -440,11 +525,44 @@ mod tests {
             text: "Failed (5s)".to_string(),
             timestamp: Some("2025-01-15T12:34:56Z".to_string()),
             severity: Severity::Error,
+            id: 0,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""severity":"error""#));
         let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.severity, Severity::Error);
+    }
+
+    #[test]
+    fn test_activity_entry_id_backward_compat() {
+        // Old JSONL entries have no `id` field — should default to 0
+        let old_json =
+            r#"{"text":"old entry","timestamp":"2025-01-15T12:00:00Z","severity":"info"}"#;
+        let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.text, "old entry");
+    }
+
+    #[test]
+    fn test_activity_entry_id_roundtrip() {
+        let entry = ActivityEntry {
+            text: "new entry".to_string(),
+            timestamp: Some("2025-01-15T12:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 42,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""id":42"#));
+        let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, 42);
+    }
+
+    #[test]
+    fn test_chat_message_entry_id_backward_compat() {
+        let old_json = r#"{"sender":"user","text":"hi","timestamp":"2025-01-15T12:00:00Z"}"#;
+        let entry: ChatMessageEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.sender, "user");
     }
 
     #[test]
@@ -454,5 +572,78 @@ mod tests {
         assert_eq!(ch.name, "emf");
         assert_eq!(ch.active_workers, 0);
         assert_eq!(ch.max_concurrent, 0);
+    }
+
+    #[test]
+    fn test_thread_summary_roundtrip() {
+        let summary = ThreadSummary {
+            name: "issue-42".to_string(),
+            channel: "emf".to_string(),
+            pattern: Some("planner".to_string()),
+            status: ThreadStatus::Processing,
+            model: Some("claude-opus".to_string()),
+            mode: Some("build".to_string()),
+            input_tokens: Some(10000),
+            max_tokens: Some(120000),
+            last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
+            skills: vec!["dev-workflow".to_string()],
+            thread_path: None,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        let parsed: ThreadSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "issue-42");
+        assert_eq!(parsed.status, ThreadStatus::Processing);
+        // ThreadSummary must not serialize activity/messages/thinking fields
+        assert!(!json.contains("activity"));
+        assert!(!json.contains("recent_messages"));
+        assert!(!json.contains("thinking_text"));
+    }
+
+    #[test]
+    fn test_inspect_overview_roundtrip() {
+        let overview = InspectOverview {
+            uptime_secs: 100,
+            version: "0.1.0".to_string(),
+            channels: vec![],
+            threads: vec![],
+            stats: GlobalStats::default(),
+            commands: vec![],
+            models: vec![],
+        };
+        let json = serde_json::to_string(&overview).unwrap();
+        // InspectOverview is a struct (not an InspectResponse variant), so no `type` tag
+        assert!(json.contains(r#""uptime_secs":100"#));
+        assert!(json.contains(r#""version":"0.1.0""#));
+        let parsed: InspectOverview = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.uptime_secs, 100);
+
+        // But when wrapped in InspectResponse, it gets the `type: "overview"` tag
+        let wrapped = InspectResponse::Overview(overview);
+        let json = serde_json::to_string(&wrapped).unwrap();
+        assert!(json.contains(r#""type":"overview""#));
+    }
+
+    #[test]
+    fn test_activity_history_response_serde() {
+        let resp = InspectResponse::ActivityHistory { entries: vec![] };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""type":"activity_history""#));
+        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            InspectResponse::ActivityHistory { entries } => assert!(entries.is_empty()),
+            other => panic!("expected ActivityHistory, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chat_history_response_serde() {
+        let resp = InspectResponse::ChatHistory { entries: vec![] };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""type":"chat_history""#));
+        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            InspectResponse::ChatHistory { entries } => assert!(entries.is_empty()),
+            other => panic!("expected ChatHistory, got {:?}", other),
+        }
     }
 }

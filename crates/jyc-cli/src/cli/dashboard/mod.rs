@@ -29,7 +29,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, InspectState, ModelInfo, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, ThreadStatus};
 
 use super::command_popup::*;
 
@@ -76,7 +76,7 @@ pub struct OpenArgs {
 
 /// Application state for the TUI.
 struct App {
-    state: Option<InspectState>,
+    state: Option<InspectOverview>,
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
@@ -155,24 +155,9 @@ impl App {
         match event {
             WsEvent::Connected => {
                 self.chat.ws_connected = true;
-                // Request pattern list on connect
-                let list_msg = serde_json::json!({"type": "list_patterns"}).to_string();
-                if let Some(tx) = &self.chat.ws_tx {
-                    let _ = tx.send(list_msg);
-                }
-
-                // Auto-re-subscribe to the previously selected thread, if any
-                if let Some(ref thread) = self.chat.thread {
-                    let subscribe_msg = serde_json::json!({
-                        "type": "subscribe",
-                        "thread": thread,
-                    })
-                    .to_string();
-                    if let Some(tx) = &self.chat.ws_tx {
-                        let _ = tx.send(subscribe_msg);
-                    }
-                    self.set_status(format!("Reconnected to {thread}"));
-                }
+                // The WS protocol no longer carries `list_patterns` or
+                // `subscribe` commands — history is loaded via REST and
+                // thread scope comes from the URL. Nothing to do here.
             }
             WsEvent::Disconnected => {
                 self.chat.ws_connected = false;
@@ -337,21 +322,23 @@ pub async fn run(
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
+            let channel = initial_channel.unwrap_or("");
             app.chat.open(&args.addr, initial_channel, Some(thread));
+            hydrate_live(&mut client, &mut app, channel, thread).await;
         }
 
         loop {
-            // Poll for new state
+            // Poll for new state (slim overview — no activity/messages/thinking)
             if last_poll.elapsed() >= poll_interval {
-                match client.get_state().await {
-                    Ok(state) => {
+                match client.get_overview().await {
+                    Ok(overview) => {
                         // Clear awaiting_response once the server confirms the thread
                         // is no longer processing (with a small grace period to avoid
                         // flicker between the local flag and server state).
                         if app.chat.awaiting_response
                             && let Some(ref chat_name) = app.chat.thread
                         {
-                            let ct = state.threads.iter().find(|t| t.name == *chat_name);
+                            let ct = overview.threads.iter().find(|t| t.name == *chat_name);
                             if let Some(ct) = ct
                                 && ct.status != ThreadStatus::Processing
                             {
@@ -359,18 +346,32 @@ pub async fn run(
                             }
                         }
 
-                        // Detail mode: extract live chat messages from recent_messages
-                        if app.chat.is_detail_mode()
-                            && let Some(ref chat_name) = app.chat.thread
-                            && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
+                        // Append new chat messages from the live buffer to the
+                        // dashboard's `chat.messages` vec. The live buffer is
+                        // populated by REST hydrate on selection and updated by
+                        // WS `chat_message` events.
+                        if let Some(channel) = app.chat.channel.as_deref()
+                            && let Some(thread) = app.chat.thread.as_deref()
                         {
+                            // Collect into a Vec first to release the immutable
+                            // borrow on app.chat.live_chat before mutating
+                            // app.chat.messages.
+                            let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+                                app.chat.live_chat_for(channel, thread).cloned().collect();
                             let mut new_msg = false;
-                            for msg in &ct.recent_messages {
-                                // Skip messages we already have (dedup by text+timestamp)
-                                let already =
-                                    app.chat.messages.iter().any(|m| {
-                                        m.text == msg.text && m.timestamp == msg.timestamp
-                                    });
+                            for msg in &live_msgs {
+                                // Dedup by (sender, text) instead of
+                                // (text, timestamp) because the
+                                // local-echo timestamp in
+                                // send_message_inner differs from
+                                // the server-generated IncomingMessage
+                                // timestamp by ≤1s, causing false
+                                // duplication on every user message.
+                                let already = app
+                                    .chat
+                                    .messages
+                                    .iter()
+                                    .any(|m| m.sender == msg.sender && m.text == msg.text);
                                 if !already {
                                     app.chat.messages.push(ChatMessage {
                                         sender: msg.sender.clone(),
@@ -380,16 +381,36 @@ pub async fn run(
                                     new_msg = true;
                                 }
                             }
-                            // Auto-scroll to bottom only when new messages arrive
                             if new_msg {
                                 app.chat.scroll = 0;
                             }
                         }
 
-                        app.state = Some(state);
+                        app.state = Some(overview);
                         if let Some(ref s) = app.state {
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
+
+                            // Hydrate the live buffers when the table-selected
+                            // thread changes (so the overview's activity pane
+                            // shows recent entries without requiring the user
+                            // to open chat first). Skip if we're in chat mode
+                            // — the open() flow already triggered hydrate.
+                            if !app.chat.visible {
+                                let selected_idx = app.table_state.selected();
+                                if let Some(idx) = selected_idx
+                                    && let Some(t) = s.threads.get(idx)
+                                {
+                                    let key = (t.channel.clone(), t.name.clone());
+                                    if app.chat.last_hydrated_key.as_ref() != Some(&key) {
+                                        let channel = t.channel.clone();
+                                        let thread = t.name.clone();
+                                        app.chat.last_hydrated_key = Some(key);
+                                        hydrate_live(&mut client, &mut app, &channel, &thread)
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                         app.error = None;
                     }
@@ -398,25 +419,6 @@ pub async fn run(
                     }
                 }
                 last_poll = std::time::Instant::now();
-            }
-
-            // Process pending message injection (detail mode)
-            if let Some((thread, text)) = app.chat.pending_inject.take()
-                && let Some(ref channel) = app.chat.detail_channel
-            {
-                match client.inject_message(channel, &thread, &text).await {
-                    Ok((true, msg)) => {
-                        tracing::debug!("Message injected: {msg}");
-                    }
-                    Ok((false, msg)) => {
-                        app.set_status(format!("Inject failed: {msg}"));
-                        app.chat.awaiting_response = false;
-                    }
-                    Err(e) => {
-                        app.set_status(format!("Inject error: {e:#}"));
-                        app.chat.awaiting_response = false;
-                    }
-                }
             }
 
             // Check for WebSocket events
@@ -515,8 +517,19 @@ pub async fn run_open(
         "Opening directory as ad-hoc thread via dashboard CLI"
     );
 
-    // Send create_thread over websocket to the target channel
-    create_thread_via_websocket(addr, &channel, &thread, &path).await?;
+    // Register the ad-hoc thread via REST. Replaces the old WebSocket
+    // `create_thread` command.
+    match client.create_thread(&channel, &thread, &path).await {
+        Ok((true, msg)) => {
+            tracing::debug!(message = %msg, "Thread created via REST");
+        }
+        Ok((false, msg)) => {
+            anyhow::bail!("create_thread failed: {msg}");
+        }
+        Err(e) => {
+            anyhow::bail!("create_thread error: {e:#}");
+        }
+    }
 
     // Wait for the inspect server to report the thread
     wait_for_thread(&mut client, &thread, &channel).await?;
@@ -616,8 +629,8 @@ async fn resolve_websocket_channel(
         return Ok(name.to_string());
     }
 
-    let state = client.get_state().await?;
-    let ws_channels: Vec<String> = state
+    let overview = client.get_overview().await?;
+    let ws_channels: Vec<String> = overview
         .channels
         .into_iter()
         .filter(|c| c.channel_type == "websocket")
@@ -636,41 +649,11 @@ async fn resolve_websocket_channel(
     }
 }
 
-/// Send a `create_thread` message over a short-lived websocket connection.
-async fn create_thread_via_websocket(
-    addr: &str,
-    channel: &str,
-    thread: &str,
-    path: &str,
-) -> Result<()> {
-    let url = format!("ws://{}/ws/{}", addr, channel);
-    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .with_context(|| format!("failed to connect to websocket at {url}"))?;
-
-    let msg = serde_json::json!({
-        "type": "create_thread",
-        "thread": thread,
-        "path": path,
-    });
-    use futures_util::SinkExt;
-    ws_stream
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            msg.to_string(),
-        ))
-        .await
-        .context("failed to send create_thread message")?;
-
-    // Graceful close; best-effort only.
-    let _ = ws_stream.close(None).await;
-    Ok(())
-}
-
 /// Poll the inspect server until the newly created thread appears in state.
 async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
-        let state = client.get_state().await?;
-        if state
+        let overview = client.get_overview().await?;
+        if overview
             .threads
             .iter()
             .any(|t| t.name == thread && t.channel == channel)
@@ -680,6 +663,53 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     anyhow::bail!("Timeout waiting for thread {thread} to be created")
+}
+
+/// REST hydrate the live activity + chat buffers for the given thread.
+///
+/// Called after the user opens a chat (Enter on a thread, `c` to start fresh,
+/// or `--thread` on the CLI). Subsequent live updates arrive over the
+/// WebSocket and are appended to the same buffers; the activity pane and
+/// chat progress read exclusively from these buffers.
+///
+/// Errors are logged but not propagated — the buffers will simply be empty
+/// (the activity pane shows "No activity" until the next WS event arrives).
+async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, thread: &str) {
+    // Activity first (chat pane progress depends on it).
+    match client
+        .get_thread_activity(channel, thread, None, Some(180))
+        .await
+    {
+        Ok(activity) => {
+            // Chat second.
+            match client
+                .get_thread_chat(channel, thread, None, Some(100))
+                .await
+            {
+                Ok(chat) => {
+                    app.chat.seed_live(channel, thread, activity, chat);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %channel,
+                        thread = %thread,
+                        error = %e,
+                        "failed to hydrate chat history (activity pane may be empty)"
+                    );
+                    // Still seed activity so the activity pane at least has entries.
+                    app.chat.seed_live(channel, thread, activity, Vec::new());
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                channel = %channel,
+                thread = %thread,
+                error = %e,
+                "failed to hydrate activity (activity pane will be empty until WS events arrive)"
+            );
+        }
+    }
 }
 
 async fn handle_normal_keys(
@@ -697,7 +727,22 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            app.chat.open(addr, None, None);
+            // Fetch patterns via REST (replaces the old WebSocket
+            // `list_patterns` command) and open the chat in pattern-select
+            // mode. After the user picks a pattern, `select_pattern` opens
+            // a scoped WS to `/ws/<channel>/<thread>`.
+            let overview = app.state.clone();
+            let channel = overview.as_ref().and_then(|o| {
+                o.channels
+                    .iter()
+                    .find(|c| c.channel_type == "websocket")
+                    .map(|c| c.name.clone())
+            });
+            if let Some(channel) = channel {
+                app.chat.open_pattern_select(addr, &channel, client).await;
+            } else {
+                app.set_status("No websocket channel configured".to_string());
+            }
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads
@@ -721,6 +766,10 @@ async fn handle_normal_keys(
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());
                 }
+                // REST hydrate the live buffers (activity + chat) so the
+                // activity pane and chat progress show recent entries
+                // immediately. WS events append to the same buffers.
+                hydrate_live(client, app, &channel, &name).await;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -1062,8 +1111,13 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let info = Paragraph::new(info_lines).block(info_block);
     frame.render_widget(info, detail_chunks[0]);
 
-    // Activity log panel
-    render_activity_log_inner(frame, detail_chunks[1], selected, 0, 0, false);
+    // Activity log panel — read from the WS-fed live buffer for this thread.
+    let activity_vec: Vec<jyc_types::ActivityEntry> = app
+        .chat
+        .live_activity_for(&selected.channel, &selected.name)
+        .cloned()
+        .collect();
+    render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {

@@ -143,43 +143,18 @@ async fn test_websocket_adapter_start_and_handle() {
         let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
         let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
 
-        inbound.handle(ws_stream, client_addr).await.unwrap();
+        inbound.handle(ws_stream, client_addr, None).await.unwrap();
     });
 
     // Connect test client
     let url = format!("ws://{}/ws", addr);
     let ws_stream = tokio_tungstenite::connect_async(&url).await.unwrap().0;
-    let (mut write, mut read) = ws_stream.split();
+    let (mut write, _read) = ws_stream.split();
 
-    // List patterns
-    let list_msg = r#"{"type":"list_patterns"}"#;
-    write
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            list_msg.to_string(),
-        ))
-        .await
-        .unwrap();
-
-    // Read patterns response
-    let response = read.next().await.unwrap().unwrap();
-    let text = response.to_text().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["type"], "patterns");
-    let patterns = parsed["patterns"].as_array().unwrap();
-    assert_eq!(patterns.len(), 2);
-    assert_eq!(patterns[0], "general");
-    assert_eq!(patterns[1], "coding-help");
-
-    // Subscribe to a thread
-    let subscribe_msg = r#"{"type":"subscribe","thread":"general"}"#;
-    write
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            subscribe_msg.to_string(),
-        ))
-        .await
-        .unwrap();
-
-    // Send a message
+    // Send a message — the URL is /ws (no thread scope), so the message
+    // payload must include `thread`. The `list_patterns` and `subscribe`
+    // commands have been replaced by REST endpoints; the WebSocket
+    // protocol now only carries the live-message stream.
     let message_text = "Hello from test client";
     let message_msg = format!(
         r#"{{"type":"message","thread":"general","text":"{}"}}"#,

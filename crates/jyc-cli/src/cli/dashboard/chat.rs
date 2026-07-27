@@ -37,6 +37,7 @@ pub(super) struct ChatState {
     pub(super) patterns: Vec<String>,
     pub(super) pattern_selected: usize,
     pub(super) thread: Option<String>,
+    pub(super) channel: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
     /// Vim-style editor state for the chat input (edtui).
     pub(super) editor: EditorState,
@@ -58,15 +59,40 @@ pub(super) struct ChatState {
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
-    // Detail mode (non-WebSocket thread chat) state
-    /// Channel name for the thread being viewed in detail mode.
-    /// Set when Enter is pressed on a non-websocket thread.
+    /// Channel name for the thread being viewed (used by live buffers).
+    /// Set when chat is opened (Enter on a thread, or `c` to start fresh).
     pub(super) detail_channel: Option<String>,
     /// Thread path from ThreadInfo (for loading chat history from disk).
+    /// Legacy detail-mode field; still set for the chat pane but no longer
+    /// drives a different code path.
     pub(super) detail_thread_path: Option<std::path::PathBuf>,
-    /// Pending message to inject via inspect protocol (detail mode).
-    /// Set by `send_message_inner` and consumed by the main poll loop.
-    pub(super) pending_inject: Option<(String, String)>,
+    /// Live activity buffer — populated by REST hydrate on selection and
+    /// appended to by WS `{"type":"activity",...}` events. Keyed by
+    /// `(channel, thread)`. The activity pane and chat progress read
+    /// exclusively from this buffer.
+    pub(super) live_activity: std::collections::BTreeMap<
+        (String, String),
+        std::collections::VecDeque<jyc_types::ActivityEntry>,
+    >,
+    /// Live chat messages — populated by REST hydrate + WS `chat_message`.
+    pub(super) live_chat: std::collections::BTreeMap<
+        (String, String),
+        std::collections::VecDeque<jyc_types::ChatMessageEntry>,
+    >,
+    /// Live thinking text — overwritten by WS `thinking` events.
+    pub(super) live_thinking: std::collections::BTreeMap<(String, String), String>,
+    /// Live processing status — updated by WS `processing` events.
+    pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
+    /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
+    /// WS events after reconnect / `resync`.
+    pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
+    /// Last (channel, thread) that was REST-hydrated by the poll loop.
+    /// Used to avoid re-hydrating the same thread on every poll when the
+    /// user is browsing the overview.
+    pub(super) last_hydrated_key: Option<(String, String)>,
+    /// Address stash for `select_pattern` to call back into `open` when
+    /// the user picks a pattern from the `c`-key pattern-select UI.
+    pub(super) open_addr: Option<String>,
     // Command popup state
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
@@ -800,39 +826,64 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     // Show progress indicator
-    // Determine if the thread is processing: either the inspect server
-    // reports Processing status, or we've sent a message and haven't yet
-    // seen the server confirm completion (covers the first-message gap
-    // where the poll hasn't caught up yet).
-    let server_processing = app
-        .state
-        .as_ref()
-        .and_then(|s| {
-            let chat_name = app.chat.thread.as_deref()?;
-            s.threads.iter().find(|t| t.name == chat_name)
-        })
-        .is_some_and(|ct| ct.status == ThreadStatus::Processing);
-
-    // Show progress if the server reports processing OR we've sent a message
-    // locally and are still waiting for the server state to catch up.
-    let show_progress = server_processing || app.chat.awaiting_response;
-
-    if show_progress {
-        // Get thread info for thinking text and activity entries
-        let thread_info = app
+    // Determine if the thread is processing: prefer the live processing
+    // status (updated via WS `processing` events), fall back to the polled
+    // overview state, fall back to local `awaiting_response`.
+    let live_processing = app
+        .chat
+        .channel
+        .as_deref()
+        .zip(app.chat.thread.as_deref())
+        .and_then(|(c, t)| app.chat.live_processing_for(c, t));
+    let server_processing = match live_processing {
+        Some((p, _)) => p,
+        None => app
             .state
             .as_ref()
             .and_then(|s| {
                 let chat_name = app.chat.thread.as_deref()?;
                 s.threads.iter().find(|t| t.name == chat_name)
             })
-            .filter(|ct| ct.status == ThreadStatus::Processing);
+            .is_some_and(|ct| ct.status == ThreadStatus::Processing),
+    };
 
-        // Show thinking text (if any) from the thread state.
+    // Show progress if the server reports processing OR we've sent a message
+    // locally and are still waiting for the server state to catch up.
+    let show_progress = server_processing || app.chat.awaiting_response;
+
+    if show_progress {
+        // Read live activity + thinking from the WS-fed buffers, falling
+        // back to the polled overview only as a last resort. The rendering
+        // logic below is byte-for-byte identical to before — only the data
+        // source changed.
+        let live_chan = app.chat.channel.clone();
+        let live_thread = app.chat.thread.clone();
+        let activity_entries: Vec<jyc_types::ActivityEntry> = live_chan
+            .as_deref()
+            .zip(live_thread.as_deref())
+            .map(|(c, t)| {
+                app.chat
+                    .live_activity_for(c, t)
+                    .rev()
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let thinking_text: Option<String> = live_chan
+            .as_deref()
+            .zip(live_thread.as_deref())
+            .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
+            .map(|s| s.to_string());
+
+        // Render thinking text first (same wrap + indent as before).
         // This comes from ThreadEvent::Thinking events and is NOT stored
         // in the activity buffer or activity.jsonl.
-        if let Some(ct) = &thread_info
-            && let Some(thinking) = &ct.thinking_text
+        if let Some(thinking) = thinking_text.as_deref()
             && !thinking.is_empty()
         {
             let gray_style = Style::default().fg(Color::Gray);
@@ -849,15 +900,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             }
         }
 
-        let activity_entries: Vec<_> = thread_info
-            .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        let has_thinking_text = thread_info
-            .and_then(|ct| ct.thinking_text.as_deref())
-            .is_some_and(|t| !t.is_empty());
-
-        if activity_entries.is_empty() && !has_thinking_text {
+        if activity_entries.is_empty() && thinking_text.is_none() {
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
@@ -869,7 +912,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             ]));
         } else {
             let total = activity_entries.len();
-            for (idx, a) in activity_entries.iter().rev().enumerate() {
+            for (idx, a) in activity_entries.iter().enumerate() {
                 let is_last = idx == total - 1;
                 let elapsed = if is_last {
                     format_elapsed(&a.timestamp)
@@ -1037,42 +1080,42 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 }
 
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let block = Block::default().title(" Activity ").borders(Borders::ALL);
-            frame.render_widget(block, area);
-            return;
-        }
-    };
-
-    let selected = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-        app.chat
-            .thread
-            .as_ref()
-            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
-    } else {
-        app.table_state
-            .selected()
-            .and_then(|i| state.threads.get(i))
-    };
-
-    let selected = match selected {
-        Some(t) => t,
-        None => {
-            let block = Block::default().title(" Activity ").borders(Borders::ALL);
-            frame.render_widget(block, area);
-            return;
-        }
-    };
+    // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
+    // currently focused thread. Falls back to empty slice if no live data
+    // has been seeded yet (transient state during hydrate).
+    let activity_vec: Vec<jyc_types::ActivityEntry> =
+        if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+            let (chan, thread) = (app.chat.channel.clone(), app.chat.thread.clone());
+            match (chan, thread) {
+                (Some(c), Some(t)) => app.chat.live_activity_for(&c, &t).cloned().collect(),
+                _ => Vec::new(),
+            }
+        } else if let Some(state) = &app.state {
+            // Overview mode: show the activity for the table-selected thread
+            // (also pulled from live buffers, hydrated when the row is selected).
+            let selected_idx = app.table_state.selected();
+            if let Some(idx) = selected_idx {
+                if let Some(t) = state.threads.get(idx) {
+                    app.chat
+                        .live_activity_for(&t.channel, &t.name)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
     // Thinking entries are excluded from the activity pane (they flood it with
     // identical "Thinking..." markers). They remain in the in-memory log for
     // the chat pane's AI progress area and are persisted to activity.jsonl.
-    let visible_count = selected
-        .activity
+    let visible_count = activity_vec
         .iter()
         .filter(|e| !e.text.starts_with("Thinking: "))
         .count();
@@ -1081,7 +1124,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     render_activity_log_inner(
         frame,
         area,
-        selected,
+        &activity_vec,
         app.chat.activity_scroll,
         app.chat.activity_hscroll,
         focused,
@@ -1091,7 +1134,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
 pub(super) fn render_activity_log_inner(
     frame: &mut Frame,
     area: Rect,
-    selected: &jyc_types::ThreadInfo,
+    activity: &[jyc_types::ActivityEntry],
     scroll_offset: usize,
     hscroll: usize,
     focused: bool,
@@ -1105,7 +1148,7 @@ pub(super) fn render_activity_log_inner(
         );
     }
 
-    if selected.activity.is_empty() {
+    if activity.is_empty() {
         let text = Paragraph::new(Span::styled(
             "  No activity",
             Style::default().fg(Color::DarkGray),
@@ -1118,8 +1161,7 @@ pub(super) fn render_activity_log_inner(
     // Thinking entries are excluded from the activity pane - they appear as
     // dozens of identical "Thinking..." markers and crowd out useful events.
     // The chat pane AI progress area handles thinking display.
-    let visible: Vec<_> = selected
-        .activity
+    let visible: Vec<_> = activity
         .iter()
         .filter(|e| !e.text.starts_with("Thinking: "))
         .collect();
@@ -1180,6 +1222,7 @@ impl ChatState {
             patterns: vec![],
             pattern_selected: 0,
             thread: None,
+            channel: None,
             messages: vec![],
             editor: empty_chat_editor(),
             handler: EditorEventHandler::default(),
@@ -1195,7 +1238,13 @@ impl ChatState {
             ws_connected: false,
             detail_channel: None,
             detail_thread_path: None,
-            pending_inject: None,
+            live_activity: std::collections::BTreeMap::new(),
+            live_chat: std::collections::BTreeMap::new(),
+            live_thinking: std::collections::BTreeMap::new(),
+            live_processing: std::collections::BTreeMap::new(),
+            last_seen_id: std::collections::BTreeMap::new(),
+            last_hydrated_key: None,
+            open_addr: None,
             commands: vec![],
             models: vec![],
             command_popup: None,
@@ -1213,6 +1262,7 @@ impl ChatState {
         };
         self.patterns.clear();
         self.pattern_selected = 0;
+        self.channel = channel.map(|s| s.to_string());
         self.thread = initial_thread.map(|s| s.to_string());
         self.messages.clear();
         self.editor = empty_chat_editor();
@@ -1225,6 +1275,20 @@ impl ChatState {
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
+        // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
+        // when we switch back to overview later.
+        self.last_hydrated_key = None;
+
+        // No WS yet — the chat starts in PatternSelect (if no initial thread)
+        // and opens a scoped WS only after the user picks a pattern
+        // (see `open_pattern_select` + `select_pattern`).
+        if initial_thread.is_none() {
+            // Drop any stale WS connection from a prior chat.
+            if let Some(tx) = self.ws_tx.take() {
+                let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+            }
+            return;
+        }
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1232,41 +1296,30 @@ impl ChatState {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
-        let url = match channel {
-            Some(ch) => format!("ws://{}/ws/{}", addr, ch),
-            None => format!("ws://{}/ws", addr),
+        let url = match (channel, initial_thread) {
+            (Some(ch), Some(th)) => format!("ws://{}/ws/{}/{}", addr, ch, th),
+            (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
+            (None, _) => format!("ws://{}/ws", addr),
         };
         tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
     }
 
-    pub(super) fn close(&mut self) {
-        self.visible = false;
-        self.phase = ChatPhase::PatternSelect;
-        self.ws_connected = false;
-        self.command_popup = None;
-        self.detail_channel = None;
-        self.detail_thread_path = None;
-        if let Some(tx) = self.ws_tx.take() {
-            // Best-effort disconnect signal
-            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
-        }
-    }
-
-    /// Open detail/chat mode for a non-WebSocket thread.
-    ///
-    /// Unlike `open`, this does NOT create a WebSocket connection.
-    /// Instead, it relies on the inspect server's poll-based state (via
-    /// `get_state`) for live message updates and the `inject_message`
-    /// protocol method for sending messages.
-    pub(super) fn open_thread_detail(
+    /// Open the chat pane in PatternSelect mode for the `c` key.
+    /// Fetches enabled pattern names via REST (replaces the old WebSocket
+    /// `list_patterns` command). No WS is opened until the user picks a
+    /// pattern (then `select_pattern` opens a scoped WS).
+    pub(super) async fn open_pattern_select(
         &mut self,
+        addr: &str,
         channel: &str,
-        thread_name: &str,
-        state: Option<&InspectState>,
+        client: &mut InspectClient,
     ) {
         self.visible = true;
-        self.phase = ChatPhase::Chatting;
-        self.thread = Some(thread_name.to_string());
+        self.phase = ChatPhase::PatternSelect;
+        self.channel = Some(channel.to_string());
+        self.thread = None;
+        self.patterns = client.list_patterns(channel).await.unwrap_or_default();
+        self.pattern_selected = 0;
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
@@ -1278,71 +1331,106 @@ impl ChatState {
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
+        self.last_hydrated_key = None;
+        // Drop any stale WS connection from a prior chat.
+        if let Some(tx) = self.ws_tx.take() {
+            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+        }
+        // Stash addr for the eventual `select_pattern` call. The polling
+        // loop in mod.rs owns the actual `addr` parameter; here we just
+        // store it so select_pattern can call back into open.
+        self.open_addr = Some(addr.to_string());
+    }
+
+    pub(super) fn close(&mut self) {
+        self.visible = false;
+        self.phase = ChatPhase::PatternSelect;
+        self.ws_connected = false;
+        self.command_popup = None;
+        self.detail_channel = None;
+        self.detail_thread_path = None;
+        self.last_hydrated_key = None;
+        if let Some(tx) = self.ws_tx.take() {
+            // Best-effort disconnect signal
+            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+        }
+    }
+
+    /// Open the chat pane for any thread, regardless of channel type.
+    ///
+    /// All channels are now reached via the unified `/ws/<channel>/<thread>`
+    /// endpoint, so this method just initializes the chat UI state.
+    /// The actual WS connection and message routing happen in the dashboard
+    /// poll loop (see `mod.rs::run`).
+    pub(super) fn open_thread_detail(
+        &mut self,
+        channel: &str,
+        thread_name: &str,
+        _state: Option<&jyc_types::InspectOverview>,
+    ) {
+        self.visible = true;
+        self.phase = ChatPhase::Chatting;
+        self.thread = Some(thread_name.to_string());
+        self.channel = Some(channel.to_string());
         self.detail_channel = Some(channel.to_string());
         self.detail_thread_path = None;
-
-        // Load initial chat history from disk
-        self.load_detail_history(state);
+        self.messages.clear();
+        self.editor = empty_chat_editor();
+        self.focus = ChatFocus::ChatPane;
+        self.scroll = 0;
+        self.activity_scroll = 0;
+        self.activity_hscroll = 0;
+        self.pending_g = false;
+        self.activity_split = 0;
+        self.ws_connected = false;
+        self.input_history.clear();
+        self.history_pos = None;
+        // The mod.rs Enter handler triggers hydrate_live after this; clear
+        // the last-hydrated key so the poll loop doesn't re-hydrate over us.
+        self.last_hydrated_key = None;
     }
 
-    /// Load chat history from the thread's chat_history_*.jsonl files.
-    ///
-    /// Reads up to 100 most recent entries (same limit as WebSocket adapter).
-    /// `state` is the latest inspect snapshot, used to resolve the thread path
-    /// when it has not been cached yet.
-    pub(super) fn load_detail_history(&mut self, state: Option<&InspectState>) {
-        let thread_path = match &self.detail_thread_path {
-            Some(p) => p.clone(),
-            None => {
-                // Try to get thread_path from the current state
-                if let Some(state) = state
-                    && let Some(ref chat_name) = self.thread
-                    && let Some(thread) = state.threads.iter().find(|t| t.name == *chat_name)
-                    && let Some(ref path) = thread.thread_path
-                {
-                    let path = path.clone();
-                    self.detail_thread_path = Some(path.clone());
-                    path
-                } else {
-                    return;
-                }
-            }
-        };
+    /// Legacy no-op kept for compatibility with the test suite.
+    #[allow(dead_code)]
+    pub(super) fn load_detail_history(&mut self, _state: Option<&jyc_types::InspectOverview>) {}
 
-        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, 100);
-        self.messages = entries
-            .into_iter()
-            .map(|e| ChatMessage {
-                sender: e.sender,
-                text: e.text,
-                timestamp: e.timestamp,
-            })
-            .collect();
-    }
-
-    /// Check whether the current chat is a detail mode (non-WebSocket) session.
+    /// Legacy no-op kept for compatibility with the test suite.
+    #[allow(dead_code)]
     pub(super) fn is_detail_mode(&self) -> bool {
         self.detail_channel.is_some()
     }
 
     pub(super) fn select_pattern(&mut self, pattern: String) {
+        let channel = match &self.channel {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let addr = match &self.open_addr {
+            Some(a) => a.clone(),
+            None => return,
+        };
+
+        self.select_pattern_inner(pattern.clone());
+
+        let url = format!("ws://{}/ws/{}/{}", addr, channel, pattern);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        self.ws_tx = Some(cmd_tx);
+        self.ws_rx = event_rx;
+        tokio::spawn(super::ws::ws_client_task(url, cmd_rx, event_tx));
+    }
+
+    /// Clear state and set thread — used by `select_pattern` for the WS flow
+    /// and directly by tests to verify state-clearing without a tokio runtime.
+    fn select_pattern_inner(&mut self, pattern: String) {
         self.phase = ChatPhase::Chatting;
-        self.thread = Some(pattern.clone());
+        self.thread = Some(pattern);
         self.editor = empty_chat_editor();
         self.scroll = 0;
         self.messages.clear();
-        self.messages.clear();
         self.input_history.clear();
         self.history_pos = None;
-
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "thread": pattern,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(subscribe_msg);
-        }
+        self.last_hydrated_key = None;
     }
 
     pub(super) fn toggle_focus(&mut self) {
@@ -1462,36 +1550,24 @@ impl ChatState {
             self.input_history.remove(0);
         }
 
-        let thread = match &self.thread {
-            Some(t) => t.clone(),
-            None => return,
-        };
-
-        if self.is_detail_mode() {
-            // Detail mode (non-WebSocket): do NOT echo locally — the message
-            // will appear via `recent_messages` on the next poll cycle
-            // (~500ms). Echoing locally would cause duplication because the
-            // `IncomingMessage` event publishes with sender="dashboard" and
-            // truncated text, failing the dedup check.
-            self.pending_inject = Some((thread, text));
-        } else {
-            // WebSocket mode: echo user message locally, send via WebSocket.
-            // No duplication — the WebSocket broadcast only sends AI replies,
-            // not user messages.
-            self.messages.push(ChatMessage {
-                sender: "user".to_string(),
-                text: text.clone(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-            });
-            let msg = serde_json::json!({
-                "type": "message",
-                "thread": thread,
-                "text": text,
-            })
-            .to_string();
-            if let Some(tx) = &self.ws_tx {
-                let _ = tx.send(msg);
-            }
+        // WebSocket-only flow: echo user message locally, send via WebSocket.
+        let _ = self.thread.as_ref(); // thread must be set before send
+        self.messages.push(ChatMessage {
+            sender: "user".to_string(),
+            text: text.clone(),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        });
+        // The /ws/<channel>/<thread> URL already carries the thread name.
+        // Both ScopedWsHandler (websocket channel) and ThreadProxyHandler
+        // (any other channel) bind the thread from the URL, so the payload
+        // doesn't need a `thread` field.
+        let msg = serde_json::json!({
+            "type": "message",
+            "text": text,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
         }
 
         self.scroll = 0;
@@ -1504,56 +1580,27 @@ impl ChatState {
             Err(_) => return,
         };
 
-        match parsed.get("type").and_then(|v| v.as_str()) {
-            Some("patterns") => {
-                if let Some(patterns) = parsed.get("patterns").and_then(|v| v.as_array()) {
-                    self.patterns = patterns
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    self.pattern_selected = 0;
-                }
-            }
-            Some("history") => {
-                if let (Some(thread), Some(messages)) = (
-                    parsed.get("thread").and_then(|v| v.as_str()),
-                    parsed.get("messages").and_then(|v| v.as_array()),
-                ) && self.thread.as_deref() == Some(thread)
-                {
-                    self.messages = messages
-                        .iter()
-                        .filter_map(|m| {
-                            Some(ChatMessage {
-                                sender: m.get("sender")?.as_str()?.to_string(),
-                                text: m.get("text")?.as_str()?.to_string(),
-                                timestamp: m
-                                    .get("timestamp")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string()),
-                            })
-                        })
-                        .collect();
-                }
-            }
-            Some("reply") => {
-                if let (Some(thread), Some(text)) = (
-                    parsed.get("thread").and_then(|v| v.as_str()),
-                    parsed.get("text").and_then(|v| v.as_str()),
-                ) {
-                    // Only append if it matches our subscribed thread
-                    if self.thread.as_deref() == Some(thread) {
-                        self.messages.push(ChatMessage {
-                            sender: "ai".to_string(),
-                            text: text.to_string(),
-                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                        });
-                        self.scroll = 0;
-                        self.awaiting_response = false;
-                    }
-                }
+        // The new ThreadProxyHandler / ScopedWsHandler publish these events
+        // on the inspect-broadcast bus. Forward them to the live buffers
+        // (activity pane, chat progress, chat message stream).
+        let event_type = parsed.get("type").and_then(|v| v.as_str());
+        match event_type {
+            Some("activity") | Some("chat_message") | Some("thinking") | Some("processing")
+            | Some("resync") => {
+                self.handle_live_event(&parsed);
             }
             _ => {}
         }
+
+        // The legacy WebsocketInboundAdapter per-channel broadcast_tx
+        // used to carry `reply` events for AI messages. Now all AI
+        // messages for both channel types arrive via inspect_broadcast
+        // as `chat_message` events (handled above by handle_live_event)
+        // — the `reply` path below has been removed to eliminate
+        // duplicates between the two event sources.
+        //
+        // `list_patterns` and `subscribe` moved to REST; `history` is
+        // no longer needed (REST `get_thread_chat`).
     }
 
     /// Recall an older entry from input history into the editor.
@@ -1589,7 +1636,211 @@ impl ChatState {
             }
         }
     }
+
+    /// Seed the live activity/chat buffers with the result of a REST hydrate
+    /// (initial fetch on thread selection). Sets `last_seen_id` to the
+    /// highest id seen so duplicate WS events are dropped.
+    #[allow(dead_code)]
+    pub(super) fn seed_live(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        activity: Vec<jyc_types::ActivityEntry>,
+        chat: Vec<jyc_types::ChatMessageEntry>,
+    ) {
+        let key = (channel.to_string(), thread.to_string());
+        let mut max_id = 0u64;
+        let activity_buf: std::collections::VecDeque<_> = activity
+            .into_iter()
+            .inspect(|e| {
+                if e.id > max_id {
+                    max_id = e.id;
+                }
+            })
+            .collect();
+        let chat_buf: std::collections::VecDeque<_> = chat
+            .into_iter()
+            .inspect(|e| {
+                if e.id > max_id {
+                    max_id = e.id;
+                }
+            })
+            .collect();
+        // Cap buffer sizes to match the in-memory cap in jyc-inspect.
+        const MAX_ACTIVITY: usize = 180;
+        const MAX_CHAT: usize = 50;
+        let mut activity_buf = activity_buf;
+        while activity_buf.len() > MAX_ACTIVITY {
+            activity_buf.pop_front();
+        }
+        let mut chat_buf = chat_buf;
+        while chat_buf.len() > MAX_CHAT {
+            chat_buf.pop_front();
+        }
+        self.live_activity.insert(key.clone(), activity_buf);
+        self.live_chat.insert(key.clone(), chat_buf);
+        self.last_seen_id.insert(key, max_id);
+    }
+
+    /// Handle a `{"type":"resync", "channel":..., "thread":...}` event by
+    /// clearing the live buffers for that thread. The caller should re-run
+    /// the REST hydrate (`get_thread_activity` + `get_thread_chat`) and
+    /// re-seed via `seed_live`.
+    #[allow(dead_code)]
+    pub(super) fn clear_live(&mut self, channel: &str, thread: &str) {
+        let key = (channel.to_string(), thread.to_string());
+        self.live_activity.remove(&key);
+        self.live_chat.remove(&key);
+        self.live_thinking.remove(&key);
+        self.live_processing.remove(&key);
+        self.last_seen_id.remove(&key);
+    }
+
+    /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
+    /// Filters out duplicate / older events using `last_seen_id`.
+    #[allow(dead_code)]
+    pub(super) fn handle_live_event(&mut self, payload: &serde_json::Value) {
+        let channel = match payload.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c.to_string(),
+            None => return,
+        };
+        let thread = match payload.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+        let key = (channel.clone(), thread.clone());
+        let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let last = self.last_seen_id.get(&key).copied().unwrap_or(0);
+        if id != 0 && id <= last {
+            return; // duplicate or older
+        }
+        if id != 0 {
+            self.last_seen_id.insert(key.clone(), id);
+        }
+
+        let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match event_type {
+            "activity" => {
+                if let Some(entry) = payload.get("entry").and_then(|v| {
+                    serde_json::from_value::<jyc_types::ActivityEntry>(v.clone()).ok()
+                }) {
+                    let buf = self.live_activity.entry(key).or_default();
+                    buf.push_back(entry);
+                    if buf.len() > 180 {
+                        buf.pop_front();
+                    }
+                }
+            }
+            "chat_message" => {
+                if let Some(entry) = payload.get("entry").and_then(|v| {
+                    serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
+                }) {
+                    // AI reply delivered — clear local waiting flag so the
+                    // progress indicator disappears immediately instead of
+                    // waiting for the next poll cycle.
+                    if entry.sender == "ai" {
+                        self.awaiting_response = false;
+                    }
+                    let buf = self.live_chat.entry(key).or_default();
+                    buf.push_back(entry);
+                    if buf.len() > 50 {
+                        buf.pop_front();
+                    }
+                }
+            }
+            "thinking" => {
+                if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+                    self.live_thinking.insert(key, text.to_string());
+                }
+            }
+            "processing" => {
+                let is_processing = payload
+                    .get("is_processing")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let has_error = payload
+                    .get("has_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.live_processing
+                    .insert(key.clone(), (is_processing, has_error));
+                if !is_processing {
+                    // Processing completed — clear the round's artifacts
+                    // so the next round starts fresh (no stale thinking
+                    // text or prior-round activity entries showing).
+                    self.live_activity.remove(&key);
+                    self.live_thinking.remove(&key);
+                    self.awaiting_response = false;
+                } else {
+                    // New round started — also clear thinking (in case
+                    // the first Thinking event for this round is delayed).
+                    self.live_thinking.remove(&key);
+                }
+            }
+            "resync" => {
+                // Server fell behind (Lagged); clear local state so the
+                // caller re-hydrates via REST.
+                self.live_activity.remove(&key);
+                self.live_chat.remove(&key);
+                self.live_thinking.remove(&key);
+                self.live_processing.remove(&key);
+                self.last_seen_id.remove(&key);
+            }
+            _ => {}
+        }
+    }
+
+    /// Get a snapshot of the live activity buffer for the given (channel, thread).
+    /// Returns an empty slice if no live data has been seeded yet.
+    #[allow(dead_code)]
+    pub(super) fn live_activity_for(
+        &self,
+        channel: &str,
+        thread: &str,
+    ) -> std::collections::vec_deque::Iter<'_, jyc_types::ActivityEntry> {
+        self.live_activity
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|v| v.iter())
+            .unwrap_or_else(|| EMPTY_VEC_DEQUE.iter())
+    }
+
+    /// Get the current thinking text for the given (channel, thread), if any.
+    pub(super) fn live_thinking_for(&self, channel: &str, thread: &str) -> Option<&str> {
+        self.live_thinking
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|s| s.as_str())
+    }
+
+    /// Get the current processing status for the given (channel, thread).
+    /// Returns `None` if no status has been received yet (fall back to polled state).
+    pub(super) fn live_processing_for(&self, channel: &str, thread: &str) -> Option<(bool, bool)> {
+        self.live_processing
+            .get(&(channel.to_string(), thread.to_string()))
+            .copied()
+    }
+    /// Iterate over the live chat messages for the given (channel, thread).
+    /// Used by the dashboard's poll loop to append new messages to the
+    /// `chat.messages` vec shown in the chat pane.
+    #[allow(dead_code)]
+    pub(super) fn live_chat_for(
+        &self,
+        channel: &str,
+        thread: &str,
+    ) -> std::collections::vec_deque::Iter<'_, jyc_types::ChatMessageEntry> {
+        self.live_chat
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|v| v.iter())
+            .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
+    }
 }
+
+/// Static empty deque used as a fallback when no live data is seeded for a
+/// (channel, thread) — lets us return a concrete `Iter` from the accessors.
+static EMPTY_VEC_DEQUE: std::sync::LazyLock<std::collections::VecDeque<jyc_types::ActivityEntry>> =
+    std::sync::LazyLock::new(std::collections::VecDeque::new);
+static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
+    std::collections::VecDeque<jyc_types::ChatMessageEntry>,
+> = std::sync::LazyLock::new(std::collections::VecDeque::new);
 
 #[cfg(test)]
 mod tests {
@@ -1614,7 +1865,7 @@ mod tests {
         assert_eq!(app.chat.messages.len(), 2);
 
         // Switch to a new thread
-        app.chat.select_pattern("thread-b".to_string());
+        app.chat.select_pattern_inner("thread-b".to_string());
 
         // Messages must be cleared so stale content doesn't leak across threads
         assert!(app.chat.messages.is_empty());
@@ -1733,7 +1984,7 @@ mod tests {
         app.chat.history_pos = Some(0);
 
         // Switch to a new thread
-        app.chat.select_pattern("thread-b".to_string());
+        app.chat.select_pattern_inner("thread-b".to_string());
 
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());
@@ -1778,7 +2029,6 @@ mod tests {
         app.chat.open_thread_detail("github", "issue-197", None);
         assert!(app.chat.visible);
         assert_eq!(app.chat.phase, ChatPhase::Chatting);
-        assert!(app.chat.is_detail_mode());
 
         // close() must return to overview and clear detail state
         app.chat.close();
@@ -1842,5 +2092,123 @@ mod tests {
         let out = wrap_text_to_width("abc", 0);
         let joined: String = out.join("");
         assert_eq!(joined, "abc");
+    }
+
+    #[test]
+    fn handle_ws_message_routes_activity_events_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Simulate hydrate: seed an activity entry, then a WS event with
+        // the same id arrives — should be deduped (id <= last_seen_id).
+        let entry = jyc_types::ActivityEntry {
+            text: "Tool: bash".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: jyc_types::Severity::Info,
+            id: 42,
+        };
+        app.chat.seed_live("github", "pr-1", vec![entry], vec![]);
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
+
+        // WS event with NEW id should be appended.
+        let payload = serde_json::json!({
+            "type": "activity",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 43,
+            "entry": {
+                "text": "Completed",
+                "timestamp": "2026-01-01T00:00:05Z",
+                "severity": "info",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 2);
+
+        // WS event with OLD id should be deduped.
+        let payload = serde_json::json!({
+            "type": "activity",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 42,
+            "entry": {
+                "text": "Old",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "severity": "info",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 2);
+    }
+
+    #[test]
+    fn handle_ws_message_routes_chat_message_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        let payload = serde_json::json!({
+            "type": "chat_message",
+            "channel": "github",
+            "thread": "pr-1",
+            "id": 1,
+            "entry": {
+                "sender": "ai",
+                "text": "Hello",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "id": 0,
+            }
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_chat_for("github", "pr-1").count(), 1);
+    }
+
+    #[test]
+    fn handle_ws_message_routes_thinking_to_live_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        let payload = serde_json::json!({
+            "type": "thinking",
+            "channel": "github",
+            "thread": "pr-1",
+            "text": "I am thinking about the problem"
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(
+            app.chat.live_thinking_for("github", "pr-1"),
+            Some("I am thinking about the problem")
+        );
+    }
+
+    #[test]
+    fn handle_ws_message_routes_resync_clears_buffer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx);
+
+        // Seed first
+        app.chat.seed_live(
+            "github",
+            "pr-1",
+            vec![jyc_types::ActivityEntry {
+                text: "old".to_string(),
+                timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+                severity: jyc_types::Severity::Info,
+                id: 1,
+            }],
+            vec![],
+        );
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
+
+        // Resync event should clear the live buffer
+        let payload = serde_json::json!({
+            "type": "resync",
+            "channel": "github",
+            "thread": "pr-1",
+            "dropped": 5
+        });
+        app.chat.handle_ws_message(&payload.to_string());
+        assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 0);
     }
 }

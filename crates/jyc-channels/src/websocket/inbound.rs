@@ -89,43 +89,30 @@ impl ChannelMatcher for WebsocketMatcher {
     }
 }
 
-/// Client-bound JSON protocol messages.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type")]
-enum ServerMessage {
-    #[serde(rename = "patterns")]
-    Patterns { patterns: Vec<String> },
-    #[serde(rename = "history")]
-    History {
-        thread: String,
-        messages: Vec<HistoryEntry>,
-    },
-}
-
-/// A single entry in chat history.
-#[derive(Debug, Clone, serde::Serialize)]
-struct HistoryEntry {
-    sender: String,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<String>,
-}
-
 /// Inbound JSON protocol messages from clients.
+///
+/// The legacy `list_patterns` / `subscribe` / `create_thread` commands
+/// have been replaced by REST endpoints on the inspect server
+/// (`list_patterns` and `create_thread`). The WebSocket protocol now
+/// only carries the live-message stream:
+/// - `message`: send a chat message to the bound thread
+/// - `reset_session`: clear the AI session for the bound thread
+/// - `disconnect`: close the connection cleanly
+/// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type")]
 enum ClientMessage {
-    #[serde(rename = "list_patterns")]
-    ListPatterns,
-    #[serde(rename = "subscribe")]
-    Subscribe { thread: String },
-    #[serde(rename = "create_thread")]
-    CreateThread {
-        thread: String,
-        path: Option<String>,
-    },
     #[serde(rename = "message")]
-    Message { thread: String, text: String },
+    Message {
+        /// Optional: when the connection is scoped to a single thread via
+        /// `/ws/<channel>/<thread>`, the inspect server propagates the URL
+        /// thread name here so the client doesn't need to include it in
+        /// the payload. Clients connecting to `/ws/<channel>` (no thread
+        /// scope) must still include `thread` here.
+        #[serde(default)]
+        thread: Option<String>,
+        text: String,
+    },
 }
 
 /// WebSocket inbound adapter.
@@ -138,7 +125,9 @@ type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>
 /// upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
-    /// Live application config for dynamic pattern reading.
+    /// Live application config (carried for API compatibility — pattern
+    /// enumeration is now done via REST `list_patterns`).
+    #[allow(dead_code)]
     app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.
     broadcast_tx: broadcast::Sender<String>,
@@ -148,6 +137,11 @@ pub struct WebsocketInboundAdapter {
     workspace_dir: Option<PathBuf>,
     /// ThreadManager reference for resolving custom thread_path overrides.
     thread_manager: Arc<StdMutex<Option<Arc<jyc_core::thread_manager::ThreadManager>>>>,
+    /// Optional inspect-broadcast bus from the inspect server.
+    /// When set, events from this bus are forwarded to WebSocket clients
+    /// alongside the per-channel `broadcast_tx` events. This enables live
+    /// activity / thinking / processing updates for websocket-type channels.
+    inspect_broadcast: Option<Arc<broadcast::Sender<String>>>,
 }
 
 impl WebsocketInboundAdapter {
@@ -164,6 +158,7 @@ impl WebsocketInboundAdapter {
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
             thread_manager: Arc::new(StdMutex::new(None)),
+            inspect_broadcast: None,
         }
     }
 
@@ -172,29 +167,14 @@ impl WebsocketInboundAdapter {
         self.workspace_dir = Some(dir);
     }
 
+    /// Set the inspect-broadcast bus for live activity/thinking events.
+    pub fn set_inspect_broadcast(&mut self, bus: Arc<broadcast::Sender<String>>) {
+        self.inspect_broadcast = Some(bus);
+    }
+
     /// Set the ThreadManager for resolving custom `thread_path` overrides.
     pub fn set_thread_manager(&self, tm: Arc<jyc_core::thread_manager::ThreadManager>) {
         *self.thread_manager.lock().unwrap() = Some(tm);
-    }
-
-    /// Read the current enabled pattern names for this channel from the live config.
-    fn pattern_names(&self) -> Vec<String> {
-        match &self.app_config {
-            Some(cfg) => {
-                let cfg = cfg.load();
-                cfg.channels
-                    .get(&self.channel_name)
-                    .and_then(|c| c.patterns.as_ref())
-                    .map(|p| {
-                        p.iter()
-                            .filter(|pat| pat.enabled)
-                            .map(|pat| pat.name.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            None => Vec::new(),
-        }
     }
 
     /// Return the channel name for this adapter.
@@ -210,24 +190,21 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         &self,
         ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
         addr: SocketAddr,
+        scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
-        let pattern_names: Vec<String> = self.pattern_names();
-
         let broadcast_rx = self.broadcast_tx.subscribe();
+        let inspect_broadcast_rx = self.inspect_broadcast.as_ref().map(|s| s.subscribe());
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
-        let workspace_dir = self.workspace_dir.clone();
-        let thread_manager = self.thread_manager.lock().unwrap().clone();
 
         handle_connection_impl(
             ws_stream,
             addr,
             channel_name,
-            pattern_names,
             broadcast_rx,
+            inspect_broadcast_rx,
             on_message,
-            workspace_dir,
-            thread_manager,
+            scoped_thread,
         )
         .await
     }
@@ -280,11 +257,10 @@ async fn handle_connection_impl<S>(
     ws_stream: tokio_tungstenite::WebSocketStream<S>,
     addr: SocketAddr,
     channel_name: String,
-    pattern_names: Vec<String>,
     mut broadcast_rx: broadcast::Receiver<String>,
+    mut inspect_broadcast_rx: Option<broadcast::Receiver<String>>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
-    workspace_dir: Option<PathBuf>,
-    thread_manager: Option<Arc<jyc_core::thread_manager::ThreadManager>>,
+    scoped_thread: Option<&str>,
 ) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
@@ -327,81 +303,22 @@ where
                 };
 
                 match client_msg {
-                    ClientMessage::ListPatterns => {
-                        let response = ServerMessage::Patterns {
-                            patterns: pattern_names.clone(),
-                        };
-                        let json = serde_json::to_string(&response)?;
-                        if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(json)).await {
-                            tracing::warn!(error = %e, addr = %addr, "Failed to send patterns");
-                            break;
-                        }
-                    }
-                    ClientMessage::Subscribe { thread } => {
-                        tracing::info!(addr = %addr, thread = %thread, "Client subscribed to thread");
-
-                        // Load and send chat history
-                        let history = load_chat_history(&thread, &workspace_dir, &thread_manager).await;
-                        if !history.is_empty() {
-                            let response = ServerMessage::History {
-                                thread: thread.clone(),
-                                messages: history,
-                            };
-                            let json = serde_json::to_string(&response)?;
-                            if let Err(e) = ws_tx
-                                .send(tokio_tungstenite::tungstenite::Message::Text(json))
-                                .await
-                            {
-                                tracing::warn!(error = %e, addr = %addr, "Failed to send history");
-                                break;
-                            }
-                        }
-                    }
-                    ClientMessage::CreateThread { thread, path } => {
-                        tracing::info!(
-                            addr = %addr,
-                            thread = %thread,
-                            path = ?path,
-                            "WebSocket create_thread"
-                        );
-
-                        let mut message = InboundMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            channel: channel_name.clone(),
-                            channel_uid: "websocket".to_string(),
-                            sender: "user".to_string(),
-                            sender_address: addr.to_string(),
-                            recipients: vec![],
-                            topic: thread.clone(),
-                            content: MessageContent {
-                                text: Some(String::new()),
-                                html: None,
-                                markdown: None,
-                            },
-                            timestamp: chrono::Utc::now(),
-                            thread_refs: None,
-                            reply_to_id: None,
-                            external_id: None,
-                            attachments: vec![],
-                            metadata: HashMap::new(),
-                            matched_pattern: None,
-                        };
-                        if let Some(p) = path {
-                            message
-                                .metadata
-                                .insert("thread_path_override".to_string(), serde_json::json!(p));
-                        }
-
-                        let guard = on_message.lock().await;
-                        if let Some(ref callback) = *guard {
-                            if let Err(e) = (callback)(message) {
-                                tracing::error!(error = %e, "WebSocket on_message error");
-                            }
-                        } else {
-                            tracing::warn!("WebSocket on_message callback not set — create_thread dropped");
-                        }
-                    }
                     ClientMessage::Message { thread, text } => {
+                        // Prefer the URL-scoped thread; fall back to the
+                        // payload's `thread` field for `/ws/<channel>`
+                        // connections where no scope was set.
+                        let thread_name = match thread
+                            .or_else(|| scoped_thread.map(|s| s.to_string()))
+                        {
+                            Some(t) => t,
+                            None => {
+                                tracing::warn!(
+                                    channel = %channel_name,
+                                    "WebSocket Message without thread; ignoring"
+                                );
+                                continue;
+                            }
+                        };
                         let message = InboundMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             channel: channel_name.clone(),
@@ -409,7 +326,7 @@ where
                             sender: "user".to_string(),
                             sender_address: addr.to_string(),
                             recipients: vec![],
-                            topic: thread.clone(),
+                            topic: thread_name,
                             content: MessageContent {
                                 text: Some(text),
                                 html: None,
@@ -452,6 +369,36 @@ where
                     }
                 }
             }
+            // Inpsect-broadcast events: activity/thinking/chat messages from
+            // the ActivityTracker. Filter by (channel, thread) and forward
+            // to the WebSocket client alongside the per-channel broadcasts.
+            inspect = async {
+                match &mut inspect_broadcast_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Result<String, broadcast::error::RecvError>>().await,
+                }
+            } => {
+                match inspect {
+                    Ok(payload) => {
+                        // Only forward events for our channel. If the
+                        // connection is thread-scoped, also filter by thread.
+                        if should_forward_inspect(&payload, &channel_name, scoped_thread)
+                            && let Err(e) = ws_tx.send(
+                                tokio_tungstenite::tungstenite::Message::Text(payload)
+                            ).await
+                        {
+                            tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // The inspect broadcast was closed — not a fatal error.
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!(addr = %addr, dropped = %n, "Inspect broadcast lagged");
+                    }
+                }
+            }
         }
     }
 
@@ -462,43 +409,32 @@ where
     Ok(())
 }
 
-/// Load recent chat history messages from JSONL files for a thread.
-///
-/// Resolves the actual thread directory via ThreadManager for custom
-/// `thread_path` configurations. Falls back to `workspace_dir.join(thread)`
-/// when no ThreadManager is available or no custom path is configured.
-/// Uses the shared `jyc_core::chat_log_store::load_recent_chat_history` for
-/// the actual file parsing.
-async fn load_chat_history(
-    thread: &str,
-    workspace_dir: &Option<PathBuf>,
-    thread_manager: &Option<Arc<jyc_core::thread_manager::ThreadManager>>,
-) -> Vec<HistoryEntry> {
-    let max_messages = 100;
-
-    // Resolve the actual thread directory path
-    let thread_dir = if let Some(tm) = thread_manager {
-        tm.thread_path(thread).await.unwrap_or_else(|| {
-            workspace_dir
-                .as_ref()
-                .map(|d| d.join(thread))
-                .unwrap_or_default()
-        })
-    } else {
-        match workspace_dir {
-            Some(dir) => dir.join(thread),
-            None => return vec![],
-        }
+/// Decide whether to forward an inspect-broadcast payload to the WebSocket
+/// client. Events are forwarded only if:
+/// - The JSON payload has a `channel` field matching `channel_name`
+/// - AND either:
+///   - `scoped_thread` is `None` (all threads for this channel), or
+///   - The payload also has a `thread` field matching `scoped_thread`
+fn should_forward_inspect(payload: &str, channel_name: &str, scoped_thread: Option<&str>) -> bool {
+    let v: serde_json::Value = match serde_json::from_str(payload) {
+        Ok(v) => v,
+        Err(_) => return false,
     };
-
-    jyc_core::chat_log_store::load_recent_chat_history(&thread_dir, max_messages)
-        .into_iter()
-        .map(|e| HistoryEntry {
-            sender: e.sender,
-            text: e.text,
-            timestamp: e.timestamp,
-        })
-        .collect()
+    let p_channel = match v.get("channel").and_then(|c| c.as_str()) {
+        Some(c) => c,
+        None => return false,
+    };
+    if p_channel != channel_name {
+        return false;
+    }
+    // If thread-scoped and the payload specifies a thread, reject mismatches.
+    if let Some(st) = scoped_thread
+        && let Some(p_thread) = v.get("thread").and_then(|t| t.as_str())
+        && p_thread != st
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -696,55 +632,31 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn test_load_chat_history_with_workspace_dir() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let thread_dir = tmp.path().join("my-thread");
-        tokio::fs::create_dir_all(thread_dir.join(".jyc"))
-            .await
-            .unwrap();
-        // Write a chat history file in the new .jyc location
-        tokio::fs::write(
-            thread_dir.join(".jyc").join("chat_history_2026-06-30.jsonl"),
-            r#"{"ts":"2026-06-30T10:00:00Z","type":"received","matched":true,"sender":"user","channel":"test","topic":"test","from":"user","content":"hello"}"#,
-        )
-        .await
-        .unwrap();
-
-        let history = load_chat_history("my-thread", &Some(tmp.path().to_path_buf()), &None).await;
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].text, "hello");
-    }
-
-    #[tokio::test]
-    async fn test_load_chat_history_returns_empty_when_no_dir() {
-        let history = load_chat_history("nonexistent", &None, &None).await;
-        assert!(history.is_empty());
+    #[test]
+    fn should_forward_inspect_for_matching_channel() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(should_forward_inspect(payload, "ws1", None));
+        assert!(should_forward_inspect(payload, "ws1", Some("t1")));
     }
 
     #[test]
-    fn create_thread_message_deserializes() {
-        let json = r#"{"type":"create_thread","thread":"my-thread","path":"/tmp/foo"}"#;
-        let msg: ClientMessage = serde_json::from_str(json).unwrap();
-        match msg {
-            ClientMessage::CreateThread { thread, path } => {
-                assert_eq!(thread, "my-thread");
-                assert_eq!(path, Some("/tmp/foo".to_string()));
-            }
-            _ => panic!("expected CreateThread variant"),
-        }
+    fn should_reject_inspect_wrong_channel() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(!should_forward_inspect(payload, "ws2", None));
+        assert!(!should_forward_inspect(payload, "ws2", Some("t1")));
     }
 
     #[test]
-    fn create_thread_message_without_path_deserializes() {
-        let json = r#"{"type":"create_thread","thread":"my-thread"}"#;
-        let msg: ClientMessage = serde_json::from_str(json).unwrap();
-        match msg {
-            ClientMessage::CreateThread { thread, path } => {
-                assert_eq!(thread, "my-thread");
-                assert_eq!(path, None);
-            }
-            _ => panic!("expected CreateThread variant"),
-        }
+    fn should_reject_inspect_wrong_thread_when_scoped() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(!should_forward_inspect(payload, "ws1", Some("t2")));
+        // Without scope, same payload should pass
+        assert!(should_forward_inspect(payload, "ws1", None));
+    }
+
+    #[test]
+    fn should_reject_inspect_malformed_json() {
+        assert!(!should_forward_inspect("not json", "ws", None));
+        assert!(!should_forward_inspect(r#"{"no":"channel"}"#, "ws", None));
     }
 }

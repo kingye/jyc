@@ -226,6 +226,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting ThreadManager on websocket handlers after creation
     let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
+    // Create the inspect-broadcast bus that ActivityTracker publishes to.
+    // Shared with websocket inbound adapters so they can forward live
+    // activity/thinking events to dashboard WebSocket clients.
+    let inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>> =
+        Arc::new(tokio::sync::broadcast::channel(256).0);
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -384,6 +389,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                     broadcast_tx,
                 );
                 handler.set_workspace_dir(workspace_dir.clone());
+                handler.set_inspect_broadcast(inspect_broadcast.clone());
                 let handler = Arc::new(handler);
                 ws_handler_for_channel.insert(channel_name.clone(), handler.clone());
                 websocket_handlers.push(handler);
@@ -1292,7 +1298,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                     fut
                 }) as jyc_inspect::server::ReloadCallback)
             },
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            inspect_broadcast: inspect_broadcast.clone(),
         });
 
         // Restore custom thread_path mappings from disk so threads with

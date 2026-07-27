@@ -137,6 +137,11 @@ pub struct WebsocketInboundAdapter {
     workspace_dir: Option<PathBuf>,
     /// ThreadManager reference for resolving custom thread_path overrides.
     thread_manager: Arc<StdMutex<Option<Arc<jyc_core::thread_manager::ThreadManager>>>>,
+    /// Optional inspect-broadcast bus from the inspect server.
+    /// When set, events from this bus are forwarded to WebSocket clients
+    /// alongside the per-channel `broadcast_tx` events. This enables live
+    /// activity / thinking / processing updates for websocket-type channels.
+    inspect_broadcast: Option<Arc<broadcast::Sender<String>>>,
 }
 
 impl WebsocketInboundAdapter {
@@ -153,12 +158,18 @@ impl WebsocketInboundAdapter {
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
             thread_manager: Arc::new(StdMutex::new(None)),
+            inspect_broadcast: None,
         }
     }
 
     /// Set the workspace directory for loading chat history.
     pub fn set_workspace_dir(&mut self, dir: PathBuf) {
         self.workspace_dir = Some(dir);
+    }
+
+    /// Set the inspect-broadcast bus for live activity/thinking events.
+    pub fn set_inspect_broadcast(&mut self, bus: Arc<broadcast::Sender<String>>) {
+        self.inspect_broadcast = Some(bus);
     }
 
     /// Set the ThreadManager for resolving custom `thread_path` overrides.
@@ -182,6 +193,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
         let broadcast_rx = self.broadcast_tx.subscribe();
+        let inspect_broadcast_rx = self.inspect_broadcast.as_ref().map(|s| s.subscribe());
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
 
@@ -190,6 +202,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             addr,
             channel_name,
             broadcast_rx,
+            inspect_broadcast_rx,
             on_message,
             scoped_thread,
         )
@@ -245,6 +258,7 @@ async fn handle_connection_impl<S>(
     addr: SocketAddr,
     channel_name: String,
     mut broadcast_rx: broadcast::Receiver<String>,
+    mut inspect_broadcast_rx: Option<broadcast::Receiver<String>>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_thread: Option<&str>,
 ) -> anyhow::Result<()>
@@ -355,6 +369,36 @@ where
                     }
                 }
             }
+            // Inpsect-broadcast events: activity/thinking/chat messages from
+            // the ActivityTracker. Filter by (channel, thread) and forward
+            // to the WebSocket client alongside the per-channel broadcasts.
+            inspect = async {
+                match &mut inspect_broadcast_rx {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Result<String, broadcast::error::RecvError>>().await,
+                }
+            } => {
+                match inspect {
+                    Ok(payload) => {
+                        // Only forward events for our channel. If the
+                        // connection is thread-scoped, also filter by thread.
+                        if should_forward_inspect(&payload, &channel_name, scoped_thread) {
+                            if let Err(e) = ws_tx.send(
+                                tokio_tungstenite::tungstenite::Message::Text(payload)
+                            ).await {
+                                tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
+                                break;
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // The inspect broadcast was closed — not a fatal error.
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!(addr = %addr, dropped = %n, "Inspect broadcast lagged");
+                    }
+                }
+            }
         }
     }
 
@@ -363,6 +407,34 @@ where
         .await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
+}
+
+/// Decide whether to forward an inspect-broadcast payload to the WebSocket
+/// client. Events are forwarded only if:
+/// - The JSON payload has a `channel` field matching `channel_name`
+/// - AND either:
+///   - `scoped_thread` is `None` (all threads for this channel), or
+///   - The payload also has a `thread` field matching `scoped_thread`
+fn should_forward_inspect(payload: &str, channel_name: &str, scoped_thread: Option<&str>) -> bool {
+    let v: serde_json::Value = match serde_json::from_str(payload) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let p_channel = match v.get("channel").and_then(|c| c.as_str()) {
+        Some(c) => c,
+        None => return false,
+    };
+    if p_channel != channel_name {
+        return false;
+    }
+    if let Some(st) = scoped_thread {
+        if let Some(p_thread) = v.get("thread").and_then(|t| t.as_str()) {
+            if p_thread != st {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -558,5 +630,33 @@ mod tests {
 
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn should_forward_inspect_for_matching_channel() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(should_forward_inspect(payload, "ws1", None));
+        assert!(should_forward_inspect(payload, "ws1", Some("t1")));
+    }
+
+    #[test]
+    fn should_reject_inspect_wrong_channel() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(!should_forward_inspect(payload, "ws2", None));
+        assert!(!should_forward_inspect(payload, "ws2", Some("t1")));
+    }
+
+    #[test]
+    fn should_reject_inspect_wrong_thread_when_scoped() {
+        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        assert!(!should_forward_inspect(payload, "ws1", Some("t2")));
+        // Without scope, same payload should pass
+        assert!(should_forward_inspect(payload, "ws1", None));
+    }
+
+    #[test]
+    fn should_reject_inspect_malformed_json() {
+        assert!(!should_forward_inspect("not json", "ws", None));
+        assert!(!should_forward_inspect(r#"{"no":"channel"}"#, "ws", None));
     }
 }

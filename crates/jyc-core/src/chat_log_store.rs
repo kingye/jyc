@@ -103,6 +103,7 @@ pub fn load_recent_chat_history(thread_path: &Path, max_messages: usize) -> Vec<
                         .get("ts")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    id: 0, // historical entries from JSONL predate the seq field
                 })
             })
             .collect();

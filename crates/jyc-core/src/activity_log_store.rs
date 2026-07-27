@@ -101,6 +101,7 @@ mod tests {
             text: text.to_string(),
             timestamp: Some(Utc::now().to_rfc3339()),
             severity: jyc_types::Severity::Info,
+            id: 0,
         }
     }
 

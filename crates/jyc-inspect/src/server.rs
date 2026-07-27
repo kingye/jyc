@@ -1,4 +1,5 @@
 use arc_swap::ArcSwap;
+use futures_util::SinkExt;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
@@ -10,6 +11,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::scoped_ws::ScopedWsHandler;
+use crate::thread_proxy::ThreadProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::all_commands;
 use jyc_core::command::list_available_models;
@@ -27,11 +30,33 @@ use jyc_types::*;
 #[async_trait::async_trait]
 pub trait WebsocketHandler: Send + Sync {
     /// Handle a single WebSocket connection.
+    ///
+    /// `scoped_thread` is the thread name bound from the URL path
+    /// (`/ws/<channel>/<thread>`). Handlers that route by URL may use
+    /// this to populate per-connection state without requiring the client
+    /// to repeat the thread name in the payload. Pass-through handlers
+    /// (e.g. `WebsocketInboundAdapter`) can ignore it.
     async fn handle(
         &self,
         ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
         addr: std::net::SocketAddr,
+        scoped_thread: Option<&str>,
     ) -> anyhow::Result<()>;
+}
+
+/// Parsed WebSocket URL route. Determines which handler the inspect server
+/// dispatches to for an incoming upgrade request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsRoute {
+    /// `GET /ws` — use the first available websocket channel's handler.
+    Bare,
+    /// `GET /ws/<channel>` — adhoc thread on a websocket-type channel.
+    Channel(String),
+    /// `GET /ws/<channel>/<thread>` — proxy to a specific thread. For
+    /// websocket-type channels, the inner handler is wrapped in
+    /// `ScopedWsHandler` to auto-subscribe. For other channels, a
+    /// `ThreadProxyHandler` is used.
+    Thread { channel: String, name: String },
 }
 
 /// Max activity entries kept per thread.
@@ -57,6 +82,9 @@ pub struct ThreadActivityState {
     pub recent_messages: VecDeque<ChatMessageEntry>,
     /// Latest AI thinking/reasoning text (full, untruncated).
     pub thinking_text: Option<String>,
+    /// Monotonic per-thread counter used to assign unique `id` to each entry
+    /// and chat message. Wraps to 0 after `u64::MAX` (effectively never).
+    pub next_id: u64,
 }
 
 /// Callback invoked after config is swapped atomically during reload.
@@ -91,6 +119,10 @@ pub struct InspectContext {
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
+    /// Per-channel broadcast bus fed by `ActivityTracker` — used by
+    /// `ThreadProxyHandler` to forward activity/chat/thinking events to
+    /// dashboard WebSocket clients. Capacity 256 (configured at creation).
+    pub inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
 }
 
 /// TCP-based inspect server.
@@ -175,16 +207,37 @@ impl InspectServer {
         prepend_bytes.extend(remaining);
 
         if prepend_bytes.first() == Some(&b'G') {
-            // HTTP request — extract WebSocket path for multi-channel routing
+            // HTTP request — extract WebSocket path for routing
             let request_str = String::from_utf8_lossy(&prepend_bytes);
             let first_line = request_str.lines().next().unwrap_or("");
-            let path = Self::extract_ws_path(first_line);
-            let handler = Self::resolve_ws_handler(&context, path);
+            let route = Self::extract_ws_route(first_line);
+            // If the route is a thread-scoped path, propagate the thread
+            // name to the handler so it doesn't have to be repeated in the
+            // payload.
+            let scoped_thread: Option<String> = match &route {
+                Some(WsRoute::Thread { name, .. }) => Some(name.clone()),
+                _ => None,
+            };
+            let handler = Self::resolve_ws_handler(&context, route);
 
-            if let Some(handler) = handler {
-                let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                handler.handle(ws_stream, addr).await?;
+            match handler {
+                Ok(handler) => {
+                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
+                    let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
+                    handler
+                        .handle(ws_stream, addr, scoped_thread.as_deref())
+                        .await?;
+                }
+                Err(e) => {
+                    tracing::debug!(addr = %addr, error = %e, "WebSocket route resolution failed");
+                    // Connection is already upgraded at the WS level; send a
+                    // close frame so the client gets a clean disconnect.
+                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
+                    let mut ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
+                    let _ = ws_stream
+                        .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                        .await;
+                }
             }
             return Ok(());
         }
@@ -223,29 +276,82 @@ impl InspectServer {
         Ok(())
     }
 
-    /// Extract the WebSocket path from an HTTP GET request line.
-    /// e.g. "GET /ws/my_channel HTTP/1.1" → Some("my_channel")
-    ///      "GET /ws HTTP/1.1" → None (fallback to first handler)
-    fn extract_ws_path(request_line: &str) -> Option<String> {
+    /// Parse the WebSocket path from an HTTP GET request line into a `WsRoute`.
+    ///
+    /// `GET /ws` → `WsRoute::Bare` (use the first available websocket channel)
+    /// `GET /ws/<channel>` → `WsRoute::Channel(name)` (adhoc thread on that channel)
+    /// `GET /ws/<channel>/<thread>` → `WsRoute::Thread { channel, name }`
+    ///   (proxy to that thread regardless of channel type)
+    fn extract_ws_route(request_line: &str) -> Option<WsRoute> {
         let path = request_line.split_whitespace().nth(1)?;
         if path == "/ws" {
-            return None; // No specific channel — fallback to first handler
+            return Some(WsRoute::Bare);
         }
-        // Extract channel name from /ws/{channel_name}
-        path.strip_prefix("/ws/")
-            .map(|s| s.split('/').next().unwrap_or(s).to_string())
+        let rest = path.strip_prefix("/ws/")?;
+        let mut parts = rest.splitn(3, '/');
+        let channel = parts.next()?.to_string();
+        match parts.next() {
+            Some(thread) => Some(WsRoute::Thread {
+                channel,
+                name: thread.to_string(),
+            }),
+            None => Some(WsRoute::Channel(channel)),
+        }
     }
 
-    /// Resolve a websocket handler by path.
-    /// If path is None (bare /ws), returns the first available handler.
+    /// Resolve a `WsRoute` to a concrete `WebsocketHandler`.
+    ///
+    /// - `WsRoute::Thread { channel, name }`:
+    ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
+    ///     to wrap its `WebsocketInboundAdapter` and pre-send `subscribe`.
+    ///   - Otherwise, construct a `ThreadProxyHandler` that routes through
+    ///     the channel's `ThreadManager` and the inspect-broadcast bus.
+    /// - `WsRoute::Channel(name)`: use the channel's own handler (must be a
+    ///   websocket-type channel, else error).
+    /// - `WsRoute::Bare`: use the first available handler; error if none.
     fn resolve_ws_handler(
         context: &InspectContext,
-        path: Option<String>,
-    ) -> Option<&Arc<dyn WebsocketHandler>> {
-        let handlers = context.websocket_handlers.as_ref()?;
-        match path {
-            Some(name) => handlers.get(&name),
-            None => handlers.values().next(),
+        route: Option<WsRoute>,
+    ) -> anyhow::Result<Arc<dyn WebsocketHandler>> {
+        let route = match route {
+            Some(r) => r,
+            None => return Err(anyhow::anyhow!("could not parse WebSocket path")),
+        };
+
+        let handlers = context.websocket_handlers.as_ref();
+
+        match route {
+            WsRoute::Thread { channel, name } => {
+                // If the channel has a websocket handler, use the scoped wrapper.
+                // Otherwise, fall through to the proxy (works for any channel type).
+                if let Some(handlers) = handlers
+                    && let Some(handler) = handlers.get(&channel)
+                {
+                    return Ok(Arc::new(ScopedWsHandler::new(handler.clone())));
+                }
+                Ok(Arc::new(ThreadProxyHandler::new(
+                    channel,
+                    name,
+                    context.thread_managers.clone(),
+                    context.inspect_broadcast.clone(),
+                )))
+            }
+            WsRoute::Channel(name) => {
+                let handlers =
+                    handlers.ok_or_else(|| anyhow::anyhow!("no WebSocket handlers registered"))?;
+                handlers.get(&name).cloned().ok_or_else(|| {
+                    anyhow::anyhow!("channel '{}' not found or not a websocket channel", name)
+                })
+            }
+            WsRoute::Bare => {
+                let handlers =
+                    handlers.ok_or_else(|| anyhow::anyhow!("no WebSocket handlers registered"))?;
+                handlers
+                    .values()
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no websocket channel configured"))
+            }
         }
     }
 
@@ -255,34 +361,122 @@ impl InspectServer {
                 let state = Self::build_state(context).await;
                 InspectResponse::State(state)
             }
+            "get_state_overview" => {
+                let overview = Self::build_overview_state(context).await;
+                InspectResponse::Overview(overview)
+            }
+            "get_thread_activity" => Self::handle_get_thread_activity(request, context).await,
+            "get_thread_chat" => Self::handle_get_thread_chat(request, context).await,
+            "list_patterns" => Self::handle_list_patterns(request, context).await,
+            "create_thread" => Self::handle_create_thread(request, context).await,
             "reload_config" => Self::handle_reload_config(context).await,
             "reset_session" => Self::handle_reset_session(request, context).await,
-            "inject_message" => Self::handle_inject_message(request, context).await,
             other => InspectResponse::Error {
                 error: format!("unknown method: {other}"),
             },
         }
     }
 
-    /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
-    ///
-    /// Written by `process_message()` on the first message for a thread.
-    /// Returns `None` if the file doesn't exist or can't be parsed.
-    async fn load_thread_meta(
-        tm: &Arc<ThreadManager>,
-        thread_name: &str,
-    ) -> Option<serde_json::Value> {
-        let thread_path = tm.thread_path(thread_name).await?;
-        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
-        let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
-        serde_json::from_str(&content).ok()
+    /// Build a slim overview snapshot — same shape as `build_state` but with
+    /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`, `recent_messages`,
+    /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
+    async fn build_overview_state(context: &InspectContext) -> InspectOverview {
+        let uptime = context.start_time.elapsed().as_secs();
+
+        let mut threads = Vec::new();
+        let mut total_threads = 0;
+        let mut active_workers = 0;
+        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
+
+        let tms = context.thread_managers.load();
+        for tm in tms.iter() {
+            let tm_threads = tm.list_threads().await;
+            total_threads += tm_threads.len();
+            let stats = tm.get_stats().await;
+            active_workers += stats.active_workers;
+            per_channel_workers.insert(
+                tm.channel_name().to_string(),
+                (stats.active_workers, tm.max_concurrent()),
+            );
+            threads.extend(tm_threads);
+        }
+
+        // Override status from activity_map (Processing / Error flags) but skip
+        // copying activity/messages/thinking — that's the whole point.
+        let activity_map = context.activity_map.lock().await;
+        for thread in &mut threads {
+            let key = (thread.channel.clone(), thread.name.clone());
+            if let Some(state) = activity_map.get(&key) {
+                if state.is_processing {
+                    thread.status = ThreadStatus::Processing;
+                } else if state.has_error {
+                    thread.status = ThreadStatus::Error;
+                }
+                if let Some(last_active) = state.last_active_at {
+                    thread.last_active_at = Some(last_active.to_rfc3339());
+                }
+            }
+        }
+        drop(activity_map);
+
+        // Slim each ThreadInfo down to a ThreadSummary.
+        let summaries: Vec<ThreadSummary> = threads
+            .into_iter()
+            .map(|t| ThreadSummary {
+                name: t.name,
+                channel: t.channel,
+                pattern: t.pattern,
+                status: t.status,
+                model: t.model,
+                mode: t.mode,
+                input_tokens: t.input_tokens,
+                max_tokens: t.max_tokens,
+                last_active_at: t.last_active_at,
+                skills: t.skills,
+                thread_path: t.thread_path,
+            })
+            .collect();
+
+        let health = context.health_stats.lock().await;
+        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
+        let stats = GlobalStats {
+            active_workers,
+            total_threads,
+            max_concurrent,
+            available_workers: max_concurrent.saturating_sub(active_workers),
+            messages_received: health.messages_received,
+            messages_processed: health.messages_processed,
+            errors: health.errors,
+        };
+        drop(health);
+
+        let channels = context.channels.load();
+        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
+        for ch in &mut channels {
+            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
+                ch.active_workers = *aw;
+                ch.max_concurrent = *mc;
+            }
+        }
+
+        InspectOverview {
+            uptime_secs: uptime,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            channels,
+            threads: summaries,
+            stats,
+            commands: all_commands(),
+            models: context
+                .config
+                .as_ref()
+                .map(|cfg| list_available_models(&cfg.load().agent.providers))
+                .unwrap_or_default(),
+        }
     }
 
-    /// Inject a message into a thread's queue for AI processing.
-    ///
-    /// Params: `channel` (channel name), `thread` (thread name), `text` (message body).
-    /// Creates a synthetic `InboundMessage` and enqueues it via `ThreadManager::enqueue()`.
-    async fn handle_inject_message(
+    /// Handle `get_thread_activity {channel, thread, since?, limit?}` — returns
+    /// recent activity entries from `.jyc/activity.jsonl`.
+    async fn handle_get_thread_activity(
         request: &InspectRequest,
         context: &InspectContext,
     ) -> InspectResponse {
@@ -303,8 +497,7 @@ impl InspectServer {
                 };
             }
         };
-
-        let thread_name = match params.get("thread").and_then(|v| v.as_str()) {
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
             Some(t) => t,
             None => {
                 return InspectResponse::Error {
@@ -312,20 +505,18 @@ impl InspectServer {
                 };
             }
         };
+        let since = params
+            .get("since")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(180);
 
-        let text = match params.get("text").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'text' param".to_string(),
-                };
-            }
-        };
-
-        // Find the ThreadManager for this channel
         let tms = context.thread_managers.load();
-        let tm = tms.iter().find(|tm| tm.channel_name() == channel);
-        let tm = match tm {
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
             Some(t) => t,
             None => {
                 return InspectResponse::Error {
@@ -333,85 +524,220 @@ impl InspectServer {
                 };
             }
         };
-
-        // Load stored routing metadata for this thread (written on first message).
-        // Restores channel-specific fields (github_number, chat_id, req_id,
-        // external_id, thread_refs) so the outbound adapter can route replies.
-        let thread_meta = Self::load_thread_meta(tm, thread_name).await;
-        let (channel_uid, external_id, thread_refs, metadata) = match thread_meta {
-            Some(meta) => {
-                let uid = meta
-                    .get("channel_uid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("dashboard")
-                    .to_string();
-                let ext_id = meta
-                    .get("external_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let refs = meta
-                    .get("thread_refs")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                let md = meta
-                    .get("metadata")
-                    .and_then(|v| v.as_object())
-                    .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                    .unwrap_or_default();
-                (uid, ext_id, refs, md)
+        let thread_path = match tm.thread_path(thread).await {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("thread '{thread}' not found in channel '{channel}'"),
+                };
             }
-            None => ("dashboard".to_string(), None, None, HashMap::new()),
         };
 
-        // Build synthetic InboundMessage (same pattern as send_to_thread tool)
-        let message = InboundMessage {
-            id: format!("inspect-{}", chrono::Utc::now().timestamp_millis()),
-            channel: channel.to_string(),
-            channel_uid,
-            sender: "dashboard".to_string(),
-            sender_address: "dashboard@inspect".to_string(),
-            recipients: vec![],
-            topic: thread_name.to_string(),
-            content: MessageContent {
-                text: Some(text.to_string()),
-                html: None,
-                markdown: None,
+        let entries = match ActivityLogStore::load_recent(&thread_path, limit) {
+            Ok(e) => e,
+            Err(e) => {
+                return InspectResponse::Error {
+                    error: format!("failed to load activity: {e}"),
+                };
+            }
+        };
+        let entries = filter_by_since(entries, since.as_deref());
+        InspectResponse::ActivityHistory { entries }
+    }
+
+    /// Handle `get_thread_chat {channel, thread, since?, limit?}` — returns
+    /// recent chat messages from `chat_history_*.jsonl`.
+    async fn handle_get_thread_chat(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+        let since = params
+            .get("since")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(100);
+
+        let tms = context.thread_managers.load();
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+        let thread_path = match tm.thread_path(thread).await {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: format!("thread '{thread}' not found in channel '{channel}'"),
+                };
+            }
+        };
+
+        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, limit);
+        let entries = filter_chat_by_since(entries, since.as_deref());
+        InspectResponse::ChatHistory { entries }
+    }
+
+    /// Handle `list_patterns {channel}` — returns the enabled pattern
+    /// names for the given channel. Used by the dashboard's `c` key to
+    /// populate the pattern-select UI.
+    async fn handle_list_patterns(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+
+        let tms = context.thread_managers.load();
+        match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(tm) => {
+                let patterns = tm.pattern_names().await;
+                InspectResponse::Patterns { patterns }
+            }
+            None => InspectResponse::Error {
+                error: format!("no thread manager found for channel '{channel}'"),
             },
-            timestamp: chrono::Utc::now(),
-            thread_refs,
-            reply_to_id: None,
-            external_id,
-            attachments: vec![],
-            metadata,
-            matched_pattern: None,
-        };
-
-        let pattern_match = PatternMatch {
-            pattern_name: String::new(),
-            channel: channel.to_string(),
-            matches: HashMap::new(),
-        };
-
-        tm.enqueue(
-            message,
-            thread_name.to_string(),
-            pattern_match,
-            None,
-            true,
-            None,
-        )
-        .await;
-
-        tracing::info!(
-            channel = %channel,
-            thread = %thread_name,
-            text_len = text.len(),
-            "Dashboard message injected"
-        );
-
-        InspectResponse::InjectMessageResult {
-            success: true,
-            message: format!("message injected into {channel}/{thread_name}"),
         }
+    }
+
+    /// Handle `create_thread {channel, thread, path}` — registers a new
+    /// ad-hoc thread with a custom workspace path. Used by
+    /// `jyc dashboard open <path>` (replaces the old WebSocket
+    /// `create_thread` command).
+    async fn handle_create_thread(
+        request: &InspectRequest,
+        context: &InspectContext,
+    ) -> InspectResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing params".to_string(),
+                };
+            }
+        };
+        let channel = match params.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'channel' param".to_string(),
+                };
+            }
+        };
+        let thread = match params.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'thread' param".to_string(),
+                };
+            }
+        };
+        let path_str = match params.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => {
+                return InspectResponse::Error {
+                    error: "missing or invalid 'path' param".to_string(),
+                };
+            }
+        };
+        let path = PathBuf::from(path_str);
+
+        if thread.contains("..") || thread.contains('/') || thread.contains('\\') {
+            return InspectResponse::CreateThreadResult {
+                success: false,
+                message: "invalid thread_name: path traversal not allowed".to_string(),
+            };
+        }
+
+        let tms = context.thread_managers.load();
+        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
+            Some(t) => t,
+            None => {
+                return InspectResponse::CreateThreadResult {
+                    success: false,
+                    message: format!("no thread manager found for channel '{channel}'"),
+                };
+            }
+        };
+
+        match tm.set_thread_path(thread, path.clone()).await {
+            Ok(()) => {
+                tracing::info!(
+                    channel = %channel,
+                    thread = %thread,
+                    path = %path.display(),
+                    "Dashboard thread created via REST"
+                );
+                InspectResponse::CreateThreadResult {
+                    success: true,
+                    message: format!("thread '{thread}' registered at {}", path.display()),
+                }
+            }
+            Err(e) => InspectResponse::CreateThreadResult {
+                success: false,
+                message: format!("failed to create thread: {e}"),
+            },
+        }
+    }
+
+    /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
+    ///
+    /// Written by `process_message()` on the first message for a thread.
+    /// Returns `None` if the file doesn't exist or can't be parsed.
+    #[allow(dead_code)] // retained for future use; currently consumed by ThreadProxyHandler directly
+    async fn load_thread_meta(
+        tm: &Arc<ThreadManager>,
+        thread_name: &str,
+    ) -> Option<serde_json::Value> {
+        let thread_path = tm.thread_path(thread_name).await?;
+        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
+        let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
+        serde_json::from_str(&content).ok()
     }
 
     /// Reload configuration from disk and swap it atomically.
@@ -661,6 +987,117 @@ impl InspectServer {
     }
 }
 
+/// Filter activity entries by `since` timestamp (RFC 3339 string).
+/// Returns entries whose timestamp is `>= since`. If `since` is None,
+/// returns all entries unchanged.
+fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<ActivityEntry> {
+    if let Some(since_ts) = since {
+        entries.retain(|e| {
+            e.timestamp
+                .as_deref()
+                .map(|t| t >= since_ts)
+                .unwrap_or(false)
+        });
+    }
+    entries
+}
+
+/// Filter chat messages by `since` timestamp (RFC 3339 string).
+fn filter_chat_by_since(
+    mut entries: Vec<ChatMessageEntry>,
+    since: Option<&str>,
+) -> Vec<ChatMessageEntry> {
+    if let Some(since_ts) = since {
+        entries.retain(|e| {
+            e.timestamp
+                .as_deref()
+                .map(|t| t >= since_ts)
+                .unwrap_or(false)
+        });
+    }
+    entries
+}
+
+/// Publish an activity entry to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"activity","channel":"...","thread":"...","id":N,"entry":{...}}
+fn publish_activity_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    entry: &ActivityEntry,
+) {
+    let payload = serde_json::json!({
+        "type": "activity",
+        "channel": channel,
+        "thread": thread,
+        "id": entry.id,
+        "entry": entry,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a chat message to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"chat_message","channel":"...","thread":"...","id":N,"entry":{...}}
+fn publish_chat_message_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    msg: &ChatMessageEntry,
+) {
+    let payload = serde_json::json!({
+        "type": "chat_message",
+        "channel": channel,
+        "thread": thread,
+        "id": msg.id,
+        "entry": msg,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a thinking event to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"thinking","channel":"...","thread":"...","text":"..."}
+fn publish_thinking_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    text: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "thinking",
+        "channel": channel,
+        "thread": thread,
+        "text": text,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a processing-status event to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"processing","channel":"...","thread":"...","is_processing":bool,"has_error":bool}
+fn publish_processing_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    is_processing: bool,
+    has_error: bool,
+) {
+    let payload = serde_json::json!({
+        "type": "processing",
+        "channel": channel,
+        "thread": thread,
+        "is_processing": is_processing,
+        "has_error": has_error,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
 /// Background task that subscribes to thread event buses and buffers
 /// activity entries for the inspect server.
 pub struct ActivityTracker;
@@ -669,11 +1106,13 @@ impl ActivityTracker {
     /// Start tracking activity for all thread managers.
     /// Periodically discovers new threads and subscribes to their event buses.
     /// Persists activity entries to `.jyc/activity.jsonl` per thread.
+    /// Fans out events to the inspect-broadcast bus for dashboard WS clients.
     /// On startup, loads historical activity from disk.
     pub fn start(
         thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
         activity_map: SharedActivityMap,
         _workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
+        inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
@@ -772,6 +1211,7 @@ impl ActivityTracker {
                                         let cancel_inner = cancel.clone();
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
+                                        let inspect_broadcast_for_task = inspect_broadcast.clone();
                                         tokio::spawn(async move {
                                             use futures_util::FutureExt;
                                             use std::panic::AssertUnwindSafe;
@@ -801,6 +1241,7 @@ impl ActivityTracker {
                                                                                 sender: sender.clone(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
+                                                                                id: 0, // assigned below in the fanout step
                                                                             })
                                                                         }
                                                                         ThreadEvent::ReplySent { text, timestamp, .. } => {
@@ -808,6 +1249,7 @@ impl ActivityTracker {
                                                                                 sender: "ai".to_string(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
+                                                                                id: 0, // assigned below in the fanout step
                                                                             })
                                                                         }
                                                                         _ => None,
@@ -822,7 +1264,7 @@ impl ActivityTracker {
                                                                     // (displayed in the chat pane, not the
                                                                     // activity pane).
                                                                     if !is_thinking {
-                                                                        let entry = event_to_activity(&event);
+                                                                        let mut entry = event_to_activity(&event);
                                                                         let is_error = entry.severity == Severity::Error;
                                                                         let is_progress =
                                                                             matches!(&event, ThreadEvent::ProcessingProgress { .. });
@@ -834,21 +1276,43 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
+                                                                        // Assign monotonic per-thread id BEFORE pushing.
+                                                                        entry.id = state.next_id;
+                                                                        state.next_id = state.next_id.wrapping_add(1);
                                                                         // ProcessingProgress is a heartbeat, not a discrete
-                                                                        // activity. Persist it to disk but skip the in-memory
-                                                                        // activity log so it doesn't crowd out ToolStarted /
-                                                                        // ToolCompleted entries that show the actual tool name.
+                                                                        // activity. Skip both the in-memory log AND the
+                                                                        // inspect-broadcast fanout so it doesn't crowd out
+                                                                        // ToolStarted / ToolCompleted entries that show the
+                                                                        // actual tool name and don't flood the dashboard's
+                                                                        // chat progress.
                                                                         if !is_progress {
-                                                                            state.entries.push_back(entry);
+                                                                            state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
                                                                             }
+                                                                            // Fan out to the inspect-broadcast bus so dashboard
+                                                                            // WebSocket clients receive live events.
+                                                                            publish_activity_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                &entry,
+                                                                            );
                                                                         }
-                                                                        if let Some(msg) = chat_msg {
-                                                                            state.recent_messages.push_back(msg);
+
+                                                                        if let Some(mut msg) = chat_msg {
+                                                                            msg.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
+                                                                            state.recent_messages.push_back(msg.clone());
                                                                             if state.recent_messages.len() > MAX_RECENT_MESSAGES {
                                                                                 state.recent_messages.pop_front();
                                                                             }
+                                                                            publish_chat_message_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                &msg,
+                                                                            );
                                                                         }
                                                                         // Clear thinking text only when a new processing
                                                                         // cycle starts or the current one completes.
@@ -869,12 +1333,28 @@ impl ActivityTracker {
                                                                             state.has_error = false;
                                                                         } else if is_completed {
                                                                             state.is_processing = false;
-                                                                        }
+                                                                            }
                                                                         if is_error {
                                                                             state.has_error = true;
                                                                         }
+                                                                        // Publish processing-status AFTER the state
+                                                                        // update so that ProcessingCompleted sends
+                                                                        // is_processing=false, not the stale true value.
+                                                                        if matches!(
+                                                                            &event,
+                                                                            ThreadEvent::ProcessingStarted { .. }
+                                                                            | ThreadEvent::ProcessingCompleted { .. }
+                                                                        ) {
+                                                                            publish_processing_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                state.is_processing,
+                                                                                state.has_error,
+                                                                            );
+                                                                        }
                                                                     } else {
-                                                                        // Thinking event: update thinking_text only.
+                                                                        // Thinking event: update thinking_text and fan out.
                                                                         if let ThreadEvent::Thinking { ref text, .. } = event {
                                                                             let mut map = map.lock().await;
                                                                             let state = map
@@ -882,6 +1362,12 @@ impl ActivityTracker {
                                                                                 .or_default();
                                                                             state.thinking_text = Some(text.clone());
                                                                             state.last_active_at = Some(event.timestamp());
+                                                                            publish_thinking_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                text,
+                                                                            );
                                                                         }
                                                                     }
                                                                 }
@@ -1245,6 +1731,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
+        id: 0, // assigned by ActivityTracker on push (see fanout step)
     }
 }
 
@@ -1274,6 +1761,7 @@ mod tests {
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         })
     }
 
@@ -1512,6 +2000,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -1601,6 +2090,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -1698,6 +2188,7 @@ mode = "agent"
             workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
             websocket_handlers: None,
             reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
         });
 
         let cancel = CancellationToken::new();
@@ -1828,6 +2319,7 @@ mode = "agent"
                 text: "channel1 working".to_string(),
                 timestamp: None,
                 severity: Severity::Info,
+                id: 0,
             });
         }
 
@@ -1890,6 +2382,7 @@ mode = "agent"
                 text: "Processing started".to_string(),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 severity: Severity::Info,
+                id: 0,
             });
         }
 
@@ -1920,71 +2413,6 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_inject_message_missing_params() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Missing params entirely
-        writer
-            .write_all(b"{\"method\":\"inject_message\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("missing params"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inject_message_unknown_channel() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(
-                b"{\"method\":\"inject_message\",\"params\":{\"channel\":\"nonexistent\",\"thread\":\"t\",\"text\":\"x\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("no thread manager found"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_event_to_activity_incoming_message() {
         let event = ThreadEvent::IncomingMessage {
             thread_name: "test".to_string(),
@@ -2007,5 +2435,308 @@ mode = "agent"
         let entry = event_to_activity(&event);
         assert!(entry.text.contains("Reply sent"));
         assert!(entry.text.contains("AI reply here"));
+    }
+
+    #[tokio::test]
+    async fn test_get_state_overview_returns_slim_payload() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state_overview\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+
+        match resp {
+            InspectResponse::Overview(overview) => {
+                assert_eq!(overview.channels.len(), 1);
+                assert_eq!(overview.threads.len(), 0);
+                // The slim payload should NOT contain activity / recent_messages / thinking_text
+                let json = serde_json::to_string(&overview).unwrap();
+                assert!(!json.contains("activity"));
+                assert!(!json.contains("recent_messages"));
+                assert!(!json.contains("thinking_text"));
+            }
+            other => panic!("expected Overview, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_activity_reads_activity_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_dir = tmp.path().to_path_buf();
+        let thread_name = "activity-test";
+        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let activity_path = jyc_dir.join("activity.jsonl");
+        let entries = [
+            r#"{"text":"Tool: bash","timestamp":"2026-07-01T10:00:00Z","severity":"info"}"#,
+            r#"{"text":"Completed (5s)","timestamp":"2026-07-01T10:00:05Z","severity":"info"}"#,
+        ];
+        let content = entries.join("\n") + "\n";
+        tokio::fs::write(&activity_path, content).await.unwrap();
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir.clone()])),
+            websocket_handlers: None,
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+        });
+
+        let cancel = CancellationToken::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // No thread managers registered → should return "no thread manager" error
+        writer
+            .write_all(
+                b"{\"method\":\"get_thread_activity\",\"params\":{\"channel\":\"any\",\"thread\":\"any\"}}\n",
+            )
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(response.contains("no thread manager"), "got: {response}");
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_activity_filters_by_since() {
+        // Verify the filter_by_since helper used by the handler.
+        use jyc_types::Severity;
+        let entries = vec![
+            ActivityEntry {
+                text: "old".to_string(),
+                timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+                id: 0,
+            },
+            ActivityEntry {
+                text: "mid".to_string(),
+                timestamp: Some("2026-02-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+                id: 0,
+            },
+            ActivityEntry {
+                text: "new".to_string(),
+                timestamp: Some("2026-03-01T00:00:00Z".to_string()),
+                severity: Severity::Info,
+                id: 0,
+            },
+        ];
+
+        let filtered = filter_by_since(entries.clone(), Some("2026-02-01T00:00:00Z"));
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].text, "mid");
+        assert_eq!(filtered[1].text, "new");
+
+        let all = filter_by_since(entries, None);
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_ws_route_bare() {
+        let route = InspectServer::extract_ws_route("GET /ws HTTP/1.1");
+        assert_eq!(route, Some(WsRoute::Bare));
+    }
+
+    #[test]
+    fn test_extract_ws_route_channel() {
+        let route = InspectServer::extract_ws_route("GET /ws/local_dev HTTP/1.1");
+        assert_eq!(route, Some(WsRoute::Channel("local_dev".to_string())));
+    }
+
+    #[test]
+    fn test_extract_ws_route_thread() {
+        let route = InspectServer::extract_ws_route("GET /ws/jiny283/invoice-2024 HTTP/1.1");
+        assert_eq!(
+            route,
+            Some(WsRoute::Thread {
+                channel: "jiny283".to_string(),
+                name: "invoice-2024".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_ws_route_invalid() {
+        assert_eq!(InspectServer::extract_ws_route(""), None);
+        assert_eq!(InspectServer::extract_ws_route("GET /other HTTP/1.1"), None);
+    }
+
+    /// `/ws/<non_websocket_channel>/<thread>` must resolve to a
+    /// `ThreadProxyHandler` (since the channel isn't in the ws handlers map).
+    #[tokio::test]
+    async fn test_resolve_ws_handler_uses_proxy_for_non_ws_channel() {
+        let ctx = test_context(); // no websocket_handlers set
+        let route = WsRoute::Thread {
+            channel: "github".to_string(),
+            name: "pr-42".to_string(),
+        };
+        // Resolution must succeed — exact handler type is verified by
+        // end-to-end integration tests in Commit 4.
+        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
+    }
+
+    /// `/ws/<websocket_channel>/<thread>` must resolve (handler type checked
+    /// by integration tests).
+    #[tokio::test]
+    async fn test_resolve_ws_handler_uses_scoped_for_ws_channel() {
+        use async_trait::async_trait;
+
+        struct Stub;
+        #[async_trait]
+        impl WebsocketHandler for Stub {
+            async fn handle(
+                &self,
+                _ws: tokio_tungstenite::WebSocketStream<PrependStream>,
+                _addr: std::net::SocketAddr,
+                _scoped_thread: Option<&str>,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let stub: Arc<dyn WebsocketHandler> = Arc::new(Stub);
+        let mut handlers: HashMap<String, Arc<dyn WebsocketHandler>> = HashMap::new();
+        handlers.insert("local_dev".to_string(), stub);
+
+        let ctx = Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: Some(handlers),
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+        });
+
+        let route = WsRoute::Thread {
+            channel: "local_dev".to_string(),
+            name: "dotfiles".to_string(),
+        };
+        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
+    }
+
+    /// `/ws/<non_ws_channel>` must error.
+    #[tokio::test]
+    async fn test_resolve_ws_handler_channel_route_rejects_non_ws() {
+        let ctx = test_context(); // no websocket_handlers
+        let route = WsRoute::Channel("github".to_string());
+        let result = InspectServer::resolve_ws_handler(&ctx, Some(route));
+        assert!(result.is_err());
+    }
+
+    /// `/ws` with no handlers must error.
+    #[tokio::test]
+    async fn test_resolve_ws_handler_bare_rejects_when_empty() {
+        let ctx = test_context();
+        let result = InspectServer::resolve_ws_handler(&ctx, Some(WsRoute::Bare));
+        assert!(result.is_err());
+    }
+
+    /// The publish helpers should produce well-formed JSON payloads that
+    /// include the (channel, thread, id) fields used by `ThreadProxyHandler`
+    /// for filtering and dedup.
+    #[tokio::test]
+    async fn test_publish_activity_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        let entry = ActivityEntry {
+            text: "Tool: bash".to_string(),
+            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 42,
+        };
+        publish_activity_event(&tx, "github", "pr-1", &entry);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "activity");
+        assert_eq!(v["channel"], "github");
+        assert_eq!(v["thread"], "pr-1");
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["entry"]["text"], "Tool: bash");
+    }
+
+    #[tokio::test]
+    async fn test_publish_chat_message_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        let msg = ChatMessageEntry {
+            sender: "ai".to_string(),
+            text: "Hello".to_string(),
+            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
+            id: 7,
+        };
+        publish_chat_message_event(&tx, "c", "t", &msg);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "chat_message");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["entry"]["sender"], "ai");
+    }
+
+    #[tokio::test]
+    async fn test_publish_thinking_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        publish_thinking_event(&tx, "c", "t", "thinking text");
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "thinking");
+        assert_eq!(v["text"], "thinking text");
+    }
+
+    #[tokio::test]
+    async fn test_publish_processing_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        publish_processing_event(&tx, "c", "t", true, false);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "processing");
+        assert_eq!(v["is_processing"], true);
+        assert_eq!(v["has_error"], false);
     }
 }

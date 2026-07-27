@@ -1747,6 +1747,12 @@ impl ChatState {
                 if let Some(entry) = payload.get("entry").and_then(|v| {
                     serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
                 }) {
+                    // AI reply delivered — clear local waiting flag so the
+                    // progress indicator disappears immediately instead of
+                    // waiting for the next poll cycle.
+                    if entry.sender == "ai" {
+                        self.awaiting_response = false;
+                    }
                     let buf = self.live_chat.entry(key).or_default();
                     buf.push_back(entry);
                     if buf.len() > 50 {
@@ -1769,6 +1775,11 @@ impl ChatState {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 self.live_processing.insert(key, (is_processing, has_error));
+                // Processing finished (or errored) — clear local waiting flag
+                // so the progress indicator hides immediately.
+                if !is_processing {
+                    self.awaiting_response = false;
+                }
             }
             "resync" => {
                 // Server fell behind (Lagged); clear local state so the

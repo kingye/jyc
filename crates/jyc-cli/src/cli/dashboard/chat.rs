@@ -1588,7 +1588,6 @@ impl ChatState {
             Some("activity") | Some("chat_message") | Some("thinking") | Some("processing")
             | Some("resync") => {
                 self.handle_live_event(&parsed);
-                return;
             }
             _ => {}
         }

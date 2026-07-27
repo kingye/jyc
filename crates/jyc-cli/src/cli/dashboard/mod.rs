@@ -29,7 +29,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, InspectState, ModelInfo, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, ThreadStatus};
 
 use super::command_popup::*;
 
@@ -76,7 +76,7 @@ pub struct OpenArgs {
 
 /// Application state for the TUI.
 struct App {
-    state: Option<InspectState>,
+    state: Option<InspectOverview>,
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
@@ -341,17 +341,17 @@ pub async fn run(
         }
 
         loop {
-            // Poll for new state
+            // Poll for new state (slim overview — no activity/messages/thinking)
             if last_poll.elapsed() >= poll_interval {
-                match client.get_state().await {
-                    Ok(state) => {
+                match client.get_overview().await {
+                    Ok(overview) => {
                         // Clear awaiting_response once the server confirms the thread
                         // is no longer processing (with a small grace period to avoid
                         // flicker between the local flag and server state).
                         if app.chat.awaiting_response
                             && let Some(ref chat_name) = app.chat.thread
                         {
-                            let ct = state.threads.iter().find(|t| t.name == *chat_name);
+                            let ct = overview.threads.iter().find(|t| t.name == *chat_name);
                             if let Some(ct) = ct
                                 && ct.status != ThreadStatus::Processing
                             {
@@ -359,14 +359,20 @@ pub async fn run(
                             }
                         }
 
-                        // Detail mode: extract live chat messages from recent_messages
-                        if app.chat.is_detail_mode()
-                            && let Some(ref chat_name) = app.chat.thread
-                            && let Some(ct) = state.threads.iter().find(|t| t.name == *chat_name)
+                        // Append new chat messages from the live buffer to the
+                        // dashboard's `chat.messages` vec. The live buffer is
+                        // populated by REST hydrate on selection and updated by
+                        // WS `chat_message` events.
+                        if let Some(channel) = app.chat.channel.as_deref()
+                            && let Some(thread) = app.chat.thread.as_deref()
                         {
+                            // Collect into a Vec first to release the immutable
+                            // borrow on app.chat.live_chat before mutating
+                            // app.chat.messages.
+                            let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+                                app.chat.live_chat_for(channel, thread).cloned().collect();
                             let mut new_msg = false;
-                            for msg in &ct.recent_messages {
-                                // Skip messages we already have (dedup by text+timestamp)
+                            for msg in &live_msgs {
                                 let already =
                                     app.chat.messages.iter().any(|m| {
                                         m.text == msg.text && m.timestamp == msg.timestamp
@@ -380,13 +386,12 @@ pub async fn run(
                                     new_msg = true;
                                 }
                             }
-                            // Auto-scroll to bottom only when new messages arrive
                             if new_msg {
                                 app.chat.scroll = 0;
                             }
                         }
 
-                        app.state = Some(state);
+                        app.state = Some(overview);
                         if let Some(ref s) = app.state {
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
@@ -616,8 +621,8 @@ async fn resolve_websocket_channel(
         return Ok(name.to_string());
     }
 
-    let state = client.get_state().await?;
-    let ws_channels: Vec<String> = state
+    let overview = client.get_overview().await?;
+    let ws_channels: Vec<String> = overview
         .channels
         .into_iter()
         .filter(|c| c.channel_type == "websocket")
@@ -669,8 +674,8 @@ async fn create_thread_via_websocket(
 /// Poll the inspect server until the newly created thread appears in state.
 async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
-        let state = client.get_state().await?;
-        if state
+        let overview = client.get_overview().await?;
+        if overview
             .threads
             .iter()
             .any(|t| t.name == thread && t.channel == channel)
@@ -1062,8 +1067,13 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let info = Paragraph::new(info_lines).block(info_block);
     frame.render_widget(info, detail_chunks[0]);
 
-    // Activity log panel
-    render_activity_log_inner(frame, detail_chunks[1], selected, 0, 0, false);
+    // Activity log panel — read from the WS-fed live buffer for this thread.
+    let activity_vec: Vec<jyc_types::ActivityEntry> = app
+        .chat
+        .live_activity_for(&selected.channel, &selected.name)
+        .cloned()
+        .collect();
+    render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {

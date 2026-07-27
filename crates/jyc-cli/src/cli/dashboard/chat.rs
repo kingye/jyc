@@ -37,6 +37,7 @@ pub(super) struct ChatState {
     pub(super) patterns: Vec<String>,
     pub(super) pattern_selected: usize,
     pub(super) thread: Option<String>,
+    pub(super) channel: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
     /// Vim-style editor state for the chat input (edtui).
     pub(super) editor: EditorState,
@@ -58,15 +59,34 @@ pub(super) struct ChatState {
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
-    // Detail mode (non-WebSocket thread chat) state
-    /// Channel name for the thread being viewed in detail mode.
-    /// Set when Enter is pressed on a non-websocket thread.
+    /// Channel name for the thread being viewed (used by live buffers).
+    /// Set when chat is opened (Enter on a thread, or `c` to start fresh).
     pub(super) detail_channel: Option<String>,
     /// Thread path from ThreadInfo (for loading chat history from disk).
     pub(super) detail_thread_path: Option<std::path::PathBuf>,
-    /// Pending message to inject via inspect protocol (detail mode).
+    /// Pending message to inject via inspect protocol (legacy detail mode).
     /// Set by `send_message_inner` and consumed by the main poll loop.
     pub(super) pending_inject: Option<(String, String)>,
+    /// Live activity buffer — populated by REST hydrate on selection and
+    /// appended to by WS `{"type":"activity",...}` events. Keyed by
+    /// `(channel, thread)`. The activity pane and chat progress read
+    /// exclusively from this buffer.
+    pub(super) live_activity: std::collections::BTreeMap<
+        (String, String),
+        std::collections::VecDeque<jyc_types::ActivityEntry>,
+    >,
+    /// Live chat messages — populated by REST hydrate + WS `chat_message`.
+    pub(super) live_chat: std::collections::BTreeMap<
+        (String, String),
+        std::collections::VecDeque<jyc_types::ChatMessageEntry>,
+    >,
+    /// Live thinking text — overwritten by WS `thinking` events.
+    pub(super) live_thinking: std::collections::BTreeMap<(String, String), String>,
+    /// Live processing status — updated by WS `processing` events.
+    pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
+    /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
+    /// WS events after reconnect / `resync`.
+    pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
     // Command popup state
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
@@ -800,39 +820,64 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     // Show progress indicator
-    // Determine if the thread is processing: either the inspect server
-    // reports Processing status, or we've sent a message and haven't yet
-    // seen the server confirm completion (covers the first-message gap
-    // where the poll hasn't caught up yet).
-    let server_processing = app
-        .state
-        .as_ref()
-        .and_then(|s| {
-            let chat_name = app.chat.thread.as_deref()?;
-            s.threads.iter().find(|t| t.name == chat_name)
-        })
-        .is_some_and(|ct| ct.status == ThreadStatus::Processing);
-
-    // Show progress if the server reports processing OR we've sent a message
-    // locally and are still waiting for the server state to catch up.
-    let show_progress = server_processing || app.chat.awaiting_response;
-
-    if show_progress {
-        // Get thread info for thinking text and activity entries
-        let thread_info = app
+    // Determine if the thread is processing: prefer the live processing
+    // status (updated via WS `processing` events), fall back to the polled
+    // overview state, fall back to local `awaiting_response`.
+    let live_processing = app
+        .chat
+        .channel
+        .as_deref()
+        .zip(app.chat.thread.as_deref())
+        .and_then(|(c, t)| app.chat.live_processing_for(c, t));
+    let server_processing = match live_processing {
+        Some((p, _)) => p,
+        None => app
             .state
             .as_ref()
             .and_then(|s| {
                 let chat_name = app.chat.thread.as_deref()?;
                 s.threads.iter().find(|t| t.name == chat_name)
             })
-            .filter(|ct| ct.status == ThreadStatus::Processing);
+            .is_some_and(|ct| ct.status == ThreadStatus::Processing),
+    };
 
-        // Show thinking text (if any) from the thread state.
+    // Show progress if the server reports processing OR we've sent a message
+    // locally and are still waiting for the server state to catch up.
+    let show_progress = server_processing || app.chat.awaiting_response;
+
+    if show_progress {
+        // Read live activity + thinking from the WS-fed buffers, falling
+        // back to the polled overview only as a last resort. The rendering
+        // logic below is byte-for-byte identical to before — only the data
+        // source changed.
+        let live_chan = app.chat.channel.clone();
+        let live_thread = app.chat.thread.clone();
+        let activity_entries: Vec<jyc_types::ActivityEntry> = live_chan
+            .as_deref()
+            .zip(live_thread.as_deref())
+            .map(|(c, t)| {
+                app.chat
+                    .live_activity_for(c, t)
+                    .rev()
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let thinking_text: Option<String> = live_chan
+            .as_deref()
+            .zip(live_thread.as_deref())
+            .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
+            .map(|s| s.to_string());
+
+        // Render thinking text first (same wrap + indent as before).
         // This comes from ThreadEvent::Thinking events and is NOT stored
         // in the activity buffer or activity.jsonl.
-        if let Some(ct) = &thread_info
-            && let Some(thinking) = &ct.thinking_text
+        if let Some(thinking) = thinking_text.as_deref()
             && !thinking.is_empty()
         {
             let gray_style = Style::default().fg(Color::Gray);
@@ -849,15 +894,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             }
         }
 
-        let activity_entries: Vec<_> = thread_info
-            .map(|ct| ct.activity.iter().rev().take(2).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        let has_thinking_text = thread_info
-            .and_then(|ct| ct.thinking_text.as_deref())
-            .is_some_and(|t| !t.is_empty());
-
-        if activity_entries.is_empty() && !has_thinking_text {
+        if activity_entries.is_empty() && thinking_text.is_none() {
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
@@ -1037,42 +1074,42 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 }
 
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
-    let state = match &app.state {
-        Some(s) => s,
-        None => {
-            let block = Block::default().title(" Activity ").borders(Borders::ALL);
-            frame.render_widget(block, area);
-            return;
-        }
-    };
-
-    let selected = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-        app.chat
-            .thread
-            .as_ref()
-            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
-    } else {
-        app.table_state
-            .selected()
-            .and_then(|i| state.threads.get(i))
-    };
-
-    let selected = match selected {
-        Some(t) => t,
-        None => {
-            let block = Block::default().title(" Activity ").borders(Borders::ALL);
-            frame.render_widget(block, area);
-            return;
-        }
-    };
+    // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
+    // currently focused thread. Falls back to empty slice if no live data
+    // has been seeded yet (transient state during hydrate).
+    let activity_vec: Vec<jyc_types::ActivityEntry> =
+        if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+            let (chan, thread) = (app.chat.channel.clone(), app.chat.thread.clone());
+            match (chan, thread) {
+                (Some(c), Some(t)) => app.chat.live_activity_for(&c, &t).cloned().collect(),
+                _ => Vec::new(),
+            }
+        } else if let Some(state) = &app.state {
+            // Overview mode: show the activity for the table-selected thread
+            // (also pulled from live buffers, hydrated when the row is selected).
+            let selected_idx = app.table_state.selected();
+            if let Some(idx) = selected_idx {
+                if let Some(t) = state.threads.get(idx) {
+                    app.chat
+                        .live_activity_for(&t.channel, &t.name)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
     // Thinking entries are excluded from the activity pane (they flood it with
     // identical "Thinking..." markers). They remain in the in-memory log for
     // the chat pane's AI progress area and are persisted to activity.jsonl.
-    let visible_count = selected
-        .activity
+    let visible_count = activity_vec
         .iter()
         .filter(|e| !e.text.starts_with("Thinking: "))
         .count();
@@ -1081,7 +1118,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     render_activity_log_inner(
         frame,
         area,
-        selected,
+        &activity_vec,
         app.chat.activity_scroll,
         app.chat.activity_hscroll,
         focused,
@@ -1091,7 +1128,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
 pub(super) fn render_activity_log_inner(
     frame: &mut Frame,
     area: Rect,
-    selected: &jyc_types::ThreadInfo,
+    activity: &[jyc_types::ActivityEntry],
     scroll_offset: usize,
     hscroll: usize,
     focused: bool,
@@ -1105,7 +1142,7 @@ pub(super) fn render_activity_log_inner(
         );
     }
 
-    if selected.activity.is_empty() {
+    if activity.is_empty() {
         let text = Paragraph::new(Span::styled(
             "  No activity",
             Style::default().fg(Color::DarkGray),
@@ -1118,8 +1155,7 @@ pub(super) fn render_activity_log_inner(
     // Thinking entries are excluded from the activity pane - they appear as
     // dozens of identical "Thinking..." markers and crowd out useful events.
     // The chat pane AI progress area handles thinking display.
-    let visible: Vec<_> = selected
-        .activity
+    let visible: Vec<_> = activity
         .iter()
         .filter(|e| !e.text.starts_with("Thinking: "))
         .collect();
@@ -1180,6 +1216,7 @@ impl ChatState {
             patterns: vec![],
             pattern_selected: 0,
             thread: None,
+            channel: None,
             messages: vec![],
             editor: empty_chat_editor(),
             handler: EditorEventHandler::default(),
@@ -1196,6 +1233,11 @@ impl ChatState {
             detail_channel: None,
             detail_thread_path: None,
             pending_inject: None,
+            live_activity: std::collections::BTreeMap::new(),
+            live_chat: std::collections::BTreeMap::new(),
+            live_thinking: std::collections::BTreeMap::new(),
+            live_processing: std::collections::BTreeMap::new(),
+            last_seen_id: std::collections::BTreeMap::new(),
             commands: vec![],
             models: vec![],
             command_popup: None,
@@ -1262,7 +1304,7 @@ impl ChatState {
         &mut self,
         channel: &str,
         thread_name: &str,
-        state: Option<&InspectState>,
+        state: Option<&jyc_types::InspectOverview>,
     ) {
         self.visible = true;
         self.phase = ChatPhase::Chatting;
@@ -1290,7 +1332,7 @@ impl ChatState {
     /// Reads up to 100 most recent entries (same limit as WebSocket adapter).
     /// `state` is the latest inspect snapshot, used to resolve the thread path
     /// when it has not been cached yet.
-    pub(super) fn load_detail_history(&mut self, state: Option<&InspectState>) {
+    pub(super) fn load_detail_history(&mut self, state: Option<&jyc_types::InspectOverview>) {
         let thread_path = match &self.detail_thread_path {
             Some(p) => p.clone(),
             None => {
@@ -1589,7 +1631,183 @@ impl ChatState {
             }
         }
     }
+
+    /// Seed the live activity/chat buffers with the result of a REST hydrate
+    /// (initial fetch on thread selection). Sets `last_seen_id` to the
+    /// highest id seen so duplicate WS events are dropped.
+    #[allow(dead_code)]
+    pub(super) fn seed_live(
+        &mut self,
+        channel: &str,
+        thread: &str,
+        activity: Vec<jyc_types::ActivityEntry>,
+        chat: Vec<jyc_types::ChatMessageEntry>,
+    ) {
+        let key = (channel.to_string(), thread.to_string());
+        let mut max_id = 0u64;
+        let activity_buf: std::collections::VecDeque<_> = activity
+            .into_iter()
+            .inspect(|e| {
+                if e.id > max_id {
+                    max_id = e.id;
+                }
+            })
+            .collect();
+        let chat_buf: std::collections::VecDeque<_> = chat
+            .into_iter()
+            .inspect(|e| {
+                if e.id > max_id {
+                    max_id = e.id;
+                }
+            })
+            .collect();
+        // Cap buffer sizes to match the in-memory cap in jyc-inspect.
+        const MAX_ACTIVITY: usize = 180;
+        const MAX_CHAT: usize = 50;
+        let mut activity_buf = activity_buf;
+        while activity_buf.len() > MAX_ACTIVITY {
+            activity_buf.pop_front();
+        }
+        let mut chat_buf = chat_buf;
+        while chat_buf.len() > MAX_CHAT {
+            chat_buf.pop_front();
+        }
+        self.live_activity.insert(key.clone(), activity_buf);
+        self.live_chat.insert(key.clone(), chat_buf);
+        self.last_seen_id.insert(key, max_id);
+    }
+
+    /// Handle a `{"type":"resync", "channel":..., "thread":...}` event by
+    /// clearing the live buffers for that thread. The caller should re-run
+    /// the REST hydrate (`get_thread_activity` + `get_thread_chat`) and
+    /// re-seed via `seed_live`.
+    #[allow(dead_code)]
+    pub(super) fn clear_live(&mut self, channel: &str, thread: &str) {
+        let key = (channel.to_string(), thread.to_string());
+        self.live_activity.remove(&key);
+        self.live_chat.remove(&key);
+        self.live_thinking.remove(&key);
+        self.live_processing.remove(&key);
+        self.last_seen_id.remove(&key);
+    }
+
+    /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
+    /// Filters out duplicate / older events using `last_seen_id`.
+    #[allow(dead_code)]
+    pub(super) fn handle_live_event(&mut self, payload: &serde_json::Value) {
+        let channel = match payload.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c.to_string(),
+            None => return,
+        };
+        let thread = match payload.get("thread").and_then(|v| v.as_str()) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+        let key = (channel.clone(), thread.clone());
+        let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let last = self.last_seen_id.get(&key).copied().unwrap_or(0);
+        if id != 0 && id <= last {
+            return; // duplicate or older
+        }
+        if id != 0 {
+            self.last_seen_id.insert(key.clone(), id);
+        }
+
+        let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match event_type {
+            "activity" => {
+                if let Some(entry) = payload.get("entry").and_then(|v| {
+                    serde_json::from_value::<jyc_types::ActivityEntry>(v.clone()).ok()
+                }) {
+                    let buf = self.live_activity.entry(key).or_default();
+                    buf.push_back(entry);
+                    if buf.len() > 180 {
+                        buf.pop_front();
+                    }
+                }
+            }
+            "chat_message" => {
+                if let Some(entry) = payload.get("entry").and_then(|v| {
+                    serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
+                }) {
+                    let buf = self.live_chat.entry(key).or_default();
+                    buf.push_back(entry);
+                    if buf.len() > 50 {
+                        buf.pop_front();
+                    }
+                }
+            }
+            "thinking" => {
+                if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+                    self.live_thinking.insert(key, text.to_string());
+                }
+            }
+            "processing" => {
+                let is_processing = payload
+                    .get("is_processing")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let has_error = payload
+                    .get("has_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.live_processing.insert(key, (is_processing, has_error));
+            }
+            _ => {}
+        }
+    }
+
+    /// Get a snapshot of the live activity buffer for the given (channel, thread).
+    /// Returns an empty slice if no live data has been seeded yet.
+    #[allow(dead_code)]
+    pub(super) fn live_activity_for(
+        &self,
+        channel: &str,
+        thread: &str,
+    ) -> std::collections::vec_deque::Iter<'_, jyc_types::ActivityEntry> {
+        self.live_activity
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|v| v.iter())
+            .unwrap_or_else(|| EMPTY_VEC_DEQUE.iter())
+    }
+
+    /// Get the current thinking text for the given (channel, thread), if any.
+    pub(super) fn live_thinking_for(&self, channel: &str, thread: &str) -> Option<&str> {
+        self.live_thinking
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|s| s.as_str())
+    }
+
+    /// Get the current processing status for the given (channel, thread).
+    /// Returns `None` if no status has been received yet (fall back to polled state).
+    pub(super) fn live_processing_for(&self, channel: &str, thread: &str) -> Option<(bool, bool)> {
+        self.live_processing
+            .get(&(channel.to_string(), thread.to_string()))
+            .copied()
+    }
+    /// Iterate over the live chat messages for the given (channel, thread).
+    /// Used by the dashboard's poll loop to append new messages to the
+    /// `chat.messages` vec shown in the chat pane.
+    #[allow(dead_code)]
+    pub(super) fn live_chat_for(
+        &self,
+        channel: &str,
+        thread: &str,
+    ) -> std::collections::vec_deque::Iter<'_, jyc_types::ChatMessageEntry> {
+        self.live_chat
+            .get(&(channel.to_string(), thread.to_string()))
+            .map(|v| v.iter())
+            .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
+    }
 }
+
+/// Static empty deque used as a fallback when no live data is seeded for a
+/// (channel, thread) — lets us return a concrete `Iter` from the accessors.
+static EMPTY_VEC_DEQUE: std::sync::LazyLock<std::collections::VecDeque<jyc_types::ActivityEntry>> =
+    std::sync::LazyLock::new(std::collections::VecDeque::new);
+static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
+    std::collections::VecDeque<jyc_types::ChatMessageEntry>,
+> = std::sync::LazyLock::new(std::collections::VecDeque::new);
 
 #[cfg(test)]
 mod tests {

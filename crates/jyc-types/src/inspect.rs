@@ -9,6 +9,9 @@ pub struct InspectRequest {
     /// Optional parameters for the method (unused by `get_state`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// Authorization token for inspect requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
 }
 
 /// Response sent by the inspect server to the dashboard client.
@@ -321,6 +324,7 @@ mod tests {
         let req = InspectRequest {
             method: "get_state".to_string(),
             params: None,
+            auth_token: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("get_state"));

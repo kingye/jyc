@@ -1299,6 +1299,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 }) as jyc_inspect::server::ReloadCallback)
             },
             inspect_broadcast: inspect_broadcast.clone(),
+            auth_token: None,
         });
 
         // Restore custom thread_path mappings from disk so threads with

@@ -119,6 +119,8 @@ pub struct InspectContext {
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
+    /// Optional authorization token required by inspect clients.
+    pub auth_token: Option<String>,
     /// Per-channel broadcast bus fed by `ActivityTracker` — used by
     /// `ThreadProxyHandler` to forward activity/chat/thinking events to
     /// dashboard WebSocket clients. Capacity 256 (configured at creation).
@@ -211,6 +213,21 @@ impl InspectServer {
             let request_str = String::from_utf8_lossy(&prepend_bytes);
             let first_line = request_str.lines().next().unwrap_or("");
             let route = Self::extract_ws_route(first_line);
+
+            if let Some(expected) = context.auth_token.as_deref()
+                && Self::extract_bearer_token(&request_str) != Some(expected)
+            {
+                let mut response = tokio::io::BufWriter::new(stream);
+                response
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
+                response.flush().await?;
+                tracing::debug!(addr = %addr, "WebSocket authentication failed");
+                return Ok(());
+            }
+
             // If the route is a thread-scoped path, propagate the thread
             // name to the handler so it doesn't have to be repeated in the
             // payload.
@@ -299,7 +316,23 @@ impl InspectServer {
         }
     }
 
-    /// Resolve a `WsRoute` to a concrete `WebsocketHandler`.
+    /// Extract a bearer token from an HTTP upgrade request.
+    fn extract_bearer_token(request: &str) -> Option<&str> {
+    request
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("authorization") {
+                value.trim().strip_prefix("Bearer ")
+            } else {
+                None
+            }
+        })
+        .map(str::trim)
+}
+
     ///
     /// - `WsRoute::Thread { channel, name }`:
     ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
@@ -356,6 +389,14 @@ impl InspectServer {
     }
 
     async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
+        if let Some(expected) = context.auth_token.as_deref()
+            && request.auth_token.as_deref() != Some(expected)
+        {
+            return InspectResponse::Error {
+                error: "auth_failed".to_string(),
+            };
+        }
+
         match request.method.as_str() {
             "get_state" => {
                 let state = Self::build_state(context).await;
@@ -1762,6 +1803,7 @@ mod tests {
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         })
     }
 
@@ -2001,6 +2043,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2091,6 +2134,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2189,6 +2233,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2509,6 +2554,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2654,6 +2700,7 @@ mode = "agent"
             websocket_handlers: Some(handlers),
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let route = WsRoute::Thread {

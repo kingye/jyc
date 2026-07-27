@@ -1324,13 +1324,6 @@ impl ActivityTracker {
                                                                             | ThreadEvent::ProcessingCompleted { .. }
                                                                         ) {
                                                                             state.thinking_text = None;
-                                                                            publish_processing_event(
-                                                                                &inspect_broadcast_for_task,
-                                                                                &channel_for_task,
-                                                                                &name,
-                                                                                state.is_processing,
-                                                                                state.has_error,
-                                                                            );
                                                                         }
                                                                         state.last_active_at = Some(event.timestamp());
                                                                         if is_processing {
@@ -1341,6 +1334,22 @@ impl ActivityTracker {
                                                                             }
                                                                         if is_error {
                                                                             state.has_error = true;
+                                                                        }
+                                                                        // Publish processing-status AFTER the state
+                                                                        // update so that ProcessingCompleted sends
+                                                                        // is_processing=false, not the stale true value.
+                                                                        if matches!(
+                                                                            &event,
+                                                                            ThreadEvent::ProcessingStarted { .. }
+                                                                            | ThreadEvent::ProcessingCompleted { .. }
+                                                                        ) {
+                                                                            publish_processing_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                state.is_processing,
+                                                                                state.has_error,
+                                                                            );
                                                                         }
                                                                     } else {
                                                                         // Thinking event: update thinking_text and fan out.

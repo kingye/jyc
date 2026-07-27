@@ -360,10 +360,18 @@ pub async fn run(
                                 app.chat.live_chat_for(channel, thread).cloned().collect();
                             let mut new_msg = false;
                             for msg in &live_msgs {
-                                let already =
-                                    app.chat.messages.iter().any(|m| {
-                                        m.text == msg.text && m.timestamp == msg.timestamp
-                                    });
+                                // Dedup by (sender, text) instead of
+                                // (text, timestamp) because the
+                                // local-echo timestamp in
+                                // send_message_inner differs from
+                                // the server-generated IncomingMessage
+                                // timestamp by ≤1s, causing false
+                                // duplication on every user message.
+                                let already = app
+                                    .chat
+                                    .messages
+                                    .iter()
+                                    .any(|m| m.sender == msg.sender && m.text == msg.text);
                                 if !already {
                                     app.chat.messages.push(ChatMessage {
                                         sender: msg.sender.clone(),

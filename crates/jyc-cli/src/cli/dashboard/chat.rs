@@ -1593,26 +1593,15 @@ impl ChatState {
             _ => {}
         }
 
-        // The legacy WebsocketInboundAdapter protocol — kept for the
-        // `reply` event (chat messages from the per-channel broadcast_tx
-        // on websocket channels). `list_patterns` and `subscribe` have
-        // moved to REST; `history` is no longer needed because chat
-        // history is loaded via REST `get_thread_chat`.
-        if let Some("reply") = event_type
-            && let (Some(thread), Some(text)) = (
-                parsed.get("thread").and_then(|v| v.as_str()),
-                parsed.get("text").and_then(|v| v.as_str()),
-            )
-            && self.thread.as_deref() == Some(thread)
-        {
-            self.messages.push(ChatMessage {
-                sender: "ai".to_string(),
-                text: text.to_string(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-            });
-            self.scroll = 0;
-            self.awaiting_response = false;
-        }
+        // The legacy WebsocketInboundAdapter per-channel broadcast_tx
+        // used to carry `reply` events for AI messages. Now all AI
+        // messages for both channel types arrive via inspect_broadcast
+        // as `chat_message` events (handled above by handle_live_event)
+        // — the `reply` path below has been removed to eliminate
+        // duplicates between the two event sources.
+        //
+        // `list_patterns` and `subscribe` moved to REST; `history` is
+        // no longer needed (REST `get_thread_chat`).
     }
 
     /// Recall an older entry from input history into the editor.

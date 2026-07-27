@@ -209,6 +209,12 @@ pub struct ActivityEntry {
     /// Severity level (defaults to Info for backward compat)
     #[serde(default)]
     pub severity: Severity,
+    /// Monotonic per-thread sequence number assigned by the inspect server's
+    /// `ActivityTracker` on push. Used by WS clients to drop duplicate events
+    /// after a reconnect / Lagged recovery. Defaults to 0 for entries from
+    /// `.jyc/activity.jsonl` that predate the seq field.
+    #[serde(default)]
+    pub id: u64,
 }
 
 /// A chat message entry for live display in the dashboard.
@@ -224,6 +230,9 @@ pub struct ChatMessageEntry {
     /// RFC 3339 timestamp
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Monotonic per-thread sequence number (see `ActivityEntry::id`).
+    #[serde(default)]
+    pub id: u64,
 }
 
 /// Thread processing status.
@@ -512,11 +521,44 @@ mod tests {
             text: "Failed (5s)".to_string(),
             timestamp: Some("2025-01-15T12:34:56Z".to_string()),
             severity: Severity::Error,
+            id: 0,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""severity":"error""#));
         let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.severity, Severity::Error);
+    }
+
+    #[test]
+    fn test_activity_entry_id_backward_compat() {
+        // Old JSONL entries have no `id` field — should default to 0
+        let old_json =
+            r#"{"text":"old entry","timestamp":"2025-01-15T12:00:00Z","severity":"info"}"#;
+        let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.text, "old entry");
+    }
+
+    #[test]
+    fn test_activity_entry_id_roundtrip() {
+        let entry = ActivityEntry {
+            text: "new entry".to_string(),
+            timestamp: Some("2025-01-15T12:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 42,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""id":42"#));
+        let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, 42);
+    }
+
+    #[test]
+    fn test_chat_message_entry_id_backward_compat() {
+        let old_json = r#"{"sender":"user","text":"hi","timestamp":"2025-01-15T12:00:00Z"}"#;
+        let entry: ChatMessageEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.sender, "user");
     }
 
     #[test]

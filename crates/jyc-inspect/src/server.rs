@@ -75,6 +75,9 @@ pub struct ThreadActivityState {
     pub recent_messages: VecDeque<ChatMessageEntry>,
     /// Latest AI thinking/reasoning text (full, untruncated).
     pub thinking_text: Option<String>,
+    /// Monotonic per-thread counter used to assign unique `id` to each entry
+    /// and chat message. Wraps to 0 after `u64::MAX` (effectively never).
+    pub next_id: u64,
 }
 
 /// Callback invoked after config is swapped atomically during reload.
@@ -1017,6 +1020,86 @@ fn filter_chat_by_since(
     entries
 }
 
+/// Publish an activity entry to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"activity","channel":"...","thread":"...","id":N,"entry":{...}}
+fn publish_activity_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    entry: &ActivityEntry,
+) {
+    let payload = serde_json::json!({
+        "type": "activity",
+        "channel": channel,
+        "thread": thread,
+        "id": entry.id,
+        "entry": entry,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a chat message to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"chat_message","channel":"...","thread":"...","id":N,"entry":{...}}
+fn publish_chat_message_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    msg: &ChatMessageEntry,
+) {
+    let payload = serde_json::json!({
+        "type": "chat_message",
+        "channel": channel,
+        "thread": thread,
+        "id": msg.id,
+        "entry": msg,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a thinking event to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"thinking","channel":"...","thread":"...","text":"..."}
+fn publish_thinking_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    text: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "thinking",
+        "channel": channel,
+        "thread": thread,
+        "text": text,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
+/// Publish a processing-status event to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"processing","channel":"...","thread":"...","is_processing":bool,"has_error":bool}
+fn publish_processing_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    is_processing: bool,
+    has_error: bool,
+) {
+    let payload = serde_json::json!({
+        "type": "processing",
+        "channel": channel,
+        "thread": thread,
+        "is_processing": is_processing,
+        "has_error": has_error,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
 /// Background task that subscribes to thread event buses and buffers
 /// activity entries for the inspect server.
 pub struct ActivityTracker;
@@ -1025,11 +1108,13 @@ impl ActivityTracker {
     /// Start tracking activity for all thread managers.
     /// Periodically discovers new threads and subscribes to their event buses.
     /// Persists activity entries to `.jyc/activity.jsonl` per thread.
+    /// Fans out events to the inspect-broadcast bus for dashboard WS clients.
     /// On startup, loads historical activity from disk.
     pub fn start(
         thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
         activity_map: SharedActivityMap,
         _workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
+        inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
@@ -1128,6 +1213,7 @@ impl ActivityTracker {
                                         let cancel_inner = cancel.clone();
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
+                                        let inspect_broadcast_for_task = inspect_broadcast.clone();
                                         tokio::spawn(async move {
                                             use futures_util::FutureExt;
                                             use std::panic::AssertUnwindSafe;
@@ -1157,6 +1243,7 @@ impl ActivityTracker {
                                                                                 sender: sender.clone(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
+                                                                                id: 0, // assigned below in the fanout step
                                                                             })
                                                                         }
                                                                         ThreadEvent::ReplySent { text, timestamp, .. } => {
@@ -1164,6 +1251,7 @@ impl ActivityTracker {
                                                                                 sender: "ai".to_string(),
                                                                                 text: text.clone(),
                                                                                 timestamp: Some(timestamp.to_rfc3339()),
+                                                                                id: 0, // assigned below in the fanout step
                                                                             })
                                                                         }
                                                                         _ => None,
@@ -1178,7 +1266,7 @@ impl ActivityTracker {
                                                                     // (displayed in the chat pane, not the
                                                                     // activity pane).
                                                                     if !is_thinking {
-                                                                        let entry = event_to_activity(&event);
+                                                                        let mut entry = event_to_activity(&event);
                                                                         let is_error = entry.severity == Severity::Error;
                                                                         let is_progress =
                                                                             matches!(&event, ThreadEvent::ProcessingProgress { .. });
@@ -1190,21 +1278,41 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
+                                                                        // Assign monotonic per-thread id BEFORE pushing.
+                                                                        entry.id = state.next_id;
+                                                                        state.next_id = state.next_id.wrapping_add(1);
                                                                         // ProcessingProgress is a heartbeat, not a discrete
                                                                         // activity. Persist it to disk but skip the in-memory
                                                                         // activity log so it doesn't crowd out ToolStarted /
                                                                         // ToolCompleted entries that show the actual tool name.
                                                                         if !is_progress {
-                                                                            state.entries.push_back(entry);
+                                                                            state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
                                                                             }
                                                                         }
-                                                                        if let Some(msg) = chat_msg {
-                                                                            state.recent_messages.push_back(msg);
+                                                                        // Fan out to the inspect-broadcast bus so dashboard
+                                                                        // WebSocket clients receive live events.
+                                                                        publish_activity_event(
+                                                                            &inspect_broadcast_for_task,
+                                                                            &channel_for_task,
+                                                                            &name,
+                                                                            &entry,
+                                                                        );
+
+                                                                        if let Some(mut msg) = chat_msg {
+                                                                            msg.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
+                                                                            state.recent_messages.push_back(msg.clone());
                                                                             if state.recent_messages.len() > MAX_RECENT_MESSAGES {
                                                                                 state.recent_messages.pop_front();
                                                                             }
+                                                                            publish_chat_message_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                &msg,
+                                                                            );
                                                                         }
                                                                         // Clear thinking text only when a new processing
                                                                         // cycle starts or the current one completes.
@@ -1218,6 +1326,13 @@ impl ActivityTracker {
                                                                             | ThreadEvent::ProcessingCompleted { .. }
                                                                         ) {
                                                                             state.thinking_text = None;
+                                                                            publish_processing_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                state.is_processing,
+                                                                                state.has_error,
+                                                                            );
                                                                         }
                                                                         state.last_active_at = Some(event.timestamp());
                                                                         if is_processing {
@@ -1225,12 +1340,12 @@ impl ActivityTracker {
                                                                             state.has_error = false;
                                                                         } else if is_completed {
                                                                             state.is_processing = false;
-                                                                        }
+                                                                            }
                                                                         if is_error {
                                                                             state.has_error = true;
                                                                         }
                                                                     } else {
-                                                                        // Thinking event: update thinking_text only.
+                                                                        // Thinking event: update thinking_text and fan out.
                                                                         if let ThreadEvent::Thinking { ref text, .. } = event {
                                                                             let mut map = map.lock().await;
                                                                             let state = map
@@ -1238,6 +1353,12 @@ impl ActivityTracker {
                                                                                 .or_default();
                                                                             state.thinking_text = Some(text.clone());
                                                                             state.last_active_at = Some(event.timestamp());
+                                                                            publish_thinking_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                text,
+                                                                            );
                                                                         }
                                                                     }
                                                                 }
@@ -1601,6 +1722,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         text,
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
+        id: 0, // assigned by ActivityTracker on push (see fanout step)
     }
 }
 
@@ -2188,6 +2310,7 @@ mode = "agent"
                 text: "channel1 working".to_string(),
                 timestamp: None,
                 severity: Severity::Info,
+                id: 0,
             });
         }
 
@@ -2250,6 +2373,7 @@ mode = "agent"
                 text: "Processing started".to_string(),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 severity: Severity::Info,
+                id: 0,
             });
         }
 
@@ -2482,16 +2606,19 @@ mode = "agent"
                 text: "old".to_string(),
                 timestamp: Some("2026-01-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
+                id: 0,
             },
             ActivityEntry {
                 text: "mid".to_string(),
                 timestamp: Some("2026-02-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
+                id: 0,
             },
             ActivityEntry {
                 text: "new".to_string(),
                 timestamp: Some("2026-03-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
+                id: 0,
             },
         ];
 
@@ -2606,5 +2733,65 @@ mode = "agent"
         let ctx = test_context();
         let result = InspectServer::resolve_ws_handler(&ctx, Some(WsRoute::Bare));
         assert!(result.is_err());
+    }
+
+    /// The publish helpers should produce well-formed JSON payloads that
+    /// include the (channel, thread, id) fields used by `ThreadProxyHandler`
+    /// for filtering and dedup.
+    #[tokio::test]
+    async fn test_publish_activity_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        let entry = ActivityEntry {
+            text: "Tool: bash".to_string(),
+            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 42,
+        };
+        publish_activity_event(&tx, "github", "pr-1", &entry);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "activity");
+        assert_eq!(v["channel"], "github");
+        assert_eq!(v["thread"], "pr-1");
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["entry"]["text"], "Tool: bash");
+    }
+
+    #[tokio::test]
+    async fn test_publish_chat_message_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        let msg = ChatMessageEntry {
+            sender: "ai".to_string(),
+            text: "Hello".to_string(),
+            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
+            id: 7,
+        };
+        publish_chat_message_event(&tx, "c", "t", &msg);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "chat_message");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["entry"]["sender"], "ai");
+    }
+
+    #[tokio::test]
+    async fn test_publish_thinking_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        publish_thinking_event(&tx, "c", "t", "thinking text");
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "thinking");
+        assert_eq!(v["text"], "thinking text");
+    }
+
+    #[tokio::test]
+    async fn test_publish_processing_event_format() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
+        publish_processing_event(&tx, "c", "t", true, false);
+        let payload = rx.recv().await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "processing");
+        assert_eq!(v["is_processing"], true);
+        assert_eq!(v["has_error"], false);
     }
 }

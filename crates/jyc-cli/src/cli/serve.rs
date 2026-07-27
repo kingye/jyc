@@ -1309,6 +1309,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             context.thread_managers.clone(),
             activity_map,
             context.workspace_dirs.clone(),
+            context.inspect_broadcast.clone(),
             cancel.clone(),
         );
 

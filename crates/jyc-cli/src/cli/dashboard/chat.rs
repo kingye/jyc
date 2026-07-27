@@ -1764,13 +1764,16 @@ impl ChatState {
                     .unwrap_or(false);
                 self.live_processing
                     .insert(key.clone(), (is_processing, has_error));
-                // Processing finished (or errored) — clear local waiting flag
-                // so the progress indicator hides immediately.
+                // Processing finished (or errored) — clear the previous
+                // round's thinking text and the local waiting flag so
+                // the progress indicator hides immediately and the next
+                // round doesn't briefly show stale thinking.
                 if !is_processing {
+                    self.live_thinking.remove(&key);
                     self.awaiting_response = false;
                 } else {
-                    // New processing round started — clear the previous
-                    // round's thinking text from the chat progress area.
+                    // New processing round started — also clear thinking
+                    // in case a new round's Thinking event is delayed.
                     self.live_thinking.remove(&key);
                 }
             }

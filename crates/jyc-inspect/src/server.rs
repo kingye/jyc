@@ -1280,23 +1280,25 @@ impl ActivityTracker {
                                                                         entry.id = state.next_id;
                                                                         state.next_id = state.next_id.wrapping_add(1);
                                                                         // ProcessingProgress is a heartbeat, not a discrete
-                                                                        // activity. Persist it to disk but skip the in-memory
-                                                                        // activity log so it doesn't crowd out ToolStarted /
-                                                                        // ToolCompleted entries that show the actual tool name.
+                                                                        // activity. Skip both the in-memory log AND the
+                                                                        // inspect-broadcast fanout so it doesn't crowd out
+                                                                        // ToolStarted / ToolCompleted entries that show the
+                                                                        // actual tool name and don't flood the dashboard's
+                                                                        // chat progress.
                                                                         if !is_progress {
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
                                                                             }
+                                                                            // Fan out to the inspect-broadcast bus so dashboard
+                                                                            // WebSocket clients receive live events.
+                                                                            publish_activity_event(
+                                                                                &inspect_broadcast_for_task,
+                                                                                &channel_for_task,
+                                                                                &name,
+                                                                                &entry,
+                                                                            );
                                                                         }
-                                                                        // Fan out to the inspect-broadcast bus so dashboard
-                                                                        // WebSocket clients receive live events.
-                                                                        publish_activity_event(
-                                                                            &inspect_broadcast_for_task,
-                                                                            &channel_for_task,
-                                                                            &name,
-                                                                            &entry,
-                                                                        );
 
                                                                         if let Some(mut msg) = chat_msg {
                                                                             msg.id = state.next_id;

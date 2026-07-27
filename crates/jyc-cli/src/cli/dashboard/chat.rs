@@ -1864,7 +1864,7 @@ mod tests {
     #[test]
     fn select_pattern_clears_chat_messages() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate messages from a previous thread
         app.chat.messages.push(ChatMessage {
@@ -1890,7 +1890,7 @@ mod tests {
     #[test]
     fn scroll_to_top_and_bottom_follow_focus() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Chat pane focused
         app.chat.focus = ChatFocus::ChatPane;
@@ -1912,7 +1912,7 @@ mod tests {
     #[test]
     fn gg_step_completes_only_on_consecutive_g() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Single `g` arms the sequence without jumping
         assert!(!app.chat.gg_step(true));
@@ -1934,7 +1934,7 @@ mod tests {
     #[test]
     fn recall_older_on_empty_history_does_nothing() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         assert!(app.chat.input_history.is_empty());
         app.chat.recall_older(); // should not panic or change anything
@@ -1944,7 +1944,7 @@ mod tests {
     #[test]
     fn recall_older_recalls_and_recall_newer_clears() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         app.chat.input_history = vec![
             "first msg".to_string(),
@@ -1993,7 +1993,7 @@ mod tests {
     #[test]
     fn select_pattern_clears_input_history() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         app.chat.input_history = vec!["msg from thread A".to_string()];
         app.chat.history_pos = Some(0);
@@ -2009,7 +2009,7 @@ mod tests {
     #[test]
     fn close_returns_to_overview_from_ws_chat() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate post-open WS chat state (what Enter on a WS row produces).
         // We set fields directly instead of calling open() because open()
@@ -2038,7 +2038,7 @@ mod tests {
     #[test]
     fn close_returns_to_overview_from_detail_mode() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate opening a non-WS thread in detail mode
         app.chat.open_thread_detail("github", "issue-197", None);
@@ -2112,7 +2112,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_activity_events_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate hydrate: seed an activity entry, then a WS event with
         // the same id arrives — should be deduped (id <= last_seen_id).
@@ -2161,7 +2161,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_chat_message_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         let payload = serde_json::json!({
             "type": "chat_message",
@@ -2182,7 +2182,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_thinking_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         let payload = serde_json::json!({
             "type": "thinking",
@@ -2200,7 +2200,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_resync_clears_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Seed first
         app.chat.seed_live(

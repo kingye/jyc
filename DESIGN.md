@@ -2778,42 +2778,116 @@ pub enum ThreadEvent {
 }
 ```
 
-#### Dashboard Message Injection
+#### Unified WebSocket Chat Pane
+
+The dashboard's chat pane uses a unified WebSocket endpoint that works
+for **any** channel type, regardless of whether the channel itself has
+a WebSocket transport. This replaces the previous design that routed
+non-websocket channels through a REST `inject_message` fallback.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Message Injection Flow                       │
-│                                                                  │
-│  Dashboard (user types message in non-WS thread detail mode)     │
-│       │                                                          │
-│       │  TCP JSON line protocol (same persistent connection)     │
-│       ▼                                                          │
-│  InspectServer::handle_request("inject_message")                  │
-│       │                                                          │
-│       │  params: { channel, thread, text }                       │
-│       ▼                                                          │
-│  Find ThreadManager by channel_name                               │
-│       │                                                          │
-│       ▼                                                          │
-│  Load routing metadata from .jyc/thread-meta.json                  │
-│    (written on first message — restores channel_uid,               │
-│     external_id, thread_refs, github_number, chat_id, etc.)        │
-│       │                                                          │
-│       ▼                                                          │
-│  Build synthetic InboundMessage:                                  │
-│    sender = "dashboard", topic = thread_name,                     │
-│    content.text = text, channel = channel_name,                   │
-│    metadata = <restored from thread-meta.json>                    │
-│       │                                                          │
-│       ▼                                                          │
-│  ThreadManager::enqueue(message, thread_name, pm, ...)            │
-│       │                                                          │
-│       └── follows normal processing flow (see above)             │
-│                                                                  │
-│  Note: This reuses the same enqueue path as the jyc_send_to_thread│
-│  cross-thread tool — no new code paths in the core router.        │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    /ws/<channel>/<thread> (any channel type)              │
+│                                                                          │
+│  Dashboard  ──────►  InspectServer::handle_client                        │
+│                          │                                             │
+│                          │  extract_ws_route("/ws/<channel>/<thread>")   │
+│                          ▼                                             │
+│                    WsRoute::Thread { channel, name }                     │
+│                          │                                             │
+│                          │  if channel in websocket_handlers:            │
+│                          ▼                                             │
+│                    ┌─────────────────────────┐                          │
+│                    │ ScopedWsHandler         │  (websocket-type channel) │
+│                    │ pre-send {type:subscribe}│  wraps WebsocketInbound- │
+│                    │ then delegate            │  Adapter                  │
+│                    └─────────────────────────┘                          │
+│                                                                          │
+│                          │  else (any other channel):                    │
+│                          ▼                                             │
+│                    ┌─────────────────────────┐                          │
+│                    │ ThreadProxyHandler      │  (any other channel)      │
+│                    │ - inbound: load thread- │  reads .jyc/thread-       │
+│                    │   meta.json, build      │  meta.json for routing    │
+│                    │   InboundMessage,       │  metadata                  │
+│                    │   tm.enqueue()          │                            │
+│                    │ - outbound: subscribe to │                            │
+│                    │   InspectContext.broad- │                            │
+│                    │   cast, filter by       │                            │
+│                    │   (channel, thread),    │                            │
+│                    │   forward events        │                            │
+│                    │ - resync on Lagged      │                            │
+│                    └─────────────────────────┘                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Three URL routes:**
+
+- `GET /ws/<channel>/<thread>` — unified chat for any (channel, thread) pair
+  (routes to `ScopedWsHandler` for websocket channels, `ThreadProxyHandler` otherwise)
+- `GET /ws/<channel>` — adhoc thread on a websocket-type channel only
+  (returns error if `<channel>` is not a websocket channel)
+- `GET /ws` — use the first registered websocket channel (legacy)
+
+**Initial hydration (cold start):**
+
+```
+Dashboard  ──REST──►  GET /threads/<channel>/<thread>/activity
+                       GET /threads/<channel>/<thread>/chat
+                       ↓
+                       seed_live(channel, thread, activity, chat) on the
+                       dashboard's ChatState.live_activity / live_chat
+                       BTreeMaps (keyed by (channel, thread))
+```
+
+**Live updates (warm path):**
+
+```
+ThreadManager  ──publish──►  ThreadEventBus
+                                 │
+                                 ▼
+                            ActivityTracker  ──fanout──►  InspectContext.broadcast
+                                 │                              │
+                                 │                              ▼
+                                 ▼                       ScopedWsHandler
+                          state.entries /                  │
+                          state.recent_messages            │ filter
+                                 │                         │ by (channel, thread)
+                                 │                         ▼
+                                 └────► also drained     ws.write
+                                          into the same         │
+                                          buffers                ▼
+                                                              Dashboard
+```
+
+**WebSocket protocol (outbound events from server):**
+
+```json
+{"type":"activity",     "channel":"...", "thread":"...", "id":N, "entry":{...}}
+{"type":"chat_message", "channel":"...", "thread":"...", "id":N, "entry":{...}}
+{"type":"thinking",     "channel":"...", "thread":"...", "text":"..."}
+{"type":"processing",   "channel":"...", "thread":"...", "is_processing":bool, "has_error":bool}
+{"type":"resync",       "channel":"...", "thread":"...", "dropped":N}
+```
+
+**WebSocket protocol (inbound messages from dashboard):**
+
+```json
+{"type":"message",       "text":"..."}
+{"type":"reset_session"}
+{"type":"disconnect"}
+```
+
+`channel` and `thread` are NOT in the payload — they're bound at handler
+construction time from the URL path.
+
+**Dedup & backpressure:**
+
+- Each entry carries a monotonic `id: u64` assigned by `ActivityTracker`
+  on push (per-thread counter in `ThreadActivityState::next_id`).
+- Client tracks `last_seen_id[(channel, thread)]` and drops `id <= last_seen_id`.
+- On `Lagged(n)`, the server sends `{"type":"resync", "dropped": n}` and the
+  client clears the live buffer and re-hydrates via REST.
 
 #### Component Map
 
@@ -2826,43 +2900,94 @@ ThreadManager (crates/jyc-core/src/thread_manager.rs)
   ├── enqueue(): publish IncomingMessage on ThreadEventBus
   ├── worker reply path: publish ReplySent after send_reply() succeeds
   └── process_message(): write .jyc/thread-meta.json on first message
-      (routing metadata for dashboard injection)
+      (routing metadata for ThreadProxyHandler)
 
 ThreadActivityState (crates/jyc-inspect/src/server.rs)
-  └── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
+  ├── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
+  └── +next_id: u64 (monotonic per-thread counter for dedup)
 
 ActivityTracker (crates/jyc-inspect/src/server.rs)
-  └── subscriber loop: capture IncomingMessage/ReplySent → recent_messages
+  ├── subscriber loop: capture IncomingMessage/ReplySent → recent_messages
+  └── fanout: publish activity/chat_message/thinking/processing events
+      to InspectContext.broadcast (capacity 256)
+
+InspectContext (crates/jyc-inspect/src/server.rs)
+  └── +inspect_broadcast: Arc<broadcast::Sender<String>>
+      Per-channel broadcast bus fed by ActivityTracker; consumed by
+      ThreadProxyHandler and ScopedWsHandler (for filtering).
+
+WsRoute (crates/jyc-inspect/src/server.rs)
+  ├── Bare: GET /ws
+  ├── Channel(name): GET /ws/<channel>
+  └── Thread { channel, name }: GET /ws/<channel>/<thread>
+
+ThreadProxyHandler (crates/jyc-inspect/src/thread_proxy.rs)
+  ├── inbound {message, reset_session, disconnect}
+  ├── outbound: filtered events from inspect_broadcast
+  └── emits resync on Lagged
+
+ScopedWsHandler (crates/jyc-inspect/src/scoped_ws.rs)
+  └── wraps any WebsocketHandler; pre-sends {type:"subscribe", thread}
+      before delegating to the inner handler (used to bind the inner
+      WebsocketInboundAdapter to a specific thread from the URL path)
+
+InspectOverview / ThreadSummary (crates/jyc-types/src/inspect.rs)
+  ├── Slim overview payload — same shape as InspectState but without
+  │   activity / recent_messages / thinking_text per thread
+  └── Used by the dashboard's polling loop to keep payloads small
 
 InspectState / ThreadInfo (crates/jyc-types/src/inspect.rs)
-  ├── +ChatMessageEntry { sender, text, timestamp }
-  └── ThreadInfo.+recent_messages: Vec<ChatMessageEntry>
+  ├── ActivityEntry { id, text, timestamp, severity }
+  ├── ChatMessageEntry { id, sender, text, timestamp }
+  └── ThreadInfo.{activity, recent_messages, thinking_text, ...} (full payload,
+      retained for backward compat with any external clients)
 
 InspectServer (crates/jyc-inspect/src/server.rs)
-  ├── build_state(): drain recent_messages → ThreadInfo
-  ├── handle_request("inject_message"): load thread-meta.json, enqueue via ThreadManager
-  └── load_thread_meta(): read .jyc/thread-meta.json for routing metadata
+  ├── build_state(): full snapshot with activity/messages
+  ├── build_overview_state(): slim snapshot (no activity/messages)
+  ├── get_thread_activity: read .jyc/activity.jsonl
+  ├── get_thread_chat: read chat_history_*.jsonl
+  ├── get_state_overview / get_state: handled by handle_request
+  └── reset_session, reload_config: handled by handle_request
 
 InspectClient (crates/jyc-inspect/src/client.rs)
-  └── +inject_message(channel, thread, text) → Result<()>
+  ├── get_state() → InspectState (full, retained for compatibility)
+  ├── get_overview() → InspectOverview (slim, used by dashboard poll)
+  ├── get_thread_activity(channel, thread, since, limit) → Vec<ActivityEntry>
+  ├── get_thread_chat(channel, thread, since, limit) → Vec<ChatMessageEntry>
+  ├── reset_session(thread_name) → (bool, String)
+  └── reload_config() → (bool, String)
 
-Dashboard (crates/jyc-cli/src/cli/dashboard.rs)
-  ├── Enter on non-WS thread → detail/chat mode (no WebSocket)
-  ├── Poll loop: drain ThreadInfo.recent_messages → chat_messages
-  └── send_chat_message_inner(): call InspectClient::inject_message()
+Dashboard (crates/jyc-cli/src/cli/dashboard/)
+  ├── main poll: client.get_overview() every 500ms (slim payload)
+  ├── on thread selection: REST hydrate (get_thread_activity + get_thread_chat)
+  │   + WS connect to /ws/<channel>/<thread>
+  ├── ChatState.live_activity / live_chat / live_thinking / live_processing:
+  │   BTreeMap<(channel, thread), ...>; populated by hydrate + WS events
+  ├── Activity pane + chat progress read from these live buffers
+  │   (rendering logic unchanged from before the refactor)
+  └── handle_live_event() appends WS events to the live buffers with
+      last_seen_id dedup
 ```
 
 #### Key Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| ThreadEventBus over new broadcast channel | Reuses existing infrastructure; events already scoped per-thread; ActivityTracker already subscribes |
+| `ThreadEventBus` over new broadcast channel | Reuses existing infrastructure; events already scoped per-thread; ActivityTracker already subscribes |
 | `IncomingMessage` published in `ThreadManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
 | `ReplySent` published after `send_reply()` succeeds | Guarantees the reply was actually delivered; same timing as existing metrics counters |
 | `recent_messages` in `ThreadActivityState`, not `ThreadInfo` directly | ThreadInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
-| Inject via inspect TCP protocol, not WebSocket | Non-WS channels have no WebSocket handler; TCP connection already exists for polling |
-| Reuse `ThreadManager::enqueue` for injection | Same path as `send_to_thread` tool; no duplicate routing logic |
+| Single WebSocket endpoint for all channels (`/ws/<channel>/<thread>`) | Decouples dashboard from channel type; `ThreadProxyHandler` handles non-WS channels uniformly |
+| Per-channel broadcast bus (`InspectContext.inspect_broadcast`) | One shared bus; handlers filter by `(channel, thread)` from each payload |
+| `id: u64` monotonic per-thread for dedup | Survives WS reconnect / Lagged recovery; small field, backward compat via `#[serde(default)]` |
+| `resync` on `Lagged(n)` instead of panicking | Client re-hydrates via REST; same code path as cold start |
+| REST hydrate on selection + WS for live | Cold start from disk (authoritative); warm path push-based (low latency) |
+| `chat.progress` and `activity` pane read from the **same** `live_activity` buffer | Single source of truth; both panes show identical data |
+| Reuse `ThreadManager::enqueue` for both REST-injected and WS-injected messages | Same path as `send_to_thread` tool; no duplicate routing logic |
 | `ChatMessageEntry` struct shared in `jyc_types` | Lets both inspect server and dashboard use the same type without coupling |
+| Drop `inject_message` REST method | Replaced by WS; no consumer since only the TUI used it |
+| Per-thread broadcast capacity 256 (vs. 64 for reply bus) | Activity events burstier than AI replies; 256 absorbs 5-min TUI offline gaps |
 
 ### MetricsCollector
 

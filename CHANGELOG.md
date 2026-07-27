@@ -6,6 +6,42 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Slim `/state_overview` REST endpoint.** New `get_state_overview` method
+  returns `InspectOverview` with `ThreadSummary` rows (no per-thread
+  `activity` / `recent_messages` / `thinking_text`), keeping the dashboard's
+  per-poll payload small. The dashboard now polls this instead of
+  `get_state`. The full `get_state` endpoint is retained for backward
+  compatibility with any external clients.
+- **Per-thread REST endpoints for cold-start hydration.** New
+  `get_thread_activity {channel, thread, since?, limit?}` and
+  `get_thread_chat {channel, thread, since?, limit?}` methods read from
+  `.jyc/activity.jsonl` and `chat_history_*.jsonl` respectively. The
+  dashboard calls these once when a thread is selected to seed the live
+  buffers before the WebSocket connection delivers subsequent events.
+- **Unified `/ws/<channel>/<thread>` WebSocket endpoint.** The dashboard
+  always connects to this URL regardless of channel type. The inspect
+  server dispatches to `ScopedWsHandler` (wraps the existing
+  `WebsocketInboundAdapter` for websocket-type channels) or
+  `ThreadProxyHandler` (new, proxies through `ThreadManager::enqueue` for
+  any other channel). The handler binds `(channel, thread)` from the URL
+  so the WebSocket payload no longer needs to carry them.
+- **Live activity / chat / thinking events over WebSocket.** All four
+  event types are published by the `ActivityTracker` to a shared
+  per-channel broadcast bus (`InspectContext.inspect_broadcast`,
+  capacity 256) and forwarded to subscribed WebSocket clients filtered
+  by `(channel, thread)`. Replaces the dashboard's 500ms polling for
+  live data.
+- **`resync` event on broadcast backpressure.** When a WebSocket
+  subscriber falls behind and `Lagged(n)` is observed, the server emits
+  a `{"type":"resync", "channel":..., "thread":..., "dropped":N}` event;
+  the client clears its live buffer for that thread and re-hydrates via
+  REST. Restores correctness after long disconnects.
+- **Monotonic per-thread sequence id.** `ActivityEntry` and
+  `ChatMessageEntry` gain an `id: u64` field (`#[serde(default)]` for
+  backward compatibility with old `.jyc/activity.jsonl` entries). Used
+  by WebSocket clients to drop duplicate / older events after a
+  reconnect or `resync`.
+
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped
   in `<think>...</think>` tags (rather than in a separate `reasoning_content`
@@ -39,6 +75,33 @@ All notable changes to JYC will be documented in this file.
   written to disk).
 
 ### Changed
+
+- **Unified dashboard chat transport.** All channels (email, github,
+  feishu, websocket, etc.) are now reached via the single
+  `/ws/<channel>/<thread>` WebSocket endpoint. Non-websocket channels
+  previously had to fall back to REST `inject_message` plus a 500ms
+  poll; the new `ThreadProxyHandler` does the same job in real time
+  over WebSocket using the per-channel `InspectContext.broadcast` bus.
+  The websocket-channel handler (`WebsocketInboundAdapter`) is preserved
+  for external clients connecting directly to that channel.
+- **Dashboard activity pane + chat progress read from a single source.**
+  Both panes now read exclusively from the WS-fed
+  `ChatState::live_activity` buffer (keyed by `(channel, thread)`),
+  populated by REST hydrate on selection and by `ThreadEvent` fanout
+  thereafter. The per-activity / per-chat rendering logic is unchanged
+  — only the data source moved.
+- **Activity `ThreadEvent` fanout.** `ActivityTracker` now publishes
+  `activity` / `chat_message` / `thinking` / `processing` events to the
+  inspect-broadcast bus on every push, in addition to the existing
+  in-memory buffer. The bus is consumed by `ThreadProxyHandler` and
+  (via `ScopedWsHandler` for websocket channels) the dashboard.
+
+### Removed
+
+- **`inject_message` inspect protocol method.** Replaced by the unified
+  WebSocket endpoint. The dashboard no longer uses REST injection; the
+  server handler, response variant, client method, defensive error
+  arms, and tests are all removed. Only the TUI used this method.
 
 - **Dashboard chat pane opens with the activity pane hidden by default.**
   The default layout is now 100/0 (chat only, no activity pane). `Ctrl+W`

@@ -2344,7 +2344,7 @@ mode = "agent"
         let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         let activity_path = jyc_dir.join("activity.jsonl");
-        let entries = vec![
+        let entries = [
             r#"{"text":"Tool: bash","timestamp":"2026-07-01T10:00:00Z","severity":"info"}"#,
             r#"{"text":"Completed (5s)","timestamp":"2026-07-01T10:00:05Z","severity":"info"}"#,
         ];

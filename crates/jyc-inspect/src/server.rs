@@ -599,7 +599,7 @@ impl InspectServer {
         };
         let entries: Vec<ActivityEntry> = entries
             .into_iter()
-            .filter(|e| is_user_visible_activity(e))
+            .filter(is_user_visible_activity)
             .collect();
         let entries = filter_by_since(entries, since.as_deref());
         tracing::debug!(

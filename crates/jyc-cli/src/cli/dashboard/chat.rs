@@ -1134,7 +1134,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     // handles thinking display; the in-memory log keeps them for debug.
     let visible_count = activity_vec
         .iter()
-        .filter(|e| is_user_visible_activity(e))
+        .filter(is_user_visible_activity)
         .count();
     let max_skip = visible_count.saturating_sub(inner_height);
     app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
@@ -1181,7 +1181,7 @@ pub(super) fn render_activity_log_inner(
     // useful events. The chat pane AI progress area handles thinking display.
     let visible: Vec<_> = activity
         .iter()
-        .filter(|e| is_user_visible_activity(e))
+        .filter(is_user_visible_activity)
         .collect();
 
     if visible.is_empty() {

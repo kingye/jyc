@@ -1782,14 +1782,13 @@ impl ChatState {
                 self.live_processing
                     .insert(key.clone(), (is_processing, has_error));
                 if !is_processing {
-                    // Processing completed — clear the round's artifacts
-                    // so the next round starts fresh (no stale thinking
-                    // text or prior-round activity entries showing).
-                    self.live_activity.remove(&key);
+                    // Processing completed - clear per-round transient
+                    // artifacts but keep live_activity as the audit trail
+                    // across rounds. Buffer is bounded at 180 entries.
                     self.live_thinking.remove(&key);
                     self.awaiting_response = false;
                 } else {
-                    // New round started — also clear thinking (in case
+                    // New round started - also clear thinking (in case
                     // the first Thinking event for this round is delayed).
                     self.live_thinking.remove(&key);
                 }

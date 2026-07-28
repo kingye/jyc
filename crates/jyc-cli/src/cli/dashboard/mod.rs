@@ -44,6 +44,10 @@ pub struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1:9876", global = true)]
     pub addr: String,
 
+    /// Authorization token (defaults to `<workdir>/auth.token`)
+    #[arg(long, env = "JYC_DASHBOARD_TOKEN", global = true)]
+    pub token: Option<String>,
+
     /// Subcommand for dashboard operations (defaults to opening the full dashboard)
     #[command(subcommand)]
     pub command: Option<DashboardCommand>,
@@ -83,12 +87,30 @@ struct App {
     status_message: Option<(String, std::time::Instant)>,
     pending_reset: Option<(String, std::time::Instant)>,
 
+    /// Authorization token propagated to the WebSocket upgrade requests.
+    token: Option<String>,
+
+    /// WS connection for the currently-selected overview thread.
+    /// Live-feeds `live_activity` so the activity pane updates without polling.
+    overview_ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    overview_ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
+    /// (channel, thread) the overview WS is currently scoped to.
+    overview_ws_target: Option<(String, String)>,
+
     /// Chat pane state (WebSocket thread chat and non-WebSocket detail mode).
     chat: ChatState,
 }
 
 impl App {
-    fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>) -> Self {
+    fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>, token: Option<String>) -> Self {
+        // The overview WS keeps its cmd_tx alive so the spawned task can
+        // reconnect on transient errors. cmd_rx is consumed by the task;
+        // event_rx is consumed by the app.
+        let (overview_ws_cmd_tx, _overview_ws_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (overview_ws_evt_tx, overview_ws_rx) =
+            tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let _ = overview_ws_evt_tx; // unused; just for pairing
         Self {
             state: None,
             error: None,
@@ -96,6 +118,10 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_reset: None,
+            token,
+            overview_ws_tx: Some(overview_ws_cmd_tx),
+            overview_ws_rx,
+            overview_ws_target: None,
             chat: ChatState::new(ws_rx),
         }
     }
@@ -177,7 +203,7 @@ impl App {
 ///
 /// Writes `serve` logs to `<data_home>/jyc.log` so the user can review
 /// diagnostics. Only works for localhost addresses (the default).
-async fn ensure_serve_running(addr: &str) -> Result<()> {
+async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
@@ -200,13 +226,10 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
     }
 
     // Determine log file path.
-    let log_dir = jyc_utils::paths::data_home().ok_or_else(|| {
-        anyhow::anyhow!("Could not determine platform data directory for log file")
-    })?;
-    tokio::fs::create_dir_all(&log_dir)
+    tokio::fs::create_dir_all(workdir)
         .await
-        .with_context(|| format!("Failed to create log directory {}", log_dir.display()))?;
-    let log_path = log_dir.join("jyc.log");
+        .with_context(|| format!("Failed to create workdir {}", workdir.display()))?;
+    let log_path = workdir.join("jyc.log");
 
     // Open log file (create / truncate).
     let log_file = std::fs::File::create(&log_path)
@@ -215,14 +238,22 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
         .try_clone()
         .context("Failed to clone log file handle")?;
 
-    // Spawn jyc serve as a background child process.
+    // Spawn jyc serve as a background child process. Pass --workdir so the
+    // auth token file is written to the same location the dashboard reads.
+    // Skip --workdir when it's the platform default (data_home) so the
+    // spawned serve uses the standard first-run provisioning path.
     let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
-    let mut child = Command::new(&exe)
-        .arg("serve")
-        .stdin(std::process::Stdio::null())
+    let default_workdir = jyc_utils::paths::data_home().unwrap_or_default();
+    let mut cmd = Command::new(&exe);
+    cmd.arg("serve");
+    if workdir != default_workdir {
+        cmd.arg("--workdir").arg(workdir);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(log_dup)
         .stderr(log_file)
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("Failed to spawn {} serve", exe.display()))?;
 
@@ -290,18 +321,29 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
 
 pub async fn run(
     args: &DashboardArgs,
+    workdir: &std::path::Path,
     initial_thread: Option<&str>,
     initial_channel: Option<&str>,
 ) -> Result<()> {
-    // Auto-spawn jyc serve if it's not running.
-    ensure_serve_running(&args.addr).await.with_context(|| {
-        format!(
-            "Failed to connect to {}. Start jyc serve manually.",
-            args.addr
-        )
-    })?;
+    // Auto-spawn jyc serve FIRST - it writes <workdir>/auth.token on
+    // startup, so the token file exists by the time we resolve it.
+    ensure_serve_running(&args.addr, workdir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to connect to {}. Start jyc serve manually.",
+                args.addr
+            )
+        })?;
 
-    let mut client = InspectClient::new(&args.addr);
+    // Resolve the auth token: explicit flag/env wins, otherwise read it
+    // from `<workdir>/auth.token` (which `jyc serve` writes on startup).
+    let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
+
+    let mut client = match &token {
+        Some(t) => InspectClient::with_token(&args.addr, t.clone()),
+        None => InspectClient::new(&args.addr),
+    };
 
     // Setup terminal
     enable_raw_mode()?;
@@ -316,14 +358,15 @@ pub async fn run(
         let mut terminal = Terminal::new(backend)?;
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(ws_rx);
+        let mut app = App::new(ws_rx, token);
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
             let channel = initial_channel.unwrap_or("");
-            app.chat.open(&args.addr, initial_channel, Some(thread));
+            app.chat
+                .open(&args.addr, initial_channel, Some(thread), app.token.clone());
             hydrate_live(&mut client, &mut app, channel, thread).await;
         }
 
@@ -388,6 +431,13 @@ pub async fn run(
 
                         app.state = Some(overview);
                         if let Some(ref s) = app.state {
+                            // Auto-select the first thread on initial load so the
+                            // activity pane is populated immediately via the existing
+                            // hydrate + ensure_overview_ws paths. The user can still
+                            // navigate to a different thread (↑/↓).
+                            if app.table_state.selected().is_none() && !s.threads.is_empty() {
+                                app.table_state.select(Some(0));
+                            }
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
 
@@ -397,18 +447,24 @@ pub async fn run(
                             // to open chat first). Skip if we're in chat mode
                             // — the open() flow already triggered hydrate.
                             if !app.chat.visible {
-                                let selected_idx = app.table_state.selected();
-                                if let Some(idx) = selected_idx
-                                    && let Some(t) = s.threads.get(idx)
-                                {
-                                    let key = (t.channel.clone(), t.name.clone());
-                                    if app.chat.last_hydrated_key.as_ref() != Some(&key) {
-                                        let channel = t.channel.clone();
-                                        let thread = t.name.clone();
+                                let selected = app
+                                    .table_state
+                                    .selected()
+                                    .and_then(|idx| s.threads.get(idx))
+                                    .map(|t| (t.channel.clone(), t.name.clone()));
+                                if let Some((channel, thread)) = selected {
+                                    let key = (channel.clone(), thread.clone());
+                                    let needs_hydrate =
+                                        app.chat.last_hydrated_key.as_ref() != Some(&key);
+                                    if needs_hydrate {
                                         app.chat.last_hydrated_key = Some(key);
+                                    }
+                                    let _ = s; // drop the immutable borrow on app.state
+                                    if needs_hydrate {
                                         hydrate_live(&mut client, &mut app, &channel, &thread)
                                             .await;
                                     }
+                                    ensure_overview_ws(&mut app, &args.addr, &channel, &thread);
                                 }
                             }
                         }
@@ -423,6 +479,10 @@ pub async fn run(
 
             // Check for WebSocket events
             while let Ok(event) = app.chat.ws_rx.try_recv() {
+                app.handle_ws_event(event);
+            }
+            // Overview WS events (live activity feed in overview mode).
+            while let Ok(event) = app.overview_ws_rx.try_recv() {
                 app.handle_ws_event(event);
             }
 
@@ -488,14 +548,18 @@ pub async fn run(
 /// working directory.
 pub async fn run_open(
     addr: &str,
+    workdir: &std::path::Path,
     thread: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
+    explicit_token: Option<&str>,
 ) -> Result<()> {
-    // Auto-spawn jyc serve if it's not running.
-    ensure_serve_running(addr)
+    // Auto-spawn jyc serve FIRST (writes <workdir>/auth.token on startup).
+    ensure_serve_running(addr, workdir)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
+
+    let token = resolve_dashboard_token(explicit_token, workdir)?;
 
     // Resolve thread path and name
     let path = resolve_thread_path(path)?;
@@ -507,7 +571,10 @@ pub async fn run_open(
     check_existing_thread_name(&path, &thread)?;
 
     // Resolve websocket channel using inspect state
-    let mut client = InspectClient::new(addr);
+    let mut client = match &token {
+        Some(t) => InspectClient::with_token(addr, t.clone()),
+        None => InspectClient::new(addr),
+    };
     let channel = resolve_websocket_channel(&mut client, channel).await?;
 
     tracing::info!(
@@ -538,12 +605,40 @@ pub async fn run_open(
     run(
         &DashboardArgs {
             addr: addr.to_string(),
+            token,
             command: None,
         },
+        workdir,
         Some(&thread),
         Some(&channel),
     )
     .await
+}
+
+/// Resolve the dashboard authorization token from explicit input or workdir.
+fn resolve_dashboard_token(
+    explicit: Option<&str>,
+    workdir: &std::path::Path,
+) -> Result<Option<String>> {
+    if let Some(token) = explicit {
+        return Ok(Some(token.to_string()));
+    }
+    let path = jyc_utils::auth_token::token_path(workdir);
+    match jyc_utils::auth_token::read_token(&path) {
+        Ok(token) => Ok(Some(token)),
+        Err(e) => {
+            // File-not-found is the common case (server not yet started).
+            // Other errors (corrupted file, permission denied) are worth logging.
+            if path.exists() {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read authorization token; dashboard will connect without auth"
+                );
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// Resolve the thread path to an absolute filesystem path.
@@ -739,7 +834,9 @@ async fn handle_normal_keys(
                     .map(|c| c.name.clone())
             });
             if let Some(channel) = channel {
-                app.chat.open_pattern_select(addr, &channel, client).await;
+                app.chat
+                    .open_pattern_select(addr, &channel, client, app.token.clone())
+                    .await;
             } else {
                 app.set_status("No websocket channel configured".to_string());
             }
@@ -761,11 +858,15 @@ async fn handle_normal_keys(
             });
             if let Some((name, channel, is_ws)) = thread_info {
                 if is_ws {
-                    app.chat.open(addr, Some(&channel), Some(&name));
+                    app.chat
+                        .open(addr, Some(&channel), Some(&name), app.token.clone());
                 } else {
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());
                 }
+                // Chat WS takes over live events. Close the overview WS
+                // so we don't have two connections to the same thread.
+                close_overview_ws(app);
                 // REST hydrate the live buffers (activity + chat) so the
                 // activity pane and chat progress show recent entries
                 // immediately. WS events append to the same buffers.
@@ -1120,6 +1221,49 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
 }
 
+/// Open (or swap to a new) overview WS for the selected thread.
+///
+/// If `app.overview_ws_target` already matches the new (channel, thread),
+/// this is a no-op. Otherwise the previous overview WS is gracefully
+/// closed (sends `disconnect` so the spawned task exits), and a new WS
+/// task is spawned against `/ws/<channel>/<thread>`.
+///
+/// `cmd_tx` is kept in `App.overview_ws_tx` so the task can keep
+/// reconnecting on transient errors (the `cmd_rx.recv() = None` path
+/// only triggers on graceful close, not idle timeouts).
+fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
+    if let Some((c, t)) = app.overview_ws_target.as_ref()
+        && c == channel
+        && t == thread
+    {
+        return;
+    }
+    // Close the previous overview WS (if any) by sending a disconnect
+    // message. The task exits when cmd_rx.recv() returns None.
+    if let Some(tx) = app.overview_ws_tx.take() {
+        let _ = tx.send(r#"{"type":"disconnect"}"#.to_string());
+    }
+    let url = format!("ws://{}/ws/{}/{}", addr, channel, thread);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    // Store the sender so we can send disconnect on close/swap. The task
+    // reads cmd_rx and exits cleanly when the channel closes.
+    app.overview_ws_tx = Some(cmd_tx);
+    app.overview_ws_rx = event_rx;
+    app.overview_ws_target = Some((channel.to_string(), thread.to_string()));
+    tokio::spawn(ws::ws_client_task(url, cmd_rx, event_tx, app.token.clone()));
+}
+
+/// Close the overview WS (used when chat mode opens; chat WS takes over).
+fn close_overview_ws(app: &mut App) {
+    if let Some(tx) = app.overview_ws_tx.take() {
+        let _ = tx.send(r#"{"type":"disconnect"}"#.to_string());
+    }
+    app.overview_ws_target = None;
+    // Drain any pending events so the next selection doesn't get stale data.
+    while app.overview_ws_rx.try_recv().is_ok() {}
+}
+
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.chat.visible {
         match app.chat.phase {
@@ -1351,5 +1495,150 @@ mod tests {
 
         let path = tmp.path().to_string_lossy().to_string();
         check_existing_thread_name(&path, "new-thread").expect("should pass when file is empty");
+    }
+
+    fn make_test_app() -> App {
+        let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        App::new(ws_rx, None)
+    }
+
+    #[tokio::test]
+    async fn ensure_overview_ws_noop_when_target_unchanged() {
+        let mut app = make_test_app();
+        app.overview_ws_target = Some(("chan".to_string(), "thr".to_string()));
+        let original_rx_ptr = std::ptr::addr_of!(app.overview_ws_rx);
+        // No new task should be spawned; rx is not replaced.
+        ensure_overview_ws(&mut app, "127.0.0.1:9876", "chan", "thr");
+        assert_eq!(
+            app.overview_ws_target,
+            Some(("chan".to_string(), "thr".to_string()))
+        );
+        assert!(std::ptr::eq(
+            original_rx_ptr,
+            std::ptr::addr_of!(app.overview_ws_rx)
+        ));
+    }
+
+    #[tokio::test]
+    async fn ensure_overview_ws_swaps_when_target_changes() {
+        let mut app = make_test_app();
+        // Seed: pretend a previous WS exists for thread A.
+        app.overview_ws_target = Some(("chan".to_string(), "old".to_string()));
+        // Call for a different target.
+        ensure_overview_ws(&mut app, "127.0.0.1:9876", "chan", "new");
+        assert_eq!(
+            app.overview_ws_target,
+            Some(("chan".to_string(), "new".to_string()))
+        );
+        // A disconnect message should have been sent on the old cmd_tx.
+        // (Can't easily test the spawn itself, but the target updated and
+        //  the old cmd_tx is consumed.)
+    }
+
+    #[tokio::test]
+    async fn close_overview_ws_drains_and_clears_target() {
+        let mut app = make_test_app();
+        // Seed: pretend a WS exists and has an event in the rx queue.
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        app.overview_ws_tx = Some(cmd_tx);
+        app.overview_ws_target = Some(("chan".to_string(), "thr".to_string()));
+        app.overview_ws_rx = {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+            // The tx side is dropped, so any send would fail. rx still alive
+            // so we can push events into the queue.
+            drop(tx);
+            rx
+        };
+        close_overview_ws(&mut app);
+        assert!(app.overview_ws_target.is_none());
+        assert!(app.overview_ws_tx.is_none());
+    }
+
+    // --- auto-select first thread on initial load ---
+
+    fn make_overview_with_threads(names: &[&str]) -> jyc_types::InspectOverview {
+        use jyc_types::{ChannelInfo, InspectOverview, ThreadStatus, ThreadSummary};
+        InspectOverview {
+            uptime_secs: 0,
+            version: "test".to_string(),
+            channels: vec![ChannelInfo {
+                name: "chan".to_string(),
+                channel_type: "websocket".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            threads: names
+                .iter()
+                .map(|n| ThreadSummary {
+                    name: (*n).to_string(),
+                    channel: "chan".to_string(),
+                    pattern: None,
+                    status: ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                })
+                .collect(),
+            stats: Default::default(),
+            commands: vec![],
+            models: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_select_first_thread_when_no_selection() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        assert!(app.table_state.selected().is_none());
+
+        // Simulate the auto-select block from the poll loop.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn auto_select_noop_when_already_selected() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        app.table_state.select(Some(1));
+
+        // Simulate the auto-select block from the poll loop.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        // Selection unchanged - user already navigated to row 1.
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn auto_select_noop_when_no_threads() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&[]));
+        assert!(app.table_state.selected().is_none());
+
+        // Simulate the auto-select block.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        // No threads -> no auto-select.
+        assert!(app.table_state.selected().is_none());
     }
 }

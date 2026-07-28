@@ -8,3 +8,4 @@ pub mod resolve;
 pub mod serve;
 pub mod stop;
 pub mod templates;
+pub mod token;

@@ -13,6 +13,7 @@ use jyc_types::{
 /// Automatically reconnects if the connection drops.
 pub struct InspectClient {
     addr: String,
+    token: Option<String>,
     conn: Option<Connection>,
 }
 
@@ -25,6 +26,16 @@ impl InspectClient {
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),
+            token: None,
+            conn: None,
+        }
+    }
+
+    /// Create a client that authenticates requests with `token`.
+    pub fn with_token(addr: &str, token: impl Into<String>) -> Self {
+        Self {
+            addr: addr.to_string(),
+            token: Some(token.into()),
             conn: None,
         }
     }
@@ -168,7 +179,7 @@ impl InspectClient {
     ) -> Result<InspectResponse> {
         // Try on existing connection first
         if let Some(conn) = self.conn.as_mut() {
-            match Self::write_and_read(conn, method, params.clone()).await {
+            match Self::write_and_read(conn, method, params.clone(), self.token.as_deref()).await {
                 Ok(resp) => return Ok(resp),
                 Err(_) => {
                     // Connection broken, drop and reconnect
@@ -180,7 +191,7 @@ impl InspectClient {
         // Connect (or reconnect)
         self.connect().await?;
         let conn = self.conn.as_mut().context("not connected")?;
-        Self::write_and_read(conn, method, params).await
+        Self::write_and_read(conn, method, params, self.token.as_deref()).await
     }
 
     async fn connect(&mut self) -> Result<()> {
@@ -200,10 +211,12 @@ impl InspectClient {
         conn: &mut Connection,
         method: &str,
         params: Option<serde_json::Value>,
+        token: Option<&str>,
     ) -> Result<InspectResponse> {
         let request = InspectRequest {
             method: method.to_string(),
             params,
+            auth_token: token.map(str::to_string),
         };
         let mut json = serde_json::to_string(&request)?;
         json.push('\n');
@@ -273,6 +286,7 @@ mod tests {
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         })
     }
 
@@ -426,6 +440,7 @@ mod tests {
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();

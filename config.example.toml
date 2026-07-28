@@ -378,6 +378,10 @@ max_per_message = 5
 # --- Inspect Server ---
 # Exposes runtime state via TCP for the TUI dashboard.
 # Run `jyc dashboard` to connect.
+#
+# When enabled, `jyc serve` generates a random authorization token and
+# writes it to <workdir>/auth.token. The dashboard auto-loads it; use
+# `jyc token show` to retrieve it manually.
 
 [inspect]
 enabled = true

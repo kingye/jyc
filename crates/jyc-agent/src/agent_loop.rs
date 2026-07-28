@@ -509,11 +509,30 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             let tool_start = Instant::now();
 
-            let output = match tools.execute(&tool_call.name, input.clone(), &ctx).await {
-                Ok(output) => output,
-                Err(e) => {
-                    tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
-                    ToolOutput::error(format!("Tool error: {e}"))
+            // Race the tool execution against cancellation. Dropping the
+            // in-flight future aborts the tool:
+            //  - bash: tokio::process::Child::drop kills the spawned shell
+            //    and any of its descendants (bash.rs:95-103).
+            //  - webfetch: drops the reqwest send future, cancelling the HTTP
+            //    request.
+            //  - read/write/edit/glob/grep/read_image: drops the I/O future;
+            //    a write/edit cancelled mid-flush may leave a partial file —
+            //    accepted trade-off for the immediate-cancel guarantee.
+            //  - mcp_*: the dropped oneshot reply is cleaned up by the bridge.
+            let output = tokio::select! {
+                result = tools.execute(&tool_call.name, input.clone(), &ctx) => {
+                    match result {
+                        Ok(output) => output,
+                        Err(e) => {
+                            tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
+                            ToolOutput::error(format!("Tool error: {e}"))
+                        }
+                    }
+                }
+                _ = cancel.cancelled() => {
+                    tracing::info!(tool = %tool_call.name, "Cancelled during tool execution");
+                    cancelled_during_tools = true;
+                    break;
                 }
             };
 

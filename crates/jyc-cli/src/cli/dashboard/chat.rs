@@ -1081,6 +1081,24 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 }
 
+/// Filter out activity entries that should not be shown in user-facing
+/// activity panes (overview activity pane, chat activity pane, chat
+/// progress). Mirrors the server-side `is_user_visible_activity` in
+/// `jyc-inspect` for client-side filtering.
+fn is_user_visible_activity(entry: &jyc_types::ActivityEntry) -> bool {
+    if entry.is_internal {
+        return false;
+    }
+    // Backward compat for old log files (pre-`is_internal` field).
+    if entry.text.starts_with("Thinking: ") {
+        return false;
+    }
+    if entry.text.ends_with(" chars)") {
+        return false;
+    }
+    true
+}
+
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
     // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
     // currently focused thread. Falls back to empty slice if no live data
@@ -1114,12 +1132,12 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
-    // Thinking entries are excluded from the activity pane (they flood it with
-    // identical "Thinking..." markers). They remain in the in-memory log for
-    // the chat pane's AI progress area and are persisted to activity.jsonl.
+    // Internal entries (`is_internal=true`) and Thinking heartbeats are
+    // excluded from the activity pane. The chat pane's AI progress area
+    // handles thinking display; the in-memory log keeps them for debug.
     let visible_count = activity_vec
         .iter()
-        .filter(|e| !e.text.starts_with("Thinking: "))
+        .filter(|e| is_user_visible_activity(e))
         .count();
     let max_skip = visible_count.saturating_sub(inner_height);
     app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
@@ -1160,12 +1178,13 @@ pub(super) fn render_activity_log_inner(
         return;
     }
 
-    // Thinking entries are excluded from the activity pane - they appear as
-    // dozens of identical "Thinking..." markers and crowd out useful events.
-    // The chat pane AI progress area handles thinking display.
+    // Internal entries (`is_internal=true`) and Thinking heartbeats are
+    // excluded from the activity pane - they appear as dozens of identical
+    // "Thinking..." / "tool execution (Xs, Y chars)" markers and crowd out
+    // useful events. The chat pane AI progress area handles thinking display.
     let visible: Vec<_> = activity
         .iter()
-        .filter(|e| !e.text.starts_with("Thinking: "))
+        .filter(|e| is_user_visible_activity(e))
         .collect();
 
     if visible.is_empty() {
@@ -2122,6 +2141,7 @@ mod tests {
             timestamp: Some("2026-01-01T00:00:00Z".to_string()),
             severity: jyc_types::Severity::Info,
             id: 42,
+            is_internal: false,
         };
         app.chat.seed_live("github", "pr-1", vec![entry], vec![]);
         assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
@@ -2212,6 +2232,7 @@ mod tests {
                 timestamp: Some("2026-01-01T00:00:00Z".to_string()),
                 severity: jyc_types::Severity::Info,
                 id: 1,
+                is_internal: false,
             }],
             vec![],
         );
@@ -2226,5 +2247,50 @@ mod tests {
         });
         app.chat.handle_ws_message(&payload.to_string());
         assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 0);
+    }
+
+    #[test]
+    fn is_user_visible_activity_filters_internal_and_thinking() {
+        use jyc_types::ActivityEntry;
+        use jyc_types::Severity;
+
+        let visible = ActivityEntry {
+            text: "Tool: bash (done, 1s)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 1,
+            is_internal: false,
+        };
+        assert!(is_user_visible_activity(&visible));
+
+        // New flag: ProcessingProgress events (is_internal=true) hidden.
+        let internal = ActivityEntry {
+            text: "tool execution (10s, 200 chars)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 2,
+            is_internal: true,
+        };
+        assert!(!is_user_visible_activity(&internal));
+
+        // Legacy: text shape for ProcessingProgress.
+        let legacy = ActivityEntry {
+            text: "tool execution (5s, 120 chars)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 3,
+            is_internal: false,
+        };
+        assert!(!is_user_visible_activity(&legacy));
+
+        // Thinking entries (existing renderer filter) hidden.
+        let thinking = ActivityEntry {
+            text: "Thinking: deep thoughts".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 4,
+            is_internal: false,
+        };
+        assert!(!is_user_visible_activity(&thinking));
     }
 }

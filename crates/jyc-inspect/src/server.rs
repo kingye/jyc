@@ -589,6 +589,10 @@ impl InspectServer {
                 };
             }
         };
+        let entries: Vec<ActivityEntry> = entries
+            .into_iter()
+            .filter(|e| !is_user_visible_activity(e))
+            .collect();
         let entries = filter_by_since(entries, since.as_deref());
         InspectResponse::ActivityHistory { entries }
     }
@@ -1050,6 +1054,26 @@ fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<
     entries
 }
 
+/// Whether an `ActivityEntry` should be shown in user-facing surfaces
+/// (overview activity pane, chat activity pane, chat progress, REST API).
+///
+/// Filters out:
+/// - New entries marked `is_internal = true` (set by `event_to_activity` for
+///   `ProcessingProgress` heartbeats).
+/// - Legacy entries from old log files (predecessors of the `is_internal`
+///   field) that match the `ProcessingProgress` text shape.
+fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
+    if entry.is_internal {
+        return false;
+    }
+    // Backward compat: old log entries predate the field. Detect the
+    // ProcessingProgress output shape: "<activity> (<N>s, <M> chars)".
+    if entry.text.ends_with(" chars)") {
+        return false;
+    }
+    true
+}
+
 /// Filter chat messages by `since` timestamp (RFC 3339 string).
 fn filter_chat_by_since(
     mut entries: Vec<ChatMessageEntry>,
@@ -1314,26 +1338,24 @@ impl ActivityTracker {
                                                                     if !is_thinking {
                                                                         let mut entry = event_to_activity(&event);
                                                                         let is_error = entry.severity == Severity::Error;
-                                                                        let is_progress =
-                                                                            matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                        if let Some(ref path) = thread_path
-                                                                            && let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
-                                                                            }
+                                                                        // Internal events (ProcessingProgress heartbeats) are
+                                                                        // debug-only: skip persisting to disk and skip the
+                                                                        // in-memory log + WS broadcast so they don't flood the
+                                                                        // activity pane / chat progress.
+                                                                        let is_internal = entry.is_internal;
                                                                         let mut map = map.lock().await;
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
-                                                                        // Assign monotonic per-thread id BEFORE pushing.
-                                                                        entry.id = state.next_id;
-                                                                        state.next_id = state.next_id.wrapping_add(1);
-                                                                        // ProcessingProgress is a heartbeat, not a discrete
-                                                                        // activity. Skip both the in-memory log AND the
-                                                                        // inspect-broadcast fanout so it doesn't crowd out
-                                                                        // ToolStarted / ToolCompleted entries that show the
-                                                                        // actual tool name and don't flood the dashboard's
-                                                                        // chat progress.
-                                                                        if !is_progress {
+                                                                        if !is_internal {
+                                                                            if let Some(ref path) = thread_path
+                                                                                && let Err(e) = ActivityLogStore::append(path, &entry)
+                                                                            {
+                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                            }
+                                                                            // Assign monotonic per-thread id BEFORE pushing.
+                                                                            entry.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
@@ -1548,6 +1570,15 @@ impl tokio::io::AsyncRead for PrependReadHalf {
         }
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
+}
+
+/// Whether a `ThreadEvent` should be marked internal (filtered from
+/// user-facing surfaces like the activity pane and REST API).
+fn is_event_internal(event: &ThreadEvent) -> bool {
+    // ProcessingProgress heartbeats are emitted frequently during long
+    // tool runs to indicate the agent is still working. They're useful
+    // for debug logs but noisy in the UI - filter them.
+    matches!(event, ThreadEvent::ProcessingProgress { .. })
 }
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
@@ -1780,6 +1811,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
         id: 0, // assigned by ActivityTracker on push (see fanout step)
+        is_internal: is_event_internal(event),
     }
 }
 
@@ -2372,6 +2404,7 @@ mode = "agent"
                 timestamp: None,
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             });
         }
 
@@ -2435,6 +2468,7 @@ mode = "agent"
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             });
         }
 
@@ -2475,6 +2509,23 @@ mode = "agent"
         let entry = event_to_activity(&event);
         assert!(entry.text.contains("Message from user"));
         assert!(entry.text.contains("hello world"));
+        assert!(!entry.is_internal);
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_processing_progress_is_internal() {
+        let event = ThreadEvent::ProcessingProgress {
+            thread_name: "test".to_string(),
+            activity: "tool execution".to_string(),
+            elapsed_secs: 25,
+            output_length: 12700,
+            progress: None,
+            parts_count: 0,
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.is_internal, "ProcessingProgress must be internal");
+        assert!(entry.text.contains("tool execution"));
     }
 
     #[tokio::test]
@@ -2604,18 +2655,21 @@ mode = "agent"
                 timestamp: Some("2026-01-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
             ActivityEntry {
                 text: "mid".to_string(),
                 timestamp: Some("2026-02-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
             ActivityEntry {
                 text: "new".to_string(),
                 timestamp: Some("2026-03-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
         ];
 
@@ -2745,6 +2799,7 @@ mode = "agent"
             timestamp: Some("2026-07-27T10:00:00Z".to_string()),
             severity: Severity::Info,
             id: 42,
+            is_internal: false,
         };
         publish_activity_event(&tx, "github", "pr-1", &entry);
         let payload = rx.recv().await.unwrap();
@@ -2950,5 +3005,42 @@ mode = "agent"
     fn test_extract_bearer_token_case_insensitive_header_name() {
         let req = "GET /ws HTTP/1.1\r\nauthorization: Bearer tok456\r\n\r\n";
         assert_eq!(InspectServer::extract_bearer_token(req), Some("tok456"));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_excludes_internal_field() {
+        let mut e = make_visible_entry("tool execution (10s, 200 chars)");
+        e.is_internal = true;
+        assert!(!is_user_visible_activity(&e));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_excludes_legacy_processing_text() {
+        // Old log entries (pre-`is_internal` field) match the text shape.
+        let e = make_visible_entry("tool execution (5s, 120 chars)");
+        assert!(!is_user_visible_activity(&e));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_keeps_real_events() {
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Tool: bash (done, 1s)"
+        )));
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Processing started"
+        )));
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Completed (10s)"
+        )));
+    }
+
+    fn make_visible_entry(text: &str) -> ActivityEntry {
+        ActivityEntry {
+            text: text.to_string(),
+            timestamp: Some("2026-07-28T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 1,
+            is_internal: false,
+        }
     }
 }

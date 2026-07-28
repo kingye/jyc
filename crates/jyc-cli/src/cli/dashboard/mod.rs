@@ -90,12 +90,19 @@ struct App {
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
 
+    /// WS connection for the currently-selected overview thread.
+    /// Live-feeds `live_activity` so the activity pane updates without polling.
+    overview_ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
+    /// (channel, thread) the overview WS is currently scoped to.
+    overview_ws_target: Option<(String, String)>,
+
     /// Chat pane state (WebSocket thread chat and non-WebSocket detail mode).
     chat: ChatState,
 }
 
 impl App {
     fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>, token: Option<String>) -> Self {
+        let (_, overview_ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         Self {
             state: None,
             error: None,
@@ -104,6 +111,8 @@ impl App {
             status_message: None,
             pending_reset: None,
             token,
+            overview_ws_rx,
+            overview_ws_target: None,
             chat: ChatState::new(ws_rx),
         }
     }
@@ -422,18 +431,24 @@ pub async fn run(
                             // to open chat first). Skip if we're in chat mode
                             // — the open() flow already triggered hydrate.
                             if !app.chat.visible {
-                                let selected_idx = app.table_state.selected();
-                                if let Some(idx) = selected_idx
-                                    && let Some(t) = s.threads.get(idx)
-                                {
-                                    let key = (t.channel.clone(), t.name.clone());
-                                    if app.chat.last_hydrated_key.as_ref() != Some(&key) {
-                                        let channel = t.channel.clone();
-                                        let thread = t.name.clone();
+                                let selected = app
+                                    .table_state
+                                    .selected()
+                                    .and_then(|idx| s.threads.get(idx))
+                                    .map(|t| (t.channel.clone(), t.name.clone()));
+                                if let Some((channel, thread)) = selected {
+                                    let key = (channel.clone(), thread.clone());
+                                    let needs_hydrate =
+                                        app.chat.last_hydrated_key.as_ref() != Some(&key);
+                                    if needs_hydrate {
                                         app.chat.last_hydrated_key = Some(key);
+                                    }
+                                    let _ = s; // drop the immutable borrow on app.state
+                                    if needs_hydrate {
                                         hydrate_live(&mut client, &mut app, &channel, &thread)
                                             .await;
                                     }
+                                    ensure_overview_ws(&mut app, &args.addr, &channel, &thread);
                                 }
                             }
                         }
@@ -448,6 +463,10 @@ pub async fn run(
 
             // Check for WebSocket events
             while let Ok(event) = app.chat.ws_rx.try_recv() {
+                app.handle_ws_event(event);
+            }
+            // Overview WS events (live activity feed in overview mode).
+            while let Ok(event) = app.overview_ws_rx.try_recv() {
                 app.handle_ws_event(event);
             }
 
@@ -829,6 +848,9 @@ async fn handle_normal_keys(
                     app.chat
                         .open_thread_detail(&channel, &name, app.state.as_ref());
                 }
+                // Chat WS takes over live events. Close the overview WS
+                // so we don't have two connections to the same thread.
+                close_overview_ws(app);
                 // REST hydrate the live buffers (activity + chat) so the
                 // activity pane and chat progress show recent entries
                 // immediately. WS events append to the same buffers.
@@ -1181,6 +1203,39 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .cloned()
         .collect();
     render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
+}
+
+/// Open (or swap to a new) overview WS for the selected thread.
+///
+/// If `app.overview_ws_target` already matches the new (channel, thread),
+/// this is a no-op. Otherwise the previous overview WS is dropped (which
+/// causes the spawned task to exit when its TCP connection closes) and a
+/// new WS task is spawned against `/ws/<channel>/<thread>`.
+fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
+    if let Some((c, t)) = app.overview_ws_target.as_ref()
+        && c == channel
+        && t == thread
+    {
+        return;
+    }
+    let url = format!("ws://{}/ws/{}/{}", addr, channel, thread);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    // Replace the receiver; the old WS task exits when the old channel is
+    // dropped (or its connection closes). cmd_tx is moved into the task and
+    // dropped at function end if the task hasn't sent to it.
+    app.overview_ws_rx = event_rx;
+    app.overview_ws_target = Some((channel.to_string(), thread.to_string()));
+    tokio::spawn(ws::ws_client_task(url, cmd_rx, event_tx, app.token.clone()));
+    // cmd_tx is dropped here; the task exits cleanly when cmd_rx returns None.
+    drop(cmd_tx);
+}
+
+/// Close the overview WS (used when chat mode opens; chat WS takes over).
+fn close_overview_ws(app: &mut App) {
+    app.overview_ws_target = None;
+    // Drain any pending events so the next selection doesn't get stale data.
+    while app.overview_ws_rx.try_recv().is_ok() {}
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {

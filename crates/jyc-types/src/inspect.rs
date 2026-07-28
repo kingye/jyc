@@ -222,6 +222,14 @@ pub struct ActivityEntry {
     /// `.jyc/activity.jsonl` that predate the seq field.
     #[serde(default)]
     pub id: u64,
+    /// Internal events are useful for debug logs but should NOT be shown in
+    /// user-facing surfaces (overview activity pane, chat activity pane,
+    /// chat progress, REST `get_thread_activity` response). Currently set
+    /// for `ProcessingProgress` heartbeats (e.g. "tool execution (Xs, Y
+    /// chars)"). Defaults to `false` for backward compat with old log
+    /// entries that predate this field.
+    #[serde(default)]
+    pub is_internal: bool,
 }
 
 /// A chat message entry for live display in the dashboard.
@@ -530,6 +538,7 @@ mod tests {
             timestamp: Some("2025-01-15T12:34:56Z".to_string()),
             severity: Severity::Error,
             id: 0,
+            is_internal: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""severity":"error""#));
@@ -554,6 +563,7 @@ mod tests {
             timestamp: Some("2025-01-15T12:00:00Z".to_string()),
             severity: Severity::Info,
             id: 42,
+            is_internal: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""id":42"#));

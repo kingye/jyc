@@ -100,7 +100,7 @@ impl ChannelMatcher for WebsocketMatcher {
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     #[serde(rename = "message")]
     Message {
@@ -113,6 +113,17 @@ enum ClientMessage {
         thread: Option<String>,
         text: String,
     },
+    /// Reset the agent session for the bound thread.
+    /// Accepted as a no-op here — session reset is wired through REST, not
+    /// the WebSocket channel, but the variant must be parseable so the
+    /// dashboard's protocol contract is honored.
+    ResetSession,
+    /// Close the connection cleanly. The handler breaks the read loop and
+    /// the post-loop helper sends a WS Close frame (`inbound.rs:405-407`).
+    Disconnect,
+    /// Keep-alive ping. tokio-tungstenite already handles WS-level pings
+    /// at the protocol layer; this is a no-op for application-level pings.
+    Ping,
 }
 
 /// WebSocket inbound adapter.
@@ -349,6 +360,20 @@ where
                         } else {
                             tracing::warn!("WebSocket on_message callback not set — message dropped");
                         }
+                    }
+                    ClientMessage::ResetSession => {
+                        // No session-reset wiring on websocket channels.
+                        // Acknowledge the message so the protocol contract
+                        // matches the doc comment; future feature can hook
+                        // into a reset callback here.
+                        tracing::debug!(addr = %addr, "WebSocket reset_session (no-op)");
+                    }
+                    ClientMessage::Disconnect => {
+                        tracing::info!(addr = %addr, "WebSocket client requested disconnect");
+                        break;
+                    }
+                    ClientMessage::Ping => {
+                        // No-op; WS-level pings handled by tokio-tungstenite.
                     }
                 }
             }

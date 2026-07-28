@@ -69,6 +69,9 @@ enum Commands {
 
     /// Stop a running jyc serve process
     Stop(cli::stop::StopArgs),
+
+    /// Manage dashboard authorization tokens
+    Token(cli::token::TokenArgs),
 }
 
 fn init_tracing(debug: bool, verbose: bool) {
@@ -124,20 +127,24 @@ async fn main() -> Result<()> {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
                     &args.addr,
+                    &workdir,
                     open.thread.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
+                    args.token.as_deref(),
                 )
                 .await
             }
-            None => cli::dashboard::run(args, None, None).await,
+            None => cli::dashboard::run(args, &workdir, None, None).await,
         },
         Commands::Open { addr, args } => {
             cli::dashboard::run_open(
                 addr,
+                &workdir,
                 args.thread.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
+                None,
             )
             .await
         }
@@ -150,6 +157,7 @@ async fn main() -> Result<()> {
         Commands::Templates { action } => cli::templates::run(action, &workdir).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
         Commands::Stop(args) => cli::stop::run(args, &workdir).await,
+        Commands::Token(args) => cli::token::run(args, &workdir),
     };
 
     if let Err(ref e) = result {

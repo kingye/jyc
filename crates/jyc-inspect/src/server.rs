@@ -119,6 +119,8 @@ pub struct InspectContext {
     pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
+    /// Optional authorization token required by inspect clients.
+    pub auth_token: Option<String>,
     /// Per-channel broadcast bus fed by `ActivityTracker` — used by
     /// `ThreadProxyHandler` to forward activity/chat/thinking events to
     /// dashboard WebSocket clients. Capacity 256 (configured at creation).
@@ -211,6 +213,21 @@ impl InspectServer {
             let request_str = String::from_utf8_lossy(&prepend_bytes);
             let first_line = request_str.lines().next().unwrap_or("");
             let route = Self::extract_ws_route(first_line);
+
+            if let Some(expected) = context.auth_token.as_deref()
+                && Self::extract_bearer_token(&request_str) != Some(expected)
+            {
+                let mut response = tokio::io::BufWriter::new(stream);
+                response
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
+                response.flush().await?;
+                tracing::debug!(addr = %addr, "WebSocket authentication failed");
+                return Ok(());
+            }
+
             // If the route is a thread-scoped path, propagate the thread
             // name to the handler so it doesn't have to be repeated in the
             // payload.
@@ -299,7 +316,30 @@ impl InspectServer {
         }
     }
 
-    /// Resolve a `WsRoute` to a concrete `WebsocketHandler`.
+    /// Extract a bearer token from an HTTP upgrade request.
+    ///
+    /// The `Authorization` header name and the `Bearer` scheme prefix are
+    /// both matched case-insensitively per RFC 7235 §2.1.
+    fn extract_bearer_token(request: &str) -> Option<&str> {
+        request
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case("authorization") {
+                    let v = value.trim();
+                    // Case-insensitive match on the Bearer scheme prefix.
+                    let rest = v
+                        .strip_prefix("Bearer ")
+                        .or_else(|| v.strip_prefix("bearer "))?;
+                    Some(rest.trim())
+                } else {
+                    None
+                }
+            })
+    }
+
     ///
     /// - `WsRoute::Thread { channel, name }`:
     ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
@@ -356,6 +396,14 @@ impl InspectServer {
     }
 
     async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
+        if let Some(expected) = context.auth_token.as_deref()
+            && request.auth_token.as_deref() != Some(expected)
+        {
+            return InspectResponse::Error {
+                error: "auth_failed".to_string(),
+            };
+        }
+
         match request.method.as_str() {
             "get_state" => {
                 let state = Self::build_state(context).await;
@@ -541,6 +589,10 @@ impl InspectServer {
                 };
             }
         };
+        let entries: Vec<ActivityEntry> = entries
+            .into_iter()
+            .filter(|e| !is_user_visible_activity(e))
+            .collect();
         let entries = filter_by_since(entries, since.as_deref());
         InspectResponse::ActivityHistory { entries }
     }
@@ -1002,6 +1054,26 @@ fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<
     entries
 }
 
+/// Whether an `ActivityEntry` should be shown in user-facing surfaces
+/// (overview activity pane, chat activity pane, chat progress, REST API).
+///
+/// Filters out:
+/// - New entries marked `is_internal = true` (set by `event_to_activity` for
+///   `ProcessingProgress` heartbeats).
+/// - Legacy entries from old log files (predecessors of the `is_internal`
+///   field) that match the `ProcessingProgress` text shape.
+fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
+    if entry.is_internal {
+        return false;
+    }
+    // Backward compat: old log entries predate the field. Detect the
+    // ProcessingProgress output shape: "<activity> (<N>s, <M> chars)".
+    if entry.text.ends_with(" chars)") {
+        return false;
+    }
+    true
+}
+
 /// Filter chat messages by `since` timestamp (RFC 3339 string).
 fn filter_chat_by_since(
     mut entries: Vec<ChatMessageEntry>,
@@ -1266,26 +1338,24 @@ impl ActivityTracker {
                                                                     if !is_thinking {
                                                                         let mut entry = event_to_activity(&event);
                                                                         let is_error = entry.severity == Severity::Error;
-                                                                        let is_progress =
-                                                                            matches!(&event, ThreadEvent::ProcessingProgress { .. });
-                                                                        if let Some(ref path) = thread_path
-                                                                            && let Err(e) = ActivityLogStore::append(path, &entry) {
-                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
-                                                                            }
+                                                                        // Internal events (ProcessingProgress heartbeats) are
+                                                                        // debug-only: skip persisting to disk and skip the
+                                                                        // in-memory log + WS broadcast so they don't flood the
+                                                                        // activity pane / chat progress.
+                                                                        let is_internal = entry.is_internal;
                                                                         let mut map = map.lock().await;
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
-                                                                        // Assign monotonic per-thread id BEFORE pushing.
-                                                                        entry.id = state.next_id;
-                                                                        state.next_id = state.next_id.wrapping_add(1);
-                                                                        // ProcessingProgress is a heartbeat, not a discrete
-                                                                        // activity. Skip both the in-memory log AND the
-                                                                        // inspect-broadcast fanout so it doesn't crowd out
-                                                                        // ToolStarted / ToolCompleted entries that show the
-                                                                        // actual tool name and don't flood the dashboard's
-                                                                        // chat progress.
-                                                                        if !is_progress {
+                                                                        if !is_internal {
+                                                                            if let Some(ref path) = thread_path
+                                                                                && let Err(e) = ActivityLogStore::append(path, &entry)
+                                                                            {
+                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                            }
+                                                                            // Assign monotonic per-thread id BEFORE pushing.
+                                                                            entry.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
@@ -1500,6 +1570,15 @@ impl tokio::io::AsyncRead for PrependReadHalf {
         }
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
+}
+
+/// Whether a `ThreadEvent` should be marked internal (filtered from
+/// user-facing surfaces like the activity pane and REST API).
+fn is_event_internal(event: &ThreadEvent) -> bool {
+    // ProcessingProgress heartbeats are emitted frequently during long
+    // tool runs to indicate the agent is still working. They're useful
+    // for debug logs but noisy in the UI - filter them.
+    matches!(event, ThreadEvent::ProcessingProgress { .. })
 }
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
@@ -1732,6 +1811,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         timestamp: Some(event.timestamp().to_rfc3339()),
         severity,
         id: 0, // assigned by ActivityTracker on push (see fanout step)
+        is_internal: is_event_internal(event),
     }
 }
 
@@ -1762,6 +1842,7 @@ mod tests {
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         })
     }
 
@@ -2001,6 +2082,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2091,6 +2173,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2189,6 +2272,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2320,6 +2404,7 @@ mode = "agent"
                 timestamp: None,
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             });
         }
 
@@ -2383,6 +2468,7 @@ mode = "agent"
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             });
         }
 
@@ -2423,6 +2509,23 @@ mode = "agent"
         let entry = event_to_activity(&event);
         assert!(entry.text.contains("Message from user"));
         assert!(entry.text.contains("hello world"));
+        assert!(!entry.is_internal);
+    }
+
+    #[tokio::test]
+    async fn test_event_to_activity_processing_progress_is_internal() {
+        let event = ThreadEvent::ProcessingProgress {
+            thread_name: "test".to_string(),
+            activity: "tool execution".to_string(),
+            elapsed_secs: 25,
+            output_length: 12700,
+            progress: None,
+            parts_count: 0,
+            timestamp: chrono::Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert!(entry.is_internal, "ProcessingProgress must be internal");
+        assert!(entry.text.contains("tool execution"));
     }
 
     #[tokio::test]
@@ -2509,6 +2612,7 @@ mode = "agent"
             websocket_handlers: None,
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let cancel = CancellationToken::new();
@@ -2551,18 +2655,21 @@ mode = "agent"
                 timestamp: Some("2026-01-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
             ActivityEntry {
                 text: "mid".to_string(),
                 timestamp: Some("2026-02-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
             ActivityEntry {
                 text: "new".to_string(),
                 timestamp: Some("2026-03-01T00:00:00Z".to_string()),
                 severity: Severity::Info,
                 id: 0,
+                is_internal: false,
             },
         ];
 
@@ -2654,6 +2761,7 @@ mode = "agent"
             websocket_handlers: Some(handlers),
             reload_callback: None,
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: None,
         });
 
         let route = WsRoute::Thread {
@@ -2691,6 +2799,7 @@ mode = "agent"
             timestamp: Some("2026-07-27T10:00:00Z".to_string()),
             severity: Severity::Info,
             id: 42,
+            is_internal: false,
         };
         publish_activity_event(&tx, "github", "pr-1", &entry);
         let payload = rx.recv().await.unwrap();
@@ -2738,5 +2847,200 @@ mode = "agent"
         assert_eq!(v["type"], "processing");
         assert_eq!(v["is_processing"], true);
         assert_eq!(v["has_error"], false);
+    }
+
+    // ── Authorization token tests ──
+
+    fn test_context_with_token(token: &str) -> Arc<InspectContext> {
+        Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
+                name: "test".to_string(),
+                channel_type: "email".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: None,
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: Some(token.to_string()),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_rest_rejects_missing_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // No auth_token field in the request
+        writer
+            .write_all(b"{\"method\":\"get_state\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
+            other => panic!("expected auth_failed error, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rest_rejects_wrong_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"wrong\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
+            other => panic!("expected auth_failed error, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rest_accepts_correct_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"secret123\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::State(state) => assert_eq!(state.channels.len(), 1),
+            other => panic!("expected State, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_extract_bearer_token_uppercase() {
+        let req = "GET /ws HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n";
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("abc123"));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let req = "GET /ws HTTP/1.1\r\nAuthorization: bearer xyz789\r\n\r\n";
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("xyz789"));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_missing() {
+        let req = "GET /ws HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(InspectServer::extract_bearer_token(req), None);
+    }
+
+    #[test]
+    fn test_extract_bearer_token_case_insensitive_header_name() {
+        let req = "GET /ws HTTP/1.1\r\nauthorization: Bearer tok456\r\n\r\n";
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("tok456"));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_excludes_internal_field() {
+        let mut e = make_visible_entry("tool execution (10s, 200 chars)");
+        e.is_internal = true;
+        assert!(!is_user_visible_activity(&e));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_excludes_legacy_processing_text() {
+        // Old log entries (pre-`is_internal` field) match the text shape.
+        let e = make_visible_entry("tool execution (5s, 120 chars)");
+        assert!(!is_user_visible_activity(&e));
+    }
+
+    #[test]
+    fn test_is_user_visible_activity_keeps_real_events() {
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Tool: bash (done, 1s)"
+        )));
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Processing started"
+        )));
+        assert!(is_user_visible_activity(&make_visible_entry(
+            "Completed (10s)"
+        )));
+    }
+
+    fn make_visible_entry(text: &str) -> ActivityEntry {
+        ActivityEntry {
+            text: text.to_string(),
+            timestamp: Some("2026-07-28T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 1,
+            is_internal: false,
+        }
     }
 }

@@ -101,6 +101,8 @@ pub(super) struct ChatState {
     pub(super) input_history: Vec<String>,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
+    /// Authorization token to attach to WebSocket upgrade requests.
+    pub(super) token: Option<String>,
 }
 
 /// Creates a fresh, empty chat input editor in Insert mode.
@@ -1079,6 +1081,21 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 }
 
+/// Filter out activity entries that should not be shown in user-facing
+/// activity panes (overview activity pane, chat activity pane, chat
+/// progress). Mirrors the server-side `is_user_visible_activity` in
+/// `jyc-inspect` for client-side filtering.
+fn is_user_visible_activity(entry: &jyc_types::ActivityEntry) -> bool {
+    if entry.is_internal {
+        return false;
+    }
+    // Backward compat for old log files (pre-`is_internal` field).
+    if entry.text.ends_with(" chars)") {
+        return false;
+    }
+    true
+}
+
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
     // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
     // currently focused thread. Falls back to empty slice if no live data
@@ -1112,12 +1129,12 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
-    // Thinking entries are excluded from the activity pane (they flood it with
-    // identical "Thinking..." markers). They remain in the in-memory log for
-    // the chat pane's AI progress area and are persisted to activity.jsonl.
+    // Internal entries (`is_internal=true`) and Thinking heartbeats are
+    // excluded from the activity pane. The chat pane's AI progress area
+    // handles thinking display; the in-memory log keeps them for debug.
     let visible_count = activity_vec
         .iter()
-        .filter(|e| !e.text.starts_with("Thinking: "))
+        .filter(|e| is_user_visible_activity(e))
         .count();
     let max_skip = visible_count.saturating_sub(inner_height);
     app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
@@ -1158,12 +1175,13 @@ pub(super) fn render_activity_log_inner(
         return;
     }
 
-    // Thinking entries are excluded from the activity pane - they appear as
-    // dozens of identical "Thinking..." markers and crowd out useful events.
-    // The chat pane AI progress area handles thinking display.
+    // Internal entries (`is_internal=true`) and Thinking heartbeats are
+    // excluded from the activity pane - they appear as dozens of identical
+    // "Thinking..." / "tool execution (Xs, Y chars)" markers and crowd out
+    // useful events. The chat pane AI progress area handles thinking display.
     let visible: Vec<_> = activity
         .iter()
-        .filter(|e| !e.text.starts_with("Thinking: "))
+        .filter(|e| is_user_visible_activity(e))
         .collect();
 
     if visible.is_empty() {
@@ -1250,10 +1268,17 @@ impl ChatState {
             command_popup: None,
             input_history: vec![],
             history_pos: None,
+            token: None,
         }
     }
 
-    pub(super) fn open(&mut self, addr: &str, channel: Option<&str>, initial_thread: Option<&str>) {
+    pub(super) fn open(
+        &mut self,
+        addr: &str,
+        channel: Option<&str>,
+        initial_thread: Option<&str>,
+        token: Option<String>,
+    ) {
         self.visible = true;
         self.phase = if initial_thread.is_some() {
             ChatPhase::Chatting
@@ -1264,6 +1289,7 @@ impl ChatState {
         self.pattern_selected = 0;
         self.channel = channel.map(|s| s.to_string());
         self.thread = initial_thread.map(|s| s.to_string());
+        self.token = token;
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
@@ -1301,7 +1327,7 @@ impl ChatState {
             (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
             (None, _) => format!("ws://{}/ws", addr),
         };
-        tokio::spawn(ws_client_task(url, cmd_rx, event_tx));
+        tokio::spawn(ws_client_task(url, cmd_rx, event_tx, self.token.clone()));
     }
 
     /// Open the chat pane in PatternSelect mode for the `c` key.
@@ -1313,11 +1339,13 @@ impl ChatState {
         addr: &str,
         channel: &str,
         client: &mut InspectClient,
+        token: Option<String>,
     ) {
         self.visible = true;
         self.phase = ChatPhase::PatternSelect;
         self.channel = Some(channel.to_string());
         self.thread = None;
+        self.token = token;
         self.patterns = client.list_patterns(channel).await.unwrap_or_default();
         self.pattern_selected = 0;
         self.messages.clear();
@@ -1417,7 +1445,12 @@ impl ChatState {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         self.ws_tx = Some(cmd_tx);
         self.ws_rx = event_rx;
-        tokio::spawn(super::ws::ws_client_task(url, cmd_rx, event_tx));
+        tokio::spawn(super::ws::ws_client_task(
+            url,
+            cmd_rx,
+            event_tx,
+            self.token.clone(),
+        ));
     }
 
     /// Clear state and set thread — used by `select_pattern` for the WS flow
@@ -1765,14 +1798,13 @@ impl ChatState {
                 self.live_processing
                     .insert(key.clone(), (is_processing, has_error));
                 if !is_processing {
-                    // Processing completed — clear the round's artifacts
-                    // so the next round starts fresh (no stale thinking
-                    // text or prior-round activity entries showing).
-                    self.live_activity.remove(&key);
+                    // Processing completed - clear per-round transient
+                    // artifacts but keep live_activity as the audit trail
+                    // across rounds. Buffer is bounded at 180 entries.
                     self.live_thinking.remove(&key);
                     self.awaiting_response = false;
                 } else {
-                    // New round started — also clear thinking (in case
+                    // New round started - also clear thinking (in case
                     // the first Thinking event for this round is delayed).
                     self.live_thinking.remove(&key);
                 }
@@ -1849,7 +1881,7 @@ mod tests {
     #[test]
     fn select_pattern_clears_chat_messages() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate messages from a previous thread
         app.chat.messages.push(ChatMessage {
@@ -1875,7 +1907,7 @@ mod tests {
     #[test]
     fn scroll_to_top_and_bottom_follow_focus() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Chat pane focused
         app.chat.focus = ChatFocus::ChatPane;
@@ -1897,7 +1929,7 @@ mod tests {
     #[test]
     fn gg_step_completes_only_on_consecutive_g() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Single `g` arms the sequence without jumping
         assert!(!app.chat.gg_step(true));
@@ -1919,7 +1951,7 @@ mod tests {
     #[test]
     fn recall_older_on_empty_history_does_nothing() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         assert!(app.chat.input_history.is_empty());
         app.chat.recall_older(); // should not panic or change anything
@@ -1929,7 +1961,7 @@ mod tests {
     #[test]
     fn recall_older_recalls_and_recall_newer_clears() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         app.chat.input_history = vec![
             "first msg".to_string(),
@@ -1978,7 +2010,7 @@ mod tests {
     #[test]
     fn select_pattern_clears_input_history() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         app.chat.input_history = vec!["msg from thread A".to_string()];
         app.chat.history_pos = Some(0);
@@ -1994,7 +2026,7 @@ mod tests {
     #[test]
     fn close_returns_to_overview_from_ws_chat() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate post-open WS chat state (what Enter on a WS row produces).
         // We set fields directly instead of calling open() because open()
@@ -2023,7 +2055,7 @@ mod tests {
     #[test]
     fn close_returns_to_overview_from_detail_mode() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate opening a non-WS thread in detail mode
         app.chat.open_thread_detail("github", "issue-197", None);
@@ -2097,7 +2129,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_activity_events_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Simulate hydrate: seed an activity entry, then a WS event with
         // the same id arrives — should be deduped (id <= last_seen_id).
@@ -2106,6 +2138,7 @@ mod tests {
             timestamp: Some("2026-01-01T00:00:00Z".to_string()),
             severity: jyc_types::Severity::Info,
             id: 42,
+            is_internal: false,
         };
         app.chat.seed_live("github", "pr-1", vec![entry], vec![]);
         assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
@@ -2146,7 +2179,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_chat_message_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         let payload = serde_json::json!({
             "type": "chat_message",
@@ -2167,7 +2200,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_thinking_to_live_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         let payload = serde_json::json!({
             "type": "thinking",
@@ -2185,7 +2218,7 @@ mod tests {
     #[test]
     fn handle_ws_message_routes_resync_clears_buffer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx);
+        let mut app = App::new(rx, None);
 
         // Seed first
         app.chat.seed_live(
@@ -2196,6 +2229,7 @@ mod tests {
                 timestamp: Some("2026-01-01T00:00:00Z".to_string()),
                 severity: jyc_types::Severity::Info,
                 id: 1,
+                is_internal: false,
             }],
             vec![],
         );
@@ -2210,5 +2244,40 @@ mod tests {
         });
         app.chat.handle_ws_message(&payload.to_string());
         assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 0);
+    }
+
+    #[test]
+    fn is_user_visible_activity_filters_internal_and_thinking() {
+        use jyc_types::ActivityEntry;
+        use jyc_types::Severity;
+
+        let visible = ActivityEntry {
+            text: "Tool: bash (done, 1s)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 1,
+            is_internal: false,
+        };
+        assert!(is_user_visible_activity(&visible));
+
+        // New flag: ProcessingProgress events (is_internal=true) hidden.
+        let internal = ActivityEntry {
+            text: "tool execution (10s, 200 chars)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 2,
+            is_internal: true,
+        };
+        assert!(!is_user_visible_activity(&internal));
+
+        // Legacy: text shape for ProcessingProgress.
+        let legacy = ActivityEntry {
+            text: "tool execution (5s, 120 chars)".to_string(),
+            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
+            severity: Severity::Info,
+            id: 3,
+            is_internal: false,
+        };
+        assert!(!is_user_visible_activity(&legacy));
     }
 }

@@ -1,4 +1,5 @@
 pub mod attachment_validator;
+pub mod auth_token;
 #[allow(dead_code)]
 pub mod constants;
 pub mod helpers;

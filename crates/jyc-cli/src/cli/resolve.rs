@@ -27,7 +27,8 @@ pub struct ConfigResolution {
 /// - `--config <path>`: absolute paths used as-is; `~` is expanded; **relative
 ///   paths are resolved against the current directory** (the user's shell cwd).
 ///   L1 still applies as base layer when different.
-/// - No `--config`, explicit `--workdir`: `<workdir>/config.toml`, L1 as base.
+/// - No `--config`, explicit `--workdir`: `<workdir>/config.toml` if it exists,
+///   otherwise fall back to `<config_home>/config.toml` (L1 global). L1 as base.
 /// - No `--config`, no `--workdir`: `<config_home>/config.toml` (is_default).
 pub fn resolve_config(
     workdir: &Path,
@@ -49,7 +50,22 @@ pub fn resolve_config(
                     .join(expanded)
             }
         }
-        None if workdir_explicit => workdir.join(DEFAULT_CONFIG_FILENAME),
+        None if workdir_explicit => {
+            let candidate = workdir.join(DEFAULT_CONFIG_FILENAME);
+            if candidate.exists() {
+                candidate
+            } else {
+                // No workdir-local config - fall back to the platform
+                // global (L1). L2 is an optional overlay, not required.
+                global.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no config found at {} or in the platform config directory; \
+                         pass --config explicitly",
+                        candidate.display()
+                    )
+                })?
+            }
+        }
         None => global.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "could not determine platform config directory; pass --config explicitly"
@@ -121,10 +137,33 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_config_workdir_only() {
-        let res = resolve_config(Path::new("/data"), None, true).unwrap();
-        assert_eq!(res.config_path, PathBuf::from("/data/config.toml"));
+    fn test_resolve_config_workdir_only_with_local_config() {
+        // When `<workdir>/config.toml` exists, it is used (L2 overlay
+        // over L1 global).
+        let tmp = tempfile::tempdir().unwrap();
+        let workdir = tmp.path();
+        std::fs::write(workdir.join("config.toml"), "[general]\n").unwrap();
+
+        let res = resolve_config(workdir, None, true).unwrap();
+        assert_eq!(res.config_path, workdir.join("config.toml"));
         assert!(!res.is_default);
+    }
+
+    #[test]
+    fn test_resolve_config_workdir_only_falls_back_to_global() {
+        // When `<workdir>/config.toml` does NOT exist, fall back to the
+        // platform global (L1) so a workdir-only invocation still works
+        // for users who only configured `~/.config/jyc/config.toml`.
+        let tmp = tempfile::tempdir().unwrap();
+        let res = resolve_config(tmp.path(), None, true).unwrap();
+        // config_path is either global (most cases) or tmp/config.toml if
+        // somehow the global resolves there. Either way: not the workdir
+        // path because the file doesn't exist.
+        assert_ne!(res.config_path, tmp.path().join("config.toml"));
+        // Global should be set as base layer when not the same file.
+        if let Some(expected) = paths::default_config_path() {
+            assert_eq!(res.config_path, expected);
+        }
     }
 
     #[test]

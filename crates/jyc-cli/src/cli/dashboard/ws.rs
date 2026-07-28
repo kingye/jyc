@@ -15,14 +15,50 @@ pub(super) async fn ws_client_task(
     url: String,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     event_tx: tokio::sync::mpsc::UnboundedSender<WsEvent>,
+    auth_token: Option<String>,
 ) {
     use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
 
     let mut backoff = 1u64; // seconds
 
     'reconnect: loop {
+        // Build the request with an optional Authorization header.
+        let request = match url.as_str().into_client_request() {
+            Ok(mut r) => {
+                if let Some(token) = auth_token.as_deref() {
+                    let value = format!("Bearer {token}");
+                    r.headers_mut().insert(
+                        "Authorization",
+                        HeaderValue::from_str(&value)
+                            .expect("token is hex so always a valid header value"),
+                    );
+                }
+                r
+            }
+            Err(e) => {
+                let _ = event_tx.send(WsEvent::Error(format!("Bad URL: {e}")));
+                let delay = std::cmp::min(backoff, 30);
+                backoff = std::cmp::min(backoff * 2, 30);
+                let sleep = tokio::time::sleep(tokio::time::Duration::from_secs(delay));
+                tokio::pin!(sleep);
+                loop {
+                    tokio::select! {
+                        _ = &mut sleep => break,
+                        cmd = cmd_rx.recv() => {
+                            if cmd.is_none() {
+                                break 'reconnect;
+                            }
+                        }
+                    }
+                }
+                continue 'reconnect;
+            }
+        };
+
         // Attempt connection
-        let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
+        let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = event_tx.send(WsEvent::Error(format!("Connect failed: {e}")));

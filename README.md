@@ -223,6 +223,8 @@ jyc serve              # Start the agent (main command)
 jyc dashboard            # Live TUI dashboard (connects via inspect server)
                          #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
                          #                     Also used for WebSocket chat on /ws
+#   --token <TOKEN>   Auth token. Falls back to $JYC_DASHBOARD_TOKEN,
+#                     then to <workdir>/auth.token
                          #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
 jyc open                 # Create a new ad-hoc websocket thread and open chat
                          #   (shortcut for `jyc dashboard open`)
@@ -233,6 +235,7 @@ jyc open                 # Create a new ad-hoc websocket thread and open chat
 jyc config init        # Generate config template (in <config dir>, or --workdir)
 jyc config validate    # Validate config file (layered: global + workdir)
                        #   --config <FILE>   Config file path (default: as serve)
+jyc token show         # Print the dashboard authorization token
 jyc patterns list      # List configured patterns
                        #   --config <FILE>   Config file path (default: as serve)
 jyc templates list     # List available templates and their skills

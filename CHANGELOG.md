@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Inspect server authorization token.** `jyc serve` generates a random
+  token and writes it to `<workdir>/auth.token` (owner-only permissions on
+  Unix). `jyc dashboard` auto-loads it from the same workdir, or accepts
+  `--token` / `JYC_DASHBOARD_TOKEN` env var. `jyc token show` prints the
+  current token. All inspect REST requests carry the token in the JSON
+  envelope; WebSocket upgrades carry it as an `Authorization: Bearer`
+  header. The server rejects mismatches.
+
 - **Slim `/state_overview` REST endpoint.** New `get_state_overview` method
   returns `InspectOverview` with `ThreadSummary` rows (no per-thread
   `activity` / `recent_messages` / `thinking_text`), keeping the dashboard's

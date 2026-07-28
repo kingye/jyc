@@ -431,6 +431,13 @@ pub async fn run(
 
                         app.state = Some(overview);
                         if let Some(ref s) = app.state {
+                            // Auto-select the first thread on initial load so the
+                            // activity pane is populated immediately via the existing
+                            // hydrate + ensure_overview_ws paths. The user can still
+                            // navigate to a different thread (↑/↓).
+                            if app.table_state.selected().is_none() && !s.threads.is_empty() {
+                                app.table_state.select(Some(0));
+                            }
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
 
@@ -1545,5 +1552,93 @@ mod tests {
         close_overview_ws(&mut app);
         assert!(app.overview_ws_target.is_none());
         assert!(app.overview_ws_tx.is_none());
+    }
+
+    // --- auto-select first thread on initial load ---
+
+    fn make_overview_with_threads(names: &[&str]) -> jyc_types::InspectOverview {
+        use jyc_types::{ChannelInfo, InspectOverview, ThreadStatus, ThreadSummary};
+        InspectOverview {
+            uptime_secs: 0,
+            version: "test".to_string(),
+            channels: vec![ChannelInfo {
+                name: "chan".to_string(),
+                channel_type: "websocket".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            threads: names
+                .iter()
+                .map(|n| ThreadSummary {
+                    name: (*n).to_string(),
+                    channel: "chan".to_string(),
+                    pattern: None,
+                    status: ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                })
+                .collect(),
+            stats: Default::default(),
+            commands: vec![],
+            models: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_select_first_thread_when_no_selection() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        assert!(app.table_state.selected().is_none());
+
+        // Simulate the auto-select block from the poll loop.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn auto_select_noop_when_already_selected() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        app.table_state.select(Some(1));
+
+        // Simulate the auto-select block from the poll loop.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        // Selection unchanged - user already navigated to row 1.
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn auto_select_noop_when_no_threads() {
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_threads(&[]));
+        assert!(app.table_state.selected().is_none());
+
+        // Simulate the auto-select block.
+        if let Some(ref s) = app.state
+            && app.table_state.selected().is_none()
+            && !s.threads.is_empty()
+        {
+            app.table_state.select(Some(0));
+        }
+
+        // No threads -> no auto-select.
+        assert!(app.table_state.selected().is_none());
     }
 }

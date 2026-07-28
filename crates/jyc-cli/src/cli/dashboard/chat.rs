@@ -2290,4 +2290,57 @@ mod tests {
         };
         assert!(!is_user_visible_activity(&legacy));
     }
+
+    #[test]
+    fn command_popup_send_preserves_editor_text() {
+        // Regression: the PopupAction::Send arm used to populate the editor
+        // with the selected command and then call `send_message()` (which
+        // cleared the editor at line 1585), wiping any pre-existing text.
+        // It now routes through `send_message_inner`, which never touches
+        // the editor — so the editor keeps whatever was there before the
+        // popup opened.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+
+        // Simulate pre-existing Normal-mode-style editor text — the case
+        // the bug actually broke.
+        app.chat.populate_editor("draft message");
+        let pre_text = app.chat.text();
+        assert_eq!(pre_text, "draft message");
+
+        // Mirror the fixed PopupAction::Send handler (chat.rs:366-368).
+        app.chat.command_popup = None;
+        app.chat.send_message_inner("/model gpt-4".to_string());
+
+        // Editor must be preserved.
+        assert_eq!(app.chat.text(), pre_text, "editor must not be cleared");
+
+        // Send-side effects still fire.
+        assert_eq!(app.chat.messages.len(), 1);
+        assert_eq!(app.chat.messages[0].sender, "user");
+        assert_eq!(app.chat.messages[0].text, "/model gpt-4");
+        assert_eq!(
+            app.chat.input_history.last(),
+            Some(&"/model gpt-4".to_string())
+        );
+        assert!(app.chat.awaiting_response);
+    }
+
+    #[test]
+    fn command_popup_send_on_empty_editor_stays_empty() {
+        // Insert-mode popup path: editor must be empty before the popup
+        // opens (per the gating at chat.rs:385-390). After the Send arm
+        // fires, the editor should still be empty — i.e. nothing was
+        // populated and nothing was cleared (the trivially-empty case).
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+
+        assert!(app.chat.text().is_empty());
+
+        app.chat.command_popup = None;
+        app.chat.send_message_inner("/plan".to_string());
+
+        assert!(app.chat.text().is_empty(), "editor must stay empty");
+        assert_eq!(app.chat.messages.last().unwrap().text, "/plan");
+    }
 }

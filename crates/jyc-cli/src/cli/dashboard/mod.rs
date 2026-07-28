@@ -185,7 +185,7 @@ impl App {
 ///
 /// Writes `serve` logs to `<data_home>/jyc.log` so the user can review
 /// diagnostics. Only works for localhost addresses (the default).
-async fn ensure_serve_running(addr: &str) -> Result<()> {
+async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
@@ -208,13 +208,10 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
     }
 
     // Determine log file path.
-    let log_dir = jyc_utils::paths::data_home().ok_or_else(|| {
-        anyhow::anyhow!("Could not determine platform data directory for log file")
-    })?;
-    tokio::fs::create_dir_all(&log_dir)
+    tokio::fs::create_dir_all(workdir)
         .await
-        .with_context(|| format!("Failed to create log directory {}", log_dir.display()))?;
-    let log_path = log_dir.join("jyc.log");
+        .with_context(|| format!("Failed to create workdir {}", workdir.display()))?;
+    let log_path = workdir.join("jyc.log");
 
     // Open log file (create / truncate).
     let log_file = std::fs::File::create(&log_path)
@@ -223,10 +220,13 @@ async fn ensure_serve_running(addr: &str) -> Result<()> {
         .try_clone()
         .context("Failed to clone log file handle")?;
 
-    // Spawn jyc serve as a background child process.
+    // Spawn jyc serve as a background child process. Pass --workdir so the
+    // auth token file is written to the same location the dashboard reads.
     let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
     let mut child = Command::new(&exe)
         .arg("serve")
+        .arg("--workdir")
+        .arg(workdir)
         .stdin(std::process::Stdio::null())
         .stdout(log_dup)
         .stderr(log_file)
@@ -302,17 +302,20 @@ pub async fn run(
     initial_thread: Option<&str>,
     initial_channel: Option<&str>,
 ) -> Result<()> {
+    // Auto-spawn jyc serve FIRST - it writes <workdir>/auth.token on
+    // startup, so the token file exists by the time we resolve it.
+    ensure_serve_running(&args.addr, workdir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to connect to {}. Start jyc serve manually.",
+                args.addr
+            )
+        })?;
+
     // Resolve the auth token: explicit flag/env wins, otherwise read it
     // from `<workdir>/auth.token` (which `jyc serve` writes on startup).
     let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
-
-    // Auto-spawn jyc serve if it's not running.
-    ensure_serve_running(&args.addr).await.with_context(|| {
-        format!(
-            "Failed to connect to {}. Start jyc serve manually.",
-            args.addr
-        )
-    })?;
 
     let mut client = match &token {
         Some(t) => InspectClient::with_token(&args.addr, t.clone()),
@@ -511,8 +514,8 @@ pub async fn run_open(
     path: Option<&str>,
     explicit_token: Option<&str>,
 ) -> Result<()> {
-    // Auto-spawn jyc serve if it's not running.
-    ensure_serve_running(addr)
+    // Auto-spawn jyc serve FIRST (writes <workdir>/auth.token on startup).
+    ensure_serve_running(addr, workdir)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
 

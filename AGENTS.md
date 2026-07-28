@@ -39,21 +39,16 @@ and uses OpenCode to generate AI replies.
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
-提交 PR 前必须在本地通过以下检查：
+提交 PR 前在本地确认以下事项：
 
-> 注意：`.github/workflows/ci.yml` 会自动执行格式化、Clippy、测试（覆盖率检查 `cargo llvm-cov` 会运行全部测试）等检查；Agent 无需在本地重复运行 CI 已覆盖的慢速检查（如 `cargo test`、`cargo llvm-cov`）。
+> **所有自动化检查由 CI 运行**。`.github/workflows/ci.yml` 在每个 push 到 `main` 和每个非草稿 PR 上自动执行：
+> - `cargo fmt -- --check`（格式化）
+> - `cargo clippy --workspace --all-targets -- -D warnings`（静态检查；同时编译所有 target，等价于 `cargo check` / `cargo build`）
+> - `cargo llvm-cov --workspace --all-targets`（运行所有测试并生成覆盖率报告，附带 60% 阈值检查）
+>
+> 本地运行这些检查既慢又浪费资源；CI 会重新执行且结果权威。
 
-1. **格式化检查**
-   ```bash
-   cargo fmt --check
-   ```
-2. **Clippy 静态检查**
-   ```bash
-   cargo clippy --workspace -- -D warnings
-   ```
-3. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
-4. **禁止本地运行 CI 专属检查** — `cargo llvm-cov`、`cargo-tarpaulin` 等覆盖率工具，以及 GitHub Actions 工作流中已自动执行的其他检查（包括测试），禁止在本地运行。
-   这些检查速度太慢，CI（`.github/workflows/ci.yml`）会在 PR 提交后自动运行并检查阈值。
+1. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
 
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 格式：

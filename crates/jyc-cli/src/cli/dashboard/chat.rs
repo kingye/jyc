@@ -341,6 +341,21 @@ pub(super) fn handle_chat_keys(
         return;
     }
 
+    // Ctrl+C sends /cancel without modifying the input buffer (advertised in
+    // CHANGELOG v0.3.12). Routes through `send_message_inner` (not
+    // `send_message`) so the editor is untouched. The worker's
+    // `pending_rx` select! arm in thread_manager.rs intercepts the
+    // leading "/" and runs CancelCommandHandler, which fires the
+    // per-thread CancellationToken. Restrict to Chatting — there is
+    // no thread to cancel in PatternSelect.
+    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
+        // Close any open command popup so the cancel path runs cleanly.
+        app.chat.command_popup = None;
+        app.chat.send_message_inner("/cancel".to_string());
+        return;
+    }
+
     // ── Command popup handling ─────────────────────────────────────
     if let Some(ref mut popup) = app.chat.command_popup {
         match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {

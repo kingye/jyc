@@ -1132,10 +1132,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     // Internal entries (`is_internal=true`) and Thinking heartbeats are
     // excluded from the activity pane. The chat pane's AI progress area
     // handles thinking display; the in-memory log keeps them for debug.
-    let visible_count = activity_vec
-        .iter()
-        .filter(is_user_visible_activity)
-        .count();
+    let visible_count = activity_vec.iter().filter(is_user_visible_activity).count();
     let max_skip = visible_count.saturating_sub(inner_height);
     app.chat.activity_scroll = app.chat.activity_scroll.min(max_skip);
     render_activity_log_inner(
@@ -1179,10 +1176,7 @@ pub(super) fn render_activity_log_inner(
     // excluded from the activity pane - they appear as dozens of identical
     // "Thinking..." / "tool execution (Xs, Y chars)" markers and crowd out
     // useful events. The chat pane AI progress area handles thinking display.
-    let visible: Vec<_> = activity
-        .iter()
-        .filter(is_user_visible_activity)
-        .collect();
+    let visible: Vec<_> = activity.iter().filter(is_user_visible_activity).collect();
 
     if visible.is_empty() {
         let text = Paragraph::new(Span::styled(

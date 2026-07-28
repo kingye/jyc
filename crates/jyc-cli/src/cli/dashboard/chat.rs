@@ -365,12 +365,7 @@ pub(super) fn handle_chat_keys(
             }
             PopupAction::Send(cmd) => {
                 app.chat.command_popup = None;
-                app.chat.populate_editor(&cmd);
-                // ponytail: overwriting the editor (vs. send_message_inner
-                // directly) preserves the post-send empty-editor invariant;
-                // revisit if Normal-mode stale-text preservation becomes a
-                // real case.
-                app.chat.send_message();
+                app.chat.send_message_inner(cmd);
             }
             PopupAction::CopyToInput(cmd) => {
                 app.chat.command_popup = None;

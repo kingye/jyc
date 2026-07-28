@@ -50,6 +50,14 @@ All notable changes to JYC will be documented in this file.
   by WebSocket clients to drop duplicate / older events after a
   reconnect or `resync`.
 
+- **Dashboard `Ctrl+C` shortcut for `/cancel`.** Pressing `Ctrl+C` in
+  the chat pane (any focus) sends `/cancel` without modifying the input
+  buffer, matching the behaviour advertised in CHANGELOG v0.3.12. The
+  local echo goes through the same `/cancel` interception path the
+  worker already uses for typed `/cancel` messages, so the per-thread
+  `CancellationToken` fires immediately. The shortcut is also
+  advertised in the chat-pane help bar.
+
 - **`<think>` tag parsing for OpenAI-compatible providers.** Providers like
   MiniMax M3 that emit thinking content inline in the `content` field wrapped
   in `<think>...</think>` tags (rather than in a separate `reasoning_content`
@@ -136,6 +144,19 @@ All notable changes to JYC will be documented in this file.
   to the input line. Enter sends in both modes.
 
 ### Fixed
+
+- **`/cancel` now aborts tool execution immediately.** Previously the
+  per-thread `CancellationToken` was honored at LLM-call boundaries
+  and between tool iterations, but a long-running tool call (e.g.
+  `bash` running `sleep 60`, a `webfetch` HTTP request) ran to
+  completion before the loop noticed. The agent loop now races
+  `tools.execute()` against `cancel.cancelled()` via `tokio::select!`;
+  on cancel, the tool's in-flight future is dropped — which kills any
+  spawned child process for `bash` via `tokio::process::Child::drop` —
+  and the existing dangling-message cleanup in `agent_loop` runs
+  unchanged. End-to-end verified by a regression test that fires
+  `/cancel` 200 ms into a `bash sleep 60` and asserts the agent
+  returns within 5 s with no reply text.
 
 - **WebSocket dashboard disconnect rejected on websocket-type channels.**
   The CLI dashboard sends `{"type":"disconnect"}` to close the WebSocket

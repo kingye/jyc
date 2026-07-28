@@ -2931,24 +2931,24 @@ mode = "agent"
     #[test]
     fn test_extract_bearer_token_uppercase() {
         let req = "GET /ws HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n";
-        assert_eq!(extract_bearer_token(req), Some("abc123"));
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("abc123"));
     }
 
     #[test]
     fn test_extract_bearer_token_lowercase() {
         let req = "GET /ws HTTP/1.1\r\nAuthorization: bearer xyz789\r\n\r\n";
-        assert_eq!(extract_bearer_token(req), Some("xyz789"));
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("xyz789"));
     }
 
     #[test]
     fn test_extract_bearer_token_missing() {
         let req = "GET /ws HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        assert_eq!(extract_bearer_token(req), None);
+        assert_eq!(InspectServer::extract_bearer_token(req), None);
     }
 
     #[test]
     fn test_extract_bearer_token_case_insensitive_header_name() {
         let req = "GET /ws HTTP/1.1\r\nauthorization: Bearer tok456\r\n\r\n";
-        assert_eq!(extract_bearer_token(req), Some("tok456"));
+        assert_eq!(InspectServer::extract_bearer_token(req), Some("tok456"));
     }
 }

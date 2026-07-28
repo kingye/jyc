@@ -142,6 +142,13 @@ All notable changes to JYC will be documented in this file.
   the same rules: Tab fills an incomplete filter (e.g. `model gpt` →
   `/model gpt-4`), and Tab on a complete filter (e.g. `/model gpt-4`) copies
   to the input line. Enter sends in both modes.
+- **Command popup Enter keeps the input field.** Pressing Enter on a command
+  in the `/` command popup now sends the selected command without clearing
+  the chat input editor. The editor retains whatever was there before the
+  popup opened (empty in Insert mode, pre-existing text in Normal mode).
+  Only the popup-Enter send path is affected; typing-and-sending in the
+  editor still clears the field as before. The Tab copy-to-input path is
+  unchanged — Tab still populates the editor for editing before send.
 
 ### Fixed
 

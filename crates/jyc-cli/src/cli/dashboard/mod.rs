@@ -222,15 +222,20 @@ async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<(
 
     // Spawn jyc serve as a background child process. Pass --workdir so the
     // auth token file is written to the same location the dashboard reads.
+    // Skip --workdir when it's the platform default (data_home) so the
+    // spawned serve uses the standard first-run provisioning path.
     let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
-    let mut child = Command::new(&exe)
-        .arg("serve")
-        .arg("--workdir")
-        .arg(workdir)
-        .stdin(std::process::Stdio::null())
+    let default_workdir = jyc_utils::paths::data_home().unwrap_or_default();
+    let mut cmd = Command::new(&exe);
+    cmd.arg("serve");
+    if workdir != default_workdir {
+        cmd.arg("--workdir").arg(workdir);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(log_dup)
         .stderr(log_file)
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("Failed to spawn {} serve", exe.display()))?;
 

@@ -27,7 +27,8 @@ pub struct ConfigResolution {
 /// - `--config <path>`: absolute paths used as-is; `~` is expanded; **relative
 ///   paths are resolved against the current directory** (the user's shell cwd).
 ///   L1 still applies as base layer when different.
-/// - No `--config`, explicit `--workdir`: `<workdir>/config.toml`, L1 as base.
+/// - No `--config`, explicit `--workdir`: `<workdir>/config.toml` if it exists,
+///   otherwise fall back to `<config_home>/config.toml` (L1 global). L1 as base.
 /// - No `--config`, no `--workdir`: `<config_home>/config.toml` (is_default).
 pub fn resolve_config(
     workdir: &Path,
@@ -49,7 +50,22 @@ pub fn resolve_config(
                     .join(expanded)
             }
         }
-        None if workdir_explicit => workdir.join(DEFAULT_CONFIG_FILENAME),
+        None if workdir_explicit => {
+            let candidate = workdir.join(DEFAULT_CONFIG_FILENAME);
+            if candidate.exists() {
+                candidate
+            } else {
+                // No workdir-local config - fall back to the platform
+                // global (L1). L2 is an optional overlay, not required.
+                global.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no config found at {} or in the platform config directory; \
+                         pass --config explicitly",
+                        candidate.display()
+                    )
+                })?
+            }
+        }
         None => global.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "could not determine platform config directory; pass --config explicitly"

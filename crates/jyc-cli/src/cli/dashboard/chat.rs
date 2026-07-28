@@ -2294,11 +2294,11 @@ mod tests {
     #[test]
     fn command_popup_send_preserves_editor_text() {
         // Regression: the PopupAction::Send arm used to populate the editor
-        // with the selected command and then call `send_message()` (which
-        // cleared the editor at line 1585), wiping any pre-existing text.
-        // It now routes through `send_message_inner`, which never touches
-        // the editor — so the editor keeps whatever was there before the
-        // popup opened.
+        // with the selected command and then call `send_message()`, which
+        // cleared the editor (`self.editor = empty_chat_editor()` inside
+        // `send_message`), wiping any pre-existing text. It now routes
+        // through `send_message_inner`, which never touches the editor —
+        // so the editor keeps whatever was there before the popup opened.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
 

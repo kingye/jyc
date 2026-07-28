@@ -32,7 +32,7 @@ pub(super) async fn ws_client_task(
                     r.headers_mut().insert(
                         "Authorization",
                         HeaderValue::from_str(&value)
-                            .expect("static bearer header value is always valid"),
+                            .expect("token is hex so always a valid header value"),
                     );
                 }
                 r

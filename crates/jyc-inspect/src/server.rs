@@ -317,6 +317,9 @@ impl InspectServer {
     }
 
     /// Extract a bearer token from an HTTP upgrade request.
+    ///
+    /// The `Authorization` header name and the `Bearer` scheme prefix are
+    /// both matched case-insensitively per RFC 7235 §2.1.
     fn extract_bearer_token(request: &str) -> Option<&str> {
         request
             .lines()
@@ -325,12 +328,16 @@ impl InspectServer {
             .find_map(|line| {
                 let (name, value) = line.split_once(':')?;
                 if name.trim().eq_ignore_ascii_case("authorization") {
-                    value.trim().strip_prefix("Bearer ")
+                    let v = value.trim();
+                    // Case-insensitive match on the Bearer scheme prefix.
+                    let rest = v
+                        .strip_prefix("Bearer ")
+                        .or_else(|| v.strip_prefix("bearer "))?;
+                    Some(rest.trim())
                 } else {
                     None
                 }
             })
-            .map(str::trim)
     }
 
     ///
@@ -2785,5 +2792,163 @@ mode = "agent"
         assert_eq!(v["type"], "processing");
         assert_eq!(v["is_processing"], true);
         assert_eq!(v["has_error"], false);
+    }
+
+    // ── Authorization token tests ──
+
+    fn test_context_with_token(token: &str) -> Arc<InspectContext> {
+        Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
+                name: "test".to_string(),
+                channel_type: "email".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }])),
+            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: None,
+            reload_callback: None,
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
+            auth_token: Some(token.to_string()),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_rest_rejects_missing_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // No auth_token field in the request
+        writer
+            .write_all(b"{\"method\":\"get_state\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
+            other => panic!("expected auth_failed error, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rest_rejects_wrong_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"wrong\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
+            other => panic!("expected auth_failed error, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rest_accepts_correct_token() {
+        let cancel = CancellationToken::new();
+        let ctx = test_context_with_token("secret123");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
+        let handle = server.start();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        writer
+            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"secret123\"}\n")
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+
+        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
+        match resp {
+            InspectResponse::State(state) => assert_eq!(state.channels.len(), 1),
+            other => panic!("expected State, got {:?}", other),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_extract_bearer_token_uppercase() {
+        let req = "GET /ws HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n";
+        assert_eq!(extract_bearer_token(req), Some("abc123"));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let req = "GET /ws HTTP/1.1\r\nAuthorization: bearer xyz789\r\n\r\n";
+        assert_eq!(extract_bearer_token(req), Some("xyz789"));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_missing() {
+        let req = "GET /ws HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(extract_bearer_token(req), None);
+    }
+
+    #[test]
+    fn test_extract_bearer_token_case_insensitive_header_name() {
+        let req = "GET /ws HTTP/1.1\r\nauthorization: Bearer tok456\r\n\r\n";
+        assert_eq!(extract_bearer_token(req), Some("tok456"));
     }
 }

@@ -1323,11 +1323,13 @@ impl ChatState {
         addr: &str,
         channel: &str,
         client: &mut InspectClient,
+        token: Option<String>,
     ) {
         self.visible = true;
         self.phase = ChatPhase::PatternSelect;
         self.channel = Some(channel.to_string());
         self.thread = None;
+        self.token = token;
         self.patterns = client.list_patterns(channel).await.unwrap_or_default();
         self.pattern_selected = 0;
         self.messages.clear();

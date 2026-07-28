@@ -13,11 +13,9 @@ pub fn token_path(workdir: &Path) -> PathBuf {
 
 /// Generate a random 256-bit authorization token encoded as hexadecimal.
 pub fn generate_token() -> String {
-    format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    )
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("getrandom failed");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Write an authorization token with owner-only permissions on Unix.
@@ -67,5 +65,12 @@ mod tests {
 
         assert_eq!(read_token(&path).unwrap(), token);
         assert_eq!(token.len(), 64);
+    }
+
+    #[test]
+    fn token_is_unique() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_ne!(a, b, "two generated tokens should differ");
     }
 }

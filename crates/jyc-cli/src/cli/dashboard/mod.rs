@@ -583,7 +583,18 @@ fn resolve_dashboard_token(
     let path = jyc_utils::auth_token::token_path(workdir);
     match jyc_utils::auth_token::read_token(&path) {
         Ok(token) => Ok(Some(token)),
-        Err(_) => Ok(None),
+        Err(e) => {
+            // File-not-found is the common case (server not yet started).
+            // Other errors (corrupted file, permission denied) are worth logging.
+            if path.exists() {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read authorization token; dashboard will connect without auth"
+                );
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -780,7 +791,9 @@ async fn handle_normal_keys(
                     .map(|c| c.name.clone())
             });
             if let Some(channel) = channel {
-                app.chat.open_pattern_select(addr, &channel, client).await;
+                app.chat
+                    .open_pattern_select(addr, &channel, client, app.token.clone())
+                    .await;
             } else {
                 app.set_status("No websocket channel configured".to_string());
             }

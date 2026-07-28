@@ -1264,17 +1264,23 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         // Generate and persist the dashboard authorization token. The file
         // is created with owner-only permissions; its path is logged so the
-        // user can retrieve the token via `jyc token show`.
+        // user can retrieve the token via `jyc token show`. If the write
+        // fails, the server still enforces the in-memory token but the
+        // dashboard won't be able to connect - bail out instead.
         let auth_token = jyc_utils::auth_token::generate_token();
         let token_path = jyc_utils::auth_token::token_path(workdir);
-        if let Err(e) = jyc_utils::auth_token::write_token(&token_path, &auth_token) {
-            tracing::warn!(path = %token_path.display(), error = %e, "Failed to write authorization token");
-        } else {
-            tracing::info!(
-                path = %token_path.display(),
-                "Authorization token written; retrieve with `jyc token show`"
-            );
-        }
+        jyc_utils::auth_token::write_token(&token_path, &auth_token).with_context(|| {
+            format!(
+                "Failed to write authorization token to {}. \
+                     Dashboard will not be able to connect. Fix the path \
+                     and rerun `jyc serve`.",
+                token_path.display()
+            )
+        })?;
+        tracing::info!(
+            path = %token_path.display(),
+            "Authorization token written; retrieve with `jyc token show`"
+        );
 
         let context = Arc::new(jyc_inspect::server::InspectContext {
             thread_managers: orchestrator.thread_managers(),

@@ -27,7 +27,7 @@ Available commands:\n\
   /build  — switch to build mode (full execution)\n\
   /reset  — reset session, keep chat history\n\
   /new    — reset session and clear chat history\n\
-  /close  — close and delete this thread\n\
+  /close [-y|--confirm]  — close and delete this thread\n\
   /template [update] — apply or re-apply thread template\n\
   /?      — show this help";
 

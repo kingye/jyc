@@ -1090,9 +1090,6 @@ fn is_user_visible_activity(entry: &jyc_types::ActivityEntry) -> bool {
         return false;
     }
     // Backward compat for old log files (pre-`is_internal` field).
-    if entry.text.starts_with("Thinking: ") {
-        return false;
-    }
     if entry.text.ends_with(" chars)") {
         return false;
     }
@@ -2282,15 +2279,5 @@ mod tests {
             is_internal: false,
         };
         assert!(!is_user_visible_activity(&legacy));
-
-        // Thinking entries (existing renderer filter) hidden.
-        let thinking = ActivityEntry {
-            text: "Thinking: deep thoughts".to_string(),
-            timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-            severity: Severity::Info,
-            id: 4,
-            is_internal: false,
-        };
-        assert!(!is_user_visible_activity(&thinking));
     }
 }

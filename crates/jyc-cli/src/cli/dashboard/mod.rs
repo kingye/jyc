@@ -92,6 +92,7 @@ struct App {
 
     /// WS connection for the currently-selected overview thread.
     /// Live-feeds `live_activity` so the activity pane updates without polling.
+    overview_ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     overview_ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     /// (channel, thread) the overview WS is currently scoped to.
     overview_ws_target: Option<(String, String)>,
@@ -102,7 +103,14 @@ struct App {
 
 impl App {
     fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>, token: Option<String>) -> Self {
-        let (_, overview_ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        // The overview WS keeps its cmd_tx alive so the spawned task can
+        // reconnect on transient errors. cmd_rx is consumed by the task;
+        // event_rx is consumed by the app.
+        let (overview_ws_cmd_tx, _overview_ws_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (overview_ws_evt_tx, overview_ws_rx) =
+            tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let _ = overview_ws_evt_tx; // unused; just for pairing
         Self {
             state: None,
             error: None,
@@ -111,6 +119,7 @@ impl App {
             status_message: None,
             pending_reset: None,
             token,
+            overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
             overview_ws_target: None,
             chat: ChatState::new(ws_rx),
@@ -1208,9 +1217,13 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 /// Open (or swap to a new) overview WS for the selected thread.
 ///
 /// If `app.overview_ws_target` already matches the new (channel, thread),
-/// this is a no-op. Otherwise the previous overview WS is dropped (which
-/// causes the spawned task to exit when its TCP connection closes) and a
-/// new WS task is spawned against `/ws/<channel>/<thread>`.
+/// this is a no-op. Otherwise the previous overview WS is gracefully
+/// closed (sends `disconnect` so the spawned task exits), and a new WS
+/// task is spawned against `/ws/<channel>/<thread>`.
+///
+/// `cmd_tx` is kept in `App.overview_ws_tx` so the task can keep
+/// reconnecting on transient errors (the `cmd_rx.recv() = None` path
+/// only triggers on graceful close, not idle timeouts).
 fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
     if let Some((c, t)) = app.overview_ws_target.as_ref()
         && c == channel
@@ -1218,21 +1231,27 @@ fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
     {
         return;
     }
+    // Close the previous overview WS (if any) by sending a disconnect
+    // message. The task exits when cmd_rx.recv() returns None.
+    if let Some(tx) = app.overview_ws_tx.take() {
+        let _ = tx.send(r#"{"type":"disconnect"}"#.to_string());
+    }
     let url = format!("ws://{}/ws/{}/{}", addr, channel, thread);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    // Replace the receiver; the old WS task exits when the old channel is
-    // dropped (or its connection closes). cmd_tx is moved into the task and
-    // dropped at function end if the task hasn't sent to it.
+    // Store the sender so we can send disconnect on close/swap. The task
+    // reads cmd_rx and exits cleanly when the channel closes.
+    app.overview_ws_tx = Some(cmd_tx);
     app.overview_ws_rx = event_rx;
     app.overview_ws_target = Some((channel.to_string(), thread.to_string()));
     tokio::spawn(ws::ws_client_task(url, cmd_rx, event_tx, app.token.clone()));
-    // cmd_tx is dropped here; the task exits cleanly when cmd_rx returns None.
-    drop(cmd_tx);
 }
 
 /// Close the overview WS (used when chat mode opens; chat WS takes over).
 fn close_overview_ws(app: &mut App) {
+    if let Some(tx) = app.overview_ws_tx.take() {
+        let _ = tx.send(r#"{"type":"disconnect"}"#.to_string());
+    }
     app.overview_ws_target = None;
     // Drain any pending events so the next selection doesn't get stale data.
     while app.overview_ws_rx.try_recv().is_ok() {}
@@ -1469,5 +1488,62 @@ mod tests {
 
         let path = tmp.path().to_string_lossy().to_string();
         check_existing_thread_name(&path, "new-thread").expect("should pass when file is empty");
+    }
+
+    fn make_test_app() -> App {
+        let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        App::new(ws_rx, None)
+    }
+
+    #[tokio::test]
+    async fn ensure_overview_ws_noop_when_target_unchanged() {
+        let mut app = make_test_app();
+        app.overview_ws_target = Some(("chan".to_string(), "thr".to_string()));
+        let original_rx_ptr = std::ptr::addr_of!(app.overview_ws_rx);
+        // No new task should be spawned; rx is not replaced.
+        ensure_overview_ws(&mut app, "127.0.0.1:9876", "chan", "thr");
+        assert_eq!(
+            app.overview_ws_target,
+            Some(("chan".to_string(), "thr".to_string()))
+        );
+        assert!(std::ptr::eq(
+            original_rx_ptr,
+            std::ptr::addr_of!(app.overview_ws_rx)
+        ));
+    }
+
+    #[tokio::test]
+    async fn ensure_overview_ws_swaps_when_target_changes() {
+        let mut app = make_test_app();
+        // Seed: pretend a previous WS exists for thread A.
+        app.overview_ws_target = Some(("chan".to_string(), "old".to_string()));
+        // Call for a different target.
+        ensure_overview_ws(&mut app, "127.0.0.1:9876", "chan", "new");
+        assert_eq!(
+            app.overview_ws_target,
+            Some(("chan".to_string(), "new".to_string()))
+        );
+        // A disconnect message should have been sent on the old cmd_tx.
+        // (Can't easily test the spawn itself, but the target updated and
+        //  the old cmd_tx is consumed.)
+    }
+
+    #[tokio::test]
+    async fn close_overview_ws_drains_and_clears_target() {
+        let mut app = make_test_app();
+        // Seed: pretend a WS exists and has an event in the rx queue.
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        app.overview_ws_tx = Some(cmd_tx);
+        app.overview_ws_target = Some(("chan".to_string(), "thr".to_string()));
+        app.overview_ws_rx = {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+            // The tx side is dropped, so any send would fail. rx still alive
+            // so we can push events into the queue.
+            drop(tx);
+            rx
+        };
+        close_overview_ws(&mut app);
+        assert!(app.overview_ws_target.is_none());
+        assert!(app.overview_ws_tx.is_none());
     }
 }

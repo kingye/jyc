@@ -153,6 +153,19 @@ All notable changes to JYC will be documented in this file.
   the loop and the existing post-loop helper sends a WS Close frame;
   `reset_session` and `ping` are accepted as no-ops.
 
+- **`get_thread_activity` returns 0 entries despite data in JSONL.**
+  Server-side filter at `handle_get_thread_activity` was inverted —
+  `.filter(|e| !is_user_visible_activity(e))` dropped the user-visible
+  entries and kept internal heartbeats. Since the JSONL contains only
+  user-visible entries (internals are skipped at write time, see
+  `ActivityTracker`'s `if !is_internal { ActivityLogStore::append(...) }`
+  guard), the response was always empty and the dashboard's activity
+  pane stayed blank on cold start. Removed the `!` to match the
+  client-side filter (`jyc-cli/src/cli/dashboard/chat.rs:1137, 1184`)
+  and the function's documented semantics. New `tracing::debug!` lines
+  log the request and the served entry count, so a non-zero count in
+  the log confirms the fix.
+
 - **`get_thread_activity` hydration is now traceable.** The inspect
   server's `handle_get_thread_activity` handler emitted nothing on
   entry or exit, so the dashboard's empty-activity-pane issue could

@@ -137,6 +137,31 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **WebSocket dashboard disconnect rejected on websocket-type channels.**
+  The CLI dashboard sends `{"type":"disconnect"}` to close the WebSocket
+  connection cleanly on every thread navigation, chat open/close, and
+  overview-WS swap. The server-side `ClientMessage` enum for
+  `WebsocketInboundAdapter` only defined the `Message` variant despite
+  its doc comment advertising `disconnect`, `reset_session`, and `ping`,
+  so serde rejected the disconnect frame with `unknown variant
+  'disconnect', expected 'message'`. The read loop never broke, the
+  connection eventually RST'd from the client side, and the dashboard
+  reconnected on the next poll — producing a ~1s connect/reset flap with
+  `Connection reset without closing handshake` warnings and missed
+  inspect-broadcast events. Mirrors `ThreadProxyHandler::ClientMessage`
+  so the protocol contract matches the doc comment. `Disconnect` breaks
+  the loop and the existing post-loop helper sends a WS Close frame;
+  `reset_session` and `ping` are accepted as no-ops.
+
+- **`get_thread_activity` hydration is now traceable.** The inspect
+  server's `handle_get_thread_activity` handler emitted nothing on
+  entry or exit, so the dashboard's empty-activity-pane issue could
+  not be diagnosed from existing logs. Two `tracing::debug!` lines at
+  the server (entry: channel/thread/limit/since; exit: count of entries
+  served) let the operator distinguish the three failure modes — never
+  fired, fired but returned 0 entries, fired and returned data — from
+  the log alone.
+
 - **Dashboard chat pane clips long thinking content.** Thinking/reasoning
   text wider than the chat pane was truncated at the right edge instead of
   wrapping. The preview is now hard-wrapped to the available width

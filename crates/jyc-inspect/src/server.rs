@@ -563,6 +563,14 @@ impl InspectServer {
             .map(|n| n as usize)
             .unwrap_or(180);
 
+        tracing::debug!(
+            channel = %channel,
+            thread = %thread,
+            limit,
+            since = since.as_deref().unwrap_or(""),
+            "inspect: get_thread_activity"
+        );
+
         let tms = context.thread_managers.load();
         let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
             Some(t) => t,
@@ -594,6 +602,12 @@ impl InspectServer {
             .filter(|e| !is_user_visible_activity(e))
             .collect();
         let entries = filter_by_since(entries, since.as_deref());
+        tracing::debug!(
+            channel = %channel,
+            thread = %thread,
+            count = entries.len(),
+            "inspect: get_thread_activity served"
+        );
         InspectResponse::ActivityHistory { entries }
     }
 

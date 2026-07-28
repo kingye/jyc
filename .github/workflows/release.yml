@@ -28,11 +28,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Swatinem/rust-cache@v2
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Include runner OS in cache key so different Ubuntu versions
+          # (e.g., ubuntu-latest in CI vs ubuntu-22.04 here) don't poison
+          # each other's GLIBC-linked build artifacts.
+          prefix-key: "v0-rust-${{ matrix.os }}"
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'

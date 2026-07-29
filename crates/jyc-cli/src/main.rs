@@ -82,16 +82,27 @@ enum Commands {
 
 /// Parse `Cli` so that bare `jyc` behaves like `jyc open` (creates an
 /// ad-hoc websocket thread and opens the chat pane). When no
-/// subcommand is given, we inject `open` and re-parse.
+/// subcommand is given, we inject `open` and re-parse. With clap's
+/// default `subcommand_required(true)`, a bare invocation emits
+/// `DisplayHelp` (we also catch `MissingSubcommand` for safety); we
+/// treat both as "no subcommand" only when `args.len() == 1` so that
+/// an explicit `jyc --help` still shows help.
 fn parse_cli() -> Cli {
-    match Cli::try_parse() {
+    let args: Vec<String> = std::env::args().collect();
+    match Cli::try_parse_from(&args) {
         Ok(c) => c,
-        Err(e) if e.kind() == ErrorKind::MissingSubcommand => {
-            let mut args: Vec<String> = std::env::args().collect();
-            if args.len() == 1 {
-                args.push("open".to_string());
-            }
-            Cli::try_parse_from(args).unwrap_or_else(|_| e.exit())
+        Err(e)
+            if args.len() == 1
+                && matches!(
+                    e.kind(),
+                    ErrorKind::MissingSubcommand
+                        | ErrorKind::DisplayHelp
+                        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ) =>
+        {
+            let mut new_args = args;
+            new_args.push("open".to_string());
+            Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit())
         }
         Err(e) => e.exit(),
     }

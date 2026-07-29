@@ -261,8 +261,6 @@ All notable changes to JYC will be documented in this file.
 ### Fixed
 
 - **`/cancel` now aborts tool execution immediately.** Previously the
-
-- **`/cancel` now aborts tool execution immediately.** Previously the
   per-thread `CancellationToken` was honored at LLM-call boundaries
   and between tool iterations, but a long-running tool call (e.g.
   `bash` running `sleep 60`, a `webfetch` HTTP request) ran to

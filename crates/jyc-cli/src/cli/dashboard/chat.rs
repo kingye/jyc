@@ -903,7 +903,8 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
                 ThreadStatus::Error => Style::default().fg(Color::Red),
             };
             let is_current = current == Some((&t.name, &t.channel));
-            let name_style = if i == selected && focused {
+            let is_selected = i == selected && focused;
+            let name_style = if is_selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
@@ -915,10 +916,27 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default()
             };
-            Line::from(vec![
-                Span::styled("● ", dot_style),
-                Span::styled(t.name.clone(), name_style),
-            ])
+
+            // For the focused selection row, paint the full row width with
+            // the highlight background so the selection visually fills the
+            // row instead of stopping at the end of the thread name.
+            if is_selected {
+                let sel_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+                let mut spans = Vec::with_capacity(3);
+                spans.push(Span::styled("● ", sel_style));
+                spans.push(Span::styled(t.name.as_str(), name_style));
+                let used = "● ".width() + t.name.as_str().width();
+                let pad = (inner.width as usize).saturating_sub(used);
+                if pad > 0 {
+                    spans.push(Span::styled(" ".repeat(pad), sel_style));
+                }
+                Line::from(spans)
+            } else {
+                Line::from(vec![
+                    Span::styled("● ", dot_style),
+                    Span::styled(t.name.as_str(), name_style),
+                ])
+            }
         })
         .collect();
 
@@ -3143,5 +3161,58 @@ mod tests {
         // First Ctrl+A after zen mode must reach the 20% size.
         app.chat.cycle_activity();
         assert_eq!(app.chat.activity_split, 1);
+    }
+
+    #[test]
+    fn explorer_selected_row_fills_full_width() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Short thread name so the missing highlight (the bug) would leave
+        // most of the row uncolored. The selection background must extend
+        // to the pane's right edge, not just under the thread-name text.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.explorer_visible = true;
+        app.chat.focus = ChatFocus::ExplorerPane;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "x".to_string(),
+                channel: "test".to_string(),
+                pattern: None,
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                input_tokens: None,
+                max_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+            }],
+            ..Default::default()
+        });
+        app.chat.explorer_selected = 0;
+
+        let width = 20;
+        let height = 5;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_explorer(frame, frame.area(), &app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // Selected row sits at the top of the inner area (y=1 once the
+        // border is taken into account). Every cell across it must have
+        // the cyan selection background.
+        for x in 1..(width - 1) {
+            let cell = &buffer[(x, 1)];
+            assert_eq!(
+                cell.bg,
+                Color::Cyan,
+                "explorer selection bg should fill row at x={x}, got {:?}",
+                cell.bg
+            );
+        }
     }
 }

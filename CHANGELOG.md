@@ -131,6 +131,12 @@ All notable changes to JYC will be documented in this file.
   covers the new location, and `.opencode/skills/` scan paths are kept
   for compatibility).
 
+- **Chat input gutter and header color changed to Catppuccin sapphire.**
+  The `╰─> ` prompt gutter and the `╭─ {mode} …` header line above the
+  chat input were bright Yellow (gutter) / Catppuccin green-yellow
+  (header, per mode). Both now use the softer Catppuccin sapphire
+  (`#74C7EC`) when focused; DarkGray unfocused is unchanged. The
+  per-mode green/yellow color distinction is removed.
 - **Chat header line shows channel, pattern, version, model, and
   input-token percentage.** The single `╭─ plan` / `╭─ build` line
   above the dashboard chat input is now
@@ -183,6 +189,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Thread explorer opens on a stale row.** Opening the explorer
+  (`Ctrl+E` / palette) now snaps the selection to the thread currently
+  open in the chat pane. `sync_explorer_selection` only followed the
+  chat thread while the explorer was unfocused — and opening focuses
+  it, so the follow-up never ran.
 - **Thread explorer selection fills the full row width.** When the
   explorer pane has focus, the highlighted row now paints the entire
   row's width with the selection background instead of stopping at the

@@ -24,6 +24,8 @@ pub(super) enum ChatFocus {
     MessageArea,
     /// The activity log pane.
     ActivityPane,
+    /// The left-side thread explorer pane.
+    ExplorerPane,
 }
 
 /// A single message in the chat conversation.
@@ -66,6 +68,12 @@ pub(super) struct ChatState {
     /// because `Ctrl+Z` toggles them together.
     /// `false` = both hidden (zen mode), `true` = both visible.
     pub(super) info_visible: bool,
+    /// Thread explorer pane (left side, 20% width). Default hidden;
+    /// toggled via Ctrl+E / the `toggle explorer` palette command.
+    /// Entering zen mode hides it; exiting zen mode does not restore it.
+    pub(super) explorer_visible: bool,
+    /// Selected row in the explorer pane.
+    pub(super) explorer_selected: usize,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
@@ -326,6 +334,49 @@ pub(super) fn edit_input_externally(
     Ok(())
 }
 
+/// Move the explorer selection by `delta` rows, clamped to the current
+/// thread list.
+fn explorer_move(app: &mut App, delta: i64) {
+    let len = app.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+    if len == 0 {
+        app.chat.explorer_selected = 0;
+        return;
+    }
+    let cur = app.chat.explorer_selected as i64;
+    app.chat.explorer_selected = (cur + delta).clamp(0, len as i64 - 1) as usize;
+}
+
+/// Open the thread currently selected in the explorer pane: websocket
+/// threads switch the chat over; other threads open the legacy detail
+/// view (same as Enter in the overview).
+fn explorer_open_selected(app: &mut App) {
+    let info = app.state.as_ref().and_then(|s| {
+        s.threads.get(app.chat.explorer_selected).map(|t| {
+            let is_ws = s
+                .channels
+                .iter()
+                .find(|c| c.name == t.channel)
+                .is_some_and(|c| c.channel_type == "websocket");
+            (t.name.clone(), t.channel.clone(), is_ws)
+        })
+    });
+    let Some((name, channel, is_ws)) = info else {
+        return;
+    };
+    if is_ws {
+        match app.chat.open_addr.clone() {
+            Some(addr) => {
+                let token = app.chat.token.clone();
+                app.chat.open(&addr, Some(&channel), Some(&name), token);
+            }
+            None => app.set_status("No server address available".to_string()),
+        }
+    } else {
+        app.chat
+            .open_thread_detail(&channel, &name, app.state.as_ref());
+    }
+}
+
 /// Execute a TUI-local action selected from the command palette.
 pub(super) fn execute_local_action(
     app: &mut App,
@@ -334,6 +385,7 @@ pub(super) fn execute_local_action(
 ) {
     use local_commands::LocalAction;
     match action {
+        LocalAction::ToggleExplorer => app.chat.toggle_explorer(),
         LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
         LocalAction::CycleActivity => app.chat.cycle_activity(),
         LocalAction::OpenExternalEditor => {
@@ -361,9 +413,16 @@ pub(super) fn handle_chat_keys(
         return;
     }
 
-    // Ctrl+E opens an external editor to compose the chat input
+    // Ctrl+E toggles the thread explorer pane (E = explorer).
     let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_e && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
+    if is_ctrl_e && app.chat.phase == ChatPhase::Chatting {
+        app.chat.toggle_explorer();
+        return;
+    }
+
+    // Ctrl+O opens an external editor to compose the chat input
+    let is_ctrl_o = key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_o && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
         if let Err(e) = edit_input_externally(app, terminal) {
             app.set_status(format!("Editor error: {e:#}"));
         }
@@ -532,6 +591,21 @@ pub(super) fn handle_chat_keys(
                 _ => {}
             }
 
+            // Explorer pane: navigate the thread list; Enter switches the
+            // chat to the selected thread. Esc returns focus to the input.
+            if app.chat.focus == ChatFocus::ExplorerPane {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.chat.focus = ChatFocus::ChatPane;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => explorer_move(app, -1),
+                    KeyCode::Down | KeyCode::Char('j') => explorer_move(app, 1),
+                    KeyCode::Enter => explorer_open_selected(app),
+                    _ => {}
+                }
+                return;
+            }
+
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     KeyCode::Esc => {
@@ -680,17 +754,39 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
         .constraints(vertical_constraints)
         .split(area);
 
-    // Top row always holds the chat conversation + optional info pane.
+    // Top row always holds the chat conversation plus the optional
+    // explorer (left) and info (right) panes.
     let top_row = chunks[0];
+    let show_explorer = app.chat.explorer_visible;
+    if show_explorer {
+        sync_explorer_selection(app);
+    }
+    let cols = match (show_explorer, app.chat.info_visible) {
+        (true, true) => Layout::horizontal([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(top_row),
+        (true, false) => {
+            Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
+                .split(top_row)
+        }
+        (false, true) => {
+            Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
+                .split(top_row)
+        }
+        (false, false) => Layout::horizontal([Constraint::Percentage(100)]).split(top_row),
+    };
+    let mut col_idx = 0;
+    if show_explorer {
+        render_explorer(frame, cols[col_idx], app);
+        col_idx += 1;
+    }
+    render_chat_conversation(frame, cols[col_idx], app);
+    col_idx += 1;
     if app.chat.info_visible {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .split(top_row);
-        render_chat_conversation(frame, cols[0], app);
-        render_thread_info_pane(frame, cols[1], app);
-    } else {
-        render_chat_conversation(frame, top_row, app);
+        render_thread_info_pane(frame, cols[col_idx], app);
     }
 
     if show_activity {
@@ -709,6 +805,104 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     } else if show_status {
         render_status_bar(frame, chunks[1], app);
     }
+}
+
+/// Keep the explorer selection valid and, while the explorer is not
+/// focused, following the thread currently open in the chat pane.
+fn sync_explorer_selection(app: &mut App) {
+    let Some(s) = app.state.as_ref() else {
+        app.chat.explorer_selected = 0;
+        return;
+    };
+    let len = s.threads.len();
+    if len == 0 {
+        app.chat.explorer_selected = 0;
+        return;
+    }
+    if app.chat.explorer_selected >= len {
+        app.chat.explorer_selected = len - 1;
+    }
+    if app.chat.focus != ChatFocus::ExplorerPane
+        && let (Some(thread), Some(channel)) = (&app.chat.thread, &app.chat.channel)
+        && let Some(idx) = s
+            .threads
+            .iter()
+            .position(|t| &t.name == thread && &t.channel == channel)
+    {
+        app.chat.explorer_selected = idx;
+    }
+}
+
+/// Render the left-side thread explorer pane (20% wide when shown).
+///
+/// Lists all threads from the latest overview poll with a status dot
+/// (green = processing, yellow = queued, cyan = waiting, red = error),
+/// highlighting the thread currently open in the chat pane. The list is
+/// rebuilt from `app.state` on every render, so it stays live.
+pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = app.chat.focus == ChatFocus::ExplorerPane;
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let block = Block::default()
+        .title(" Threads ")
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(s) = app.state.as_ref() else {
+        return;
+    };
+
+    let current = app.chat.thread.as_ref().zip(app.chat.channel.as_ref());
+    let selected = app.chat.explorer_selected;
+
+    // Scroll window: keep the selected row visible.
+    let height = inner.height as usize;
+    let offset = if selected >= height {
+        selected - height + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = s
+        .threads
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(height)
+        .map(|(i, t)| {
+            let dot_style = match t.status {
+                ThreadStatus::Processing => Style::default().fg(Color::Green),
+                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
+                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
+                ThreadStatus::Error => Style::default().fg(Color::Red),
+            };
+            let is_current = current == Some((&t.name, &t.channel));
+            let name_style = if i == selected && focused {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_current {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(vec![
+                Span::styled("● ", dot_style),
+                Span::styled(t.name.clone(), name_style),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Render the right-hand thread info pane (always 20% wide when shown).
@@ -928,10 +1122,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         if !is_user && prev_sender == Some("user") {
             let width = chunks[0].width as usize;
             all_lines.push(Line::from(""));
-            all_lines.push(Line::from(Span::styled(
-                "┄".repeat(width),
-                dim_style,
-            )));
+            all_lines.push(Line::from(Span::styled("┄".repeat(width), dim_style)));
             all_lines.push(Line::from(""));
         }
 
@@ -1191,7 +1382,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .base(Style::default())
         .hide_status_line();
     let theme = match app.chat.focus {
-        ChatFocus::MessageArea | ChatFocus::ActivityPane => theme.hide_cursor(),
+        ChatFocus::MessageArea | ChatFocus::ActivityPane | ChatFocus::ExplorerPane => {
+            theme.hide_cursor()
+        }
         ChatFocus::ChatPane => match app.chat.editor.mode {
             EditorMode::Insert => theme.cursor_style(
                 Style::default()
@@ -1443,6 +1636,8 @@ impl ChatState {
             awaiting_response: false,
             activity_split: 0,
             info_visible: false,
+            explorer_visible: false,
+            explorer_selected: 0,
             ws_tx: None,
             ws_rx,
             ws_connected: false,
@@ -1499,6 +1694,8 @@ impl ChatState {
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
         // when we switch back to overview later.
         self.last_hydrated_key = None;
+        // Stash addr so the explorer pane can switch threads later.
+        self.open_addr = Some(addr.to_string());
 
         // No WS yet — the chat starts in PatternSelect (if no initial thread)
         // and opens a scoped WS only after the user picks a pattern
@@ -1672,11 +1869,20 @@ impl ChatState {
             ChatFocus::MessageArea => {
                 if self.activity_split != 0 {
                     ChatFocus::ActivityPane
+                } else if self.explorer_visible {
+                    ChatFocus::ExplorerPane
                 } else {
                     ChatFocus::ChatPane
                 }
             }
-            ChatFocus::ActivityPane => ChatFocus::ChatPane,
+            ChatFocus::ActivityPane => {
+                if self.explorer_visible {
+                    ChatFocus::ExplorerPane
+                } else {
+                    ChatFocus::ChatPane
+                }
+            }
+            ChatFocus::ExplorerPane => ChatFocus::ChatPane,
         };
     }
 
@@ -1698,13 +1904,23 @@ impl ChatState {
         // Hide auxiliary UI unconditionally.
         self.info_visible = false;
         self.activity_split = 0;
-        if self.focus == ChatFocus::ActivityPane {
+        self.explorer_visible = false;
+        if self.focus == ChatFocus::ActivityPane || self.focus == ChatFocus::ExplorerPane {
             self.focus = ChatFocus::ChatPane;
         }
         // If anything was visible, we're now in zen mode (exit).
         // Otherwise restore info+status.
         if !was_info_visible {
             self.info_visible = true;
+        }
+    }
+
+    /// Toggle the thread explorer pane (left side). Hiding it while it
+    /// has focus returns focus to the chat input.
+    pub(super) fn toggle_explorer(&mut self) {
+        self.explorer_visible = !self.explorer_visible;
+        if !self.explorer_visible && self.focus == ChatFocus::ExplorerPane {
+            self.focus = ChatFocus::ChatPane;
         }
     }
 
@@ -1716,6 +1932,7 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
             }
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -1738,6 +1955,7 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(1)
             }
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -1749,6 +1967,7 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = usize::MAX,
             ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -1757,6 +1976,7 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = 0,
             ChatFocus::ActivityPane => self.activity_scroll = 0,
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -1776,7 +1996,7 @@ impl ChatState {
                     .clamp(2, 11);
                 base.saturating_sub(input_lines).max(1)
             }
-            ChatFocus::ActivityPane => base.max(1),
+            ChatFocus::ActivityPane | ChatFocus::ExplorerPane => base.max(1),
         }
     }
 
@@ -1789,6 +2009,7 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
             }
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -1801,6 +2022,7 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)
             }
+            ChatFocus::ExplorerPane => {}
         }
     }
 
@@ -2652,6 +2874,59 @@ mod tests {
         let app = App::new(rx, None);
         assert!(!app.chat.info_visible);
         assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn zen_mode_hides_explorer_and_does_not_restore_it() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+
+        // Explorer open alongside visible info pane.
+        app.chat.toggle_zen_mode(); // exit default zen: info visible
+        app.chat.toggle_explorer();
+        assert!(app.chat.explorer_visible);
+        assert!(app.chat.info_visible);
+
+        // Enter zen → explorer hidden.
+        app.chat.toggle_zen_mode();
+        assert!(!app.chat.explorer_visible);
+        assert!(!app.chat.info_visible);
+
+        // Exit zen → info restored, explorer stays hidden.
+        app.chat.toggle_zen_mode();
+        assert!(app.chat.info_visible);
+        assert!(!app.chat.explorer_visible);
+    }
+
+    #[test]
+    fn hiding_explorer_returns_focus_to_chat_pane() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.toggle_explorer();
+        app.chat.focus = ChatFocus::ExplorerPane;
+        app.chat.toggle_explorer();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn focus_cycle_includes_explorer_only_when_visible() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+
+        // Hidden: ChatPane → MessageArea → ChatPane (no activity pane).
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+
+        // Visible: ChatPane → MessageArea → ExplorerPane → ChatPane.
+        app.chat.toggle_explorer();
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ExplorerPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
     }
 
     #[test]

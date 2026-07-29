@@ -103,7 +103,8 @@ starts in Insert mode.
 | `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Switch focus between Chat and Activity panes |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
-| `Ctrl+W` | Cycle activity pane split ratio |
+| `Ctrl+A` | Cycle activity pane size: hidden → bottom 20% → bottom 80% → activity-only → hidden |
+| `Ctrl+Z` | Toggle zen mode: hide (or show) thread info pane and status bar together. If the activity pane is visible, `Ctrl+Z` also hides it. Exiting zen mode restores only info + status, not activity. |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
 | `Ctrl+Q` | Quit the dashboard |
@@ -138,21 +139,38 @@ Normal mode (default):
 └────────────────────────┘
 ```
 
-Chat mode (`c` toggled on):
+Chat mode (`c` toggled on). The channel bar is hidden; chat, thread info
+pane, activity pane, and status bar are individually togglable. By
+default all auxiliary UI is hidden (zen mode). Each chat round has only
+a top time rule and a bottom right-aligned duration rule — there are no
+side borders or middle dividers.
 
 ```
+Default (zen mode):
 ┌────────────────────────┐
-│ Channels bar           │
-├────────────────────────┤
-│ Threads table          │
-├────────────────────────┤
-│ Compact info bar (1ln) │
-├────────────────────────┤
+│ Chat conversation      │
+│ (borderless, full size)│
+└────────────────────────┘
+
+After Ctrl+Z (info + status shown):
+┌────────────────────────┐
+│ Chat conversation      │┌─────────────┐
+│ (borderless)           ││ Thread Info │
+│                        ││  (20% wide) │
+│                        ││             │
+└────────────────────────┘└─────────────┘
+ Help bar (1 line)
+
+After Ctrl+A twice (activity 80% bottom):
+┌────────────────────────┐
 │ Chat conversation      │
 ├────────────────────────┤
+│ Activity log (80%)     │
+└────────────────────────┘
+
+After Ctrl+A three times (activity only):
+┌────────────────────────┐
 │ Activity log           │
-├────────────────────────┤
-│ Help bar               │
 └────────────────────────┘
 ```
 

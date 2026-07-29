@@ -54,8 +54,13 @@ pub(super) struct ChatState {
     /// the thread is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
     pub(super) awaiting_response: bool,
-    /// Activity pane split state: 0=100/0, 1=80/20, 2=20/80, 3=0/100
+    /// Activity pane visibility/size state.
+    /// 0 = hidden, 1 = bottom 20%, 2 = bottom 80%, 3 = activity-only (full pane)
     pub(super) activity_split: u8,
+    /// Thread info pane + bottom status bar visibility. They share state
+    /// because `Ctrl+Z` toggles them together.
+    /// `false` = both hidden (zen mode), `true` = both visible.
+    pub(super) info_visible: bool,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
@@ -334,10 +339,20 @@ pub(super) fn handle_chat_keys(
         return;
     }
 
-    // Ctrl+W cycles activity pane split ratio
-    let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_w && app.chat.phase == ChatPhase::Chatting {
-        app.chat.activity_split = (app.chat.activity_split + 1) % 4;
+    // Ctrl+A cycles the activity pane size. Replaces the previous Ctrl+W
+    // binding.
+    let is_ctrl_a = key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_a && app.chat.phase == ChatPhase::Chatting {
+        app.chat.cycle_activity();
+        return;
+    }
+
+    // Ctrl+Z toggles zen mode: hides/shows thread info pane + status bar,
+    // and hides the activity pane if it was visible. Exiting zen mode does
+    // not restore the activity pane — only info+status.
+    let is_ctrl_z = key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_z && app.chat.phase == ChatPhase::Chatting {
+        app.chat.toggle_zen_mode();
         return;
     }
 
@@ -532,104 +547,153 @@ pub(super) fn handle_chat_keys(
 }
 
 pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Channels bar
-            Constraint::Length(1), // Compact info bar
-            Constraint::Min(0),    // Content (chat + optional activity)
-            Constraint::Length(1), // Status bar
-        ])
-        .split(area);
+    // Layout for the chat screen — no channel bar, borderless chat pane.
+    //
+    //   ┌─────────── top row (chat + optional 20% info pane) ───────────┐
+    //   │  chat conversation (borderless, fills horizontally)            │
+    //   │  ┌── thread info pane (20% wide, only when info_visible) ──┐  │
+    //   │  │   ...                                                   │  │
+    //   │  └─────────────────────────────────────────────────────────┘  │
+    //   ├────────── bottom area: status bar + activity pane ────────────┤
+    //   │  status bar (1 line; only when info_visible)                  │
+    //   │  activity pane (bottom 20% / 80% / full when visible)         │
+    //   └───────────────────────────────────────────────────────────────┘
+    //
+    // Both status bar and thread info pane are tied to `info_visible` so
+    // `Ctrl+Z` toggles them together.
 
-    render_channels(frame, main_chunks[0], app);
-    render_compact_info(frame, main_chunks[1], app);
-
-    match app.chat.phase {
-        ChatPhase::PatternSelect => {
-            render_pattern_select(frame, main_chunks[2], app);
+    if app.chat.phase == ChatPhase::PatternSelect {
+        // Pattern select is the initial screen when no thread is chosen.
+        // No channel bar, no status bar — the user is picking where to go.
+        let mut chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Thread info pane
+                Constraint::Min(0),    // Pattern select
+                Constraint::Length(1), // Status bar
+            ])
+            .split(area);
+        if !app.chat.info_visible {
+            // Zen-style: drop info row and status row, expand pattern area.
+            chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0)])
+                .split(area);
         }
-        ChatPhase::Chatting => {
-            match app.chat.activity_split {
-                1 => {
-                    // 80/20 — chat dominant
-                    let content = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-                        .split(main_chunks[2]);
-                    render_chat_conversation(frame, content[0], app);
-                    render_activity_log(frame, content[1], app);
-                }
-                2 => {
-                    // 20/80 — activity dominant
-                    let content = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
-                        .split(main_chunks[2]);
-                    render_chat_conversation(frame, content[0], app);
-                    render_activity_log(frame, content[1], app);
-                }
-                3 => {
-                    // 0/100 — full activity
-                    render_activity_log(frame, main_chunks[2], app);
-                }
-                _ => {
-                    // 0 — 100/0 (default) — full chat, no activity pane
-                    render_chat_conversation(frame, main_chunks[2], app);
-                }
-            }
+        render_pattern_select(frame, chunks[chunks.len() - 1], app);
+        if app.chat.info_visible {
+            render_thread_info_pane(frame, chunks[0], app);
+            render_status_bar(frame, chunks[2], app);
         }
+        return;
     }
 
-    render_status_bar(frame, main_chunks[3], app);
+    // Chatting phase.
+    let show_status = app.chat.info_visible;
+    let show_activity = app.chat.activity_split != 0;
+
+    // Build vertical constraints for: [top row, activity_row?, status_row?].
+    let activity_pct = match app.chat.activity_split {
+        1 => 20,
+        2 => 80,
+        3 => 100,
+        _ => 0,
+    };
+    let mut vertical_constraints: Vec<Constraint> = vec![Constraint::Min(0)];
+    if show_activity {
+        vertical_constraints.push(Constraint::Percentage(activity_pct));
+    }
+    if show_status {
+        vertical_constraints.push(Constraint::Length(1));
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vertical_constraints)
+        .split(area);
+
+    // Top row always holds the chat conversation + optional info pane.
+    let top_row = chunks[0];
+    if app.chat.info_visible {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+            .split(top_row);
+        render_chat_conversation(frame, cols[0], app);
+        render_thread_info_pane(frame, cols[1], app);
+    } else {
+        render_chat_conversation(frame, top_row, app);
+    }
+
+    if show_activity {
+        // Activity pane takes the chunk just below the top row.
+        let activity_chunk_idx = 1;
+        let activity_chunk = chunks[activity_chunk_idx];
+        if app.chat.activity_split == 3 {
+            // Activity-only — also hides the chat conversation.
+            render_activity_log(frame, activity_chunk, app);
+        } else {
+            render_activity_log(frame, activity_chunk, app);
+        }
+        if show_status {
+            render_status_bar(frame, chunks[2], app);
+        }
+    } else if show_status {
+        render_status_bar(frame, chunks[1], app);
+    }
 }
 
-pub(super) fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
+/// Render the right-hand thread info pane (always 20% wide when shown).
+///
+/// Displays thread name, channel, pattern, model, mode, tokens, and a
+/// processing indicator. Wraps content in a bordered `Block` so it is
+/// visually separable from the borderless chat pane.
+pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .title(" Thread Info ")
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     let state = match &app.state {
         Some(s) => s,
-        None => {
-            let text = Paragraph::new("");
-            frame.render_widget(text, area);
-            return;
-        }
+        None => return,
     };
 
-    let selected = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-        app.chat
-            .thread
-            .as_ref()
-            .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
-    } else {
-        app.table_state
-            .selected()
-            .and_then(|i| state.threads.get(i))
-    };
+    let selected = app
+        .chat
+        .thread
+        .as_ref()
+        .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
+        .or_else(|| {
+            app.table_state
+                .selected()
+                .and_then(|i| state.threads.get(i))
+        });
 
-    let text = if let Some(t) = selected {
-        let mut spans = vec![
+    let lines: Vec<Line> = if let Some(t) = selected {
+        let mut out: Vec<Line> = Vec::new();
+        out.push(Line::from(vec![
             Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&t.name),
-            Span::raw(" | "),
+        ]));
+        out.push(Line::from(vec![
             Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&t.channel),
-            Span::raw(" | "),
+        ]));
+        out.push(Line::from(vec![
             Span::styled("Pattern: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.pattern.as_deref().unwrap_or("-")),
-        ];
+        ]));
         if let Some(ref model) = t.model {
-            spans.push(Span::raw(" | "));
-            spans.push(Span::styled(
-                "Model: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::raw(model));
+            out.push(Line::from(vec![
+                Span::styled("Model: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(model),
+            ]));
         }
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            "Mode: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(t.mode.as_deref().unwrap_or("build")));
+        out.push(Line::from(vec![
+            Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(t.mode.as_deref().unwrap_or("build")),
+        ]));
         if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
             let pct = if max > 0 {
                 cur.checked_mul(100)
@@ -638,27 +702,24 @@ pub(super) fn render_compact_info(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 0
             };
-            spans.push(Span::raw(" | "));
-            spans.push(Span::styled(
-                "Tokens: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+            out.push(Line::from(vec![
+                Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{cur} / {max} ({pct}%)")),
+            ]));
         }
         if t.status == ThreadStatus::Processing {
-            spans.push(Span::raw(" | "));
-            spans.push(Span::styled(
+            out.push(Line::from(Span::styled(
                 "⏳ AI thinking...",
                 Style::default().fg(Color::Yellow),
-            ));
+            )));
         }
-        Line::from(spans)
+        out
     } else {
-        Line::from("Select a thread with ↑/↓")
+        vec![Line::from("Select a thread")]
     };
 
-    let paragraph = Paragraph::new(text);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, inner);
 }
 
 pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
@@ -703,36 +764,33 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
-    let title = format!(" Chat: {} ", app.chat.thread.as_deref().unwrap_or("-"));
-    let mut block = Block::default().title(title).borders(Borders::ALL);
+    // Borderless chat pane — no outer block, no side borders, no
+    // per-message `│ ` gutter. Each chat round is bounded by a horizontal
+    // top rule (time on the left) and a horizontal bottom rule (duration
+    // right-aligned). When the chat pane is focused, draw a faint
+    // background so the cursor position is still discoverable.
     if app.chat.focus == ChatFocus::ChatPane {
-        block = block.border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        let bg = Block::default().style(Style::default().bg(Color::Reset));
+        frame.render_widget(bg, area);
     }
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area grows with content (up to 10 rows) for multi-line editing.
     // Subtract the 2-column "> " prompt gutter from the wrap width.
     let input_line_count =
-        count_wrapped_lines(&app.chat.text(), inner.width.saturating_sub(2)).clamp(1, 10) as u16;
+        count_wrapped_lines(&app.chat.text(), area.width.saturating_sub(2)).clamp(1, 10) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
-        .split(inner);
+        .split(area);
 
-    // --- Messages area (markdown-rendered with colored bars) ---
+    // --- Messages area (markdown-rendered) ---
     let renderer = ratatui_markdown::markdown::MarkdownRenderer::new(chunks[0].width as usize);
     let theme = ratatui_markdown::theme::ThemeConfig::default();
 
     let mut all_lines: Vec<Line> = Vec::new();
 
     let dim_style = Style::default().fg(Color::DarkGray);
-    let mut box_open = false;
     let mut group_start_ts: Option<String> = None;
 
     for (idx, msg) in app.chat.messages.iter().enumerate() {
@@ -745,9 +803,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             None
         };
 
-        // Close previous group box on AI → user transition
-        if is_user && prev_sender == Some("ai") && box_open {
-            all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+        // Close previous round when transitioning AI → user. Bottom rule
+        // has the duration right-aligned.
+        if is_user && prev_sender == Some("ai") {
             let last_ts = app
                 .chat
                 .messages
@@ -755,85 +813,60 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 .and_then(|m| m.timestamp.clone());
             let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
             let width = chunks[0].width as usize;
-            let close_spans = if elapsed.is_empty() {
-                let dashes = "─".repeat(width.saturating_sub(1));
-                vec![Span::styled(format!("╰{dashes}"), dim_style)]
+            if elapsed.is_empty() {
+                let dashes = "─".repeat(width);
+                all_lines.push(Line::from(Span::styled(dashes, dim_style)));
             } else {
-                // ╰─── 12s ──
-                let dash_count = width.saturating_sub(2 + elapsed.len() + 4); // ╰ + " " + elapsed + " " + "──"
-                vec![
-                    Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
+                // Right-align: <dashes> <elapsed>
+                let dash_count = width.saturating_sub(elapsed.len());
+                all_lines.push(Line::from(vec![
+                    Span::styled("─".repeat(dash_count), dim_style),
                     Span::styled(elapsed, dim_style),
-                    Span::styled(" ──", dim_style),
-                ]
-            };
-            all_lines.push(Line::from(close_spans));
+                ]));
+            }
             all_lines.push(Line::from(""));
-            box_open = false;
             group_start_ts = None;
         }
 
-        // Open new group box at the start of a user turn
-        if is_user && !box_open {
+        // Open new round at the start of a user turn. Top rule has the
+        // timestamp left-aligned (no time → plain rule).
+        if is_user {
             group_start_ts = msg.timestamp.clone();
             let time_str = format_msg_time(&msg.timestamp);
             let width = chunks[0].width as usize;
-            let open_spans = if time_str.is_empty() {
-                let dashes = "─".repeat(width.saturating_sub(2));
-                vec![Span::styled(format!("╭─{}", dashes), dim_style)]
+            if time_str.is_empty() {
+                all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
             } else {
-                let used = 3 + time_str.len() + 1; // "╭─ " + time_str + " "
-                let dash_count = width.saturating_sub(used);
-                vec![
-                    Span::styled("╭─ ", dim_style),
+                let dash_count = width.saturating_sub(time_str.len() + 1);
+                all_lines.push(Line::from(vec![
                     Span::styled(time_str, dim_style),
                     Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
-                ]
-            };
-            all_lines.push(Line::from(open_spans));
-            box_open = true;
+                ]));
+            }
         }
 
-        // Separator line between user and AI within a group
-        if !is_user && prev_sender == Some("user") {
-            let width = chunks[0].width as usize;
-            let sep = format!("├{}", "─".repeat(width.saturating_sub(1)));
-            let sep_style = Style::default().fg(Color::DarkGray);
-            all_lines.push(Line::from(vec![Span::styled(sep, sep_style)]));
-        }
-
-        // Render message: all bars use the same dim style
-        let bar_style = dim_style;
+        // Render message (no side gutters).
         let md_text = format!("{prefix}{}\n", msg.text);
         let blocks = renderer.parse(&md_text);
         let msg_lines = renderer.render(&blocks, &theme);
-
-        for line in msg_lines {
-            let bar_span = Span::styled("│ ", bar_style);
-            let spans: Vec<Span> = std::iter::once(bar_span).chain(line).collect();
-            all_lines.push(Line::from(spans));
-        }
+        all_lines.extend(msg_lines);
     }
 
-    // Close any open box at the end
-    if box_open {
-        all_lines.push(Line::from(vec![Span::styled("│", dim_style)]));
+    // Close any open round at the end.
+    if group_start_ts.is_some() {
         let last_ts = app.chat.messages.last().and_then(|m| m.timestamp.clone());
         let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
         let width = chunks[0].width as usize;
-        let close_spans = if elapsed.is_empty() {
-            let dashes = "─".repeat(width.saturating_sub(1));
-            vec![Span::styled(format!("╰{dashes}"), dim_style)]
+        if elapsed.is_empty() {
+            let dashes = "─".repeat(width);
+            all_lines.push(Line::from(Span::styled(dashes, dim_style)));
         } else {
-            // ╰─── 12s ──
-            let dash_count = width.saturating_sub(2 + elapsed.len() + 4);
-            vec![
-                Span::styled(format!("╰{} ", "─".repeat(dash_count)), dim_style),
+            let dash_count = width.saturating_sub(elapsed.len());
+            all_lines.push(Line::from(vec![
+                Span::styled("─".repeat(dash_count), dim_style),
                 Span::styled(elapsed, dim_style),
-                Span::styled(" ──", dim_style),
-            ]
-        };
-        all_lines.push(Line::from(close_spans));
+            ]));
+        }
         all_lines.push(Line::from(""));
     }
 
@@ -1087,7 +1120,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
     // ── Command popup overlay ──
     if let Some(ref popup) = app.chat.command_popup {
-        render_command_popup(frame, inner, popup, &app.chat.commands, &app.chat.models);
+        render_command_popup(frame, area, popup, &app.chat.commands, &app.chat.models);
     }
 }
 
@@ -1261,6 +1294,7 @@ impl ChatState {
             activity_hscroll: 0,
             awaiting_response: false,
             activity_split: 0,
+            info_visible: false,
             ws_tx: None,
             ws_rx,
             ws_connected: false,
@@ -1308,6 +1342,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1366,6 +1401,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1420,6 +1456,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1481,6 +1518,28 @@ impl ChatState {
             ChatFocus::ChatPane => ChatFocus::ActivityPane,
             ChatFocus::ActivityPane => ChatFocus::ChatPane,
         };
+    }
+
+    /// Cycle the activity pane size. Replaces the legacy `Ctrl+W` behavior.
+    /// 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0.
+    pub(super) fn cycle_activity(&mut self) {
+        self.activity_split = (self.activity_split + 1) % 4;
+    }
+
+    /// Toggle zen mode. Zen mode hides the thread info pane, the bottom
+    /// status bar, and any visible activity pane. Exiting zen mode
+    /// restores the thread info pane and status bar only — the activity
+    /// pane stays hidden until the user re-opens it via `Ctrl+A`.
+    pub(super) fn toggle_zen_mode(&mut self) {
+        let was_info_visible = self.info_visible;
+        // Hide auxiliary UI unconditionally.
+        self.info_visible = false;
+        self.activity_split = 0;
+        // If anything was visible, we're now in zen mode (exit).
+        // Otherwise restore info+status.
+        if !was_info_visible {
+            self.info_visible = true;
+        }
     }
 
     pub(super) fn scroll_up(&mut self) {
@@ -2342,5 +2401,82 @@ mod tests {
 
         assert!(app.chat.text().is_empty(), "editor must stay empty");
         assert_eq!(app.chat.messages.last().unwrap().text, "/plan");
+    }
+
+    #[test]
+    fn opens_with_info_and_activity_hidden() {
+        // All visibility flags default to hidden when a new ChatState is
+        // constructed. Mirrors the "borderless chat, no chrome" UX.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let app = App::new(rx, None);
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn cycle_activity_rotates_through_four_states() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0
+        assert_eq!(app.chat.activity_split, 0);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 2);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 3);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn zen_mode_hides_info_and_activity() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // Start in zen mode (info hidden, activity hidden).
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // Press Ctrl+Z → exit zen mode: info+status visible, activity still hidden.
+        app.chat.toggle_zen_mode();
+        assert!(app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // User opens activity via Ctrl+A. Now both info and activity are visible.
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
+        assert!(app.chat.info_visible);
+
+        // Press Ctrl+Z → enter zen mode: info hidden AND activity hidden,
+        // regardless of its current size.
+        app.chat.toggle_zen_mode();
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // Press Ctrl+Z again → exit zen mode: info+status restored, activity
+        // stays hidden (not auto-restored).
+        app.chat.toggle_zen_mode();
+        assert!(app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn cycle_resets_after_zen_mode() {
+        // Regression: after Ctrl+Z hides the activity pane, the next Ctrl+A
+        // should restart the cycle from the 20% bottom size, not from
+        // wherever activity was previously.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // Drive activity to "activity-only" (size 3).
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 3);
+        // Enter zen mode — activity is reset to 0.
+        app.chat.toggle_zen_mode();
+        assert_eq!(app.chat.activity_split, 0);
+        // First Ctrl+A after zen mode must reach the 20% size.
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
     }
 }

@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// Width of the input prompt gutter ("╭─ build" / "╰─> ").
-const PROMPT_GUTTER_WIDTH: u16 = 8;
+/// Width of the input prompt gutter ("╰─> ").
+const PROMPT_GUTTER_WIDTH: u16 = 4;
 
 /// Phase of the chat pane UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1103,8 +1103,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the input field does
     // not have focus. A two-line prompt gutter sits left of the editor:
-    // "╭─ build" (or "╭─ plan") on the header row, "╰─>" on the first
-    // editor row; it dims when the message area is focused.
+    // "╭─ build" (or "╭─ plan") on the header row, "╰─>" (Insert mode)
+    // or "╰─<" (other vim modes) on the first editor row; it dims when
+    // the message area is focused.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
@@ -1156,8 +1157,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         ))),
         header_area,
     );
+    // Vim-mode arrow: "╰─> " in Insert mode, "╰─< " otherwise. The
+    // full vim-mode chip lives in the status bar.
+    let arrow = if app.chat.editor.mode == EditorMode::Insert {
+        "╰─> "
+    } else {
+        "╰─< "
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("╰─> ", prompt_style))),
+        Paragraph::new(Line::from(Span::styled(arrow, prompt_style))),
         prompt_area,
     );
     EditorView::new(&mut app.chat.editor)

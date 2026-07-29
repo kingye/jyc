@@ -27,6 +27,14 @@ fn model_subfilter(filter: &str) -> &str {
     f.strip_prefix("model ").unwrap_or("")
 }
 
+/// True when model-selection mode is active: the filter starts with
+/// "model " AND the caller actually has models to select from. The
+/// command palette passes an empty models slice, so "model " typed into
+/// it stays a plain (non-matching) command filter.
+fn model_mode_active(filter: &str, models: &[ModelInfo]) -> bool {
+    is_model_mode(filter) && !models.is_empty()
+}
+
 /// True when filter exactly matches a registered command name (with or
 /// without leading `/`). Used by Tab to pick auto-complete vs. copy.
 fn is_filter_complete(filter: &str, commands: &[CommandInfo]) -> bool {
@@ -117,7 +125,7 @@ pub fn handle_popup_key(
 ) -> PopupAction {
     use crossterm::event::KeyCode;
 
-    let model_mode = is_model_mode(&state.filter);
+    let model_mode = model_mode_active(&state.filter, models);
 
     // Clamp selection against current filtered list
     let count = if model_mode {
@@ -257,7 +265,7 @@ fn render_popup(
     models: &[ModelInfo],
     cmd_title: &str,
 ) {
-    let model_mode = is_model_mode(&state.filter);
+    let model_mode = model_mode_active(&state.filter, models);
 
     let (items, title) = if model_mode {
         let filtered = state.filtered_models(models);
@@ -445,6 +453,26 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn model_mode_requires_models() {
+        // With models present, "model x" activates model mode.
+        assert!(model_mode_active("model x", &[make_model("m1")]));
+        // Without models (e.g. the command palette), "model x" stays a
+        // plain command filter instead of showing an empty model list.
+        assert!(!model_mode_active("model x", &[]));
+        assert!(!model_mode_active("zen", &[make_model("m1")]));
+
+        // Palette scenario: Enter with a "model " filter and no models
+        // must not produce a "/model ..." send action.
+        let mut state = CommandPopupState::new();
+        state.filter = "model x".to_string();
+        let cmds = vec![make_cmd("toggle zen")];
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Enter), &mut state, &cmds, &[]),
+            PopupAction::None
+        );
     }
 
     #[test]

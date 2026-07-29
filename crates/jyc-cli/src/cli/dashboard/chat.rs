@@ -398,6 +398,7 @@ pub(super) fn handle_chat_keys(
     if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
+        app.chat.palette = None;
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
@@ -428,12 +429,14 @@ pub(super) fn handle_chat_keys(
     }
 
     // ":" opens the command palette in Normal mode (vim-style, symmetric
-    // with "/" opening the backend command popup).
+    // with "/" opening the backend command popup). Suppressed while the
+    // command popup is open — there ":" is legitimate filter input.
     let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
     if is_colon
         && app.chat.phase == ChatPhase::Chatting
         && app.chat.focus == ChatFocus::ChatPane
         && app.chat.editor.mode == EditorMode::Normal
+        && app.chat.command_popup.is_none()
     {
         app.chat.command_popup = None;
         app.chat.palette = Some(CommandPopupState::new());

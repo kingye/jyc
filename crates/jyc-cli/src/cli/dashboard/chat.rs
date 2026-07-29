@@ -1137,8 +1137,8 @@ fn build_chat_header_line(
     };
     let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
 
-    let left_w = left.chars().count();
-    let chip_w = chip.chars().count();
+    let left_w = left.width();
+    let chip_w = chip.width();
 
     // Width budget: pad = width - left - chip. If negative, drop the
     // chip first, then truncate the left segment.
@@ -1147,14 +1147,19 @@ fn build_chat_header_line(
         if width >= left_w {
             return Line::from(Span::styled(left, header_style));
         }
-        // Left itself doesn't fit; truncate the channel/pattern segments.
+        // Left itself doesn't fit; best-effort segments over
+        // [channel, pattern], adding the separator only when there is
+        // room for at least one column of content after it.
         let mut compact = format!("╭─ {}", ctx.mode);
-        if let Some(ch) = ctx.channel {
-            compact.push_str(" · ");
-            let avail = width.saturating_sub(compact.chars().count());
-            if avail >= 3 {
-                compact.push_str(&truncate_chars(ch, avail));
+        for seg in [ctx.channel, ctx.pattern].into_iter().flatten() {
+            let used = compact.width();
+            // Need room for " · " (3 cols) plus at least 1 col of content.
+            if width < used + 4 {
+                break;
             }
+            let avail = width - used - 3;
+            compact.push_str(" · ");
+            compact.push_str(&truncate_to_width(seg, avail));
         }
         return Line::from(Span::styled(compact, header_style));
     }
@@ -1169,21 +1174,30 @@ fn build_chat_header_line(
     Line::from(spans)
 }
 
-/// Truncate `s` to at most `max_chars` Unicode scalar values; if the
-/// input is longer, replace the tail with `…`.
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+/// Truncate `s` to at most `max_width` display columns (per
+/// `unicode-width`); if the input is wider, replace the tail with `…`.
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max_width == 0 {
         return String::new();
     }
-    let count = s.chars().count();
-    if count <= max_chars {
+    if s.width() <= max_width {
         return s.to_string();
     }
-    if max_chars == 1 {
+    if max_width == 1 {
         return "…".to_string();
     }
-    let keep = max_chars - 1;
-    let mut out: String = s.chars().take(keep).collect();
+    let keep = max_width - 1; // reserve 1 col for the ellipsis
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > keep {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
     out.push('…');
     out
 }
@@ -3365,7 +3379,7 @@ mod tests {
             "missing chip in: {text:?}"
         );
         // The line should fill the requested width via dash padding.
-        assert_eq!(text.chars().count(), 80);
+        assert_eq!(text.width(), 80);
     }
 
     #[test]
@@ -3441,19 +3455,53 @@ mod tests {
         // Channel must be truncated to fit; chip dropped.
         assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
         assert!(text.starts_with("╭─ plan"));
-        assert!(text.chars().count() <= 20);
+        assert!(text.width() <= 20);
+        // Never leave a dangling separator at the end.
+        assert!(
+            !text.ends_with("· "),
+            "should not end with separator: {text:?}"
+        );
     }
 
     #[test]
-    fn truncate_chars_short_string_unchanged() {
-        assert_eq!(truncate_chars("hi", 5), "hi");
-        assert_eq!(truncate_chars("hi", 2), "hi");
+    fn header_line_never_emits_dangling_separator() {
+        // Width fits "╭─ plan · " (10 cols) but no room for channel content.
+        let ctx = ChatHeaderCtx {
+            mode: "plan",
+            model: None,
+            pct: None,
+            channel: Some("ch"),
+            pattern: None,
+        };
+        let line = build_chat_header_line(10, &ctx, None, test_header_style());
+        let text = line_text(&line);
+        assert!(
+            !text.ends_with("· "),
+            "should not end with separator: {text:?}"
+        );
     }
 
     #[test]
-    fn truncate_chars_long_string_gets_ellipsis() {
-        assert_eq!(truncate_chars("hello world", 6), "hello…");
-        assert_eq!(truncate_chars("abc", 1), "…");
-        assert_eq!(truncate_chars("abc", 0), "");
+    fn truncate_to_width_short_string_unchanged() {
+        assert_eq!(truncate_to_width("hi", 5), "hi");
+        assert_eq!(truncate_to_width("hi", 2), "hi");
+    }
+
+    #[test]
+    fn truncate_to_width_long_string_gets_ellipsis() {
+        assert_eq!(truncate_to_width("hello world", 6), "hello…");
+        assert_eq!(truncate_to_width("abc", 1), "…");
+        assert_eq!(truncate_to_width("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_to_width_counts_cjk_as_two_columns() {
+        // 4 CJK chars = 8 display columns; budget 5 keeps 2 chars + …
+        let out = truncate_to_width("你好世界", 5);
+        assert_eq!(out, "你好…");
+        assert_eq!(out.width(), 5);
+        // Wide char that doesn't fit the remaining column is dropped.
+        let out = truncate_to_width("你好", 3);
+        assert_eq!(out, "你…");
     }
 }

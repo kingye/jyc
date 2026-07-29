@@ -249,7 +249,18 @@ All notable changes to JYC will be documented in this file.
   each conversation round now pad the timestamp and duration:
   `── 09:50 ────────` (top) and `──────── 1m ──` (bottom).
 
+- **Explorer pane: switch is functional.** Opening the explorer now
+  moves focus into it (so `j`/`k`/`Enter` work immediately); after a
+  successful switch the new thread's chat history is hydrated (was
+  blank) and the explorer auto-hides so you land in the new chat. The
+  explorer also spans the full chat-screen height as a left column.
+- **Explorer pane: detail-mode state no longer leaks.** `open()` now
+  clears `detail_channel`/`detail_thread_path`, so switching from a
+  detail view back to a websocket chat exits detail mode.
+
 ### Fixed
+
+- **`/cancel` now aborts tool execution immediately.** Previously the
 
 - **`/cancel` now aborts tool execution immediately.** Previously the
   per-thread `CancellationToken` was honored at LLM-call boundaries

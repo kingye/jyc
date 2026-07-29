@@ -171,6 +171,15 @@ All notable changes to JYC will be documented in this file.
   in-memory buffer. The bus is consumed by `ThreadProxyHandler` and
   (via `ScopedWsHandler` for websocket channels) the dashboard.
 
+### Fixed
+
+- **Thread explorer selection fills the full row width.** When the
+  explorer pane has focus, the highlighted row now paints the entire
+  row's width with the selection background instead of stopping at the
+  end of the thread-name text. The status dot, separator, and trailing
+  padding all carry the highlight so the selection visually represents
+  the complete selectable row.
+
 ### Removed
 
 - **`jyc templates` command and `templates/templates.toml`.** The old

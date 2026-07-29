@@ -15,8 +15,10 @@ pub(super) enum ChatPhase {
 /// Which pane has focus in chat mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatFocus {
-    /// The chat conversation pane.
+    /// The chat input field (vim editor).
     ChatPane,
+    /// The scrollable message area above the input field.
+    MessageArea,
     /// The activity log pane.
     ActivityPane,
 }
@@ -480,14 +482,30 @@ pub(super) fn handle_chat_keys(
                 return;
             }
 
-            // Chat pane: vim editor input. Everything not matched here is
+            // Message area: scroll the conversation with arrows / vim keys.
+            // Esc returns focus to the input field (does not exit the chat).
+            // Any other printable key refocuses the input and is forwarded
+            // to the editor, so the user can scroll then just start typing.
+            if app.chat.focus == ChatFocus::MessageArea {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.chat.focus = ChatFocus::ChatPane;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
+                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
+                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
+                    KeyCode::Char('g') => {}
+                    _ => {
+                        app.chat.focus = ChatFocus::ChatPane;
+                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
+                    }
+                }
+                return;
+            }
+
+            // Chat input field: vim editor. Everything not matched here is
             // delegated to the edtui event handler.
-            //
-            // When the input holds at most one line, `j`/`k`/`gg`/`G` would
-            // be no-ops in the editor, so in Normal mode they scroll the
-            // message history instead. With multi-line input they remain
-            // editor motions.
-            let single_line_input = app.chat.editor.lines.len() <= 1;
             match (app.chat.editor.mode, key.code) {
                 // Esc in Normal mode leaves the thread; in other modes the
                 // editor uses it to return to Normal mode.
@@ -520,26 +538,6 @@ pub(super) fn handle_chat_keys(
                 }
                 // Enter in Normal mode also sends (newlines come from o/O).
                 (EditorMode::Normal, KeyCode::Enter) => app.chat.send_message(),
-                // In Normal mode, Up/Down scroll the message history (cursor
-                // movement is on h/l). In other modes arrows go to the editor.
-                (EditorMode::Normal, KeyCode::Up) => app.chat.scroll_up(),
-                (EditorMode::Normal, KeyCode::Down) => app.chat.scroll_down(),
-                // j/k and gg/G scroll the history only when the input is a
-                // single line (where they are editor no-ops); multi-line
-                // input keeps them as editor motions.
-                (EditorMode::Normal, KeyCode::Char('k')) if single_line_input => {
-                    app.chat.scroll_up()
-                }
-                (EditorMode::Normal, KeyCode::Char('j')) if single_line_input => {
-                    app.chat.scroll_down()
-                }
-                (EditorMode::Normal, KeyCode::Char('G')) if single_line_input => {
-                    app.chat.scroll_to_bottom()
-                }
-                (EditorMode::Normal, KeyCode::Char('g')) if single_line_input && gg_jump => {
-                    app.chat.scroll_to_top()
-                }
-                (EditorMode::Normal, KeyCode::Char('g')) if single_line_input => {}
                 _ => app.chat.handler.on_key_event(key, &mut app.chat.editor),
             }
         }
@@ -1091,13 +1089,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // --- Input area (vim editor, at bottom) ---
     // The editor renders its own wrapping, scroll-follow, and mode status
     // line. The cursor is a blinking underline in Insert mode and the
-    // default inverted block otherwise; hidden when the activity pane has
-    // focus. A "> " prompt sits in a 2-column gutter left of the editor.
+    // default inverted block otherwise; hidden when the input field does
+    // not have focus. A "> " prompt sits in a 2-column gutter left of the
+    // editor; it dims when the message area is focused.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
     let theme = match app.chat.focus {
-        ChatFocus::ActivityPane => theme.hide_cursor(),
+        ChatFocus::MessageArea | ChatFocus::ActivityPane => theme.hide_cursor(),
         ChatFocus::ChatPane => match app.chat.editor.mode {
             EditorMode::Insert => theme.cursor_style(
                 Style::default()
@@ -1109,10 +1108,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     };
     let [prompt_area, editor_area] =
         Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(chunks[1]);
-    frame.render_widget(
-        Paragraph::new("> ").style(Style::default().fg(Color::Yellow)),
-        prompt_area,
-    );
+    let prompt_style = if app.chat.focus == ChatFocus::ChatPane {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    frame.render_widget(Paragraph::new("> ").style(prompt_style), prompt_area);
     EditorView::new(&mut app.chat.editor)
         .theme(theme)
         .wrap(true)
@@ -1513,9 +1514,19 @@ impl ChatState {
         self.last_hydrated_key = None;
     }
 
+    /// Cycle focus: Input → MessageArea → ActivityPane → Input.
+    /// The activity pane is skipped when it is hidden so the cycle never
+    /// lands on an invisible pane.
     pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
-            ChatFocus::ChatPane => ChatFocus::ActivityPane,
+            ChatFocus::ChatPane => ChatFocus::MessageArea,
+            ChatFocus::MessageArea => {
+                if self.activity_split != 0 {
+                    ChatFocus::ActivityPane
+                } else {
+                    ChatFocus::ChatPane
+                }
+            }
             ChatFocus::ActivityPane => ChatFocus::ChatPane,
         };
     }
@@ -1524,6 +1535,9 @@ impl ChatState {
     /// 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0.
     pub(super) fn cycle_activity(&mut self) {
         self.activity_split = (self.activity_split + 1) % 4;
+        if self.activity_split == 0 && self.focus == ChatFocus::ActivityPane {
+            self.focus = ChatFocus::ChatPane;
+        }
     }
 
     /// Toggle zen mode. Zen mode hides the thread info pane, the bottom
@@ -1535,6 +1549,9 @@ impl ChatState {
         // Hide auxiliary UI unconditionally.
         self.info_visible = false;
         self.activity_split = 0;
+        if self.focus == ChatFocus::ActivityPane {
+            self.focus = ChatFocus::ChatPane;
+        }
         // If anything was visible, we're now in zen mode (exit).
         // Otherwise restore info+status.
         if !was_info_visible {
@@ -1544,7 +1561,9 @@ impl ChatState {
 
     pub(super) fn scroll_up(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_add(1),
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                self.scroll = self.scroll.saturating_add(1)
+            }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
             }
@@ -1564,7 +1583,9 @@ impl ChatState {
 
     pub(super) fn scroll_down(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_sub(1),
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                self.scroll = self.scroll.saturating_sub(1)
+            }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(1)
             }
@@ -1577,7 +1598,7 @@ impl ChatState {
     /// setting it to `usize::MAX` is a safe "scroll all the way up".
     pub(super) fn scroll_to_top(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = usize::MAX,
+            ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = usize::MAX,
             ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
         }
     }
@@ -1585,7 +1606,7 @@ impl ChatState {
     /// Jump to the latest message (bottom) of the focused pane.
     pub(super) fn scroll_to_bottom(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = 0,
+            ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = 0,
             ChatFocus::ActivityPane => self.activity_scroll = 0,
         }
     }
@@ -1595,7 +1616,7 @@ impl ChatState {
             .map(|(_, h)| h.saturating_sub(7) as usize)
             .unwrap_or(10);
         match self.focus {
-            ChatFocus::ChatPane => {
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
                 // Editor rows: wrapped text lines (1-10).
                 // Subtract the 2-column "> " prompt gutter from the width.
@@ -1610,7 +1631,9 @@ impl ChatState {
     pub(super) fn page_up(&mut self) {
         let page = self.page_size();
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_add(page),
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                self.scroll = self.scroll.saturating_add(page)
+            }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
             }
@@ -1620,7 +1643,9 @@ impl ChatState {
     pub(super) fn page_down(&mut self) {
         let page = self.page_size();
         match self.focus {
-            ChatFocus::ChatPane => self.scroll = self.scroll.saturating_sub(page),
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                self.scroll = self.scroll.saturating_sub(page)
+            }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)
             }
@@ -1993,6 +2018,70 @@ mod tests {
         assert_eq!(app.chat.scroll, 0);
         app.chat.scroll_to_bottom();
         assert_eq!(app.chat.activity_scroll, 0);
+    }
+
+    #[test]
+    fn tab_cycles_input_messages_activity_when_activity_visible() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.activity_split = 1; // activity pane visible
+
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn tab_skips_hidden_activity_pane() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert_eq!(app.chat.activity_split, 0); // activity hidden
+
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn hiding_activity_refocuses_input() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // Activity visible and focused.
+        app.chat.activity_split = 1;
+        app.chat.focus = ChatFocus::ActivityPane;
+        // Cycle to hidden (0) — focus must fall back to the input field.
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 0);
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+
+        // Same guard when entering zen mode with the activity pane focused.
+        app.chat.activity_split = 1;
+        app.chat.info_visible = true;
+        app.chat.focus = ChatFocus::ActivityPane;
+        app.chat.toggle_zen_mode();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn message_area_scrolls_chat_history() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.focus = ChatFocus::MessageArea;
+        app.chat.scroll_to_top();
+        assert_eq!(app.chat.scroll, usize::MAX);
+        app.chat.scroll_to_bottom();
+        assert_eq!(app.chat.scroll, 0);
+        app.chat.scroll_up();
+        assert_eq!(app.chat.scroll, 1);
+        app.chat.scroll_down();
+        assert_eq!(app.chat.scroll, 0);
     }
 
     #[test]

@@ -54,8 +54,13 @@ pub(super) struct ChatState {
     /// the thread is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
     pub(super) awaiting_response: bool,
-    /// Activity pane split state: 0=100/0, 1=80/20, 2=20/80, 3=0/100
+    /// Activity pane visibility/size state.
+    /// 0 = hidden, 1 = bottom 20%, 2 = bottom 80%, 3 = activity-only (full pane)
     pub(super) activity_split: u8,
+    /// Thread info pane + bottom status bar visibility. They share state
+    /// because `Ctrl+Z` toggles them together.
+    /// `false` = both hidden (zen mode), `true` = both visible.
+    pub(super) info_visible: bool,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
@@ -334,10 +339,20 @@ pub(super) fn handle_chat_keys(
         return;
     }
 
-    // Ctrl+W cycles activity pane split ratio
-    let is_ctrl_w = key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_w && app.chat.phase == ChatPhase::Chatting {
-        app.chat.activity_split = (app.chat.activity_split + 1) % 4;
+    // Ctrl+A cycles the activity pane size. Replaces the previous Ctrl+W
+    // binding.
+    let is_ctrl_a = key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_a && app.chat.phase == ChatPhase::Chatting {
+        app.chat.cycle_activity();
+        return;
+    }
+
+    // Ctrl+Z toggles zen mode: hides/shows thread info pane + status bar,
+    // and hides the activity pane if it was visible. Exiting zen mode does
+    // not restore the activity pane — only info+status.
+    let is_ctrl_z = key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_z && app.chat.phase == ChatPhase::Chatting {
+        app.chat.toggle_zen_mode();
         return;
     }
 
@@ -1261,6 +1276,7 @@ impl ChatState {
             activity_hscroll: 0,
             awaiting_response: false,
             activity_split: 0,
+            info_visible: false,
             ws_tx: None,
             ws_rx,
             ws_connected: false,
@@ -1308,6 +1324,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1366,6 +1383,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1420,6 +1438,7 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
+        self.info_visible = false;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -1481,6 +1500,28 @@ impl ChatState {
             ChatFocus::ChatPane => ChatFocus::ActivityPane,
             ChatFocus::ActivityPane => ChatFocus::ChatPane,
         };
+    }
+
+    /// Cycle the activity pane size. Replaces the legacy `Ctrl+W` behavior.
+    /// 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0.
+    pub(super) fn cycle_activity(&mut self) {
+        self.activity_split = (self.activity_split + 1) % 4;
+    }
+
+    /// Toggle zen mode. Zen mode hides the thread info pane, the bottom
+    /// status bar, and any visible activity pane. Exiting zen mode
+    /// restores the thread info pane and status bar only — the activity
+    /// pane stays hidden until the user re-opens it via `Ctrl+A`.
+    pub(super) fn toggle_zen_mode(&mut self) {
+        let was_info_visible = self.info_visible;
+        // Hide auxiliary UI unconditionally.
+        self.info_visible = false;
+        self.activity_split = 0;
+        // If anything was visible, we're now in zen mode (exit).
+        // Otherwise restore info+status.
+        if !was_info_visible {
+            self.info_visible = true;
+        }
     }
 
     pub(super) fn scroll_up(&mut self) {
@@ -2342,5 +2383,82 @@ mod tests {
 
         assert!(app.chat.text().is_empty(), "editor must stay empty");
         assert_eq!(app.chat.messages.last().unwrap().text, "/plan");
+    }
+
+    #[test]
+    fn opens_with_info_and_activity_hidden() {
+        // All visibility flags default to hidden when a new ChatState is
+        // constructed. Mirrors the "borderless chat, no chrome" UX.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let app = App::new(rx, None);
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn cycle_activity_rotates_through_four_states() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0
+        assert_eq!(app.chat.activity_split, 0);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 2);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 3);
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn zen_mode_hides_info_and_activity() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // Start in zen mode (info hidden, activity hidden).
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // Press Ctrl+Z → exit zen mode: info+status visible, activity still hidden.
+        app.chat.toggle_zen_mode();
+        assert!(app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // User opens activity via Ctrl+A. Now both info and activity are visible.
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
+        assert!(app.chat.info_visible);
+
+        // Press Ctrl+Z → enter zen mode: info hidden AND activity hidden,
+        // regardless of its current size.
+        app.chat.toggle_zen_mode();
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+
+        // Press Ctrl+Z again → exit zen mode: info+status restored, activity
+        // stays hidden (not auto-restored).
+        app.chat.toggle_zen_mode();
+        assert!(app.chat.info_visible);
+        assert_eq!(app.chat.activity_split, 0);
+    }
+
+    #[test]
+    fn cycle_resets_after_zen_mode() {
+        // Regression: after Ctrl+Z hides the activity pane, the next Ctrl+A
+        // should restart the cycle from the 20% bottom size, not from
+        // wherever activity was previously.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        // Drive activity to "activity-only" (size 3).
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 3);
+        // Enter zen mode — activity is reset to 0.
+        app.chat.toggle_zen_mode();
+        assert_eq!(app.chat.activity_split, 0);
+        // First Ctrl+A after zen mode must reach the 20% size.
+        app.chat.cycle_activity();
+        assert_eq!(app.chat.activity_split, 1);
     }
 }

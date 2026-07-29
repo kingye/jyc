@@ -92,6 +92,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Dashboard chat input prompt redesigned.** The single-letter `B`/`P`
+  agent-mode chip (a lone colored-background cell in the backgroundless
+  input gutter) is replaced by a two-line gutter: a colored
+  `╭─ build` / `╭─ plan` header above a `╰─>` prompt, with no background
+  fill. The gutter widens from 4 to 8 columns and the input area reserves
+  one extra row for the header.
+
 - **`/close` now requires `-y` (or `--confirm`) to actually delete a thread.**
   Sending plain `/close` returns a warning message listing the thread name
   and the correct confirm syntax, and performs no destructive action. This

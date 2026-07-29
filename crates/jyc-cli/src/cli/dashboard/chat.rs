@@ -1168,7 +1168,11 @@ fn build_chat_header_line(
     let mut spans = Vec::with_capacity(3);
     spans.push(Span::styled(left, header_style));
     if pad > 0 {
-        spans.push(Span::styled("─".repeat(pad), header_style));
+        // One space separates the left segment from the dash run.
+        spans.push(Span::styled(" ", header_style));
+        if pad > 1 {
+            spans.push(Span::styled("─".repeat(pad - 1), header_style));
+        }
     }
     spans.push(Span::styled(chip, header_style));
     Line::from(spans)

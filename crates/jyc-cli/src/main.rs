@@ -1,7 +1,7 @@
 mod cli;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, error::ErrorKind};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -80,6 +80,23 @@ enum Commands {
     Token(cli::token::TokenArgs),
 }
 
+/// Parse `Cli` so that bare `jyc` behaves like `jyc open` (creates an
+/// ad-hoc websocket thread and opens the chat pane). When no
+/// subcommand is given, we inject `open` and re-parse.
+fn parse_cli() -> Cli {
+    match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::MissingSubcommand => {
+            let mut args: Vec<String> = std::env::args().collect();
+            if args.len() == 1 {
+                args.push("open".to_string());
+            }
+            Cli::try_parse_from(args).unwrap_or_else(|_| e.exit())
+        }
+        Err(e) => e.exit(),
+    }
+}
+
 fn init_tracing(debug: bool, verbose: bool) {
     let filter = if verbose {
         "jyc=trace,jyc_agent=trace,async_imap=debug"
@@ -121,7 +138,7 @@ fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
     init_tracing(cli.debug, cli.verbose);
 

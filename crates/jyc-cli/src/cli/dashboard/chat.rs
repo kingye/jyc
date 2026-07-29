@@ -1112,6 +1112,10 @@ fn build_chat_header_line(
     header_style: Style,
 ) -> Line<'static> {
     // --- Left segment: "╭─ {mode} · {channel} · {pattern}" ---
+    // Divergence from the Thread Info pane: when `pattern` is `None`
+    // we omit the segment entirely instead of rendering "-". The
+    // header is width-constrained, so omitting the segment looks
+    // cleaner than `╭─ plan · local_dev · -`.
     let mut left = String::with_capacity(32);
     left.push_str("╭─ ");
     left.push_str(ctx.mode);
@@ -3335,7 +3339,7 @@ mod tests {
         }
     }
 
-    fn header_style() -> Style {
+    fn test_header_style() -> Style {
         Style::default()
             .fg(Color::Rgb(249, 226, 175))
             .add_modifier(Modifier::BOLD)
@@ -3348,7 +3352,7 @@ mod tests {
     #[test]
     fn header_line_includes_mode_channel_pattern_and_chip() {
         let ctx = ctx_with_full_data();
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
         let text = line_text(&line);
         // Left segment includes mode + channel + pattern.
         assert!(
@@ -3368,7 +3372,7 @@ mod tests {
     fn header_line_omits_pattern_when_missing() {
         let mut ctx = ctx_with_full_data();
         ctx.pattern = None;
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
         let text = line_text(&line);
         assert!(
             text.starts_with("╭─ plan · local_dev"),
@@ -3381,7 +3385,7 @@ mod tests {
     fn header_line_shows_dash_for_missing_tokens() {
         let mut ctx = ctx_with_full_data();
         ctx.pct = None;
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
         let text = line_text(&line);
         assert!(
             text.contains("· –% ]"),
@@ -3398,7 +3402,7 @@ mod tests {
             channel: None,
             pattern: None,
         };
-        let line = build_chat_header_line(80, &ctx, None, header_style());
+        let line = build_chat_header_line(80, &ctx, None, test_header_style());
         let text = line_text(&line);
         // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
         assert!(
@@ -3420,7 +3424,7 @@ mod tests {
             left.chars().count() + 1,
             &ctx,
             Some("0.3.12"),
-            header_style(),
+            test_header_style(),
         );
         let text = line_text(&line);
         assert_eq!(text, left, "should drop chip and keep left segment");
@@ -3432,7 +3436,7 @@ mod tests {
         ctx.channel = Some("a-very-long-channel-name");
         ctx.pattern = Some("a-very-long-pattern-name");
         // Width so tight that even truncating channel to 3 chars barely fits.
-        let line = build_chat_header_line(20, &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(20, &ctx, Some("0.3.12"), test_header_style());
         let text = line_text(&line);
         // Channel must be truncated to fit; chip dropped.
         assert!(!text.contains("["), "chip should be dropped, got: {text:?}");

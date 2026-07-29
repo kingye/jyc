@@ -92,6 +92,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **`/close` now requires `-y` (or `--confirm`) to actually delete a thread.**
+  Sending plain `/close` returns a warning message listing the thread name
+  and the correct confirm syntax, and performs no destructive action. This
+  protects against accidental thread deletion (chat history, AI session,
+  attachments) via typo or wrong command. The 8 external `on_thread_close`
+  callbacks (Feishu chat disbanded, GitHub/Gitee issue/PR closed, etc.)
+  remain unchanged — they are not user-initiated and do not need a gate.
+
 - **Unified dashboard chat transport.** All channels (email, github,
   feishu, websocket, etc.) are now reached via the single
   `/ws/<channel>/<thread>` WebSocket endpoint. Non-websocket channels

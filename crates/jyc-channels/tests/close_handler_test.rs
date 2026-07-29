@@ -43,8 +43,12 @@ fn test_config_swap() -> Arc<ArcSwap<AppConfig>> {
 }
 
 fn test_context(thread_path: &std::path::Path) -> CommandContext {
+    test_context_with_args(thread_path, &["--confirm"])
+}
+
+fn test_context_with_args(thread_path: &std::path::Path, args: &[&str]) -> CommandContext {
     CommandContext {
-        args: vec![],
+        args: args.iter().map(|s| s.to_string()).collect(),
         thread_path: thread_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
@@ -183,7 +187,7 @@ async fn test_close_command_invalid_thread_path() {
     let handler = CloseCommandHandler::new(thread_manager);
 
     let ctx = CommandContext {
-        args: vec![],
+        args: vec!["--confirm".into()],
         thread_path: PathBuf::from("/"),
         config: test_config(),
         channel: "test".into(),
@@ -196,4 +200,66 @@ async fn test_close_command_invalid_thread_path() {
     let result = handler.execute(ctx).await.unwrap();
     assert!(!result.success);
     assert!(result.error.is_some());
+}
+
+#[tokio::test]
+async fn test_close_command_without_confirm_keeps_directory() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let thread_dir = workspace.join("test_thread");
+    std::fs::create_dir_all(&thread_dir).unwrap();
+    std::fs::write(thread_dir.join("test.txt"), "content").unwrap();
+
+    let storage = Arc::new(MessageStorage::new(&workspace));
+
+    let thread_manager = Arc::new(ThreadManager::new(
+        3,
+        10,
+        storage.clone(),
+        Arc::new(EmailOutboundAdapter::new(
+            &SmtpConfig {
+                host: "smtp.example.com".into(),
+                port: 465,
+                secure: true,
+                username: "test".into(),
+                password: "test".into(),
+                from_address: Some("test@example.com".into()),
+                from_name: None,
+            },
+            storage,
+        )),
+        Arc::new(StaticAgentService::new("test reply")),
+        tokio_util::sync::CancellationToken::new(),
+        PathBuf::from("/tmp/templates"),
+        test_config_swap(),
+        "test".to_string(),
+        "email".to_string(),
+        tmp.path().to_path_buf(),
+        workspace.clone(),
+        MetricsHandle::noop(),
+    ));
+
+    let handler = CloseCommandHandler::new(thread_manager);
+    // Plain `/close` (no args) — must NOT delete
+    let ctx = test_context_with_args(&thread_dir, &[]);
+
+    let result = handler.execute(ctx).await.unwrap();
+    assert!(
+        result.success,
+        "warning path should be informational success"
+    );
+    assert!(
+        result.message.contains("/close -y"),
+        "message should mention the confirm syntax, got: {}",
+        result.message
+    );
+    assert!(
+        thread_dir.exists(),
+        "thread dir must still exist after plain /close"
+    );
+    assert!(
+        thread_dir.join("test.txt").exists(),
+        "thread contents must be preserved"
+    );
 }

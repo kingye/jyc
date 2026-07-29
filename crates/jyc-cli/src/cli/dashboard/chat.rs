@@ -3020,7 +3020,6 @@ mod tests {
     async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
-        let (addr_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         app.chat.open_addr = Some("test-addr".to_string());
         app.chat.token = None;
         app.state = Some(jyc_types::InspectOverview {

@@ -1272,7 +1272,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit".to_string()
             }
             ChatPhase::Chatting => {
-                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^A]activity [^Z]zen [^P]palette [Esc]back [^Q]quit".to_string()
+                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^A]activity [^Z]zen [^E]explorer [^P]palette [Esc]back [^Q]quit".to_string()
             }
         }
     } else {

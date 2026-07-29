@@ -10,6 +10,8 @@ use jyc_types::CommandInfo;
 /// A TUI-local action dispatched by the command palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalAction {
+    /// Toggle the thread explorer pane (left side).
+    ToggleExplorer,
     /// Toggle zen mode (hide/show info pane + status bar).
     ToggleZen,
     /// Cycle the activity pane through its size states.
@@ -38,6 +40,12 @@ pub struct LocalCommand {
 pub fn local_commands() -> &'static [LocalCommand] {
     &[
         LocalCommand {
+            name: "toggle explorer",
+            description: "Show/hide thread explorer pane",
+            keybinding: "Ctrl+E",
+            action: LocalAction::ToggleExplorer,
+        },
+        LocalCommand {
             name: "toggle zen",
             description: "Hide/show info pane and status bar",
             keybinding: "Ctrl+Z",
@@ -52,7 +60,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         LocalCommand {
             name: "open in editor",
             description: "Compose input in external $EDITOR",
-            keybinding: "Ctrl+E",
+            keybinding: "Ctrl+O",
             action: LocalAction::OpenExternalEditor,
         },
         LocalCommand {

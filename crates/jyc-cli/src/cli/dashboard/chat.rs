@@ -648,7 +648,9 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
 /// processing indicator. Wraps content in a bordered `Block` so it is
 /// visually separable from the borderless chat pane.
 pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default().title(" Thread Info ").borders(Borders::ALL);
+    let block = Block::default()
+        .title(" Thread Info ")
+        .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -833,10 +835,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             let time_str = format_msg_time(&msg.timestamp);
             let width = chunks[0].width as usize;
             if time_str.is_empty() {
-                all_lines.push(Line::from(Span::styled(
-                    "─".repeat(width),
-                    dim_style,
-                )));
+                all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
             } else {
                 let dash_count = width.saturating_sub(time_str.len() + 1);
                 all_lines.push(Line::from(vec![

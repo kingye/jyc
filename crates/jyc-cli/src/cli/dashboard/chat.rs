@@ -943,6 +943,41 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Find the `ThreadSummary` currently in scope. Used by both the
+/// thread info pane and the chat header so the two views agree on
+/// which thread is "selected".
+///
+/// Lookup order matches the legacy chat-pane behavior:
+/// 1. The thread the chat pane is currently bound to (`app.chat.thread`).
+/// 2. The currently-selected row of the thread table.
+fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
+    let state = app.state.as_ref()?;
+    state
+        .threads
+        .iter()
+        .find(|t| Some(&t.name) == app.chat.thread.as_ref())
+        .or_else(|| {
+            app.table_state
+                .selected()
+                .and_then(|i| state.threads.get(i))
+        })
+}
+
+/// Compute the input-token percentage for a thread, returned as
+/// `Option<u32>` so callers can decide how to render a missing value
+/// (chip shows `–%`, pane omits the row). Uses checked arithmetic to
+/// avoid wrapping when `cur` is very large.
+fn input_token_pct(t: &jyc_types::ThreadSummary) -> Option<u32> {
+    match (t.input_tokens, t.max_tokens) {
+        (Some(cur), Some(max)) if max > 0 => Some(
+            cur.checked_mul(100)
+                .and_then(|v| v.checked_div(max))
+                .unwrap_or(0) as u32,
+        ),
+        _ => None,
+    }
+}
+
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///
 /// Displays thread name, channel, pattern, model, mode, tokens, and a
@@ -955,23 +990,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let state = match &app.state {
-        Some(s) => s,
-        None => return,
-    };
-
-    let selected = app
-        .chat
-        .thread
-        .as_ref()
-        .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
-        .or_else(|| {
-            app.table_state
-                .selected()
-                .and_then(|i| state.threads.get(i))
-        });
-
-    let lines: Vec<Line> = if let Some(t) = selected {
+    let lines: Vec<Line> = if let Some(t) = selected_thread_summary(app) {
         let mut out: Vec<Line> = Vec::new();
         out.push(Line::from(vec![
             Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -996,13 +1015,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
         if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
-            let pct = if max > 0 {
-                cur.checked_mul(100)
-                    .and_then(|v| v.checked_div(max))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            let pct = input_token_pct(t).unwrap_or(0);
             out.push(Line::from(vec![
                 Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(format!("{cur} / {max} ({pct}%)")),
@@ -1064,36 +1077,27 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-/// Resolved values for the chat header line. All fields are sourced from
-/// the polled `InspectOverview`, matching the data shown by the Thread
-/// Info pane. Missing fields fall back to placeholders so the chip
-/// still reads as `[ jyc ai v? · ? · –% ]` before the first poll.
-#[derive(Default)]
-struct ChatHeaderCtx {
-    mode: String,
-    model: Option<String>,
-    input_tokens: Option<u64>,
-    max_tokens: Option<u64>,
-    channel: Option<String>,
-    pattern: Option<String>,
+/// Zero-alloc snapshot of the data the chat header needs. All fields
+/// borrow directly from the polled `InspectOverview`, matching what the
+/// Thread Info pane shows. Missing fields fall back to placeholders
+/// so the chip still reads as `[ jyc ai v? · ? · –% ]` before the
+/// first poll.
+struct ChatHeaderCtx<'a> {
+    mode: &'a str,
+    model: Option<&'a str>,
+    pct: Option<u32>,
+    channel: Option<&'a str>,
+    pattern: Option<&'a str>,
 }
 
-fn resolve_header_ctx(app: &App) -> ChatHeaderCtx {
-    let thread = app.state.as_ref().and_then(|s| {
-        app.chat
-            .thread
-            .as_deref()
-            .and_then(|name| s.threads.iter().find(|t| t.name == name))
-    });
+fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
+    let t = selected_thread_summary(app);
     ChatHeaderCtx {
-        mode: thread
-            .and_then(|t| t.mode.clone())
-            .unwrap_or_else(|| "build".to_string()),
-        model: thread.and_then(|t| t.model.clone()),
-        input_tokens: thread.and_then(|t| t.input_tokens),
-        max_tokens: thread.and_then(|t| t.max_tokens),
-        channel: thread.map(|t| t.channel.clone()),
-        pattern: thread.and_then(|t| t.pattern.clone()),
+        mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
+        model: t.and_then(|t| t.model.as_deref()),
+        pct: t.and_then(input_token_pct),
+        channel: t.map(|t| t.channel.as_str()),
+        pattern: t.and_then(|t| t.pattern.as_deref()),
     }
 }
 
@@ -1103,34 +1107,29 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx {
 /// right border. Falls back gracefully when any field is missing.
 fn build_chat_header_line(
     width: usize,
-    mode_word: &str,
-    ctx: &ChatHeaderCtx,
+    ctx: &ChatHeaderCtx<'_>,
     server_version: Option<&str>,
     header_style: Style,
 ) -> Line<'static> {
     // --- Left segment: "╭─ {mode} · {channel} · {pattern}" ---
     let mut left = String::with_capacity(32);
     left.push_str("╭─ ");
-    left.push_str(mode_word);
-    if let Some(ch) = ctx.channel.as_deref() {
+    left.push_str(ctx.mode);
+    if let Some(ch) = ctx.channel {
         left.push_str(" · ");
         left.push_str(ch);
     }
-    if let Some(pat) = ctx.pattern.as_deref() {
+    if let Some(pat) = ctx.pattern {
         left.push_str(" · ");
         left.push_str(pat);
     }
 
     // --- Right chip: "[ jyc ai v{ver} · {model} · {pct}% ]" ---
     let version = server_version.unwrap_or("?");
-    let model = ctx.model.as_deref().unwrap_or("?");
-    let pct = match (ctx.input_tokens, ctx.max_tokens) {
-        (Some(cur), Some(max)) if max > 0 => (cur.saturating_mul(100) / max) as u32,
-        _ => 0,
-    };
-    let pct_str = match (ctx.input_tokens, ctx.max_tokens) {
-        (Some(_), Some(_)) => format!("{pct}%"),
-        _ => "–%".to_string(),
+    let model = ctx.model.unwrap_or("?");
+    let pct_str = match ctx.pct {
+        Some(p) => format!("{p}%"),
+        None => "–%".to_string(),
     };
     let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
 
@@ -1145,8 +1144,8 @@ fn build_chat_header_line(
             return Line::from(Span::styled(left, header_style));
         }
         // Left itself doesn't fit; truncate the channel/pattern segments.
-        let mut compact = format!("╭─ {mode_word}");
-        if let Some(ch) = ctx.channel.as_deref() {
+        let mut compact = format!("╭─ {}", ctx.mode);
+        if let Some(ch) = ctx.channel {
             compact.push_str(" · ");
             let avail = width.saturating_sub(compact.chars().count());
             if avail >= 3 {
@@ -1567,10 +1566,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Thread Info pane).
     let header_ctx = resolve_header_ctx(app);
-    let (mode_word, mode_color) = if header_ctx.mode == "plan" {
-        ("plan", Color::Rgb(249, 226, 175)) // Catppuccin yellow
+    let mode_color = if header_ctx.mode == "plan" {
+        Color::Rgb(249, 226, 175) // Catppuccin yellow
     } else {
-        ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
+        Color::Rgb(166, 227, 161) // Catppuccin green
     };
     // Sync the header fg with the prompt gutter: dim when focus moved
     // away from the input field (Tab), highlight when it is focused.
@@ -1581,7 +1580,6 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     };
     let header_line = build_chat_header_line(
         header_area.width as usize,
-        mode_word,
         &header_ctx,
         app.state.as_ref().map(|s| s.version.as_str()),
         header_style,
@@ -3327,14 +3325,13 @@ mod tests {
         }
     }
 
-    fn ctx_with_full_data() -> ChatHeaderCtx {
+    fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
         ChatHeaderCtx {
-            mode: "plan".to_string(),
-            model: Some("claude-opus-4-6".to_string()),
-            input_tokens: Some(12288),
-            max_tokens: Some(122880),
-            channel: Some("local_dev".to_string()),
-            pattern: Some("jyc".to_string()),
+            mode: "plan",
+            model: Some("claude-opus-4-6"),
+            pct: Some(10),
+            channel: Some("local_dev"),
+            pattern: Some("jyc"),
         }
     }
 
@@ -3351,7 +3348,7 @@ mod tests {
     #[test]
     fn header_line_includes_mode_channel_pattern_and_chip() {
         let ctx = ctx_with_full_data();
-        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
         let text = line_text(&line);
         // Left segment includes mode + channel + pattern.
         assert!(
@@ -3371,7 +3368,7 @@ mod tests {
     fn header_line_omits_pattern_when_missing() {
         let mut ctx = ctx_with_full_data();
         ctx.pattern = None;
-        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
         let text = line_text(&line);
         assert!(
             text.starts_with("╭─ plan · local_dev"),
@@ -3383,9 +3380,8 @@ mod tests {
     #[test]
     fn header_line_shows_dash_for_missing_tokens() {
         let mut ctx = ctx_with_full_data();
-        ctx.input_tokens = None;
-        ctx.max_tokens = None;
-        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        ctx.pct = None;
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), header_style());
         let text = line_text(&line);
         assert!(
             text.contains("· –% ]"),
@@ -3395,8 +3391,14 @@ mod tests {
 
     #[test]
     fn header_line_shows_question_marks_when_no_state() {
-        let ctx = ChatHeaderCtx::default();
-        let line = build_chat_header_line(80, "build", &ctx, None, header_style());
+        let ctx = ChatHeaderCtx {
+            mode: "build",
+            model: None,
+            pct: None,
+            channel: None,
+            pattern: None,
+        };
+        let line = build_chat_header_line(80, &ctx, None, header_style());
         let text = line_text(&line);
         // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
         assert!(
@@ -3416,7 +3418,6 @@ mod tests {
         let left = "╭─ plan · local_dev · jyc";
         let line = build_chat_header_line(
             left.chars().count() + 1,
-            "plan",
             &ctx,
             Some("0.3.12"),
             header_style(),
@@ -3428,10 +3429,10 @@ mod tests {
     #[test]
     fn header_line_truncates_left_when_too_narrow() {
         let mut ctx = ctx_with_full_data();
-        ctx.channel = Some("a-very-long-channel-name".to_string());
-        ctx.pattern = Some("a-very-long-pattern-name".to_string());
+        ctx.channel = Some("a-very-long-channel-name");
+        ctx.pattern = Some("a-very-long-pattern-name");
         // Width so tight that even truncating channel to 3 chars barely fits.
-        let line = build_chat_header_line(20, "plan", &ctx, Some("0.3.12"), header_style());
+        let line = build_chat_header_line(20, &ctx, Some("0.3.12"), header_style());
         let text = line_text(&line);
         // Channel must be truncated to fit; chip dropped.
         assert!(!text.contains("["), "chip should be dropped, got: {text:?}");

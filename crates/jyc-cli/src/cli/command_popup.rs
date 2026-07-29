@@ -232,6 +232,31 @@ pub fn render_command_popup(
     commands: &[CommandInfo],
     models: &[ModelInfo],
 ) {
+    render_popup(frame, area, state, commands, models, " Commands ");
+}
+
+/// Render the TUI-local command palette as a centered overlay.
+///
+/// Same UI as the `/` command popup but with a " Palette " title and no
+/// model mode (palette commands are never backend commands).
+pub fn render_palette_popup(
+    frame: &mut Frame,
+    area: Rect,
+    state: &CommandPopupState,
+    commands: &[CommandInfo],
+) {
+    render_popup(frame, area, state, commands, &[], " Palette ");
+}
+
+/// Shared renderer for the command popup and the command palette.
+fn render_popup(
+    frame: &mut Frame,
+    area: Rect,
+    state: &CommandPopupState,
+    commands: &[CommandInfo],
+    models: &[ModelInfo],
+    cmd_title: &str,
+) {
     let model_mode = is_model_mode(&state.filter);
 
     let (items, title) = if model_mode {
@@ -249,7 +274,7 @@ pub fn render_command_popup(
         }
     } else if state.filter.is_empty() || !state.filtered_commands(commands).is_empty() {
         let filtered = state.filtered_commands(commands);
-        (render_command_list(&filtered, state.selected), " Commands ")
+        (render_command_list(&filtered, state.selected), cmd_title)
     } else {
         // Filter doesn't match anything — show empty state
         (
@@ -257,7 +282,7 @@ pub fn render_command_popup(
                 "  (no matches)",
                 Style::default().fg(Color::DarkGray),
             ))],
-            " Commands ",
+            cmd_title,
         )
     };
 

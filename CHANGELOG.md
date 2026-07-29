@@ -92,6 +92,9 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Mode header dims with focus.** The `╭─ build` / `╭─ plan` header
+  above the chat input now dims to DarkGray when Tab moves focus away
+  from the input field, synchronizing with the input prompt gutter.
 - **Dashboard chat input prompt redesigned.** The single-letter `B`/`P`
   agent-mode chip (a lone colored-background cell in the backgroundless
   input gutter) is replaced by a two-line gutter: an fg-colored

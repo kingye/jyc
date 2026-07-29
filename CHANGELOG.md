@@ -6,6 +6,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Bare `jyc` opens an ad-hoc websocket thread and launches chat.**
+  Clap's "missing subcommand" error is caught and `open` is injected,
+  so `jyc` is now equivalent to `jyc open`.
+
 - **Thread explorer pane.** `Ctrl+E` (or `toggle explorer` in the
   command palette) opens a left-side pane (20% width, default hidden)
   listing all threads with a live status dot (processing / queued /

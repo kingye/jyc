@@ -84,8 +84,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub wecom: Option<WecomGlobalConfig>,
 
-    /// Named MCP server configurations, referenced by templates.
-    /// Each template in `templates.toml` can specify which MCPs it needs.
+    /// Named MCP server configurations, referenced by agent templates.
     #[serde(default)]
     pub mcps: Vec<McpServerConfig>,
 

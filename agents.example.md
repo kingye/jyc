@@ -13,7 +13,7 @@ uncomment the environment section that matches your deployment.
 2. Symlink the deploy skills so OpenCode can discover them:
    ```bash
    mkdir -p .opencode
-   ln -s ../jyc/.opencode/skills .opencode/skills
+   ln -s ../jyc/skills .opencode/skills
    ```
 
 3. Copy this file as AGENTS.md:

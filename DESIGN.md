@@ -172,7 +172,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
 9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-thread messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-thread replies
-10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml` and `mcps` in template's `templates.toml`
+10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
 13. **Message Storage** — Unified chat log storage: daily log files (`chat_history_YYYY-MM-DD.jsonl`) with JSON metadata

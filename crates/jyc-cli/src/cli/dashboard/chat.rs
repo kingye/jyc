@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// Width of the input prompt gutter ("╭─ build" / "╰─> ").
+const PROMPT_GUTTER_WIDTH: u16 = 8;
+
 /// Phase of the chat pane UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatPhase {
@@ -773,10 +776,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area grows with content (up to 10 rows) for multi-line editing.
-    // Subtract the 4-column "B > " prompt gutter from the wrap width.
-    let input_line_count =
-        count_wrapped_lines(&app.chat.text(), area.width.saturating_sub(4)).clamp(1, 10) as u16;
+    // Input area = 1 mode header row ("╭─ build") + editor rows (grows with
+    // content, up to 10). Subtract the prompt gutter from the wrap width.
+    let input_line_count = (count_wrapped_lines(
+        &app.chat.text(),
+        area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
+    ) + 1)
+        .clamp(2, 11) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -1096,8 +1102,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // The editor renders its own wrapping, scroll-follow, and mode status
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the input field does
-    // not have focus. A "> " prompt sits in a 2-column gutter left of the
-    // editor; it dims when the message area is focused.
+    // not have focus. A two-line prompt gutter sits left of the editor:
+    // "╭─ build" (or "╭─ plan") on the header row, "╰─>" on the first
+    // editor row; it dims when the message area is focused.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
@@ -1112,17 +1119,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             _ => theme,
         },
     };
+    let [header_area, body_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(chunks[1]);
     let [prompt_area, editor_area] =
-        Layout::horizontal([Constraint::Length(4), Constraint::Min(0)]).areas(chunks[1]);
+        Layout::horizontal([Constraint::Length(PROMPT_GUTTER_WIDTH), Constraint::Min(0)])
+            .areas(body_area);
     let prompt_style = if app.chat.focus == ChatFocus::ChatPane {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // Always-visible agent-mode letter chip before the "> " prompt.
-    // B = build (green), P = plan (yellow); defaults to build when the
-    // thread's mode is unset. Sourced from the polled overview, same as
-    // the Thread Info pane.
+    // Always-visible agent-mode word above the "> " prompt, colored
+    // (green = build, yellow = plan); defaults to build when the thread's
+    // mode is unset. Sourced from the polled overview, same as the
+    // Thread Info pane.
     let thread_mode = app
         .state
         .as_ref()
@@ -1134,24 +1144,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         })
         .and_then(|t| t.mode.as_deref())
         .unwrap_or("build");
-    let (mode_letter, mode_bg) = if thread_mode == "plan" {
-        ("P", Color::Rgb(249, 226, 175)) // Catppuccin yellow
+    let (mode_word, mode_color) = if thread_mode == "plan" {
+        ("plan", Color::Rgb(249, 226, 175)) // Catppuccin yellow
     } else {
-        ("B", Color::Rgb(166, 227, 161)) // Catppuccin green
+        ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
     };
-    let mode_chip = Span::styled(
-        mode_letter,
-        Style::default()
-            .fg(Color::Rgb(30, 30, 46))
-            .bg(mode_bg)
-            .add_modifier(Modifier::BOLD),
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("╭─ {mode_word}"),
+            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+        ))),
+        header_area,
     );
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            mode_chip,
-            Span::raw(" "),
-            Span::styled("> ", prompt_style),
-        ])),
+        Paragraph::new(Line::from(Span::styled("╰─> ", prompt_style))),
         prompt_area,
     );
     EditorView::new(&mut app.chat.editor)
@@ -1658,10 +1664,13 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // Editor rows: wrapped text lines (1-10).
-                // Subtract the 4-column "B > " prompt gutter from the width.
-                let input_lines =
-                    count_wrapped_lines(&self.text(), term_width.saturating_sub(4)).clamp(1, 10);
+                // Editor rows: 1 mode header row + wrapped text lines (1-10).
+                // Subtract the prompt gutter from the width.
+                let input_lines = (count_wrapped_lines(
+                    &self.text(),
+                    term_width.saturating_sub(PROMPT_GUTTER_WIDTH),
+                ) + 1)
+                    .clamp(2, 11);
                 base.saturating_sub(input_lines).max(1)
             }
             ChatFocus::ActivityPane => base.max(1),

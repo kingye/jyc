@@ -95,13 +95,13 @@ starts in Insert mode.
 | Key | Action |
 |-----|--------|
 | `c` | Open chat pane (from thread list) |
-| `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (Normal mode); move cursor (Insert/Visual mode) |
-| `gg` / `G` | Jump to top / bottom of the focused pane (Normal mode, single-line input) |
+| `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (message-area focus); move cursor (Insert/Visual mode) |
+| `gg` / `G` | Jump to top / bottom of the focused pane (message-area focus) |
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
-| `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection) |
+| `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection); message-area focus → back to input |
 | `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
-| `Tab` | Switch focus between Chat and Activity panes |
+| `Tab` | Cycle focus: Input → Message area → Activity pane (skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+A` | Cycle activity pane size: hidden → bottom 20% → bottom 80% → activity-only → hidden |
 | `Ctrl+Z` | Toggle zen mode: hide (or show) thread info pane and status bar together. If the activity pane is visible, `Ctrl+Z` also hides it. Exiting zen mode restores only info + status, not activity. |
@@ -115,11 +115,13 @@ yank/paste (`y yy p P`), undo/redo (`u` / `Ctrl+r`), repeat (`.`), half-page
 jumps (`Ctrl+d` / `Ctrl+u`), and Visual mode (`v`). See the
 [edtui keybinding list](https://docs.rs/edtui) for details.
 
-Note: when the input holds at most one line (where `j`/`k`/`gg`/`G` would be
-editor no-ops), Normal mode uses them to scroll the message history instead —
-`j`/`k` scroll down/up, `gg`/`G` jump to the top/bottom. With multi-line input
-they remain editor motions. The input area grows with content from 1 up to 10
-text lines.
+Note: with the input field focused, Up/Down recall sent-message history when
+the input is empty (Insert mode); to scroll the conversation, press `Tab` to
+focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or `gg/G`. Typing
+while the message area is focused refocuses the input automatically. The input
+area grows with content from 1 up to 10 text lines. The input prompt shows an
+always-visible agent-mode letter chip before `> `: `B` (green) for build mode,
+`P` (yellow) for plan mode.
 
 ### Interface Layout
 

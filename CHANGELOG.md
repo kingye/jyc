@@ -173,6 +173,24 @@ All notable changes to JYC will be documented in this file.
   only the info pane + status bar, not activity). `Tab` continues to
   switch Chat/Activity focus.
 
+- **Message-area focus in the chat pane.** `Tab` now cycles focus through
+  Input → Message area → Activity pane (the activity pane is skipped when
+  hidden). While the message area is focused, `↑/↓` and `j/k` scroll the
+  conversation, `PgUp/PgDn` page, `gg/G` jump to top/bottom, `Esc`
+  returns focus to the input field, and typing any other key refocuses
+  the input and forwards the key to the editor. The previous
+  Normal-mode/single-line-input scroll behavior is removed — scrolling
+  the conversation always happens through message-area focus.
+
+- **Agent mode letter chip in the chat input prompt.** The chat input
+  prompt is now prefixed with an always-visible single-letter chip: `B`
+  (green) for build mode, `P` (yellow) for plan mode. The gutter grows
+  from 2 to 4 columns (`B > `).
+
+- **Breathing space in chat round rules.** The horizontal rules bounding
+  each conversation round now pad the timestamp and duration:
+  `── 09:50 ────────` (top) and `──────── 1m ──` (bottom).
+
 ### Fixed
 
 - **`/cancel` now aborts tool execution immediately.** Previously the

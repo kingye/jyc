@@ -1577,22 +1577,19 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         Layout::horizontal([Constraint::Length(PROMPT_GUTTER_WIDTH), Constraint::Min(0)])
             .areas(body_area);
     let prompt_style = if app.chat.focus == ChatFocus::ChatPane {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
     } else {
         Style::default().fg(Color::DarkGray)
     };
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Thread Info pane).
     let header_ctx = resolve_header_ctx(app);
-    let mode_color = if header_ctx.mode == "plan" {
-        Color::Rgb(249, 226, 175) // Catppuccin yellow
-    } else {
-        Color::Rgb(166, 227, 161) // Catppuccin green
-    };
     // Sync the header fg with the prompt gutter: dim when focus moved
     // away from the input field (Tab), highlight when it is focused.
     let header_style = if app.chat.focus == ChatFocus::ChatPane {
-        Style::default().fg(mode_color).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
+            .add_modifier(Modifier::BOLD)
     } else {
         prompt_style
     };

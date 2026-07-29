@@ -87,6 +87,10 @@ struct App {
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
     pending_reset: Option<(String, std::time::Instant)>,
+    /// Set by the explorer pane when it switches the chat to a new
+    /// thread; the async poll loop picks it up and hydrates the live
+    /// buffers so the chat pane shows the new thread's history.
+    pending_hydrate: Option<(String, String)>,
 
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
@@ -119,6 +123,7 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_reset: None,
+            pending_hydrate: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
@@ -476,6 +481,13 @@ pub async fn run(
                     }
                 }
                 last_poll = std::time::Instant::now();
+            }
+
+            // Hydrate the new thread's history when the explorer pane
+            // switches the chat. Deferred here because the sync key
+            // handler can't await on InspectClient.
+            if let Some((channel, thread)) = app.pending_hydrate.take() {
+                hydrate_live(&mut client, &mut app, &channel, &thread).await;
             }
 
             // Check for WebSocket events

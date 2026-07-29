@@ -368,12 +368,21 @@ fn explorer_open_selected(app: &mut App) {
             Some(addr) => {
                 let token = app.chat.token.clone();
                 app.chat.open(&addr, Some(&channel), Some(&name), token);
+                // Hydration runs on the async poll loop (sync key handler
+                // can't await on InspectClient).
+                app.pending_hydrate = Some((channel, name));
+                // Focus on the new thread's input; hide the explorer so
+                // the user lands in the chat, not the pane they used to
+                // pick the thread.
+                app.chat.explorer_visible = false;
             }
             None => app.set_status("No server address available".to_string()),
         }
     } else {
         app.chat
             .open_thread_detail(&channel, &name, app.state.as_ref());
+        app.pending_hydrate = Some((channel, name));
+        app.chat.explorer_visible = false;
     }
 }
 
@@ -752,8 +761,22 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // Chatting phase.
     let show_status = app.chat.info_visible;
     let show_activity = app.chat.activity_split != 0;
+    let show_explorer = app.chat.explorer_visible;
+    if show_explorer {
+        sync_explorer_selection(app);
+    }
 
-    // Build vertical constraints for: [top row, activity_row?, status_row?].
+    // Outer split: when the explorer is visible, it spans the full chat
+    // height as the left column; the right column holds everything else.
+    let (explorer_area, rest_area) = if show_explorer {
+        let halves = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .split(area);
+        (Some(halves[0]), halves[1])
+    } else {
+        (None, area)
+    };
+
+    // Right column: vertical [top(chat+info), activity?, status?]
     let activity_pct = match app.chat.activity_split {
         1 => 20,
         2 => 80,
@@ -770,53 +793,27 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vertical_constraints)
-        .split(area);
+        .split(rest_area);
 
-    // Top row always holds the chat conversation plus the optional
-    // explorer (left) and info (right) panes.
+    // Top row inside the right column: chat + optional info pane.
     let top_row = chunks[0];
-    let show_explorer = app.chat.explorer_visible;
-    if show_explorer {
-        sync_explorer_selection(app);
-    }
-    let cols = match (show_explorer, app.chat.info_visible) {
-        (true, true) => Layout::horizontal([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(top_row),
-        (true, false) => {
-            Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
-                .split(top_row)
-        }
-        (false, true) => {
-            Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)])
-                .split(top_row)
-        }
-        (false, false) => Layout::horizontal([Constraint::Percentage(100)]).split(top_row),
+    let top_cols = if app.chat.info_visible {
+        Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)]).split(top_row)
+    } else {
+        Layout::horizontal([Constraint::Percentage(100)]).split(top_row)
     };
-    let mut col_idx = 0;
-    if show_explorer {
-        render_explorer(frame, cols[col_idx], app);
-        col_idx += 1;
-    }
-    render_chat_conversation(frame, cols[col_idx], app);
-    col_idx += 1;
+    render_chat_conversation(frame, top_cols[0], app);
     if app.chat.info_visible {
-        render_thread_info_pane(frame, cols[col_idx], app);
+        render_thread_info_pane(frame, top_cols[1], app);
+    }
+
+    if let Some(exp) = explorer_area {
+        render_explorer(frame, exp, app);
     }
 
     if show_activity {
-        // Activity pane takes the chunk just below the top row.
-        let activity_chunk_idx = 1;
-        let activity_chunk = chunks[activity_chunk_idx];
-        if app.chat.activity_split == 3 {
-            // Activity-only — also hides the chat conversation.
-            render_activity_log(frame, activity_chunk, app);
-        } else {
-            render_activity_log(frame, activity_chunk, app);
-        }
+        let activity_chunk = chunks[1];
+        render_activity_log(frame, activity_chunk, app);
         if show_status {
             render_status_bar(frame, chunks[2], app);
         }
@@ -1714,6 +1711,10 @@ impl ChatState {
         self.last_hydrated_key = None;
         // Stash addr so the explorer pane can switch threads later.
         self.open_addr = Some(addr.to_string());
+        // Clear any stale detail-mode state (the explorer can switch
+        // from a detail view back to a websocket chat).
+        self.detail_channel = None;
+        self.detail_thread_path = None;
 
         // No WS yet — the chat starts in PatternSelect (if no initial thread)
         // and opens a scoped WS only after the user picks a pattern
@@ -1940,11 +1941,14 @@ impl ChatState {
         }
     }
 
-    /// Toggle the thread explorer pane (left side). Hiding it while it
-    /// has focus returns focus to the chat input.
+    /// Toggle the thread explorer pane (left side). Opening moves focus
+    /// into it so j/k/Enter are immediately usable; closing returns
+    /// focus to the chat input.
     pub(super) fn toggle_explorer(&mut self) {
         self.explorer_visible = !self.explorer_visible;
-        if !self.explorer_visible && self.focus == ChatFocus::ExplorerPane {
+        if self.explorer_visible {
+            self.focus = ChatFocus::ExplorerPane;
+        } else if self.focus == ChatFocus::ExplorerPane {
             self.focus = ChatFocus::ChatPane;
         }
     }
@@ -2994,14 +2998,80 @@ mod tests {
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
 
-        // Visible: ChatPane → MessageArea → ExplorerPane → ChatPane.
+        // Opening the explorer jumps focus straight into it so j/k/Enter
+        // are immediately usable; Tab then returns to the chat input.
         app.chat.toggle_explorer();
-        app.chat.toggle_focus();
-        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
-        app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::ExplorerPane);
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn opening_explorer_moves_focus_into_it() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        app.chat.toggle_explorer();
+        assert!(app.chat.explorer_visible);
+        assert_eq!(app.chat.focus, ChatFocus::ExplorerPane);
+    }
+
+    #[tokio::test]
+    async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        let (addr_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        app.chat.open_addr = Some("test-addr".to_string());
+        app.chat.token = None;
+        app.state = Some(jyc_types::InspectOverview {
+            channels: vec![jyc_types::ChannelInfo {
+                name: "local_dev".to_string(),
+                channel_type: "websocket".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            threads: vec![
+                jyc_types::ThreadSummary {
+                    name: "current".to_string(),
+                    channel: "local_dev".to_string(),
+                    pattern: None,
+                    status: jyc_types::ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                },
+                jyc_types::ThreadSummary {
+                    name: "other".to_string(),
+                    channel: "local_dev".to_string(),
+                    pattern: None,
+                    status: jyc_types::ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                },
+            ],
+            ..Default::default()
+        });
+        app.chat.explorer_visible = true;
+        app.chat.explorer_selected = 1;
+
+        explorer_open_selected(&mut app);
+
+        assert!(!app.chat.explorer_visible);
+        assert_eq!(app.chat.thread.as_deref(), Some("other"));
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        assert_eq!(
+            app.pending_hydrate.as_ref(),
+            Some(&("local_dev".to_string(), "other".to_string()))
+        );
     }
 
     #[test]

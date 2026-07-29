@@ -107,6 +107,10 @@ pub(super) struct ChatState {
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
     pub(super) command_popup: Option<CommandPopupState>,
+    /// TUI-local command palette entries (zen mode, activity pane, ...).
+    pub(super) local_commands: Vec<CommandInfo>,
+    /// Command palette popup state (TUI-local commands, never sent).
+    pub(super) palette: Option<CommandPopupState>,
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
     /// Current position in history browsing (None = not browsing).
@@ -322,6 +326,28 @@ pub(super) fn edit_input_externally(
     Ok(())
 }
 
+/// Execute a TUI-local action selected from the command palette.
+pub(super) fn execute_local_action(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    action: local_commands::LocalAction,
+) {
+    use local_commands::LocalAction;
+    match action {
+        LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
+        LocalAction::CycleActivity => app.chat.cycle_activity(),
+        LocalAction::OpenExternalEditor => {
+            if app.chat.focus == ChatFocus::ChatPane
+                && let Err(e) = edit_input_externally(app, terminal)
+            {
+                app.set_status(format!("Editor error: {e:#}"));
+            }
+        }
+        LocalAction::ScrollTop => app.chat.scroll_to_top(),
+        LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
+    }
+}
+
 pub(super) fn handle_chat_keys(
     app: &mut App,
     key: event::KeyEvent,
@@ -372,7 +398,48 @@ pub(super) fn handle_chat_keys(
     if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
+        app.chat.palette = None;
         app.chat.send_message_inner("/cancel".to_string());
+        return;
+    }
+
+    // ── Command palette handling (TUI-local commands, never sent) ──
+    if let Some(ref mut palette) = app.chat.palette {
+        match handle_popup_key(key, palette, &app.chat.local_commands, &[]) {
+            PopupAction::None => {}
+            PopupAction::Close => {
+                app.chat.palette = None;
+            }
+            PopupAction::Send(name) | PopupAction::CopyToInput(name) => {
+                app.chat.palette = None;
+                if let Some(action) = local_commands::find_by_name(&name) {
+                    execute_local_action(app, terminal, action);
+                }
+            }
+        }
+        return;
+    }
+
+    // Ctrl+P opens the command palette (works from any editor mode).
+    let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_p && app.chat.phase == ChatPhase::Chatting {
+        app.chat.command_popup = None;
+        app.chat.palette = Some(CommandPopupState::new());
+        return;
+    }
+
+    // ":" opens the command palette in Normal mode (vim-style, symmetric
+    // with "/" opening the backend command popup). Suppressed while the
+    // command popup is open — there ":" is legitimate filter input.
+    let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_colon
+        && app.chat.phase == ChatPhase::Chatting
+        && app.chat.focus == ChatFocus::ChatPane
+        && app.chat.editor.mode == EditorMode::Normal
+        && app.chat.command_popup.is_none()
+    {
+        app.chat.command_popup = None;
+        app.chat.palette = Some(CommandPopupState::new());
         return;
     }
 
@@ -406,6 +473,7 @@ pub(super) fn handle_chat_keys(
             _ => false,
         };
         if should_open {
+            app.chat.palette = None;
             app.chat.command_popup = Some(CommandPopupState::new());
             return;
         }
@@ -1184,6 +1252,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     if let Some(ref popup) = app.chat.command_popup {
         render_command_popup(frame, area, popup, &app.chat.commands, &app.chat.models);
     }
+
+    // ── Command palette overlay (TUI-local commands) ──
+    if let Some(ref popup) = app.chat.palette {
+        render_palette_popup(frame, area, popup, &app.chat.local_commands);
+    }
 }
 
 /// Filter out activity entries that should not be shown in user-facing
@@ -1372,6 +1445,8 @@ impl ChatState {
             commands: vec![],
             models: vec![],
             command_popup: None,
+            local_commands: local_commands::command_infos(),
+            palette: None,
             input_history: vec![],
             history_pos: None,
             token: None,

@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **TUI command palette.** `Ctrl+P` (any editor mode) or `:` (Normal
+  mode) opens a palette of TUI-local actions — toggle zen, cycle activity
+  pane, open input in external editor, scroll top/bottom — each shown
+  with its keybinding. Palette selections execute locally and are never
+  sent to the backend; the `/` popup remains backend commands only.
+
 - **`jyc agents` and `jyc skills` commands.** `jyc agents install [name]`
   installs agent templates from `<source>/templates/` into
   `<target>/templates/`; `jyc skills install [name]` does the same for

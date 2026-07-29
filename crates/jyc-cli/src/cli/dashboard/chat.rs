@@ -1064,6 +1064,127 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
+/// Resolved values for the chat header line. All fields are sourced from
+/// the polled `InspectOverview`, matching the data shown by the Thread
+/// Info pane. Missing fields fall back to placeholders so the chip
+/// still reads as `[ jyc ai v? · ? · –% ]` before the first poll.
+#[derive(Default)]
+struct ChatHeaderCtx {
+    mode: String,
+    model: Option<String>,
+    input_tokens: Option<u64>,
+    max_tokens: Option<u64>,
+    channel: Option<String>,
+    pattern: Option<String>,
+}
+
+fn resolve_header_ctx(app: &App) -> ChatHeaderCtx {
+    let thread = app.state.as_ref().and_then(|s| {
+        app.chat
+            .thread
+            .as_deref()
+            .and_then(|name| s.threads.iter().find(|t| t.name == name))
+    });
+    ChatHeaderCtx {
+        mode: thread
+            .and_then(|t| t.mode.clone())
+            .unwrap_or_else(|| "build".to_string()),
+        model: thread.and_then(|t| t.model.clone()),
+        input_tokens: thread.and_then(|t| t.input_tokens),
+        max_tokens: thread.and_then(|t| t.max_tokens),
+        channel: thread.map(|t| t.channel.clone()),
+        pattern: thread.and_then(|t| t.pattern.clone()),
+    }
+}
+
+/// Build the chat header row: "╭─ {mode} · {channel} · {pattern}"
+/// left-aligned, ─ padding filling the chat-pane width, and a right-
+/// aligned "[ jyc ai v{ver} · {model} · {pct}% ]" chip. No bottom or
+/// right border. Falls back gracefully when any field is missing.
+fn build_chat_header_line(
+    width: usize,
+    mode_word: &str,
+    ctx: &ChatHeaderCtx,
+    server_version: Option<&str>,
+    header_style: Style,
+) -> Line<'static> {
+    // --- Left segment: "╭─ {mode} · {channel} · {pattern}" ---
+    let mut left = String::with_capacity(32);
+    left.push_str("╭─ ");
+    left.push_str(mode_word);
+    if let Some(ch) = ctx.channel.as_deref() {
+        left.push_str(" · ");
+        left.push_str(ch);
+    }
+    if let Some(pat) = ctx.pattern.as_deref() {
+        left.push_str(" · ");
+        left.push_str(pat);
+    }
+
+    // --- Right chip: "[ jyc ai v{ver} · {model} · {pct}% ]" ---
+    let version = server_version.unwrap_or("?");
+    let model = ctx.model.as_deref().unwrap_or("?");
+    let pct = match (ctx.input_tokens, ctx.max_tokens) {
+        (Some(cur), Some(max)) if max > 0 => (cur.saturating_mul(100) / max) as u32,
+        _ => 0,
+    };
+    let pct_str = match (ctx.input_tokens, ctx.max_tokens) {
+        (Some(_), Some(_)) => format!("{pct}%"),
+        _ => "–%".to_string(),
+    };
+    let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
+
+    let left_w = left.chars().count();
+    let chip_w = chip.chars().count();
+
+    // Width budget: pad = width - left - chip. If negative, drop the
+    // chip first, then truncate the left segment.
+    if width < left_w + chip_w {
+        // Try without the chip.
+        if width >= left_w {
+            return Line::from(Span::styled(left, header_style));
+        }
+        // Left itself doesn't fit; truncate the channel/pattern segments.
+        let mut compact = format!("╭─ {mode_word}");
+        if let Some(ch) = ctx.channel.as_deref() {
+            compact.push_str(" · ");
+            let avail = width.saturating_sub(compact.chars().count());
+            if avail >= 3 {
+                compact.push_str(&truncate_chars(ch, avail));
+            }
+        }
+        return Line::from(Span::styled(compact, header_style));
+    }
+
+    let pad = width - left_w - chip_w;
+    let mut spans = Vec::with_capacity(3);
+    spans.push(Span::styled(left, header_style));
+    if pad > 0 {
+        spans.push(Span::styled("─".repeat(pad), header_style));
+    }
+    spans.push(Span::styled(chip, header_style));
+    Line::from(spans)
+}
+
+/// Truncate `s` to at most `max_chars` Unicode scalar values; if the
+/// input is longer, replace the tail with `…`.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let keep = max_chars - 1;
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
 pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Borderless chat pane — no outer block, no side borders, no
     // per-message `│ ` gutter. Each chat round is bounded by a horizontal
@@ -1413,9 +1534,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the input field does
     // not have focus. A two-line prompt gutter sits left of the editor:
-    // "╭─ build" (or "╭─ plan") on the header row, "╰─>" (Insert mode)
-    // or "╰─<" (other vim modes) on the first editor row; both dim when
-    // the input field loses focus.
+    // the header row shows "╭─ {mode} · {channel} · {pattern}" with a
+    // right-aligned "[ jyc ai v{ver} · {model} · {pct}% ]" chip, and
+    // "╰─>" (Insert mode) / "╰─<" (other vim modes) on the first editor
+    // row; both dim when the input field loses focus.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
@@ -1442,22 +1564,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // Always-visible agent-mode word above the "> " prompt, colored
-    // (green = build, yellow = plan); defaults to build when the thread's
-    // mode is unset. Sourced from the polled overview, same as the
-    // Thread Info pane.
-    let thread_mode = app
-        .state
-        .as_ref()
-        .and_then(|s| {
-            app.chat
-                .thread
-                .as_deref()
-                .and_then(|name| s.threads.iter().find(|t| t.name == name))
-        })
-        .and_then(|t| t.mode.as_deref())
-        .unwrap_or("build");
-    let (mode_word, mode_color) = if thread_mode == "plan" {
+    // Resolve mode/channel/pattern/model/tokens for the header line, all
+    // from the polled overview (same source as the Thread Info pane).
+    let header_ctx = resolve_header_ctx(app);
+    let (mode_word, mode_color) = if header_ctx.mode == "plan" {
         ("plan", Color::Rgb(249, 226, 175)) // Catppuccin yellow
     } else {
         ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
@@ -1469,13 +1579,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         prompt_style
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("╭─ {mode_word}"),
-            header_style,
-        ))),
-        header_area,
+    let header_line = build_chat_header_line(
+        header_area.width as usize,
+        mode_word,
+        &header_ctx,
+        app.state.as_ref().map(|s| s.version.as_str()),
+        header_style,
     );
+    frame.render_widget(Paragraph::new(header_line), header_area);
     // Vim-mode arrow: "╰─> " in Insert mode, "╰─< " otherwise. The
     // full vim-mode chip lives in the status bar.
     let arrow = if app.chat.editor.mode == EditorMode::Insert {
@@ -3214,5 +3325,130 @@ mod tests {
                 cell.bg
             );
         }
+    }
+
+    fn ctx_with_full_data() -> ChatHeaderCtx {
+        ChatHeaderCtx {
+            mode: "plan".to_string(),
+            model: Some("claude-opus-4-6".to_string()),
+            input_tokens: Some(12288),
+            max_tokens: Some(122880),
+            channel: Some("local_dev".to_string()),
+            pattern: Some("jyc".to_string()),
+        }
+    }
+
+    fn header_style() -> Style {
+        Style::default()
+            .fg(Color::Rgb(249, 226, 175))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn header_line_includes_mode_channel_pattern_and_chip() {
+        let ctx = ctx_with_full_data();
+        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        let text = line_text(&line);
+        // Left segment includes mode + channel + pattern.
+        assert!(
+            text.contains("╭─ plan · local_dev · jyc"),
+            "missing left segment in: {text:?}"
+        );
+        // Right chip includes version + model + percent.
+        assert!(
+            text.contains("[ jyc ai v0.3.12 · claude-opus-4-6 · 10% ]"),
+            "missing chip in: {text:?}"
+        );
+        // The line should fill the requested width via dash padding.
+        assert_eq!(text.chars().count(), 80);
+    }
+
+    #[test]
+    fn header_line_omits_pattern_when_missing() {
+        let mut ctx = ctx_with_full_data();
+        ctx.pattern = None;
+        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        let text = line_text(&line);
+        assert!(
+            text.starts_with("╭─ plan · local_dev"),
+            "missing channel segment in: {text:?}"
+        );
+        assert!(!text.contains("· jyc"));
+    }
+
+    #[test]
+    fn header_line_shows_dash_for_missing_tokens() {
+        let mut ctx = ctx_with_full_data();
+        ctx.input_tokens = None;
+        ctx.max_tokens = None;
+        let line = build_chat_header_line(80, "plan", &ctx, Some("0.3.12"), header_style());
+        let text = line_text(&line);
+        assert!(
+            text.contains("· –% ]"),
+            "missing en-dash placeholder for tokens in: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_shows_question_marks_when_no_state() {
+        let ctx = ChatHeaderCtx::default();
+        let line = build_chat_header_line(80, "build", &ctx, None, header_style());
+        let text = line_text(&line);
+        // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
+        assert!(
+            text.starts_with("╭─ build"),
+            "missing default mode in: {text:?}"
+        );
+        assert!(
+            text.contains("[ jyc ai v? · ? · –% ]"),
+            "missing fallback chip in: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_drops_chip_when_narrow() {
+        let ctx = ctx_with_full_data();
+        // Width just enough for the left segment but not the chip.
+        let left = "╭─ plan · local_dev · jyc";
+        let line = build_chat_header_line(
+            left.chars().count() + 1,
+            "plan",
+            &ctx,
+            Some("0.3.12"),
+            header_style(),
+        );
+        let text = line_text(&line);
+        assert_eq!(text, left, "should drop chip and keep left segment");
+    }
+
+    #[test]
+    fn header_line_truncates_left_when_too_narrow() {
+        let mut ctx = ctx_with_full_data();
+        ctx.channel = Some("a-very-long-channel-name".to_string());
+        ctx.pattern = Some("a-very-long-pattern-name".to_string());
+        // Width so tight that even truncating channel to 3 chars barely fits.
+        let line = build_chat_header_line(20, "plan", &ctx, Some("0.3.12"), header_style());
+        let text = line_text(&line);
+        // Channel must be truncated to fit; chip dropped.
+        assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
+        assert!(text.starts_with("╭─ plan"));
+        assert!(text.chars().count() <= 20);
+    }
+
+    #[test]
+    fn truncate_chars_short_string_unchanged() {
+        assert_eq!(truncate_chars("hi", 5), "hi");
+        assert_eq!(truncate_chars("hi", 2), "hi");
+    }
+
+    #[test]
+    fn truncate_chars_long_string_gets_ellipsis() {
+        assert_eq!(truncate_chars("hello world", 6), "hello…");
+        assert_eq!(truncate_chars("abc", 1), "…");
+        assert_eq!(truncate_chars("abc", 0), "");
     }
 }

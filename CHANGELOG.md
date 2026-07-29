@@ -6,6 +6,19 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+### Changed
+
+- **Chat header line shows channel, pattern, version, model, and
+  input-token percentage.** The single `╭─ plan` / `╭─ build` line
+  above the dashboard chat input is now
+  `╭─ {mode} · {channel} · {pattern}` with a right-aligned
+  `[ jyc ai v{ver} · {model} · {pct}% ]` chip, separated by `─`
+  padding that fills the chat-pane width. No new border is added; the
+  line still has no bottom or right border. Falls back gracefully
+  when channel/pattern/model/tokens are missing (renders `?` and
+  `–%`). The chip dims along with the mode word when the input loses
+  focus.
+
 - **Bare `jyc` opens an ad-hoc websocket thread and launches chat.**
   Clap's "missing subcommand" error is caught and `open` is injected,
   so `jyc` is now equivalent to `jyc open`.

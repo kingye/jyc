@@ -766,37 +766,44 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
         sync_explorer_selection(app);
     }
 
-    // Outer split: when the explorer is visible, it spans the full chat
-    // height as the left column; the right column holds everything else.
-    let (explorer_area, rest_area) = if show_explorer {
-        let halves = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
-            .split(area);
-        (Some(halves[0]), halves[1])
+    // Outer vertical split: [main, status?]. The status bar (when visible)
+    // spans the full width across both columns.
+    let (main_area, status_area) = if show_status {
+        let v = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+        (v[0], Some(v[1]))
     } else {
-        (None, area)
+        (area, None)
     };
 
-    // Right column: vertical [top(chat+info), activity?, status?]
+    // Main area: horizontal [explorer?, right column]. The right column
+    // holds chat, info, and activity.
+    let (explorer_area, right_area) = if show_explorer {
+        let h = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .split(main_area);
+        (Some(h[0]), h[1])
+    } else {
+        (None, main_area)
+    };
+
+    // Right column: vertical [top(chat+info), activity?].
     let activity_pct = match app.chat.activity_split {
         1 => 20,
         2 => 80,
         3 => 100,
         _ => 0,
     };
-    let mut vertical_constraints: Vec<Constraint> = vec![Constraint::Min(0)];
-    if show_activity {
-        vertical_constraints.push(Constraint::Percentage(activity_pct));
-    }
-    if show_status {
-        vertical_constraints.push(Constraint::Length(1));
-    }
-    let chunks = Layout::default()
+    let right_constraints: Vec<Constraint> = if show_activity {
+        vec![Constraint::Min(0), Constraint::Percentage(activity_pct)]
+    } else {
+        vec![Constraint::Min(0)]
+    };
+    let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vertical_constraints)
-        .split(rest_area);
+        .constraints(right_constraints)
+        .split(right_area);
 
     // Top row inside the right column: chat + optional info pane.
-    let top_row = chunks[0];
+    let top_row = right_chunks[0];
     let top_cols = if app.chat.info_visible {
         Layout::horizontal([Constraint::Percentage(80), Constraint::Percentage(20)]).split(top_row)
     } else {
@@ -812,13 +819,11 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if show_activity {
-        let activity_chunk = chunks[1];
-        render_activity_log(frame, activity_chunk, app);
-        if show_status {
-            render_status_bar(frame, chunks[2], app);
-        }
-    } else if show_status {
-        render_status_bar(frame, chunks[1], app);
+        render_activity_log(frame, right_chunks[1], app);
+    }
+
+    if let Some(status) = status_area {
+        render_status_bar(frame, status, app);
     }
 }
 

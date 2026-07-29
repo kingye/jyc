@@ -343,7 +343,7 @@ fn explorer_move(app: &mut App, delta: i64) {
         return;
     }
     let cur = app.chat.explorer_selected as i64;
-    app.chat.explorer_selected = (cur + delta).clamp(0, len as i64 - 1) as usize;
+    app.chat.explorer_selected = cur.saturating_add(delta).clamp(0, len as i64 - 1) as usize;
 }
 
 /// Open the thread currently selected in the explorer pane: websocket
@@ -573,19 +573,35 @@ pub(super) fn handle_chat_keys(
                     return;
                 }
                 KeyCode::PageUp => {
-                    app.chat.page_up();
+                    if app.chat.focus == ChatFocus::ExplorerPane {
+                        explorer_move(app, -10);
+                    } else {
+                        app.chat.page_up();
+                    }
                     return;
                 }
                 KeyCode::PageDown => {
-                    app.chat.page_down();
+                    if app.chat.focus == ChatFocus::ExplorerPane {
+                        explorer_move(app, 10);
+                    } else {
+                        app.chat.page_down();
+                    }
                     return;
                 }
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.chat.page_up();
+                    if app.chat.focus == ChatFocus::ExplorerPane {
+                        explorer_move(app, -10);
+                    } else {
+                        app.chat.page_up();
+                    }
                     return;
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.chat.page_down();
+                    if app.chat.focus == ChatFocus::ExplorerPane {
+                        explorer_move(app, 10);
+                    } else {
+                        app.chat.page_down();
+                    }
                     return;
                 }
                 _ => {}
@@ -600,6 +616,8 @@ pub(super) fn handle_chat_keys(
                     }
                     KeyCode::Up | KeyCode::Char('k') => explorer_move(app, -1),
                     KeyCode::Down | KeyCode::Char('j') => explorer_move(app, 1),
+                    KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
+                    KeyCode::Char('G') => explorer_move(app, i64::MAX),
                     KeyCode::Enter => explorer_open_selected(app),
                     _ => {}
                 }
@@ -1810,6 +1828,13 @@ impl ChatState {
         // The mod.rs Enter handler triggers hydrate_live after this; clear
         // the last-hydrated key so the poll loop doesn't re-hydrate over us.
         self.last_hydrated_key = None;
+        // Drop any stale chat WS (e.g. when the explorer switches from a
+        // websocket chat to a detail view). Without this, ws_tx would
+        // still point at the *previous* thread and send_message_inner
+        // would deliver messages there.
+        if let Some(tx) = self.ws_tx.take() {
+            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+        }
     }
 
     /// Legacy no-op kept for compatibility with the test suite.
@@ -2896,6 +2921,56 @@ mod tests {
         app.chat.toggle_zen_mode();
         assert!(app.chat.info_visible);
         assert!(!app.chat.explorer_visible);
+    }
+
+    #[test]
+    fn open_thread_detail_disconnects_stale_ws() {
+        // Regression: switching from a websocket chat to a detail view
+        // must drop ws_tx, otherwise send_message_inner would deliver
+        // messages to the *previous* thread.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        app.chat.ws_tx = Some(ws_tx);
+
+        app.chat.open_thread_detail("email", "thread-b", None);
+
+        assert!(app.chat.ws_tx.is_none());
+        let disconnect = ws_rx.try_recv().expect("disconnect frame sent");
+        assert!(disconnect.contains("disconnect"));
+    }
+
+    #[test]
+    fn explorer_move_clamps_and_saturates() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.state = Some(jyc_types::InspectOverview {
+            threads: (0..5)
+                .map(|i| jyc_types::ThreadSummary {
+                    name: format!("t{i}"),
+                    channel: "test".to_string(),
+                    pattern: None,
+                    status: jyc_types::ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                })
+                .collect(),
+            ..Default::default()
+        });
+
+        explorer_move(&mut app, 1);
+        assert_eq!(app.chat.explorer_selected, 1);
+        // G-jump: saturates to the last row without overflow.
+        explorer_move(&mut app, i64::MAX);
+        assert_eq!(app.chat.explorer_selected, 4);
+        // gg-jump: saturates to the first row.
+        explorer_move(&mut app, i64::MIN);
+        assert_eq!(app.chat.explorer_selected, 0);
     }
 
     #[test]

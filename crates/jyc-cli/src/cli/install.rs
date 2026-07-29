@@ -99,7 +99,12 @@ pub async fn install_entries(
         println!("  installed: {entry_name}");
     }
 
-    println!("{} {collection} installed.", selected.len());
+    let noun = match (selected.len(), collection) {
+        (1, "templates") => "template",
+        (1, "skills") => "skill",
+        (_, c) => c,
+    };
+    println!("{} {noun} installed.", selected.len());
     Ok(())
 }
 

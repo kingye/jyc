@@ -3243,7 +3243,7 @@ INFO worker{channel=jiny283, thread=weather}: Worker finished
 | `/plan`        | Switch to plan mode (read-only, enforced by OpenCode)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current OpenCode session (start fresh context)      | `/reset`                                           |
-| `/close`       | Close the current thread (deletes thread directory and state) | `/close`                                           |
+| `/close`       | Close the current thread (deletes thread directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
 | `/template`    | Re-apply the pattern's thread template files                  | `/template`                                        |
 
 ### Command Handler Trait

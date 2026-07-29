@@ -46,7 +46,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/close".into(),
-            description: "Close and delete this thread".into(),
+            description: "Close and delete this thread (requires --confirm or -y)".into(),
         },
         CommandInfo {
             name: "/template".into(),

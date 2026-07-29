@@ -943,6 +943,41 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Find the `ThreadSummary` currently in scope. Used by both the
+/// thread info pane and the chat header so the two views agree on
+/// which thread is "selected".
+///
+/// Lookup order matches the legacy chat-pane behavior:
+/// 1. The thread the chat pane is currently bound to (`app.chat.thread`).
+/// 2. The currently-selected row of the thread table.
+fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
+    let state = app.state.as_ref()?;
+    state
+        .threads
+        .iter()
+        .find(|t| Some(&t.name) == app.chat.thread.as_ref())
+        .or_else(|| {
+            app.table_state
+                .selected()
+                .and_then(|i| state.threads.get(i))
+        })
+}
+
+/// Compute the input-token percentage for a thread, returned as
+/// `Option<u32>` so callers can decide how to render a missing value
+/// (chip shows `–%`, pane omits the row). Uses checked arithmetic to
+/// avoid wrapping when `cur` is very large.
+fn input_token_pct(t: &jyc_types::ThreadSummary) -> Option<u32> {
+    match (t.input_tokens, t.max_tokens) {
+        (Some(cur), Some(max)) if max > 0 => Some(
+            cur.checked_mul(100)
+                .and_then(|v| v.checked_div(max))
+                .unwrap_or(0) as u32,
+        ),
+        _ => None,
+    }
+}
+
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///
 /// Displays thread name, channel, pattern, model, mode, tokens, and a
@@ -955,23 +990,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let state = match &app.state {
-        Some(s) => s,
-        None => return,
-    };
-
-    let selected = app
-        .chat
-        .thread
-        .as_ref()
-        .and_then(|chat_name| state.threads.iter().find(|t| t.name == *chat_name))
-        .or_else(|| {
-            app.table_state
-                .selected()
-                .and_then(|i| state.threads.get(i))
-        });
-
-    let lines: Vec<Line> = if let Some(t) = selected {
+    let lines: Vec<Line> = if let Some(t) = selected_thread_summary(app) {
         let mut out: Vec<Line> = Vec::new();
         out.push(Line::from(vec![
             Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -996,13 +1015,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
         if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
-            let pct = if max > 0 {
-                cur.checked_mul(100)
-                    .and_then(|v| v.checked_div(max))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            let pct = input_token_pct(t).unwrap_or(0);
             out.push(Line::from(vec![
                 Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(format!("{cur} / {max} ({pct}%)")),
@@ -1062,6 +1075,131 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
+}
+
+/// Zero-alloc snapshot of the data the chat header needs. All fields
+/// borrow directly from the polled `InspectOverview`, matching what the
+/// Thread Info pane shows. Missing fields fall back to placeholders
+/// so the chip still reads as `[ jyc ai v? · ? · –% ]` before the
+/// first poll.
+struct ChatHeaderCtx<'a> {
+    mode: &'a str,
+    model: Option<&'a str>,
+    pct: Option<u32>,
+    channel: Option<&'a str>,
+    pattern: Option<&'a str>,
+}
+
+fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
+    let t = selected_thread_summary(app);
+    ChatHeaderCtx {
+        mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
+        model: t.and_then(|t| t.model.as_deref()),
+        pct: t.and_then(input_token_pct),
+        channel: t.map(|t| t.channel.as_str()),
+        pattern: t.and_then(|t| t.pattern.as_deref()),
+    }
+}
+
+/// Build the chat header row: "╭─ {mode} · {channel} · {pattern}"
+/// left-aligned, ─ padding filling the chat-pane width, and a right-
+/// aligned "[ jyc ai v{ver} · {model} · {pct}% ]" chip. No bottom or
+/// right border. Falls back gracefully when any field is missing.
+fn build_chat_header_line(
+    width: usize,
+    ctx: &ChatHeaderCtx<'_>,
+    server_version: Option<&str>,
+    header_style: Style,
+) -> Line<'static> {
+    // --- Left segment: "╭─ {mode} · {channel} · {pattern}" ---
+    // Divergence from the Thread Info pane: when `pattern` is `None`
+    // we omit the segment entirely instead of rendering "-". The
+    // header is width-constrained, so omitting the segment looks
+    // cleaner than `╭─ plan · local_dev · -`.
+    let mut left = String::with_capacity(32);
+    left.push_str("╭─ ");
+    left.push_str(ctx.mode);
+    if let Some(ch) = ctx.channel {
+        left.push_str(" · ");
+        left.push_str(ch);
+    }
+    if let Some(pat) = ctx.pattern {
+        left.push_str(" · ");
+        left.push_str(pat);
+    }
+
+    // --- Right chip: "[ jyc ai v{ver} · {model} · {pct}% ]" ---
+    let version = server_version.unwrap_or("?");
+    let model = ctx.model.unwrap_or("?");
+    let pct_str = match ctx.pct {
+        Some(p) => format!("{p}%"),
+        None => "–%".to_string(),
+    };
+    let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
+
+    let left_w = left.width();
+    let chip_w = chip.width();
+
+    // Width budget: pad = width - left - chip. If negative, drop the
+    // chip first, then truncate the left segment.
+    if width < left_w + chip_w {
+        // Try without the chip.
+        if width >= left_w {
+            return Line::from(Span::styled(left, header_style));
+        }
+        // Left itself doesn't fit; best-effort segments over
+        // [channel, pattern], adding the separator only when there is
+        // room for at least one column of content after it.
+        let mut compact = format!("╭─ {}", ctx.mode);
+        for seg in [ctx.channel, ctx.pattern].into_iter().flatten() {
+            let used = compact.width();
+            // Need room for " · " (3 cols) plus at least 1 col of content.
+            if width < used + 4 {
+                break;
+            }
+            let avail = width - used - 3;
+            compact.push_str(" · ");
+            compact.push_str(&truncate_to_width(seg, avail));
+        }
+        return Line::from(Span::styled(compact, header_style));
+    }
+
+    let pad = width - left_w - chip_w;
+    let mut spans = Vec::with_capacity(3);
+    spans.push(Span::styled(left, header_style));
+    if pad > 0 {
+        spans.push(Span::styled("─".repeat(pad), header_style));
+    }
+    spans.push(Span::styled(chip, header_style));
+    Line::from(spans)
+}
+
+/// Truncate `s` to at most `max_width` display columns (per
+/// `unicode-width`); if the input is wider, replace the tail with `…`.
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max_width == 0 {
+        return String::new();
+    }
+    if s.width() <= max_width {
+        return s.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let keep = max_width - 1; // reserve 1 col for the ellipsis
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > keep {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1413,9 +1551,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // line. The cursor is a blinking underline in Insert mode and the
     // default inverted block otherwise; hidden when the input field does
     // not have focus. A two-line prompt gutter sits left of the editor:
-    // "╭─ build" (or "╭─ plan") on the header row, "╰─>" (Insert mode)
-    // or "╰─<" (other vim modes) on the first editor row; both dim when
-    // the input field loses focus.
+    // the header row shows "╭─ {mode} · {channel} · {pattern}" with a
+    // right-aligned "[ jyc ai v{ver} · {model} · {pct}% ]" chip, and
+    // "╰─>" (Insert mode) / "╰─<" (other vim modes) on the first editor
+    // row; both dim when the input field loses focus.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
@@ -1442,25 +1581,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // Always-visible agent-mode word above the "> " prompt, colored
-    // (green = build, yellow = plan); defaults to build when the thread's
-    // mode is unset. Sourced from the polled overview, same as the
-    // Thread Info pane.
-    let thread_mode = app
-        .state
-        .as_ref()
-        .and_then(|s| {
-            app.chat
-                .thread
-                .as_deref()
-                .and_then(|name| s.threads.iter().find(|t| t.name == name))
-        })
-        .and_then(|t| t.mode.as_deref())
-        .unwrap_or("build");
-    let (mode_word, mode_color) = if thread_mode == "plan" {
-        ("plan", Color::Rgb(249, 226, 175)) // Catppuccin yellow
+    // Resolve mode/channel/pattern/model/tokens for the header line, all
+    // from the polled overview (same source as the Thread Info pane).
+    let header_ctx = resolve_header_ctx(app);
+    let mode_color = if header_ctx.mode == "plan" {
+        Color::Rgb(249, 226, 175) // Catppuccin yellow
     } else {
-        ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
+        Color::Rgb(166, 227, 161) // Catppuccin green
     };
     // Sync the header fg with the prompt gutter: dim when focus moved
     // away from the input field (Tab), highlight when it is focused.
@@ -1469,13 +1596,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         prompt_style
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("╭─ {mode_word}"),
-            header_style,
-        ))),
-        header_area,
+    let header_line = build_chat_header_line(
+        header_area.width as usize,
+        &header_ctx,
+        app.state.as_ref().map(|s| s.version.as_str()),
+        header_style,
     );
+    frame.render_widget(Paragraph::new(header_line), header_area);
     // Vim-mode arrow: "╰─> " in Insert mode, "╰─< " otherwise. The
     // full vim-mode chip lives in the status bar.
     let arrow = if app.chat.editor.mode == EditorMode::Insert {
@@ -3214,5 +3341,167 @@ mod tests {
                 cell.bg
             );
         }
+    }
+
+    fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
+        ChatHeaderCtx {
+            mode: "plan",
+            model: Some("claude-opus-4-6"),
+            pct: Some(10),
+            channel: Some("local_dev"),
+            pattern: Some("jyc"),
+        }
+    }
+
+    fn test_header_style() -> Style {
+        Style::default()
+            .fg(Color::Rgb(249, 226, 175))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn header_line_includes_mode_channel_pattern_and_chip() {
+        let ctx = ctx_with_full_data();
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let text = line_text(&line);
+        // Left segment includes mode + channel + pattern.
+        assert!(
+            text.contains("╭─ plan · local_dev · jyc"),
+            "missing left segment in: {text:?}"
+        );
+        // Right chip includes version + model + percent.
+        assert!(
+            text.contains("[ jyc ai v0.3.12 · claude-opus-4-6 · 10% ]"),
+            "missing chip in: {text:?}"
+        );
+        // The line should fill the requested width via dash padding.
+        assert_eq!(text.width(), 80);
+    }
+
+    #[test]
+    fn header_line_omits_pattern_when_missing() {
+        let mut ctx = ctx_with_full_data();
+        ctx.pattern = None;
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let text = line_text(&line);
+        assert!(
+            text.starts_with("╭─ plan · local_dev"),
+            "missing channel segment in: {text:?}"
+        );
+        assert!(!text.contains("· jyc"));
+    }
+
+    #[test]
+    fn header_line_shows_dash_for_missing_tokens() {
+        let mut ctx = ctx_with_full_data();
+        ctx.pct = None;
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let text = line_text(&line);
+        assert!(
+            text.contains("· –% ]"),
+            "missing en-dash placeholder for tokens in: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_shows_question_marks_when_no_state() {
+        let ctx = ChatHeaderCtx {
+            mode: "build",
+            model: None,
+            pct: None,
+            channel: None,
+            pattern: None,
+        };
+        let line = build_chat_header_line(80, &ctx, None, test_header_style());
+        let text = line_text(&line);
+        // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
+        assert!(
+            text.starts_with("╭─ build"),
+            "missing default mode in: {text:?}"
+        );
+        assert!(
+            text.contains("[ jyc ai v? · ? · –% ]"),
+            "missing fallback chip in: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_drops_chip_when_narrow() {
+        let ctx = ctx_with_full_data();
+        // Width just enough for the left segment but not the chip.
+        let left = "╭─ plan · local_dev · jyc";
+        let line = build_chat_header_line(
+            left.chars().count() + 1,
+            &ctx,
+            Some("0.3.12"),
+            test_header_style(),
+        );
+        let text = line_text(&line);
+        assert_eq!(text, left, "should drop chip and keep left segment");
+    }
+
+    #[test]
+    fn header_line_truncates_left_when_too_narrow() {
+        let mut ctx = ctx_with_full_data();
+        ctx.channel = Some("a-very-long-channel-name");
+        ctx.pattern = Some("a-very-long-pattern-name");
+        // Width so tight that even truncating channel to 3 chars barely fits.
+        let line = build_chat_header_line(20, &ctx, Some("0.3.12"), test_header_style());
+        let text = line_text(&line);
+        // Channel must be truncated to fit; chip dropped.
+        assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
+        assert!(text.starts_with("╭─ plan"));
+        assert!(text.width() <= 20);
+        // Never leave a dangling separator at the end.
+        assert!(
+            !text.ends_with("· "),
+            "should not end with separator: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_never_emits_dangling_separator() {
+        // Width fits "╭─ plan · " (10 cols) but no room for channel content.
+        let ctx = ChatHeaderCtx {
+            mode: "plan",
+            model: None,
+            pct: None,
+            channel: Some("ch"),
+            pattern: None,
+        };
+        let line = build_chat_header_line(10, &ctx, None, test_header_style());
+        let text = line_text(&line);
+        assert!(
+            !text.ends_with("· "),
+            "should not end with separator: {text:?}"
+        );
+    }
+
+    #[test]
+    fn truncate_to_width_short_string_unchanged() {
+        assert_eq!(truncate_to_width("hi", 5), "hi");
+        assert_eq!(truncate_to_width("hi", 2), "hi");
+    }
+
+    #[test]
+    fn truncate_to_width_long_string_gets_ellipsis() {
+        assert_eq!(truncate_to_width("hello world", 6), "hello…");
+        assert_eq!(truncate_to_width("abc", 1), "…");
+        assert_eq!(truncate_to_width("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_to_width_counts_cjk_as_two_columns() {
+        // 4 CJK chars = 8 display columns; budget 5 keeps 2 chars + …
+        let out = truncate_to_width("你好世界", 5);
+        assert_eq!(out, "你好…");
+        assert_eq!(out.width(), 5);
+        // Wide char that doesn't fit the remaining column is dropped.
+        let out = truncate_to_width("你好", 3);
+        assert_eq!(out, "你…");
     }
 }

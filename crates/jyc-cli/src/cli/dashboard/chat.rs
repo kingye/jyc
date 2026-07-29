@@ -394,7 +394,7 @@ pub(super) fn execute_local_action(
 ) {
     use local_commands::LocalAction;
     match action {
-        LocalAction::ToggleExplorer => app.chat.toggle_explorer(),
+        LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
         LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
         LocalAction::CycleActivity => app.chat.cycle_activity(),
         LocalAction::OpenExternalEditor => {
@@ -406,6 +406,27 @@ pub(super) fn execute_local_action(
         }
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
+    }
+}
+
+/// Toggle the thread explorer. When opening, snap the selection to the
+/// thread currently open in the chat pane — `sync_explorer_selection`
+/// only follows the chat thread while the explorer is *unfocused*, so
+/// without this the explorer would open on a stale row.
+fn toggle_explorer_snapped(app: &mut App) {
+    app.chat.toggle_explorer();
+    if !app.chat.explorer_visible {
+        return;
+    }
+    let idx = app.state.as_ref().and_then(|s| {
+        let thread = app.chat.thread.as_deref()?;
+        let channel = app.chat.channel.as_deref()?;
+        s.threads
+            .iter()
+            .position(|t| t.name == thread && t.channel == channel)
+    });
+    if let Some(idx) = idx {
+        app.chat.explorer_selected = idx;
     }
 }
 
@@ -425,7 +446,7 @@ pub(super) fn handle_chat_keys(
     // Ctrl+E toggles the thread explorer pane (E = explorer).
     let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_e && app.chat.phase == ChatPhase::Chatting {
-        app.chat.toggle_explorer();
+        toggle_explorer_snapped(app);
         return;
     }
 
@@ -1168,7 +1189,15 @@ fn build_chat_header_line(
     let mut spans = Vec::with_capacity(3);
     spans.push(Span::styled(left, header_style));
     if pad > 0 {
-        spans.push(Span::styled("─".repeat(pad), header_style));
+        // One space separates the left segment from the dash run, and
+        // another separates the dash run from the chip.
+        spans.push(Span::styled(" ", header_style));
+        if pad > 2 {
+            spans.push(Span::styled("─".repeat(pad - 2), header_style));
+        }
+        if pad > 1 {
+            spans.push(Span::styled(" ", header_style));
+        }
     }
     spans.push(Span::styled(chip, header_style));
     Line::from(spans)
@@ -1577,22 +1606,19 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         Layout::horizontal([Constraint::Length(PROMPT_GUTTER_WIDTH), Constraint::Min(0)])
             .areas(body_area);
     let prompt_style = if app.chat.focus == ChatFocus::ChatPane {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
     } else {
         Style::default().fg(Color::DarkGray)
     };
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Thread Info pane).
     let header_ctx = resolve_header_ctx(app);
-    let mode_color = if header_ctx.mode == "plan" {
-        Color::Rgb(249, 226, 175) // Catppuccin yellow
-    } else {
-        Color::Rgb(166, 227, 161) // Catppuccin green
-    };
     // Sync the header fg with the prompt gutter: dim when focus moved
     // away from the input field (Tab), highlight when it is focused.
     let header_style = if app.chat.focus == ChatFocus::ChatPane {
-        Style::default().fg(mode_color).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
+            .add_modifier(Modifier::BOLD)
     } else {
         prompt_style
     };
@@ -3124,6 +3150,76 @@ mod tests {
         assert_eq!(app.chat.explorer_selected, 4);
         // gg-jump: saturates to the first row.
         explorer_move(&mut app, i64::MIN);
+        assert_eq!(app.chat.explorer_selected, 0);
+    }
+
+    #[test]
+    fn opening_explorer_snaps_selection_to_chat_thread() {
+        // Regression: the explorer opened on a stale row because
+        // sync_explorer_selection only follows the chat thread while
+        // the explorer is unfocused — and opening focuses it.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.state = Some(jyc_types::InspectOverview {
+            threads: (0..5)
+                .map(|i| jyc_types::ThreadSummary {
+                    name: format!("t{i}"),
+                    channel: "test".to_string(),
+                    pattern: None,
+                    status: jyc_types::ThreadStatus::Idle,
+                    model: None,
+                    mode: None,
+                    input_tokens: None,
+                    max_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    thread_path: None,
+                })
+                .collect(),
+            ..Default::default()
+        });
+        app.chat.thread = Some("t2".to_string());
+        app.chat.channel = Some("test".to_string());
+        app.chat.explorer_selected = 0; // stale row
+
+        toggle_explorer_snapped(&mut app);
+        assert!(app.chat.explorer_visible);
+        assert_eq!(app.chat.explorer_selected, 2);
+
+        // Closing keeps the selection where it is.
+        toggle_explorer_snapped(&mut app);
+        assert!(!app.chat.explorer_visible);
+        assert_eq!(app.chat.explorer_selected, 2);
+    }
+
+    #[test]
+    fn opening_explorer_keeps_selection_when_chat_thread_not_in_list() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "t0".to_string(),
+                channel: "test".to_string(),
+                pattern: None,
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                input_tokens: None,
+                max_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+            }],
+            ..Default::default()
+        });
+        // Chat is bound to a thread absent from the overview (e.g. a
+        // fresh adhoc thread not yet polled).
+        app.chat.thread = Some("missing".to_string());
+        app.chat.channel = Some("test".to_string());
+        app.chat.explorer_selected = 0;
+
+        toggle_explorer_snapped(&mut app);
+        assert!(app.chat.explorer_visible);
         assert_eq!(app.chat.explorer_selected, 0);
     }
 

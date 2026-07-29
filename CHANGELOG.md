@@ -158,6 +158,21 @@ All notable changes to JYC will be documented in this file.
   editor still clears the field as before. The Tab copy-to-input path is
   unchanged — Tab still populates the editor for editing before send.
 
+- **Borderless chat-pane layout with new shortcuts.** The dashboard chat
+  screen no longer renders the channel bar. The chat pane itself is now
+  borderless; each conversation round is delimited only by a horizontal
+  top rule with the timestamp on the left and a horizontal bottom rule
+  with the duration on the right (no side borders, no middle divider).
+  The compact one-line info bar has been replaced by a bordered Thread
+  Info pane fixed at 20% of the screen width on the right. By default
+  the Thread Info pane, status bar, and bottom activity pane are all
+  hidden (zen mode). New shortcuts: `Ctrl+A` cycles the activity pane
+  through hidden → bottom 20% → bottom 80% → activity-only → hidden
+  (replaces the previous `Ctrl+W`); `Ctrl+Z` toggles zen mode and also
+  hides any visible activity pane on enter (exiting zen mode restores
+  only the info pane + status bar, not activity). `Tab` continues to
+  switch Chat/Activity focus.
+
 ### Fixed
 
 - **`/cancel` now aborts tool execution immediately.** Previously the

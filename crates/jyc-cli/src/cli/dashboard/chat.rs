@@ -802,7 +802,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         };
 
         // Close previous round when transitioning AI → user. Bottom rule
-        // has the duration right-aligned.
+        // has the duration right-aligned with breathing space:
+        // "──────── 1m ──"
         if is_user && prev_sender == Some("ai") {
             let last_ts = app
                 .chat
@@ -815,11 +816,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 let dashes = "─".repeat(width);
                 all_lines.push(Line::from(Span::styled(dashes, dim_style)));
             } else {
-                // Right-align: <dashes> <elapsed>
-                let dash_count = width.saturating_sub(elapsed.len());
+                // <dashes> <elapsed> ──
+                let dash_count = width.saturating_sub(elapsed.len() + 3);
                 all_lines.push(Line::from(vec![
-                    Span::styled("─".repeat(dash_count), dim_style),
+                    Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
                     Span::styled(elapsed, dim_style),
+                    Span::styled(" ──", dim_style),
                 ]));
             }
             all_lines.push(Line::from(""));
@@ -827,7 +829,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         // Open new round at the start of a user turn. Top rule has the
-        // timestamp left-aligned (no time → plain rule).
+        // timestamp left-aligned with breathing space:
+        // "── 09:50 ────────"
         if is_user {
             group_start_ts = msg.timestamp.clone();
             let time_str = format_msg_time(&msg.timestamp);
@@ -835,8 +838,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             if time_str.is_empty() {
                 all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
             } else {
-                let dash_count = width.saturating_sub(time_str.len() + 1);
+                // ── <time> <dashes>
+                let dash_count = width.saturating_sub(time_str.len() + 3);
                 all_lines.push(Line::from(vec![
+                    Span::styled("── ", dim_style),
                     Span::styled(time_str, dim_style),
                     Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
                 ]));
@@ -850,7 +855,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         all_lines.extend(msg_lines);
     }
 
-    // Close any open round at the end.
+    // Close any open round at the end (same bottom-rule format as above).
     if group_start_ts.is_some() {
         let last_ts = app.chat.messages.last().and_then(|m| m.timestamp.clone());
         let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
@@ -859,10 +864,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             let dashes = "─".repeat(width);
             all_lines.push(Line::from(Span::styled(dashes, dim_style)));
         } else {
-            let dash_count = width.saturating_sub(elapsed.len());
+            let dash_count = width.saturating_sub(elapsed.len() + 3);
             all_lines.push(Line::from(vec![
-                Span::styled("─".repeat(dash_count), dim_style),
+                Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
                 Span::styled(elapsed, dim_style),
+                Span::styled(" ──", dim_style),
             ]));
         }
         all_lines.push(Line::from(""));

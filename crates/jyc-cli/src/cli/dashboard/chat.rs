@@ -922,6 +922,19 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             }
         }
 
+        // Separator between the user message and the AI response within
+        // a round: a light dashed rule, visually subordinate to the
+        // solid "─" round rules.
+        if !is_user && prev_sender == Some("user") {
+            let width = chunks[0].width as usize;
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled(
+                "┄".repeat(width),
+                dim_style,
+            )));
+            all_lines.push(Line::from(""));
+        }
+
         // Render message (no side gutters).
         let md_text = format!("{prefix}{}\n", msg.text);
         let blocks = renderer.parse(&md_text);

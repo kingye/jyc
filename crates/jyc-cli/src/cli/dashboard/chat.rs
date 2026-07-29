@@ -1104,8 +1104,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // default inverted block otherwise; hidden when the input field does
     // not have focus. A two-line prompt gutter sits left of the editor:
     // "╭─ build" (or "╭─ plan") on the header row, "╰─>" (Insert mode)
-    // or "╰─<" (other vim modes) on the first editor row; it dims when
-    // the message area is focused.
+    // or "╰─<" (other vim modes) on the first editor row; both dim when
+    // the input field loses focus.
     let theme = EditorTheme::default()
         .base(Style::default())
         .hide_status_line();
@@ -1150,10 +1150,17 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
     };
+    // Sync the header fg with the prompt gutter: dim when focus moved
+    // away from the input field (Tab), highlight when it is focused.
+    let header_style = if app.chat.focus == ChatFocus::ChatPane {
+        Style::default().fg(mode_color).add_modifier(Modifier::BOLD)
+    } else {
+        prompt_style
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("╭─ {mode_word}"),
-            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            header_style,
         ))),
         header_area,
     );

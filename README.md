@@ -238,13 +238,16 @@ jyc config validate    # Validate config file (layered: global + workdir)
 jyc token show         # Print the dashboard authorization token
 jyc patterns list      # List configured patterns
                        #   --config <FILE>   Config file path (default: as serve)
-jyc templates list     # List available templates and their skills
-                       #   --source-dir <PATH>   Source directory containing templates/
-jyc templates deploy <target_dir>   # Deploy templates to a target directory
-                       #   <template_name>       Deploy only this template (optional)
-                       #   --as <NAME>           Rename the deployed template directory
-                       #   --model <MODEL>       Write a model override file
-                       #   --source-dir <PATH>   Source directory containing templates/
+jyc agents list        # List available agent templates
+                       #   --source <DIR>   Source dir containing templates/ (default: CWD)
+jyc agents install [name]   # Install agent template(s) (omit name = all)
+                       #   --source <DIR>   Source dir (default: CWD)
+                       #   --target <DIR>   Target dir (default: platform config home)
+jyc skills list        # List available skills
+                       #   --source <DIR>   Source dir containing skills/ (default: CWD)
+jyc skills install [name]   # Install skill(s) (omit name = all)
+                       #   --source <DIR>   Source dir (default: CWD)
+                       #   --target <DIR>   Target dir (default: platform config home)
 ```
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.

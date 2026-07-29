@@ -58,9 +58,15 @@ enum Commands {
     },
 
     /// Manage agent templates
-    Templates {
+    Agents {
         #[command(subcommand)]
-        action: cli::templates::TemplatesAction,
+        action: cli::agents::AgentsAction,
+    },
+
+    /// Manage skills
+    Skills {
+        #[command(subcommand)]
+        action: cli::skills::SkillsAction,
     },
 
     /// MCP reply tool server (internal — spawned by agent)
@@ -154,7 +160,8 @@ async fn main() -> Result<()> {
         Commands::Patterns { action } => {
             cli::patterns::run(action, &workdir, cli.workdir.is_some()).await
         }
-        Commands::Templates { action } => cli::templates::run(action, &workdir).await,
+        Commands::Agents { action } => cli::agents::run(action).await,
+        Commands::Skills { action } => cli::skills::run(action).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
         Commands::Stop(args) => cli::stop::run(args, &workdir).await,
         Commands::Token(args) => cli::token::run(args, &workdir),

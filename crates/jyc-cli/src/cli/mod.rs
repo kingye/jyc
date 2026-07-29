@@ -1,11 +1,13 @@
 pub mod agent_builder;
+pub mod agents;
 pub mod command_popup;
 pub mod config;
 pub mod dashboard;
+pub mod install;
 pub mod mcp_reply;
 pub mod patterns;
 pub mod resolve;
 pub mod serve;
+pub mod skills;
 pub mod stop;
-pub mod templates;
 pub mod token;

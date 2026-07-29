@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`jyc agents` and `jyc skills` commands.** `jyc agents install [name]`
+  installs agent templates from `<source>/templates/` into
+  `<target>/templates/`; `jyc skills install [name]` does the same for
+  `<source>/skills/`. `--source` defaults to the current directory,
+  `--target` defaults to the platform config home (e.g. `~/.config/jyc`),
+  and omitting `name` installs everything. `list` subcommands show what a
+  source directory provides.
+
 - **Inspect server authorization token.** `jyc serve` generates a random
   token and writes it to `<workdir>/auth.token` (owner-only permissions on
   Unix). `jyc dashboard` auto-loads it from the same workdir, or accepts
@@ -92,6 +100,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **In-repo skills moved from `.opencode/skills/` to `skills/`** at the
+  repo root, and `.opencode/` is no longer git-tracked. Runtime skill
+  discovery is unchanged (the `{workdir}/skills/` scan path already
+  covers the new location, and `.opencode/skills/` scan paths are kept
+  for compatibility).
+
 - **Mode header dims with focus.** The `╭─ build` / `╭─ plan` header
   above the chat input now dims to DarkGray when Tab moves focus away
   from the input field, synchronizing with the input prompt gutter.
@@ -133,6 +147,13 @@ All notable changes to JYC will be documented in this file.
   (via `ScopedWsHandler` for websocket channels) the dashboard.
 
 ### Removed
+
+- **`jyc templates` command and `templates/templates.toml`.** The old
+  `deploy` mechanism (which materialized per-template skill copies under
+  `.opencode/skills/`) is replaced by `jyc agents install` +
+  `jyc skills install`; skill scoping is handled by channel/pattern
+  `skills` / `disabled_skills` config. The `--model` and `--as` deploy
+  flags are gone.
 
 - **`inject_message` inspect protocol method.** Replaced by the unified
   WebSocket endpoint. The dashboard no longer uses REST injection; the

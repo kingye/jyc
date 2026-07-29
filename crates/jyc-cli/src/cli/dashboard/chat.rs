@@ -1066,11 +1066,11 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Resolved values for the chat header line. All fields are sourced from
 /// the polled `InspectOverview`, matching the data shown by the Thread
-/// Info pane. Missing fields fall back to placeholders so the chip
+/// Info pane. Missing (channel/pattern) or unavailable (model/tokens)
+/// fields are *omitted* or replaced with fallback placeholders so the chip
 /// still reads as `[ jyc ai v? · ? · –% ]` before the first poll.
 #[derive(Default)]
 struct ChatHeaderCtx {
-    mode: String,
     model: Option<String>,
     input_tokens: Option<u64>,
     max_tokens: Option<u64>,
@@ -1078,23 +1078,25 @@ struct ChatHeaderCtx {
     pattern: Option<String>,
 }
 
-fn resolve_header_ctx(app: &App) -> ChatHeaderCtx {
+fn resolve_header_ctx(app: &App) -> (ChatHeaderCtx, &'static str) {
     let thread = app.state.as_ref().and_then(|s| {
         app.chat
             .thread
             .as_deref()
             .and_then(|name| s.threads.iter().find(|t| t.name == name))
     });
-    ChatHeaderCtx {
-        mode: thread
-            .and_then(|t| t.mode.clone())
-            .unwrap_or_else(|| "build".to_string()),
+    let mode_word = thread
+        .and_then(|t| t.mode.as_deref())
+        .unwrap_or("build");
+    let mode_word: &'static str = if mode_word == "plan" { "plan" } else { "build" };
+    let ctx = ChatHeaderCtx {
         model: thread.and_then(|t| t.model.clone()),
         input_tokens: thread.and_then(|t| t.input_tokens),
         max_tokens: thread.and_then(|t| t.max_tokens),
         channel: thread.map(|t| t.channel.clone()),
         pattern: thread.and_then(|t| t.pattern.clone()),
-    }
+    };
+    (ctx, mode_word)
 }
 
 /// Build the chat header row: "╭─ {mode} · {channel} · {pattern}"
@@ -1124,18 +1126,16 @@ fn build_chat_header_line(
     // --- Right chip: "[ jyc ai v{ver} · {model} · {pct}% ]" ---
     let version = server_version.unwrap_or("?");
     let model = ctx.model.as_deref().unwrap_or("?");
-    let pct = match (ctx.input_tokens, ctx.max_tokens) {
-        (Some(cur), Some(max)) if max > 0 => (cur.saturating_mul(100) / max) as u32,
-        _ => 0,
-    };
     let pct_str = match (ctx.input_tokens, ctx.max_tokens) {
-        (Some(_), Some(_)) => format!("{pct}%"),
+        (Some(cur), Some(max)) if max > 0 => {
+            format!("{}%", (cur.saturating_mul(100) / max) as u32)
+        }
         _ => "–%".to_string(),
     };
     let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
 
-    let left_w = left.chars().count();
-    let chip_w = chip.chars().count();
+    let left_w = left.width();
+    let chip_w = chip.width();
 
     // Width budget: pad = width - left - chip. If negative, drop the
     // chip first, then truncate the left segment.
@@ -1144,14 +1144,22 @@ fn build_chat_header_line(
         if width >= left_w {
             return Line::from(Span::styled(left, header_style));
         }
-        // Left itself doesn't fit; truncate the channel/pattern segments.
+        // Left itself doesn't fit; build a best-effort compact header
+        // starting with mode_word, then try each optional segment
+        // (channel, pattern) only when there is room for it.
         let mut compact = format!("╭─ {mode_word}");
-        if let Some(ch) = ctx.channel.as_deref() {
-            compact.push_str(" · ");
-            let avail = width.saturating_sub(compact.chars().count());
-            if avail >= 3 {
-                compact.push_str(&truncate_chars(ch, avail));
+        for seg in [ctx.channel.as_deref(), ctx.pattern.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let sep = " · ";
+            let min = sep.width() + 1; // separator + at least the ellipsis
+            let avail = width.saturating_sub(compact.width());
+            if avail < min {
+                break;
             }
+            compact.push_str(sep);
+            compact.push_str(&truncate_to_width(seg, avail.saturating_sub(sep.width())));
         }
         return Line::from(Span::styled(compact, header_style));
     }
@@ -1166,21 +1174,30 @@ fn build_chat_header_line(
     Line::from(spans)
 }
 
-/// Truncate `s` to at most `max_chars` Unicode scalar values; if the
-/// input is longer, replace the tail with `…`.
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+/// Truncate `s` to at most `max_width` display columns (UnicodeWidthStr);
+/// if the input is wider, replace the tail with `…`.
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    if max_width == 0 {
         return String::new();
     }
-    let count = s.chars().count();
-    if count <= max_chars {
+    let full_w = s.width();
+    if full_w <= max_width {
         return s.to_string();
     }
-    if max_chars == 1 {
+    if max_width == 1 {
         return "…".to_string();
     }
-    let keep = max_chars - 1;
-    let mut out: String = s.chars().take(keep).collect();
+    let target = max_width.saturating_sub(1); // reserve 1 col for …
+    let mut out = String::new();
+    for ch in s.chars() {
+        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if out.width() + ch_w > target {
+            break;
+        }
+        out.push(ch);
+    }
     out.push('…');
     out
 }
@@ -1566,8 +1583,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     };
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Thread Info pane).
-    let header_ctx = resolve_header_ctx(app);
-    let (mode_word, mode_color) = if header_ctx.mode == "plan" {
+    let (header_ctx, mode_word) = resolve_header_ctx(app);
+    let (mode_word, mode_color) = if mode_word == "plan" {
         ("plan", Color::Rgb(249, 226, 175)) // Catppuccin yellow
     } else {
         ("build", Color::Rgb(166, 227, 161)) // Catppuccin green
@@ -3329,7 +3346,6 @@ mod tests {
 
     fn ctx_with_full_data() -> ChatHeaderCtx {
         ChatHeaderCtx {
-            mode: "plan".to_string(),
             model: Some("claude-opus-4-6".to_string()),
             input_tokens: Some(12288),
             max_tokens: Some(122880),
@@ -3436,19 +3452,20 @@ mod tests {
         // Channel must be truncated to fit; chip dropped.
         assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
         assert!(text.starts_with("╭─ plan"));
-        assert!(text.chars().count() <= 20);
+        assert!(!text.ends_with("· "), "dangling separator: {text:?}");
+        assert!(text.width() <= 20);
     }
 
     #[test]
-    fn truncate_chars_short_string_unchanged() {
-        assert_eq!(truncate_chars("hi", 5), "hi");
-        assert_eq!(truncate_chars("hi", 2), "hi");
+    fn truncate_to_width_short_string_unchanged() {
+        assert_eq!(truncate_to_width("hi", 5), "hi");
+        assert_eq!(truncate_to_width("hi", 2), "hi");
     }
 
     #[test]
-    fn truncate_chars_long_string_gets_ellipsis() {
-        assert_eq!(truncate_chars("hello world", 6), "hello…");
-        assert_eq!(truncate_chars("abc", 1), "…");
-        assert_eq!(truncate_chars("abc", 0), "");
+    fn truncate_to_width_long_string_gets_ellipsis() {
+        assert_eq!(truncate_to_width("hello world", 6), "hello…");
+        assert_eq!(truncate_to_width("abc", 1), "…");
+        assert_eq!(truncate_to_width("abc", 0), "");
     }
 }

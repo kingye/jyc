@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use jyc_types::{CommandInfo, ModelInfo};
+use unicode_width::UnicodeWidthStr;
 
 /// Strips a leading `/` from a command name for filter matching.
 fn skip_slash(s: &str) -> &str {
@@ -296,7 +297,31 @@ fn render_popup(
 
     let list_height = items.len().clamp(1, 10) as u16;
     let popup_height = list_height + 3; // border(2) + filter(1)
-    let popup_width = 52u16;
+
+    // Adaptive width: fit the longest item text (name + description) so
+    // wide content isn't truncated, clamped to the available area.
+    // Width is computed over *all* entries (not the filtered subset) so
+    // the popup doesn't resize while typing.
+    let content_width = if model_mode {
+        models
+            .iter()
+            .map(|m| UnicodeWidthStr::width(m.name.as_str()) + 4)
+            .max()
+            .unwrap_or(0)
+    } else {
+        commands
+            .iter()
+            .map(|c| {
+                UnicodeWidthStr::width(c.name.as_str())
+                    + UnicodeWidthStr::width(c.description.as_str())
+                    + 6
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let popup_width = (content_width as u16 + 2) // + borders
+        .max(UnicodeWidthStr::width(title) as u16 + 4)
+        .clamp(32, area.width.saturating_sub(2).max(32));
 
     // Center the popup
     let x = area.x + area.width.saturating_sub(popup_width) / 2;

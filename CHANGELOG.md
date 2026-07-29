@@ -6,6 +6,18 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Thread explorer pane.** `Ctrl+E` (or `toggle explorer` in the
+  command palette) opens a left-side pane (20% width, default hidden)
+  listing all threads with a live status dot (processing / queued /
+  waiting / idle / error); the current thread is highlighted. `Tab`
+  cycles focus into it, `↑↓/jk` navigate, `Enter` switches the chat
+  (websocket threads) or opens the legacy detail view. Zen mode hides
+  it; exiting zen does not restore it.
+- **User/AI turn separator.** A light dashed rule now separates the user
+  message from the AI response within a chat round.
+- **Adaptive command popup width.** The `/` popup and command palette
+  now size to their longest entry instead of a fixed 52 columns.
+
 - **TUI command palette.** `Ctrl+P` (any editor mode) or `:` (Normal
   mode) opens a palette of TUI-local actions — toggle zen, cycle activity
   pane, open input in external editor, scroll top/bottom — each shown
@@ -105,6 +117,9 @@ All notable changes to JYC will be documented in this file.
   written to disk).
 
 ### Changed
+
+- **External editor keybinding moved from `Ctrl+E` to `Ctrl+O`** —
+  `Ctrl+E` now toggles the thread explorer pane.
 
 - **In-repo skills moved from `.opencode/skills/` to `skills/`** at the
   repo root, and `.opencode/` is no longer git-tracked. Runtime skill

@@ -189,6 +189,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Thread explorer opens on a stale row.** Opening the explorer
+  (`Ctrl+E` / palette) now snaps the selection to the thread currently
+  open in the chat pane. `sync_explorer_selection` only followed the
+  chat thread while the explorer was unfocused — and opening focuses
+  it, so the follow-up never ran.
 - **Thread explorer selection fills the full row width.** When the
   explorer pane has focus, the highlighted row now paints the entire
   row's width with the selection background instead of stopping at the

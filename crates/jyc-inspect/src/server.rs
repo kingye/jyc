@@ -467,7 +467,7 @@ impl InspectServer {
         drop(activity_map);
 
         // Slim each ThreadInfo down to a ThreadSummary.
-        let summaries: Vec<ThreadSummary> = threads
+        let mut summaries: Vec<ThreadSummary> = threads
             .into_iter()
             .map(|t| ThreadSummary {
                 name: t.name,
@@ -483,6 +483,10 @@ impl InspectServer {
                 thread_path: t.thread_path,
             })
             .collect();
+        // list_threads() sorts within each channel, but threads from multiple
+        // channels are concatenated above — re-sort globally by (name, channel)
+        // so the dashboard table and chat explorer show one alphabetical list.
+        summaries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.channel.cmp(&b.channel)));
 
         let health = context.health_stats.lock().await;
         let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();

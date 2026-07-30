@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Command palette on the dashboard screen.** `Ctrl+P` or `:` opens the
+  palette on the dashboard (previously chat-only). Palette commands are
+  now scoped — `dashboard` (open chat), `chat` (open dashboard, zen,
+  explorer, activity pane, editor, scrolling), and `shared` (new chat,
+  reload config, quit) — and each screen shows its own scope plus shared
+  commands. Navigation between screens goes through the palette:
+  `open dashboard` / `open chat` / `new chat`.
+
 - **Bare `jyc` opens an ad-hoc websocket thread and launches chat.**
   Clap's "missing subcommand" error is caught and `open` is injected,
   so `jyc` is now equivalent to `jyc open`.
@@ -122,6 +130,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **`Esc` no longer leaves the chat screen.** Returning to the dashboard
+  is done via the palette (`open dashboard`, `Ctrl+P`). `Esc` keeps its
+  other meanings: closing popups, returning focus to the chat input, and
+  vim Insert→Normal.
+- **Status bars show a minimal `[^P]palette [^Q]quit` hint.** The full
+  shortcut lists were removed; shortcuts are discoverable in the palette.
+
 - **External editor keybinding moved from `Ctrl+E` to `Ctrl+O`** —
   `Ctrl+E` now toggles the thread explorer pane.
 
@@ -202,6 +217,13 @@ All notable changes to JYC will be documented in this file.
   the complete selectable row.
 
 ### Removed
+
+- **Dashboard `r` (force refresh) and `s` (reset session) keys.** `r` was
+  a near no-op with 500ms auto-polling; session reset remains available
+  in-band via the `/reset` chat command. The now-dead out-of-band reset
+  chain was removed with it: `InspectClient::reset_session`, the inspect
+  protocol `reset_session` method, the WebSocket `reset_session` message
+  type, and `InspectResponse::ResetSessionResult`.
 
 - **`jyc templates` command and `templates/templates.toml`.** The old
   `deploy` mechanism (which materialized per-template skill copies under

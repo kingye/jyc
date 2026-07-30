@@ -21,7 +21,6 @@ use crate::session;
 use crate::tools::OutboundsMap;
 use crate::tools::ThreadManagersMap;
 use crate::tools::registry::ToolRegistry;
-use crate::types::AgentConfig;
 use crate::vision::VisionClient;
 use std::sync::Arc;
 
@@ -194,22 +193,20 @@ impl JycAgentService {
         }
     }
 
-    /// Derive the effective `AgentConfig` for this service's channel from the
-    /// live `AppConfig`.
+    /// Derive the effective `jyc_types::AgentConfig` for this service's
+    /// channel from the live `AppConfig`.
     ///
-    /// Reads the current `AppConfig` via the shared `ArcSwap` and applies the
-    /// channel-level overrides (channel's `model` / `small_model`) to compute
-    /// the effective `model` and `small_model`. Provider definitions, agent
-    /// flags (`max_iterations`, `sse_read_timeout_secs`, `auto_reset_threshold`,
-    /// `vision`, `reset_compression`) are taken from the global `[agent]`
-    /// section.
+    /// Reads the current `AppConfig` via the shared `ArcSwap` and applies
+    /// the channel-level overrides (`channels.<name>.model`,
+    /// `channels.<name>.small_model`) on top of the global `[agent]`
+    /// section. Provider definitions, agent flags, vision, and reset
+    /// compression pass through unchanged.
     ///
-    /// Called on every agent request, so any reload of `config.toml` (via the
-    /// TUI `reload config` action) takes effect immediately — no restart
-    /// needed.
-    pub fn agent_config(&self) -> AgentConfig {
-        let app = self.config.load();
-        derive_agent_config(&app, &self.channel_name)
+    /// Called on every agent request, so any reload of `config.toml` (via
+    /// the TUI `reload config` action) takes effect immediately — no
+    /// restart needed.
+    pub fn agent_config(&self) -> jyc_types::AgentConfig {
+        derive_agent_config(&self.config.load(), &self.channel_name)
     }
 
     /// Set the cross-channel thread managers map.
@@ -1069,7 +1066,7 @@ impl JycAgentService {
     /// values, even if a reload happens mid-request.
     fn create_provider(
         &self,
-        agent_cfg: &AgentConfig,
+        agent_cfg: &jyc_types::AgentConfig,
         model_override: Option<&str>,
     ) -> Result<Box<dyn provider::Provider>> {
         let model = model_override
@@ -1537,86 +1534,32 @@ impl AgentService for JycAgentService {
     }
 }
 
-/// Derive the effective [`AgentConfig`] for a given channel from the full
-/// [`jyc_types::AppConfig`].
+/// Derive the effective [`jyc_types::AgentConfig`] for a given channel from
+/// the full [`jyc_types::AppConfig`].
 ///
 /// Applies the channel-level overrides (`channels.<name>.model`,
-/// `channels.<name>.small_model`) to the global `[agent]` settings. Provider
-/// definitions and per-model fields (`context_window`, `supports_images`,
-/// `params`, `user_agent`) are passed through unchanged — those are read
-/// live via the `AppConfig` chain and applied by
-/// `provider::create_provider` and friends.
+/// `channels.<name>.small_model`) on top of the global `[agent]` settings.
+/// All other fields — providers, agent flags, vision, reset compression —
+/// pass through unchanged from `app.agent`.
 ///
-/// `plan_model` / `build_model` are always `None` here; the per-mode
-/// resolution happens at request time from the `ChannelPattern` /
-/// thread-level override, with this struct's `model` as the global default.
-pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> AgentConfig {
-    let channel = app.channels.get(channel_name);
-    let effective_model = channel
-        .and_then(|c| c.model.clone())
-        .or_else(|| app.agent.model.clone());
-    let effective_small_model = channel
-        .and_then(|c| c.small_model.clone())
-        .or_else(|| app.agent.small_model.clone());
-
-    let providers = app
-        .agent
-        .providers
-        .iter()
-        .map(|(name, def)| {
-            let models = def
-                .models
-                .iter()
-                .map(|(model_name, model_def)| {
-                    (
-                        model_name.clone(),
-                        crate::types::ModelConfig {
-                            model_id: model_def.model_id.clone(),
-                            context_window: model_def.context_window,
-                            supports_images: model_def.supports_images,
-                            params: model_def.params.clone(),
-                            user_agent: model_def.user_agent.clone(),
-                        },
-                    )
-                })
-                .collect();
-            (
-                name.clone(),
-                crate::types::ProviderConfig {
-                    provider_type: def.provider_type.clone(),
-                    base_url: def.base_url.clone(),
-                    api_key_env: def.api_key_env.clone(),
-                    context_window: def.context_window,
-                    supports_images: def.supports_images,
-                    params: def.params.clone(),
-                    user_agent: def.user_agent.clone(),
-                    models,
-                },
-            )
-        })
-        .collect();
-
-    AgentConfig {
-        plan_model: None,
-        build_model: None,
-        model: effective_model,
-        small_model: effective_small_model,
-        providers,
-        max_iterations: app.agent.max_iterations,
-        sse_read_timeout_secs: app.agent.sse_read_timeout_secs,
-        vision: app
-            .agent
-            .vision
-            .as_ref()
-            .map(|v| crate::types::VisionConfig {
-                enabled: v.enabled,
-                provider: v.provider.clone(),
-                model: v.model.clone(),
-                prompt: v.prompt.clone(),
-            }),
-        reset_compression: app.agent.reset_compression.clone(),
-        auto_reset_threshold: app.agent.auto_reset_threshold,
+/// Channel-level `[channels.<name>.agent]` overrides (a nested
+/// `AgentConfig` per channel) are intentionally **not** applied here; the
+/// current top-level fields `model` and `small_model` are the only
+/// per-channel knobs `JycAgentService` reads.
+pub fn derive_agent_config(
+    app: &jyc_types::AppConfig,
+    channel_name: &str,
+) -> jyc_types::AgentConfig {
+    let mut agent = app.agent.clone();
+    if let Some(ch) = app.channels.get(channel_name) {
+        if ch.model.is_some() {
+            agent.model = ch.model.clone();
+        }
+        if ch.small_model.is_some() {
+            agent.small_model = ch.small_model.clone();
+        }
     }
+    agent
 }
 
 #[cfg(test)]

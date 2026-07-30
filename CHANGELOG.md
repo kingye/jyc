@@ -130,6 +130,20 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Reloading config now applies new/changed model settings without a
+  server restart.** `JycAgentService` used to hold a frozen copy of the
+  agent config taken at startup, so reloading `config.toml` (via the
+  TUI `reload config` action) made new models appear in the model list
+  but their `context_window`, `supports_images`, `params`, `user_agent`,
+  and the agent-level `small_model`, `max_iterations`,
+  `sse_read_timeout_secs` were still read from the stale snapshot — a
+  full server restart was required for them to take effect. The service
+  now holds the same `Arc<ArcSwap<AppConfig>>` that `MessageRouter` and
+  the inspect server use, and derives the effective agent config on
+  each request from the live shared config. A regression test asserts
+  the new model becomes visible (with its per-model `context_window`)
+  immediately after a config swap. (#478)
+
 - **Thread list not globally sorted across channels.** The dashboard
   Threads table and chat explorer pane showed threads sorted within each
   channel but grouped by channel iteration order, not one alphabetical

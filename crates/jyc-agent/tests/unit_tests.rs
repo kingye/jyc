@@ -1099,9 +1099,11 @@ mod mcp_bridge {
 }
 
 mod skills {
+    use arc_swap::ArcSwap;
     use jyc_agent::JycAgentService;
     use jyc_agent::service::{SkillMeta, format_skills_section, parse_skill_frontmatter};
-    use jyc_agent::types::AgentConfig;
+    use jyc_types::AppConfig;
+    use std::sync::Arc;
 
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -1132,8 +1134,34 @@ mod skills {
 
     /// Helper: create a JycAgentService with a specific workdir.
     fn make_service(workdir: PathBuf) -> JycAgentService {
+        let app = AppConfig {
+            general: jyc_types::GeneralConfig::default(),
+            channels: std::collections::HashMap::new(),
+            agent: jyc_types::AgentConfig {
+                enabled: true,
+                mode: "agent".to_string(),
+                model: None,
+                plan_model: None,
+                build_model: None,
+                small_model: None,
+                system_prompt: None,
+                max_iterations: 500,
+                sse_read_timeout_secs: 120,
+                text: None,
+                attachments: None,
+                providers: std::collections::HashMap::new(),
+                vision: None,
+                reset_compression: None,
+                auto_reset_threshold: 0.95,
+            },
+            inspect: None,
+            attachments: None,
+            wecom: None,
+            mcps: Vec::new(),
+            scheduler: jyc_types::SchedulerConfig::default(),
+        };
         JycAgentService::new(
-            AgentConfig::default(),
+            Arc::new(ArcSwap::from_pointee(app)),
             workdir,
             vec![],
             None,

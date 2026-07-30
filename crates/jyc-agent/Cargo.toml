@@ -29,6 +29,9 @@ thiserror = "2"
 tracing = "0.1"
 async-trait = "0.1"
 
+# Live config (shared single source of truth with MessageRouter / inspect server)
+arc-swap = "1"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 

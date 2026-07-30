@@ -3,6 +3,7 @@
 //! Uses direct LLM calls and tool execution instead of external server.
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -102,7 +103,13 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 /// Implements `AgentService` by running LLM inference and tool execution
 /// directly in-process.
 pub struct JycAgentService {
-    config: AgentConfig,
+    /// Live, swappable view of the full application config (shared with
+    /// `MessageRouter` and the inspect server). On every config reload, the
+    /// new `AppConfig` is atomically swapped in here, so the agent picks up
+    /// new models, context_windows, params, etc. without a server restart.
+    /// All per-model/agent fields are derived from this on demand via
+    /// [`Self::agent_config`].
+    config: Arc<ArcSwap<jyc_types::AppConfig>>,
     /// Per-thread event bus map.
     event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
     /// JYC workdir (for discovering global skills).
@@ -148,12 +155,12 @@ pub struct JycAgentService {
 }
 
 impl JycAgentService {
-    /// Create a new agent service with the given configuration, workdir,
-    /// MCP configs, current channel's patterns, global inbound-attachment config,
-    /// and optional vision fallback client.
+    /// Create a new agent service with the given live `AppConfig` handle,
+    /// workdir, MCP configs, current channel's patterns, global inbound-attachment
+    /// config, and optional vision fallback client.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: AgentConfig,
+        config: Arc<ArcSwap<jyc_types::AppConfig>>,
         workdir: PathBuf,
         mcp_configs: Vec<McpServerConfig>,
         channel_mcp_configs: Option<Vec<McpServerConfig>>,
@@ -185,6 +192,24 @@ impl JycAgentService {
             channel_name,
             outbounds: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Derive the effective `AgentConfig` for this service's channel from the
+    /// live `AppConfig`.
+    ///
+    /// Reads the current `AppConfig` via the shared `ArcSwap` and applies the
+    /// channel-level overrides (channel's `model` / `small_model`) to compute
+    /// the effective `model` and `small_model`. Provider definitions, agent
+    /// flags (`max_iterations`, `sse_read_timeout_secs`, `auto_reset_threshold`,
+    /// `vision`, `reset_compression`) are taken from the global `[agent]`
+    /// section.
+    ///
+    /// Called on every agent request, so any reload of `config.toml` (via the
+    /// TUI `reload config` action) takes effect immediately — no restart
+    /// needed.
+    pub fn agent_config(&self) -> AgentConfig {
+        let app = self.config.load();
+        derive_agent_config(&app, &self.channel_name)
     }
 
     /// Set the cross-channel thread managers map.
@@ -1036,13 +1061,14 @@ impl JycAgentService {
 
     /// Get or create the provider for the current model.
     fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn provider::Provider>> {
+        let agent_cfg = self.agent_config();
         let model = model_override
-            .or(self.config.model.as_deref())
+            .or(agent_cfg.model.as_deref())
             .ok_or_else(|| {
                 anyhow::anyhow!("No model configured. Set [agent].model in config.toml")
             })?;
 
-        provider::create_provider(model, &self.config.providers)
+        provider::create_provider(model, &agent_cfg.providers)
     }
 
     /// Get event bus for a thread.
@@ -1149,6 +1175,11 @@ impl AgentService for JycAgentService {
             "Processing message with in-process agent"
         );
 
+        // 0. Snapshot the live agent config once for this request.
+        //    Re-reads from the shared `ArcSwap` on every call, so any
+        //    config reload (TUI `reload config`) takes effect immediately.
+        let agent_cfg = self.agent_config();
+
         // 1. Read mode override for this thread (used to select mode-specific model)
         let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
 
@@ -1214,10 +1245,10 @@ impl AgentService for JycAgentService {
             .or_else(|| pattern.and_then(|p| p.model.as_deref()));
         // Config: try mode-specific field first, then generic model
         let config_override = match mode_override.as_deref() {
-            Some("plan") => self.config.plan_model.as_deref(),
-            _ => self.config.build_model.as_deref(), // default = build
+            Some("plan") => agent_cfg.plan_model.as_deref(),
+            _ => agent_cfg.build_model.as_deref(), // default = build
         }
-        .or(self.config.model.as_deref());
+        .or(agent_cfg.model.as_deref());
         let model_override = file_override
             .clone()
             .or_else(|| thread_cfg_override.map(|s| s.to_string()))
@@ -1250,7 +1281,7 @@ impl AgentService for JycAgentService {
             .as_ref()
             .and_then(|a| a.small_model.as_deref())
             .or(pattern_small_model)
-            .or(self.config.small_model.as_deref());
+            .or(agent_cfg.small_model.as_deref());
 
         // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
         let pattern_threshold = message
@@ -1258,10 +1289,10 @@ impl AgentService for JycAgentService {
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.auto_reset_threshold);
-        let auto_reset_threshold = pattern_threshold.unwrap_or(self.config.auto_reset_threshold);
+        let auto_reset_threshold = pattern_threshold.unwrap_or(agent_cfg.auto_reset_threshold);
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
-                match provider::create_provider(m, &self.config.providers) {
+                match provider::create_provider(m, &agent_cfg.providers) {
                     Ok(p) => {
                         tracing::info!(
                             small_provider = %p.name(),
@@ -1341,7 +1372,7 @@ impl AgentService for JycAgentService {
         const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
         let model_str = model_override.as_deref().unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
-            self.config.providers.get(provider_name).and_then(|p| {
+            agent_cfg.providers.get(provider_name).and_then(|p| {
                 // Check per-model override first, then provider default
                 p.models
                     .get(model_id)
@@ -1374,8 +1405,8 @@ impl AgentService for JycAgentService {
             event_bus: event_bus.as_ref(),
             prior_history,
             prior_raw_context,
-            max_iterations: Some(self.config.max_iterations),
-            sse_read_timeout: std::time::Duration::from_secs(self.config.sse_read_timeout_secs),
+            max_iterations: Some(agent_cfg.max_iterations),
+            sse_read_timeout: std::time::Duration::from_secs(agent_cfg.sse_read_timeout_secs),
             additional_read_roots,
             additional_write_roots,
             pattern_inject_images: pattern_inject,
@@ -1455,10 +1486,13 @@ impl AgentService for JycAgentService {
         thread_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
+        // Read the live agent config so reload of small_model / providers
+        // takes effect without a server restart.
+        let agent_cfg = self.agent_config();
         // Use the agent config's small_model as the compression provider if available
-        let small_model = self.config.small_model.as_deref();
+        let small_model = agent_cfg.small_model.as_deref();
         let provider: Option<Box<dyn provider::Provider>> =
-            small_model.and_then(|m| provider::create_provider(m, &self.config.providers).ok());
+            small_model.and_then(|m| provider::create_provider(m, &agent_cfg.providers).ok());
 
         // Resolve compression config: pattern (not available here) -> agent config
         let resolved_config = config.clone();
@@ -1493,11 +1527,126 @@ impl AgentService for JycAgentService {
     }
 }
 
+/// Derive the effective [`AgentConfig`] for a given channel from the full
+/// [`jyc_types::AppConfig`].
+///
+/// Applies the channel-level overrides (`channels.<name>.model`,
+/// `channels.<name>.small_model`) to the global `[agent]` settings. Provider
+/// definitions and per-model fields (`context_window`, `supports_images`,
+/// `params`, `user_agent`) are passed through unchanged — those are read
+/// live via the `AppConfig` chain and applied by
+/// `provider::create_provider` and friends.
+///
+/// `plan_model` / `build_model` are always `None` here; the per-mode
+/// resolution happens at request time from the `ChannelPattern` /
+/// thread-level override, with this struct's `model` as the global default.
+pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> AgentConfig {
+    let channel = app.channels.get(channel_name);
+    let effective_model = channel
+        .and_then(|c| c.model.clone())
+        .or_else(|| app.agent.model.clone());
+    let effective_small_model = channel
+        .and_then(|c| c.small_model.clone())
+        .or_else(|| app.agent.small_model.clone());
+
+    let providers = app
+        .agent
+        .providers
+        .iter()
+        .map(|(name, def)| {
+            let models = def
+                .models
+                .iter()
+                .map(|(model_name, model_def)| {
+                    (
+                        model_name.clone(),
+                        crate::types::ModelConfig {
+                            model_id: model_def.model_id.clone(),
+                            context_window: model_def.context_window,
+                            supports_images: model_def.supports_images,
+                            params: model_def.params.clone(),
+                            user_agent: model_def.user_agent.clone(),
+                        },
+                    )
+                })
+                .collect();
+            (
+                name.clone(),
+                crate::types::ProviderConfig {
+                    provider_type: def.provider_type.clone(),
+                    base_url: def.base_url.clone(),
+                    api_key_env: def.api_key_env.clone(),
+                    context_window: def.context_window,
+                    supports_images: def.supports_images,
+                    params: def.params.clone(),
+                    user_agent: def.user_agent.clone(),
+                    models,
+                },
+            )
+        })
+        .collect();
+
+    AgentConfig {
+        plan_model: None,
+        build_model: None,
+        model: effective_model,
+        small_model: effective_small_model,
+        providers,
+        max_iterations: app.agent.max_iterations,
+        sse_read_timeout_secs: app.agent.sse_read_timeout_secs,
+        vision: app
+            .agent
+            .vision
+            .as_ref()
+            .map(|v| crate::types::VisionConfig {
+                enabled: v.enabled,
+                provider: v.provider.clone(),
+                model: v.model.clone(),
+                prompt: v.prompt.clone(),
+            }),
+        reset_compression: app.agent.reset_compression.clone(),
+        auto_reset_threshold: app.agent.auto_reset_threshold,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use jyc_types::{ChannelPattern, ChannelType};
     use std::path::PathBuf;
+
+    /// Helper: build a minimal `AppConfig` wrapped in an `Arc<ArcSwap>`.
+    /// `model` becomes the global `[agent].model`. Add to `providers`/`channels`
+    /// to simulate config knobs.
+    fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfig>> {
+        let app = jyc_types::AppConfig {
+            general: jyc_types::GeneralConfig::default(),
+            channels: HashMap::new(),
+            agent: jyc_types::AgentConfig {
+                enabled: true,
+                mode: "agent".to_string(),
+                model: model.map(|s| s.to_string()),
+                plan_model: None,
+                build_model: None,
+                small_model: None,
+                system_prompt: None,
+                max_iterations: 500,
+                sse_read_timeout_secs: 120,
+                text: None,
+                attachments: None,
+                providers: HashMap::new(),
+                vision: None,
+                reset_compression: None,
+                auto_reset_threshold: 0.95,
+            },
+            inspect: None,
+            attachments: None,
+            wecom: None,
+            mcps: Vec::new(),
+            scheduler: jyc_types::SchedulerConfig::default(),
+        };
+        Arc::new(ArcSwap::from_pointee(app))
+    }
 
     /// Helper: build a service with given config model and patterns.
     fn service_with_patterns(
@@ -1505,10 +1654,7 @@ mod tests {
         patterns: Vec<ChannelPattern>,
     ) -> JycAgentService {
         JycAgentService::new(
-            AgentConfig {
-                model: config_model.map(|s| s.to_string()),
-                ..AgentConfig::default()
-            },
+            app_config_with_model(config_model),
             PathBuf::from("/tmp/test-workdir"),
             vec![],
             None,
@@ -1546,7 +1692,7 @@ mod tests {
         channel_mcp_configs: Option<Vec<McpServerConfig>>,
     ) -> JycAgentService {
         JycAgentService::new(
-            AgentConfig::default(),
+            app_config_with_model(None),
             PathBuf::from("/tmp/test-workdir"),
             vec![],
             channel_mcp_configs,
@@ -1569,7 +1715,7 @@ mod tests {
         channel_disabled_skills: Option<Vec<String>>,
     ) -> JycAgentService {
         JycAgentService::new(
-            AgentConfig::default(),
+            app_config_with_model(None),
             PathBuf::from("/tmp/test-workdir"),
             vec![],
             None,
@@ -1619,7 +1765,7 @@ mod tests {
             .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.model.as_deref())
             .map(|s| s.to_string())
-            .or_else(|| svc.config.model.clone());
+            .or_else(|| svc.agent_config().model.clone());
 
         assert_eq!(resolved.as_deref(), Some("provider/model-from-pattern"));
     }
@@ -1638,7 +1784,7 @@ mod tests {
             .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.model.as_deref())
             .map(|s| s.to_string())
-            .or_else(|| svc.config.model.clone());
+            .or_else(|| svc.agent_config().model.clone());
 
         assert_eq!(resolved.as_deref(), Some("provider/default-model"));
     }
@@ -1658,7 +1804,7 @@ mod tests {
             .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.model.as_deref())
             .map(|s| s.to_string())
-            .or_else(|| svc.config.model.clone());
+            .or_else(|| svc.agent_config().model.clone());
 
         assert_eq!(resolved.as_deref(), Some("provider/default-model"));
     }
@@ -1672,7 +1818,7 @@ mod tests {
             .and_then(|name| svc.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.model.as_deref())
             .map(|s| s.to_string())
-            .or_else(|| svc.config.model.clone());
+            .or_else(|| svc.agent_config().model.clone());
 
         assert_eq!(resolved, None);
     }
@@ -1702,6 +1848,107 @@ mod tests {
             .and_then(|p| p.model.as_deref());
 
         assert_eq!(resolved, Some("provider/first"));
+    }
+
+    /// Regression test for issue #478: adding a model to the live config
+    /// after the service is constructed must be visible immediately, with
+    /// its `context_window` and other per-model fields applied. Previously
+    /// the service held a startup-time snapshot and required a full server
+    /// restart to pick up new models.
+    #[test]
+    fn reload_picks_up_new_model_context_window_without_restart() {
+        // Build an AppConfig with an existing provider but no models,
+        // wrapped in an Arc<ArcSwap> (the live single source of truth).
+        let app = jyc_types::AppConfig {
+            general: jyc_types::GeneralConfig::default(),
+            channels: HashMap::new(),
+            agent: jyc_types::AgentConfig {
+                enabled: true,
+                mode: "agent".to_string(),
+                model: Some("openai/gpt-4".to_string()),
+                plan_model: None,
+                build_model: None,
+                small_model: None,
+                system_prompt: None,
+                max_iterations: 500,
+                sse_read_timeout_secs: 120,
+                text: None,
+                attachments: None,
+                providers: {
+                    let mut p = HashMap::new();
+                    p.insert(
+                        "openai".to_string(),
+                        jyc_types::ProviderDef {
+                            provider_type: "openai-compatible".to_string(),
+                            base_url: Some("http://api.example.com".to_string()),
+                            api_key_env: Some("TEST_KEY".to_string()),
+                            context_window: Some(8000),
+                            supports_images: None,
+                            params: None,
+                            user_agent: None,
+                            models: HashMap::new(),
+                        },
+                    );
+                    p
+                },
+                vision: None,
+                reset_compression: None,
+                auto_reset_threshold: 0.95,
+            },
+            inspect: None,
+            attachments: None,
+            wecom: None,
+            mcps: Vec::new(),
+            scheduler: jyc_types::SchedulerConfig::default(),
+        };
+        let config = Arc::new(ArcSwap::from_pointee(app));
+        let svc = JycAgentService::new(
+            config.clone(),
+            PathBuf::from("/tmp/test-workdir"),
+            vec![],
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "test".to_string(),
+        );
+
+        // Before reload: only the default `openai/gpt-4` is known, with
+        // the provider-level fallback of 8000 (no per-model entry yet).
+        let before = svc.agent_config();
+        let openai_before = before.providers.get("openai").unwrap();
+        assert!(!openai_before.models.contains_key("gpt-4"));
+        assert_eq!(openai_before.context_window, Some(8000));
+
+        // Simulate a config reload: swap in a new AppConfig with an
+        // additional model that has its own context_window.
+        let mut new_app = config.load().as_ref().clone();
+        if let Some(openai) = new_app.agent.providers.get_mut("openai") {
+            openai.models.insert(
+                "gpt-4-new".to_string(),
+                jyc_types::ModelDef {
+                    model_id: None,
+                    context_window: Some(128000),
+                    supports_images: Some(true),
+                    params: None,
+                    user_agent: None,
+                },
+            );
+        }
+        config.store(Arc::new(new_app));
+
+        // After reload: the new model is visible with its per-model
+        // context_window — no server restart required.
+        let after = svc.agent_config();
+        let openai_after = after.providers.get("openai").unwrap();
+        let gpt4_new = openai_after.models.get("gpt-4-new").unwrap();
+        assert_eq!(gpt4_new.context_window, Some(128000));
+        assert_eq!(gpt4_new.supports_images, Some(true));
     }
 
     #[tokio::test]

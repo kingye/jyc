@@ -377,6 +377,28 @@ pub struct AgentConfig {
     pub auto_reset_threshold: f64,
 }
 
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: default_agent_mode(),
+            model: None,
+            plan_model: None,
+            build_model: None,
+            small_model: None,
+            system_prompt: None,
+            max_iterations: default_max_iterations(),
+            sse_read_timeout_secs: default_sse_read_timeout(),
+            text: None,
+            attachments: None,
+            providers: std::collections::HashMap::new(),
+            vision: None,
+            reset_compression: None,
+            auto_reset_threshold: default_auto_reset_threshold(),
+        }
+    }
+}
+
 /// Provider definition for the in-process agent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderDef {
@@ -522,7 +544,11 @@ fn default_agent_mode() -> String {
 }
 
 fn default_max_iterations() -> usize {
-    200
+    // 500 (raised from 200 in v0.3.6 — in-loop summarization at the cycle
+    // boundary now keeps the request size bounded regardless of iteration
+    // count). See jyc-agent's prior slim AgentConfig for the original
+    // rationale.
+    500
 }
 
 fn default_sse_read_timeout() -> u64 {

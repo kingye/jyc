@@ -77,7 +77,7 @@ jobs:
       # Delete the existing GitHub release (and its tag) so action-gh-release
       # creates a fresh release without encountering duplicate-release errors.
       - name: Delete existing nightly release
-        run: gh release delete nightly --cleanup-tag -y || true
+        run: gh release delete nightly --cleanup-tag -y --repo ${{ github.repository }} || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

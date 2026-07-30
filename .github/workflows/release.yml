@@ -88,3 +88,7 @@ jobs:
           name: Nightly Build (${{ github.sha }})
           prerelease: true
           files: dist/*.tar.gz
+          # Use a PAT (not the default GITHUB_TOKEN) so the resulting
+          # release:published event can trigger sync-gitee-release.yml.
+          # Events from GITHUB_TOKEN don't trigger other workflows.
+          token: ${{ secrets.RELEASE_PAT }}

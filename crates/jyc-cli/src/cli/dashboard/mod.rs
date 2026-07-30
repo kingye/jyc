@@ -101,6 +101,10 @@ struct App {
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
 
+    /// Open command palette on the dashboard screen (dashboard + shared
+    /// commands).
+    palette: Option<palette::Palette>,
+
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
 
@@ -135,6 +139,7 @@ impl App {
             pending_hydrate: None,
             pending_new_chat: false,
             pending_reload_config: false,
+            palette: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
@@ -860,6 +865,41 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &mut InspectClient) {
     }
 }
 
+/// Open the chat screen for the table-selected thread: websocket chat for
+/// websocket threads, detail mode otherwise. Used by the Enter key and the
+/// palette `open chat` action.
+async fn open_selected_thread_chat(app: &mut App, client: &mut InspectClient, addr: &str) {
+    let thread_info = app.state.as_ref().and_then(|s| {
+        app.table_state
+            .selected()
+            .and_then(|i| s.threads.get(i))
+            .map(|t| {
+                let is_ws = s
+                    .channels
+                    .iter()
+                    .find(|c| c.name == t.channel)
+                    .is_some_and(|c| c.channel_type == "websocket");
+                (t.name.clone(), t.channel.clone(), is_ws)
+            })
+    });
+    if let Some((name, channel, is_ws)) = thread_info {
+        if is_ws {
+            app.chat
+                .open(addr, Some(&channel), Some(&name), app.token.clone());
+        } else {
+            app.chat
+                .open_thread_detail(&channel, &name, app.state.as_ref());
+        }
+        // Chat WS takes over live events. Close the overview WS
+        // so we don't have two connections to the same thread.
+        close_overview_ws(app);
+        // REST hydrate the live buffers (activity + chat) so the
+        // activity pane and chat progress show recent entries
+        // immediately. WS events append to the same buffers.
+        hydrate_live(client, app, &channel, &name).await;
+    }
+}
+
 /// Reload the server configuration. Used by the `R` key and the palette
 /// `reload config` action (via `pending_reload_config`).
 async fn reload_server_config(
@@ -894,6 +934,37 @@ async fn handle_normal_keys(
         return;
     }
 
+    // Palette open: delegate all keys to it and dispatch the chosen action.
+    if let Some(ref mut p) = app.palette {
+        match p.handle_key(key) {
+            palette::PaletteResult::Consumed => {}
+            palette::PaletteResult::Closed => app.palette = None,
+            palette::PaletteResult::Action(action) => {
+                app.palette = None;
+                use local_commands::LocalAction;
+                match action {
+                    LocalAction::OpenChat => open_selected_thread_chat(app, client, addr).await,
+                    LocalAction::NewChat => start_new_chat(app, addr, client).await,
+                    LocalAction::ReloadConfig => {
+                        reload_server_config(app, client, last_poll).await
+                    }
+                    LocalAction::Quit => app.should_quit = true,
+                    // Chat-scoped actions are never offered on the dashboard.
+                    _ => {}
+                }
+            }
+        }
+        return;
+    }
+
+    // Ctrl+P or ":" opens the command palette (dashboard + shared commands).
+    let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
+    let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_p || is_colon {
+        app.palette = Some(palette::Palette::new(local_commands::CommandScope::Dashboard));
+        return;
+    }
+
     match key.code {
         KeyCode::Char('c') => {
             // After the user picks a pattern, `select_pattern` opens a
@@ -901,36 +972,7 @@ async fn handle_normal_keys(
             start_new_chat(app, addr, client).await;
         }
         KeyCode::Enter => {
-            // Enter chat for websocket threads, detail mode for non-websocket threads
-            let thread_info = app.state.as_ref().and_then(|s| {
-                app.table_state
-                    .selected()
-                    .and_then(|i| s.threads.get(i))
-                    .map(|t| {
-                        let is_ws = s
-                            .channels
-                            .iter()
-                            .find(|c| c.name == t.channel)
-                            .is_some_and(|c| c.channel_type == "websocket");
-                        (t.name.clone(), t.channel.clone(), is_ws)
-                    })
-            });
-            if let Some((name, channel, is_ws)) = thread_info {
-                if is_ws {
-                    app.chat
-                        .open(addr, Some(&channel), Some(&name), app.token.clone());
-                } else {
-                    app.chat
-                        .open_thread_detail(&channel, &name, app.state.as_ref());
-                }
-                // Chat WS takes over live events. Close the overview WS
-                // so we don't have two connections to the same thread.
-                close_overview_ws(app);
-                // REST hydrate the live buffers (activity + chat) so the
-                // activity pane and chat progress show recent entries
-                // immediately. WS events append to the same buffers.
-                hydrate_live(client, app, &channel, &name).await;
-            }
+            open_selected_thread_chat(app, client, addr).await;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.next_thread();
@@ -1016,6 +1058,11 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     render_threads(frame, chunks[1], app);
     render_details(frame, chunks[2], app);
     render_status_bar(frame, chunks[3], app);
+
+    // Command palette overlay (dashboard + shared commands).
+    if let Some(ref p) = app.palette {
+        p.render(frame, area);
+    }
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {

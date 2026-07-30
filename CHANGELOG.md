@@ -140,6 +140,9 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Input gutter arrows.** The prompt gutter now uses `❯` (Insert mode)
+  and `❮` (Normal/Visual mode) instead of `>` / `<`.
+
 - **`Esc` no longer leaves the chat screen.** Returning to the dashboard
   is done via the palette (`open dashboard`, `Ctrl+P`). `Esc` keeps its
   other meanings: closing popups, returning focus to the chat input, and

@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// Width of the input prompt gutter ("╰─> ").
+/// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
 
 /// Phase of the chat pane UI.
@@ -1583,7 +1583,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // not have focus. A two-line prompt gutter sits left of the editor:
     // the header row shows "╭─ {mode} · {channel} · {pattern}" with a
     // right-aligned "[ jyc ai v{ver} · {model} · {pct}% ]" chip, and
-    // "╰─>" (Insert mode) / "╰─<" (other vim modes) on the first editor
+    // "╰─❯" (Insert mode) / "╰─❮" (other vim modes) on the first editor
     // row; both dim when the input field loses focus.
     let theme = EditorTheme::default()
         .base(Style::default())
@@ -1630,12 +1630,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         header_style,
     );
     frame.render_widget(Paragraph::new(header_line), header_area);
-    // Vim-mode arrow: "╰─> " in Insert mode, "╰─< " otherwise. The
+    // Vim-mode arrow: "╰─❯ " in Insert mode, "╰─❮ " otherwise. The
     // full vim-mode chip lives in the status bar.
     let arrow = if app.chat.editor.mode == EditorMode::Insert {
-        "╰─> "
+        "╰─❯ "
     } else {
-        "╰─< "
+        "╰─❮ "
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(arrow, prompt_style))),

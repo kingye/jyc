@@ -122,7 +122,7 @@ the input is empty (Insert mode); to scroll the conversation, press `Tab` to
 focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or `gg/G`. Typing
 while the message area is focused refocuses the input automatically. The input
 area grows with content from 1 up to 10 text lines. The input prompt shows an
-always-visible agent-mode letter chip before `> `: `B` (green) for build mode,
+always-visible agent-mode letter chip before `❯ `: `B` (green) for build mode,
 `P` (yellow) for plan mode.
 
 ### Interface Layout

@@ -74,10 +74,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Delete the existing GitHub release (and its tag) so action-gh-release
-      # creates a fresh release without encountering duplicate-release errors.
+      # Delete ALL existing nightly releases (including stale drafts) and the
+      # tag, so action-gh-release creates a fresh release without hitting
+      # "tag_name already_exists". gh release delete only removes the single
+      # release the tag resolves to, leaving duplicate drafts behind.
       - name: Delete existing nightly release
-        run: gh release delete nightly --cleanup-tag -y --repo ${{ github.repository }} || true
+        run: |
+          for id in $(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name=="nightly") | .id'); do
+            gh api -X DELETE repos/${{ github.repository }}/releases/"$id" || true
+          done
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/nightly || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

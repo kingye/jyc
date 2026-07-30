@@ -128,6 +128,16 @@ All notable changes to JYC will be documented in this file.
   "Thinking..." marker (verbose reasoning text is kept in-memory only and never
   written to disk).
 
+### Fixed
+
+- **Chat progress stale after switching threads.** `live_processing` /
+  `live_thinking` are only updated by WS events received while a thread is
+  watched, so entries went stale for unwatched threads: a missed completion
+  left phantom progress (last 2 activity events) and a missed start hid the
+  progress of a busy thread. Both are now cleared on the REST hydrate when
+  switching threads, falling back to the polled overview status until fresh
+  WS events arrive.
+
 ### Changed
 
 - **`Esc` no longer leaves the chat screen.** Returning to the dashboard

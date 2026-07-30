@@ -798,6 +798,10 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
 /// Errors are logged but not propagated — the buffers will simply be empty
 /// (the activity pane shows "No activity" until the next WS event arrives).
 async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, thread: &str) {
+    // Drop stale WS-fed processing/thinking state for this thread (it may
+    // have changed while unwatched); the renderer falls back to the polled
+    // overview status until fresh WS events arrive.
+    app.chat.clear_live_transient(channel, thread);
     // Activity first (chat pane progress depends on it).
     match client
         .get_thread_activity(channel, thread, None, Some(180))

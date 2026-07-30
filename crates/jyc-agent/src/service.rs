@@ -1059,9 +1059,19 @@ impl JycAgentService {
         registry
     }
 
-    /// Get or create the provider for the current model.
-    fn create_provider(&self, model_override: Option<&str>) -> Result<Box<dyn provider::Provider>> {
-        let agent_cfg = self.agent_config();
+    /// Get or create the provider for the current model, using the given
+    /// pre-derived `agent_cfg`.
+    ///
+    /// Taking the config as a parameter (instead of calling
+    /// [`Self::agent_config`] internally) keeps the entire request
+    /// consistent within a single live config read — `process()` snapshots
+    /// the config once at the top, and every downstream call sees the same
+    /// values, even if a reload happens mid-request.
+    fn create_provider(
+        &self,
+        agent_cfg: &AgentConfig,
+        model_override: Option<&str>,
+    ) -> Result<Box<dyn provider::Provider>> {
         let model = model_override
             .or(agent_cfg.model.as_deref())
             .ok_or_else(|| {
@@ -1257,7 +1267,7 @@ impl AgentService for JycAgentService {
 
         // 2. Create provider
         let provider = self
-            .create_provider(model_override.as_deref())
+            .create_provider(&agent_cfg, model_override.as_deref())
             .context("Failed to create LLM provider")?;
 
         tracing::info!(
@@ -1949,6 +1959,78 @@ mod tests {
         let gpt4_new = openai_after.models.get("gpt-4-new").unwrap();
         assert_eq!(gpt4_new.context_window, Some(128000));
         assert_eq!(gpt4_new.supports_images, Some(true));
+    }
+
+    /// `derive_agent_config` must apply `channels.<name>.model` and
+    /// `channels.<name>.small_model` over the global `[agent]` defaults —
+    /// this is the channel-override branch that the live-config test above
+    /// does not exercise (its config has no channel entries).
+    #[test]
+    fn derive_agent_config_applies_channel_overrides() {
+        // Build a minimal ChannelConfig with just the override fields we
+        // care about. All other fields are explicitly `None` to mirror how
+        // they appear in a real config.
+        let channel_cfg = jyc_types::ChannelConfig {
+            channel_type: "websocket".to_string(),
+            model: Some("override/main".to_string()),
+            small_model: Some("override/small".to_string()),
+            inbound: None,
+            outbound: None,
+            feishu: None,
+            gitee: None,
+            github: None,
+            wechat: None,
+            wecom: None,
+            wecom_kf: None,
+            wecom_bot: None,
+            monitor: None,
+            patterns: None,
+            agent: None,
+            footer: None,
+            mcps: None,
+            disabled_tools: None,
+            disabled_mcp_servers: None,
+            skills: None,
+            disabled_skills: None,
+        };
+        let mut channels = HashMap::new();
+        channels.insert("test".to_string(), channel_cfg);
+
+        let app = jyc_types::AppConfig {
+            general: jyc_types::GeneralConfig::default(),
+            channels,
+            agent: jyc_types::AgentConfig {
+                enabled: true,
+                mode: "agent".to_string(),
+                model: Some("global/main".to_string()),
+                plan_model: None,
+                build_model: None,
+                small_model: Some("global/small".to_string()),
+                system_prompt: None,
+                max_iterations: 500,
+                sse_read_timeout_secs: 120,
+                text: None,
+                attachments: None,
+                providers: HashMap::new(),
+                vision: None,
+                reset_compression: None,
+                auto_reset_threshold: 0.95,
+            },
+            inspect: None,
+            attachments: None,
+            wecom: None,
+            mcps: Vec::new(),
+            scheduler: jyc_types::SchedulerConfig::default(),
+        };
+        let cfg = derive_agent_config(&app, "test");
+        assert_eq!(cfg.model.as_deref(), Some("override/main"));
+        assert_eq!(cfg.small_model.as_deref(), Some("override/small"));
+
+        // A different channel with no override falls back to the global
+        // agent settings.
+        let cfg2 = derive_agent_config(&app, "other");
+        assert_eq!(cfg2.model.as_deref(), Some("global/main"));
+        assert_eq!(cfg2.small_model.as_deref(), Some("global/small"));
     }
 
     #[tokio::test]

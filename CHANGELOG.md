@@ -143,7 +143,11 @@ All notable changes to JYC will be documented in this file.
 - **Input gutter arrows.** The prompt gutter now uses `❯` (Insert mode)
   and `❮` (Normal/Visual mode) instead of `>` / `<`. Box-drawing
   characters (`╭─`, `╰─`, header dash padding) are colored `#393552`;
-  the arrows are yellow.
+  the arrows are yellow. Coloring is focus-dependent: when the input
+  field is focused the border/gutter lines use the message-separator
+  `DarkGray`, info text stays sapphire, and the arrows are yellow; when
+  focus moves away, the border, gutter line, arrows, and info text all
+  dim to `#393552`.
 
 - **`Esc` no longer leaves the chat screen.** Returning to the dashboard
   is done via the palette (`open dashboard`, `Ctrl+P`). `Esc` keeps its

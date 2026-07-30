@@ -198,8 +198,8 @@ pub trait Provider: Send + Sync {
     fn model(&self) -> &str;
 
     /// Whether the active model accepts image content blocks (multimodal input).
-    /// Resolved at construction time from config (`ModelConfig.supports_images`
-    /// overrides `ProviderConfig.supports_images`; default false).
+    /// Resolved at construction time from config (`ModelDef.supports_images`
+    /// overrides `ProviderDef.supports_images`; default false).
     fn supports_images(&self) -> bool {
         false
     }
@@ -260,7 +260,7 @@ pub trait Provider: Send + Sync {
 /// The provider_name must match a key in the `[agent.providers.*]` config.
 pub fn create_provider(
     model: &str,
-    providers: &std::collections::HashMap<String, crate::types::ProviderConfig>,
+    providers: &std::collections::HashMap<String, jyc_types::ProviderDef>,
 ) -> Result<Box<dyn Provider>> {
     let (provider_name, model_id) = model
         .split_once('/')
@@ -921,11 +921,11 @@ mod dangling_tool_call_tests {
 #[cfg(test)]
 mod model_id_tests {
     use super::*;
-    use crate::types::{ModelConfig, ProviderConfig};
+    use jyc_types::{ModelDef, ProviderDef};
     use std::collections::HashMap;
 
-    fn model_config(model_id: Option<&str>) -> ModelConfig {
-        ModelConfig {
+    fn model_config(model_id: Option<&str>) -> ModelDef {
+        ModelDef {
             model_id: model_id.map(|s| s.to_string()),
             context_window: None,
             supports_images: None,
@@ -934,11 +934,11 @@ mod model_id_tests {
         }
     }
 
-    fn providers_with(models: HashMap<String, ModelConfig>) -> HashMap<String, ProviderConfig> {
+    fn providers_with(models: HashMap<String, ModelDef>) -> HashMap<String, ProviderDef> {
         let mut providers = HashMap::new();
         providers.insert(
             "kimi".to_string(),
-            ProviderConfig {
+            ProviderDef {
                 provider_type: "openai-compatible".to_string(),
                 base_url: Some("https://api.moonshot.cn/v1".to_string()),
                 api_key_env: None,

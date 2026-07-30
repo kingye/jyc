@@ -168,6 +168,19 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Eliminated duplicate agent config types (single source of truth).**
+  `jyc-agent` no longer defines its own `ProviderConfig`, `ModelConfig`,
+  `VisionConfig`, or slim `AgentConfig`; it uses `jyc_types::{ProviderDef,
+  ModelDef, VisionConfig, AgentConfig}` directly. `provider::create_provider`
+  takes `&HashMap<String, ProviderDef>`. `derive_agent_config` collapses
+  from an 80-line per-field conversion to a 10-line channel-override patch
+  (clones `app.agent` and applies `channels.<name>.model` /
+  `small_model`). Net diff: **-282 lines**. The `max_iterations` default
+  in `jyc_types::AgentConfig` is raised from 200 to 500 to match the
+  agent-runtime default (the slim `jyc_agent::types::AgentConfig` had
+  already been silently 500 since v0.3.6 — this is the upstream fix for
+  that divergence). (#477)
+
 - **Decoupled Gitee release sync from the release CI pipeline.** The
   `sync-gitee` job is now a separate workflow (`sync-gitee-release.yml`)
   triggered by the GitHub `release` event instead of running inline in

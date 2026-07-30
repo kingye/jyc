@@ -16,8 +16,9 @@ pub use service::JycAgentService;
 mod integration_tests {
     use super::*;
     use crate::provider;
-    use crate::types::{Message, ProviderConfig};
+    use crate::types::Message;
     use futures::StreamExt;
+    use jyc_types::ProviderDef;
     use std::collections::HashMap;
 
     /// Manual integration test — requires local proxy running.
@@ -28,7 +29,7 @@ mod integration_tests {
         let mut providers = HashMap::new();
         providers.insert(
             "anthropic".to_string(),
-            ProviderConfig {
+            ProviderDef {
                 provider_type: "anthropic".to_string(),
                 base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
@@ -69,7 +70,7 @@ mod integration_tests {
         let mut providers = HashMap::new();
         providers.insert(
             "anthropic".to_string(),
-            ProviderConfig {
+            ProviderDef {
                 provider_type: "anthropic".to_string(),
                 base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),

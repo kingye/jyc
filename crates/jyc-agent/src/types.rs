@@ -1,8 +1,12 @@
 //! Core types for the agent system.
 //!
 //! Inspired by jcode's clean architecture but minimal — only what JYC needs.
+//!
+//! **Config types** (`ProviderDef`, `ModelDef`, `AgentConfig`, `VisionConfig`)
+//! live in `jyc_types` and are the single source of truth — `jyc-agent`
+//! consumes them directly and does not define its own duplicates.
+//! `derive_agent_config` in `service.rs` returns `jyc_types::AgentConfig`.
 
-use jyc_types::channel::ResetCompressionConfig;
 use serde::{Deserialize, Serialize};
 
 /// Role in a conversation.
@@ -172,151 +176,6 @@ pub struct AgentLoopResult {
     pub raw_context: Vec<serde_json::Value>,
 }
 
-/// Provider configuration from config.toml.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    /// Provider type: "anthropic" or "openai-compatible"
-    #[serde(rename = "type")]
-    pub provider_type: String,
-    /// API base URL (optional, uses default for provider type)
-    pub base_url: Option<String>,
-    /// Environment variable name containing the API key
-    pub api_key_env: Option<String>,
-    /// Default context window size in tokens
-    pub context_window: Option<u64>,
-    /// Whether models under this provider can accept image content blocks
-    /// (multimodal input). Per-model override via `ModelConfig.supports_images`
-    /// takes precedence. Default: false.
-    pub supports_images: Option<bool>,
-    /// Extra parameters merged into every API request for this provider
-    pub params: Option<serde_json::Value>,
-    /// Optional User-Agent header override for all models under this provider.
-    /// Model-level `user_agent` takes precedence.
-    pub user_agent: Option<String>,
-    /// Per-model configuration
-    #[serde(default)]
-    pub models: std::collections::HashMap<String, ModelConfig>,
-}
-
-/// Per-model configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfig {
-    /// Actual model identifier sent to the remote LLM API.
-    /// When unset, the key of this entry in `ProviderConfig.models` is used.
-    /// This allows multiple config entries (aliases) with different params
-    /// to point at the same remote model.
-    pub model_id: Option<String>,
-    /// Context window size in tokens for this specific model
-    pub context_window: Option<u64>,
-    /// Whether this specific model can accept image content blocks
-    /// (multimodal input). Overrides the provider-level `supports_images`.
-    /// Default: inherits from provider, else false.
-    pub supports_images: Option<bool>,
-    /// Extra parameters merged into API request (overrides provider params)
-    pub params: Option<serde_json::Value>,
-    /// Optional User-Agent header override for requests made by this model.
-    /// Takes precedence over provider-level `user_agent`.
-    pub user_agent: Option<String>,
-}
-
-/// Vision model configuration for the `read_image` tool fallback.
-///
-/// When the primary model does not support images (`supports_images = false`),
-/// the `read_image` tool uses this configuration to call an independent vision
-/// model (e.g., DeepSeek-OCR) to analyze images and return text descriptions.
-///
-/// The `provider` field references a named entry in `[agent.providers.xxx]`
-/// to reuse its `base_url` and `api_key_env`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VisionConfig {
-    /// Whether vision fallback is enabled (default: false)
-    #[serde(default)]
-    pub enabled: bool,
-    /// Name of the provider in `[agent.providers]` to use for vision calls
-    pub provider: String,
-    /// Model identifier (e.g., "deepseek-ocr")
-    pub model: String,
-    /// Optional custom prompt for the vision model
-    pub prompt: Option<String>,
-}
-
-/// Agent configuration section from config.toml.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Default model in "provider/model-id" format
-    pub model: Option<String>,
-    /// Model override for plan (read-only) mode. Falls back to `model` if unset.
-    #[serde(default)]
-    pub plan_model: Option<String>,
-    /// Model override for build (full execution) mode. Falls back to `model` if unset.
-    #[serde(default)]
-    pub build_model: Option<String>,
-    /// Optional small/fast model used for ancillary LLM work — currently:
-    /// - cycle-boundary progress summary (in `agent_loop`)
-    /// - between-messages context reset summary (in `session::summarize_context`)
-    /// Falls back to the main `model` if unset, or if provider construction
-    /// fails (logged as a warning, the agent loop continues).
-    #[allow(clippy::doc_lazy_continuation)]
-    #[serde(default)]
-    pub small_model: Option<String>,
-    /// Provider definitions
-    #[serde(default)]
-    pub providers: std::collections::HashMap<String, ProviderConfig>,
-    /// Maximum agent loop iterations per cycle. Default: 500.
-    /// When exceeded, agent sends progress reply, resets counter, and continues.
-    #[serde(default = "default_max_iterations")]
-    pub max_iterations: usize,
-    /// Maximum gap (seconds) between SSE events before the stream is
-    /// considered hung and triggers a retry. Default: 120.
-    #[serde(default = "default_sse_read_timeout")]
-    pub sse_read_timeout_secs: u64,
-    /// Vision fallback configuration for text-only models to use an external
-    /// vision model (e.g., DeepSeek-OCR) for image analysis via `read_image`.
-    pub vision: Option<VisionConfig>,
-
-    /// Compression configuration for session reset (global fallback).
-    /// Per-pattern `reset_compression` takes priority when set.
-    #[serde(default)]
-    pub reset_compression: Option<ResetCompressionConfig>,
-
-    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// When `total_input_tokens >= context_window * auto_reset_threshold`,
-    /// auto-reset is triggered.
-    /// Per-pattern `auto_reset_threshold` takes priority when set.
-    /// Default: 0.95.
-    #[serde(default = "default_auto_reset_threshold")]
-    pub auto_reset_threshold: f64,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            model: None,
-            plan_model: None,
-            build_model: None,
-            small_model: None,
-            providers: std::collections::HashMap::new(),
-            max_iterations: default_max_iterations(),
-            sse_read_timeout_secs: default_sse_read_timeout(),
-            vision: None,
-            reset_compression: None,
-            auto_reset_threshold: default_auto_reset_threshold(),
-        }
-    }
-}
-
-fn default_max_iterations() -> usize {
-    500
-}
-
-fn default_sse_read_timeout() -> u64 {
-    120
-}
-
-fn default_auto_reset_threshold() -> f64 {
-    0.95
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,53 +328,6 @@ mod tests {
         };
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("bash"));
-    }
-
-    #[test]
-    fn provider_config_default() {
-        let config = ProviderConfig {
-            provider_type: "test".to_string(),
-            base_url: None,
-            api_key_env: None,
-            context_window: None,
-            supports_images: None,
-            params: None,
-            user_agent: None,
-            models: std::collections::HashMap::new(),
-        };
-        assert_eq!(config.provider_type, "test");
-    }
-
-    #[test]
-    fn model_config_default() {
-        let config = ModelConfig {
-            model_id: None,
-            context_window: Some(4096),
-            supports_images: Some(true),
-            params: None,
-            user_agent: None,
-        };
-        assert_eq!(config.context_window, Some(4096));
-        assert_eq!(config.model_id, None);
-    }
-
-    #[test]
-    fn vision_config_serde() {
-        let config = VisionConfig {
-            enabled: true,
-            provider: "openai".to_string(),
-            model: "gpt-4-vision".to_string(),
-            prompt: Some("describe".to_string()),
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("gpt-4-vision"));
-    }
-
-    #[test]
-    fn agent_config_default() {
-        let config = AgentConfig::default();
-        assert_eq!(config.max_iterations, 500);
-        assert!(config.model.is_none());
     }
 
     #[test]

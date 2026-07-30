@@ -7,13 +7,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use arc_swap::ArcSwap;
 
 use jyc_agent::JycAgentService;
+use jyc_agent::service::derive_agent_config;
 use jyc_core::agent::AgentService;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_types::{
-    AgentConfig, ChannelConfig, ChannelPattern, InboundAttachmentConfig, McpServerConfig,
-    OutboundAdapter,
+    ChannelConfig, ChannelPattern, InboundAttachmentConfig, McpServerConfig, OutboundAdapter,
 };
 
 /// Result of building an agent service.
@@ -30,12 +31,19 @@ pub struct AgentServiceResult {
 
 /// Build an `AgentServiceResult` from configuration.
 ///
-/// This helper centralises the ~110 lines of agent setup that are identical
-/// between `serve.rs` and `local.rs` (provider mapping, `AgentConfig`
-/// construction, `VisionClient` building, `JycAgentService::new` call).
+/// This helper centralises the common agent setup shared between `serve.rs`
+/// and the in-process command-palette path (provider mapping, vision-client
+/// building, `JycAgentService::new` call).
 ///
 /// # Parameters
-/// - `agent_config` – global `[agent]` table from `config.toml`
+/// - `live_config` – shared `Arc<ArcSwap<AppConfig>>` (single source of truth,
+///   same handle the inspect server, `MessageRouter`, and `ThreadManager` use).
+///   Reloading the config in the TUI atomically swaps in a new `AppConfig`,
+///   and the agent service reads the new values on each request — no restart
+///   needed.
+/// - `agent_config` – global `[agent]` table from `config.toml` (a snapshot;
+///   passed for vision-client wiring which still needs a stable handle at
+///   construction time).
 /// - `channel_config` – per-channel configuration
 /// - `workdir` – JYC working directory
 /// - `outbound` – outbound adapter for the channel
@@ -45,7 +53,8 @@ pub struct AgentServiceResult {
 /// - `channel_name` – channel name (for logging / context)
 #[allow(clippy::too_many_arguments)]
 pub fn build_agent_service(
-    agent_config: &AgentConfig,
+    live_config: Arc<ArcSwap<jyc_types::AppConfig>>,
+    agent_config: &jyc_types::AgentConfig,
     channel_config: &ChannelConfig,
     workdir: &Path,
     outbound: Arc<dyn OutboundAdapter>,
@@ -54,78 +63,14 @@ pub fn build_agent_service(
     inbound_attachment_config: Option<InboundAttachmentConfig>,
     channel_name: &str,
 ) -> Result<AgentServiceResult> {
-    let effective_model = channel_config
-        .model
-        .clone()
-        .or_else(|| agent_config.model.clone());
-    let effective_small_model = channel_config
-        .small_model
-        .clone()
-        .or_else(|| agent_config.small_model.clone());
-
     match agent_config.mode.as_str() {
         "agent" => {
-            let model = effective_model;
+            // Derive the effective agent config once for the log line. The
+            // service itself re-derives it live on every call via
+            // `JycAgentService::agent_config()`.
+            let initial = derive_agent_config(&live_config.load(), channel_name);
+            let model = initial.model.clone();
             tracing::info!(channel = %channel_name, model = ?model, "Using agent: jyc-agent (in-process)");
-
-            let providers = agent_config
-                .providers
-                .iter()
-                .map(|(name, def)| {
-                    let models = def
-                        .models
-                        .iter()
-                        .map(|(model_name, model_def)| {
-                            (
-                                model_name.clone(),
-                                jyc_agent::types::ModelConfig {
-                                    model_id: model_def.model_id.clone(),
-                                    context_window: model_def.context_window,
-                                    supports_images: model_def.supports_images,
-                                    params: model_def.params.clone(),
-                                    user_agent: model_def.user_agent.clone(),
-                                },
-                            )
-                        })
-                        .collect();
-                    (
-                        name.clone(),
-                        jyc_agent::types::ProviderConfig {
-                            provider_type: def.provider_type.clone(),
-                            base_url: def.base_url.clone(),
-                            api_key_env: def.api_key_env.clone(),
-                            context_window: def.context_window,
-                            supports_images: def.supports_images,
-                            params: def.params.clone(),
-                            user_agent: def.user_agent.clone(),
-                            models,
-                        },
-                    )
-                })
-                .collect();
-
-            let agent_cfg = jyc_agent::types::AgentConfig {
-                plan_model: None,
-                build_model: None,
-                model,
-                small_model: effective_small_model.clone(),
-                providers,
-                max_iterations: agent_config.max_iterations,
-                sse_read_timeout_secs: agent_config.sse_read_timeout_secs,
-                vision: agent_config
-                    .vision
-                    .clone()
-                    .map(|v| jyc_agent::types::VisionConfig {
-                        enabled: v.enabled,
-                        provider: v.provider,
-                        model: v.model,
-                        prompt: v.prompt,
-                    }),
-                reset_compression: agent_config.reset_compression.clone(),
-                auto_reset_threshold: agent_config.auto_reset_threshold,
-            };
-
-            let channel_patterns = patterns;
 
             let vision_client: Option<std::sync::Arc<jyc_agent::vision::VisionClient>> = {
                 agent_config
@@ -161,11 +106,11 @@ pub fn build_agent_service(
             };
 
             let jyc_agent_svc = Arc::new(JycAgentService::new(
-                agent_cfg,
+                live_config,
                 workdir.to_path_buf(),
                 global_mcp_configs,
                 channel_config.mcps.clone(),
-                channel_patterns,
+                patterns,
                 inbound_attachment_config,
                 vision_client,
                 Some(outbound),

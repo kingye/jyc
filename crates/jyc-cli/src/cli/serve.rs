@@ -417,6 +417,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         // Create agent based on configured mode
         let agent_result = crate::cli::agent_builder::build_agent_service(
+            config.clone(),
             &agent_config,
             channel_config,
             workdir,

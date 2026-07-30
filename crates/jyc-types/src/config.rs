@@ -60,7 +60,7 @@ pub enum McpServerKind {
 }
 
 /// Top-level application configuration, deserialized from config.toml.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     /// General settings (concurrency, queue sizes)
     #[serde(default)]
@@ -96,7 +96,7 @@ pub struct AppConfig {
 }
 
 /// General application settings.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GeneralConfig {
     /// Max concurrent thread workers (default: 3)
     #[serde(default = "default_3")]
@@ -128,7 +128,7 @@ pub struct FooterConfig {
 }
 
 /// Configuration for a single channel (e.g., one email account).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChannelConfig {
     /// Channel type: "email", "feishu", etc.
     #[serde(rename = "type")]

@@ -31,11 +31,6 @@ pub enum InspectResponse {
         success: bool,
         message: String,
     },
-    /// Result of a `reset_session` request.
-    ResetSessionResult {
-        success: bool,
-        message: String,
-    },
     /// Recent activity entries for a single thread (returned by `get_thread_activity`).
     ActivityHistory {
         entries: Vec<ActivityEntry>,
@@ -439,38 +434,6 @@ mod tests {
         assert_eq!(format!("{}", ThreadStatus::Error), "Error");
     }
 
-    #[test]
-    fn test_inspect_response_reset_session_result() {
-        let resp = InspectResponse::ResetSessionResult {
-            success: true,
-            message: "session deleted".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"reset_session_result""#));
-        assert!(json.contains("session deleted"));
-
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ResetSessionResult { success, message } => {
-                assert!(success);
-                assert_eq!(message, "session deleted");
-            }
-            _ => panic!("expected ResetSessionResult"),
-        }
-
-        let resp_fail = InspectResponse::ResetSessionResult {
-            success: false,
-            message: "missing thread_name param".to_string(),
-        };
-        let json_fail = serde_json::to_string(&resp_fail).unwrap();
-        let parsed_fail: InspectResponse = serde_json::from_str(&json_fail).unwrap();
-        match parsed_fail {
-            InspectResponse::ResetSessionResult { success, .. } => {
-                assert!(!success);
-            }
-            _ => panic!("expected ResetSessionResult"),
-        }
-    }
 
     #[test]
     fn test_inspect_state_default() {

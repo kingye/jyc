@@ -87,7 +87,6 @@ struct App {
     table_state: TableState,
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
-    pending_reset: Option<(String, std::time::Instant)>,
     /// Set by the explorer pane when it switches the chat to a new
     /// thread; the async poll loop picks it up and hydrates the live
     /// buffers so the chat pane shows the new thread's history.
@@ -135,7 +134,6 @@ impl App {
             table_state: TableState::default(),
             should_quit: false,
             status_message: None,
-            pending_reset: None,
             pending_hydrate: None,
             pending_new_chat: false,
             pending_reload_config: false,
@@ -152,20 +150,11 @@ impl App {
         self.status_message = Some((msg, std::time::Instant::now()));
     }
 
-    fn clear_pending_reset(&mut self) {
-        self.pending_reset = None;
-    }
-
     fn tick_status(&mut self) {
         if let Some((_, at)) = &self.status_message
             && at.elapsed() > Duration::from_secs(5)
         {
             self.status_message = None;
-        }
-        if let Some((_, at)) = &self.pending_reset
-            && at.elapsed() > Duration::from_secs(3)
-        {
-            self.pending_reset = None;
         }
     }
 
@@ -980,55 +969,10 @@ async fn handle_normal_keys(
         KeyCode::Up | KeyCode::Char('k') => {
             app.prev_thread();
         }
-        KeyCode::Char('r') => {
-            // Force refresh
-            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-        }
         KeyCode::Char('R') => {
             reload_server_config(app, client, last_poll).await;
         }
-        KeyCode::Char('s') => {
-            if let Some((ref thread_name, at)) = app.pending_reset {
-                if at.elapsed() <= Duration::from_secs(3) {
-                    let name = thread_name.clone();
-                    app.clear_pending_reset();
-                    match client.reset_session(&name).await {
-                        Ok((true, msg)) => {
-                            app.set_status(format!("Session reset: {msg}"));
-                            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-                        }
-                        Ok((false, msg)) => {
-                            app.set_status(format!("Reset failed: {msg}"));
-                        }
-                        Err(e) => {
-                            app.set_status(format!("Reset error: {e:#}"));
-                        }
-                    }
-                } else {
-                    app.clear_pending_reset();
-                }
-            } else {
-                let thread_name = app.state.as_ref().and_then(|s| {
-                    app.table_state
-                        .selected()
-                        .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
-                });
-                match thread_name {
-                    Some(name) => {
-                        app.pending_reset = Some((name.clone(), std::time::Instant::now()));
-                        app.set_status(format!(
-                            "Press `s` again to confirm reset session for {name}"
-                        ));
-                    }
-                    None => {
-                        app.set_status("No thread selected".to_string());
-                    }
-                }
-            }
-        }
-        _ => {
-            app.clear_pending_reset();
-        }
+        _ => {}
     }
 }
 
@@ -1359,18 +1303,9 @@ fn close_overview_ws(app: &mut App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.chat.visible {
-        match app.chat.phase {
-            ChatPhase::PatternSelect => {
-                "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit".to_string()
-            }
-            ChatPhase::Chatting => {
-                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^A]activity [^Z]zen [^E]explorer [^P]palette [Esc]back [^Q]quit".to_string()
-            }
-        }
-    } else {
-        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new".to_string()
-    };
+    // Shortcuts live in the command palette (Ctrl+P); the status bar only
+    // advertises how to reach them.
+    let help_text = "[^P]palette [^Q]quit".to_string();
 
     // Right-aligned vim mode chip while chatting. 8 cells = padded label width.
     let mode_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {

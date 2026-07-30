@@ -6,6 +6,10 @@ use super::*;
 /// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
 
+/// Color for box-drawing characters in the chat header and input gutter
+/// ("╭─", "╰─", and the "─" padding run). The ❮/❯ arrows are yellow.
+const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
+
 /// Phase of the chat pane UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatPhase {
@@ -1139,7 +1143,6 @@ fn build_chat_header_line(
     // header is width-constrained, so omitting the segment looks
     // cleaner than `╭─ plan · local_dev · -`.
     let mut left = String::with_capacity(32);
-    left.push_str("╭─ ");
     left.push_str(ctx.mode);
     if let Some(ch) = ctx.channel {
         left.push_str(" · ");
@@ -1149,6 +1152,9 @@ fn build_chat_header_line(
         left.push_str(" · ");
         left.push_str(pat);
     }
+    // The "╭─ " prefix is accounted for separately so it can be styled in
+    // the line-drawing color (3 display columns).
+    let left_w = 3 + left.width();
 
     // --- Right chip: "[ jyc ai v{ver} · {model} · {pct}% ]" ---
     let version = server_version.unwrap_or("?");
@@ -1159,7 +1165,6 @@ fn build_chat_header_line(
     };
     let chip = format!("[ jyc ai v{version} · {model} · {pct_str} ]");
 
-    let left_w = left.width();
     let chip_w = chip.width();
 
     // Width budget: pad = width - left - chip. If negative, drop the
@@ -1167,14 +1172,18 @@ fn build_chat_header_line(
     if width < left_w + chip_w {
         // Try without the chip.
         if width >= left_w {
-            return Line::from(Span::styled(left, header_style));
+            return Line::from(vec![
+                Span::styled("╭─", LINE_DRAWING),
+                Span::styled(format!(" {left}"), header_style),
+            ]);
         }
         // Left itself doesn't fit; best-effort segments over
         // [channel, pattern], adding the separator only when there is
         // room for at least one column of content after it.
-        let mut compact = format!("╭─ {}", ctx.mode);
+        let mut compact = ctx.mode.to_string();
         for seg in [ctx.channel, ctx.pattern].into_iter().flatten() {
-            let used = compact.width();
+            // +3 accounts for the "╭─ " prefix.
+            let used = 3 + compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.
             if width < used + 4 {
                 break;
@@ -1183,18 +1192,22 @@ fn build_chat_header_line(
             compact.push_str(" · ");
             compact.push_str(&truncate_to_width(seg, avail));
         }
-        return Line::from(Span::styled(compact, header_style));
+        return Line::from(vec![
+            Span::styled("╭─", LINE_DRAWING),
+            Span::styled(format!(" {compact}"), header_style),
+        ]);
     }
 
     let pad = width - left_w - chip_w;
-    let mut spans = Vec::with_capacity(3);
-    spans.push(Span::styled(left, header_style));
+    let mut spans = Vec::with_capacity(4);
+    spans.push(Span::styled("╭─", LINE_DRAWING));
+    spans.push(Span::styled(format!(" {left}"), header_style));
     if pad > 0 {
         // One space separates the left segment from the dash run, and
         // another separates the dash run from the chip.
         spans.push(Span::styled(" ", header_style));
         if pad > 2 {
-            spans.push(Span::styled("─".repeat(pad - 2), header_style));
+            spans.push(Span::styled("─".repeat(pad - 2), LINE_DRAWING));
         }
         if pad > 1 {
             spans.push(Span::styled(" ", header_style));
@@ -1631,14 +1644,18 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     );
     frame.render_widget(Paragraph::new(header_line), header_area);
     // Vim-mode arrow: "╰─❯ " in Insert mode, "╰─❮ " otherwise. The
-    // full vim-mode chip lives in the status bar.
+    // box-drawing prefix uses the line-drawing color, the arrow is yellow.
+    // The full vim-mode chip lives in the status bar.
     let arrow = if app.chat.editor.mode == EditorMode::Insert {
-        "╰─❯ "
+        "❯ "
     } else {
-        "╰─❮ "
+        "❮ "
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(arrow, prompt_style))),
+        Paragraph::new(Line::from(vec![
+            Span::styled("╰─", LINE_DRAWING),
+            Span::styled(arrow, Style::default().fg(Color::Yellow)),
+        ])),
         prompt_area,
     );
     EditorView::new(&mut app.chat.editor)
@@ -3572,6 +3589,23 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn header_line_box_drawing_uses_line_color() {
+        let ctx = ctx_with_full_data();
+        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let line_fg = Color::Rgb(0x39, 0x35, 0x52);
+        // First span is the "╭─" prefix in the line-drawing color.
+        assert_eq!(line.spans[0].content.as_ref(), "╭─");
+        assert_eq!(line.spans[0].style.fg, Some(line_fg));
+        // The dash padding run also uses the line-drawing color.
+        let dash_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.chars().all(|c| c == '─'))
+            .expect("dash padding span");
+        assert_eq!(dash_span.style.fg, Some(line_fg));
     }
 
     #[test]

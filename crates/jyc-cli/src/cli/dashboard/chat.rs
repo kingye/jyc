@@ -285,9 +285,9 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 ///
 /// The TUI is suspended (raw mode off, alternate screen left) while the
 /// editor runs and restored afterwards regardless of the editor outcome.
-pub(super) fn edit_input_externally<W: std::io::Write>(
+pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<W>>,
+    terminal: &mut Terminal<B>,
 ) -> Result<()> {
     let tmp = tempfile::Builder::new()
         .prefix("jyc-chat-")
@@ -386,9 +386,9 @@ fn explorer_open_selected(app: &mut App) {
 }
 
 /// Execute a TUI-local action selected from the command palette.
-pub(super) fn execute_local_action<W: std::io::Write>(
+pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<W>>,
+    terminal: &mut Terminal<B>,
     action: local_commands::LocalAction,
 ) {
     use local_commands::LocalAction;
@@ -435,10 +435,10 @@ fn toggle_explorer_snapped(app: &mut App) {
     }
 }
 
-pub(super) fn handle_chat_keys<W: std::io::Write>(
+pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     app: &mut App,
     key: event::KeyEvent,
-    terminal: &mut Terminal<CrosstermBackend<W>>,
+    terminal: &mut Terminal<B>,
 ) {
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -2764,8 +2764,8 @@ mod tests {
         crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
 
-    fn sink_terminal() -> Terminal<CrosstermBackend<std::io::Sink>> {
-        Terminal::new(CrosstermBackend::new(std::io::sink())).unwrap()
+    fn test_terminal() -> Terminal<ratatui::backend::TestBackend> {
+        Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap()
     }
 
     #[test]
@@ -2778,7 +2778,7 @@ mod tests {
         app.chat.focus = ChatFocus::ChatPane;
         app.chat.editor.mode = EditorMode::Normal;
 
-        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
         assert!(app.chat.visible, "Esc must not close the chat screen");
     }
 
@@ -2791,7 +2791,7 @@ mod tests {
         app.chat.thread = Some("jyc".to_string());
         app.chat.focus = ChatFocus::ActivityPane;
 
-        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
         assert!(app.chat.visible, "Esc must not close the chat screen");
         assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
     }
@@ -2803,7 +2803,7 @@ mod tests {
         app.chat.visible = true;
         app.chat.phase = ChatPhase::PatternSelect;
 
-        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
         assert!(app.chat.visible, "Esc must not close pattern select");
         assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
     }
@@ -2818,7 +2818,7 @@ mod tests {
 
         execute_local_action(
             &mut app,
-            &mut sink_terminal(),
+            &mut test_terminal(),
             local_commands::LocalAction::OpenDashboard,
         );
         assert!(!app.chat.visible);

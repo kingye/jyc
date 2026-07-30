@@ -130,6 +130,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Slash command results not shown live in chat.** Command replies
+  (`/model`, `/close`, `/help`, etc.) were persisted to chat history
+  (visible after re-entering the thread) but never appeared live in the
+  chat pane. The command-result path called `send_reply` but not
+  `publish_reply_sent`, so no `chat_message` event reached the dashboard
+  WebSocket. Both command-result paths (main and during-AI-processing)
+  now publish the `ReplySent` event, matching the AI-reply flow.
+
 - **Chat progress stale after switching threads.** `live_processing` /
   `live_thinking` are only updated by WS events received while a thread is
   watched, so entries went stale for unwatched threads: a missed completion

@@ -1548,6 +1548,13 @@ async fn process_message(
                 None,
             )
             .await?;
+        // Publish a ReplySent event so the inspect server's ActivityTracker
+        // fans it out as a chat_message to dashboard WS clients. Without
+        // this, command results are persisted to disk (visible on re-enter)
+        // but never appear live in the chat pane.
+        thread_manager
+            .publish_reply_sent(thread_name, &summary)
+            .await;
     }
 
     // ── 4. CHECK BODY ─────────────────────────────────────────────────
@@ -1753,6 +1760,12 @@ async fn process_message(
                                             "Failed to send command result during AI processing"
                                         );
                                     }
+                                    // Publish ReplySent so the dashboard
+                                    // sees the command result live (same as
+                                    // the main command-result path above).
+                                    thread_manager
+                                        .publish_reply_sent(thread_name, &summary)
+                                        .await;
                                 }
                             }
                             Err(e) => {

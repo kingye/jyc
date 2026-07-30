@@ -148,6 +148,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Decoupled Gitee release sync from the release CI pipeline.** The
+  `sync-gitee` job is now a separate workflow (`sync-gitee-release.yml`)
+  triggered by the GitHub `release` event instead of running inline in
+  `release.yml`. This prevents slow Gitee API calls from blocking the
+  next nightly build. The sync workflow uses `cancel-in-progress: true`
+  so only the latest nightly is synced.
 - **Input gutter arrows.** The prompt gutter now uses `❯` (Insert mode)
   and `❮` (Normal/Visual mode) instead of `>` / `<`. Box-drawing
   characters (`╭─`, `╰─`, header dash padding) are colored `#393552`;

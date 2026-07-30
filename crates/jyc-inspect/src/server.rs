@@ -873,7 +873,6 @@ impl InspectServer {
         }
     }
 
-
     async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
 
@@ -2060,7 +2059,6 @@ mode = "agent"
         cancel.cancel();
         handle.await.unwrap();
     }
-
 
     /// Regression test for cross-channel issue collision.
     ///

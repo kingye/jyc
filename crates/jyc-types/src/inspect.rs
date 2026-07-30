@@ -434,7 +434,6 @@ mod tests {
         assert_eq!(format!("{}", ThreadStatus::Error), "Error");
     }
 
-
     #[test]
     fn test_inspect_state_default() {
         let state = InspectState::default();

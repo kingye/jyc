@@ -224,7 +224,10 @@ mod tests {
             .iter()
             .filter(|c| c.scope == CommandScope::Shared)
             .count();
-        assert_eq!(dashboard.len() + chat.len(), local_commands().len() + shared_count);
+        assert_eq!(
+            dashboard.len() + chat.len(),
+            local_commands().len() + shared_count
+        );
     }
 
     #[test]

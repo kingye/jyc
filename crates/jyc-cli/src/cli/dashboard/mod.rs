@@ -934,9 +934,7 @@ async fn handle_normal_keys(
                 match action {
                     LocalAction::OpenChat => open_selected_thread_chat(app, client, addr).await,
                     LocalAction::NewChat => start_new_chat(app, addr, client).await,
-                    LocalAction::ReloadConfig => {
-                        reload_server_config(app, client, last_poll).await
-                    }
+                    LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
                     LocalAction::Quit => app.should_quit = true,
                     // Chat-scoped actions are never offered on the dashboard.
                     _ => {}
@@ -950,7 +948,9 @@ async fn handle_normal_keys(
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
     let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_p || is_colon {
-        app.palette = Some(palette::Palette::new(local_commands::CommandScope::Dashboard));
+        app.palette = Some(palette::Palette::new(
+            local_commands::CommandScope::Dashboard,
+        ));
         return;
     }
 

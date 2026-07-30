@@ -162,7 +162,6 @@ impl ThreadProxyHandler {
         .await;
         Ok(())
     }
-
 }
 
 #[async_trait]

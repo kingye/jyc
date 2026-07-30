@@ -130,6 +130,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Thread list not globally sorted across channels.** The dashboard
+  Threads table and chat explorer pane showed threads sorted within each
+  channel but grouped by channel iteration order, not one alphabetical
+  list. `build_overview_state` now sorts the combined thread summaries by
+  `(name, channel)`. (#476)
+
 - **Slash command results not shown live in chat.** Command replies
   (`/model`, `/close`, `/help`, etc.) were persisted to chat history
   (visible after re-entering the thread) but never appeared live in the

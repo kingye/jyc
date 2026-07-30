@@ -1136,6 +1136,7 @@ fn build_chat_header_line(
     ctx: &ChatHeaderCtx<'_>,
     server_version: Option<&str>,
     header_style: Style,
+    line_style: Style,
 ) -> Line<'static> {
     // --- Left segment: "╭─ {mode} · {channel} · {pattern}" ---
     // Divergence from the Thread Info pane: when `pattern` is `None`
@@ -1173,7 +1174,7 @@ fn build_chat_header_line(
         // Try without the chip.
         if width >= left_w {
             return Line::from(vec![
-                Span::styled("╭─", LINE_DRAWING),
+                Span::styled("╭─", line_style),
                 Span::styled(format!(" {left}"), header_style),
             ]);
         }
@@ -1193,21 +1194,21 @@ fn build_chat_header_line(
             compact.push_str(&truncate_to_width(seg, avail));
         }
         return Line::from(vec![
-            Span::styled("╭─", LINE_DRAWING),
+            Span::styled("╭─", line_style),
             Span::styled(format!(" {compact}"), header_style),
         ]);
     }
 
     let pad = width - left_w - chip_w;
     let mut spans = Vec::with_capacity(4);
-    spans.push(Span::styled("╭─", LINE_DRAWING));
+    spans.push(Span::styled("╭─", line_style));
     spans.push(Span::styled(format!(" {left}"), header_style));
     if pad > 0 {
         // One space separates the left segment from the dash run, and
         // another separates the dash run from the chip.
         spans.push(Span::styled(" ", header_style));
         if pad > 2 {
-            spans.push(Span::styled("─".repeat(pad - 2), LINE_DRAWING));
+            spans.push(Span::styled("─".repeat(pad - 2), line_style));
         }
         if pad > 1 {
             spans.push(Span::styled(" ", header_style));
@@ -1619,33 +1620,44 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     let [prompt_area, editor_area] =
         Layout::horizontal([Constraint::Length(PROMPT_GUTTER_WIDTH), Constraint::Min(0)])
             .areas(body_area);
-    let prompt_style = if app.chat.focus == ChatFocus::ChatPane {
-        Style::default().fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let focused = app.chat.focus == ChatFocus::ChatPane;
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Thread Info pane).
     let header_ctx = resolve_header_ctx(app);
-    // Sync the header fg with the prompt gutter: dim when focus moved
-    // away from the input field (Tab), highlight when it is focused.
-    let header_style = if app.chat.focus == ChatFocus::ChatPane {
+    // Header info text: sapphire + bold when focused, otherwise the same
+    // inactive #393552 as the line-drawing characters.
+    let header_style = if focused {
         Style::default()
             .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
             .add_modifier(Modifier::BOLD)
     } else {
-        prompt_style
+        LINE_DRAWING
+    };
+    // Box-drawing characters (header border + gutter line) match the
+    // message-area separator color when focused, and go inactive (#393552)
+    // alongside the text when focus moves away.
+    let line_style = if focused {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        LINE_DRAWING
     };
     let header_line = build_chat_header_line(
         header_area.width as usize,
         &header_ctx,
         app.state.as_ref().map(|s| s.version.as_str()),
         header_style,
+        line_style,
     );
     frame.render_widget(Paragraph::new(header_line), header_area);
     // Vim-mode arrow: "╰─❯ " in Insert mode, "╰─❮ " otherwise. The
-    // box-drawing prefix uses the line-drawing color, the arrow is yellow.
-    // The full vim-mode chip lives in the status bar.
+    // box-drawing prefix uses the focus-dependent line style, the arrow is
+    // yellow when focused and dims to #393552 when not. The full vim-mode
+    // chip lives in the status bar.
+    let arrow_style = if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        LINE_DRAWING
+    };
     let arrow = if app.chat.editor.mode == EditorMode::Insert {
         "❯ "
     } else {
@@ -1653,8 +1665,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("╰─", LINE_DRAWING),
-            Span::styled(arrow, Style::default().fg(Color::Yellow)),
+            Span::styled("╰─", line_style),
+            Span::styled(arrow, arrow_style),
         ])),
         prompt_area,
     );
@@ -3592,9 +3604,32 @@ mod tests {
     }
 
     #[test]
+    fn header_line_box_drawing_uses_passed_line_style() {
+        let ctx = ctx_with_full_data();
+        // Inactive: line-drawing chars use #393552.
+        let inactive =
+            build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
+        assert_eq!(inactive.spans[0].content.as_ref(), "╭─");
+        assert_eq!(
+            inactive.spans[0].style.fg,
+            Some(Color::Rgb(0x39, 0x35, 0x52))
+        );
+        // Active: caller passes DarkGray (matches the message separator).
+        let active = build_chat_header_line(
+            80,
+            &ctx,
+            Some("0.3.12"),
+            test_header_style(),
+            Style::default().fg(Color::DarkGray),
+        );
+        assert_eq!(active.spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
     fn header_line_box_drawing_uses_line_color() {
         let ctx = ctx_with_full_data();
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let line =
+            build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let line_fg = Color::Rgb(0x39, 0x35, 0x52);
         // First span is the "╭─" prefix in the line-drawing color.
         assert_eq!(line.spans[0].content.as_ref(), "╭─");
@@ -3611,7 +3646,8 @@ mod tests {
     #[test]
     fn header_line_includes_mode_channel_pattern_and_chip() {
         let ctx = ctx_with_full_data();
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let line =
+            build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         // Left segment includes mode + channel + pattern.
         assert!(
@@ -3631,7 +3667,8 @@ mod tests {
     fn header_line_omits_pattern_when_missing() {
         let mut ctx = ctx_with_full_data();
         ctx.pattern = None;
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let line =
+            build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             text.starts_with("╭─ plan · local_dev"),
@@ -3644,7 +3681,8 @@ mod tests {
     fn header_line_shows_dash_for_missing_tokens() {
         let mut ctx = ctx_with_full_data();
         ctx.pct = None;
-        let line = build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style());
+        let line =
+            build_chat_header_line(80, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             text.contains("· –% ]"),
@@ -3661,7 +3699,7 @@ mod tests {
             channel: None,
             pattern: None,
         };
-        let line = build_chat_header_line(80, &ctx, None, test_header_style());
+        let line = build_chat_header_line(80, &ctx, None, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
         assert!(
@@ -3684,6 +3722,7 @@ mod tests {
             &ctx,
             Some("0.3.12"),
             test_header_style(),
+            LINE_DRAWING,
         );
         let text = line_text(&line);
         assert_eq!(text, left, "should drop chip and keep left segment");
@@ -3695,7 +3734,8 @@ mod tests {
         ctx.channel = Some("a-very-long-channel-name");
         ctx.pattern = Some("a-very-long-pattern-name");
         // Width so tight that even truncating channel to 3 chars barely fits.
-        let line = build_chat_header_line(20, &ctx, Some("0.3.12"), test_header_style());
+        let line =
+            build_chat_header_line(20, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         // Channel must be truncated to fit; chip dropped.
         assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
@@ -3718,7 +3758,7 @@ mod tests {
             channel: Some("ch"),
             pattern: None,
         };
-        let line = build_chat_header_line(10, &ctx, None, test_header_style());
+        let line = build_chat_header_line(10, &ctx, None, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             !text.ends_with("· "),

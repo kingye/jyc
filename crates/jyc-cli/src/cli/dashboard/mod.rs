@@ -17,7 +17,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Widget, Wrap},
 };
-use std::io::{Stdout, stdout};
+use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

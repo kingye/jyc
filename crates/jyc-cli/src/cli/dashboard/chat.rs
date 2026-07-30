@@ -285,9 +285,9 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 ///
 /// The TUI is suspended (raw mode off, alternate screen left) while the
 /// editor runs and restored afterwards regardless of the editor outcome.
-pub(super) fn edit_input_externally(
+pub(super) fn edit_input_externally<W: std::io::Write>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<W>>,
 ) -> Result<()> {
     let tmp = tempfile::Builder::new()
         .prefix("jyc-chat-")
@@ -386,9 +386,9 @@ fn explorer_open_selected(app: &mut App) {
 }
 
 /// Execute a TUI-local action selected from the command palette.
-pub(super) fn execute_local_action(
+pub(super) fn execute_local_action<W: std::io::Write>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<W>>,
     action: local_commands::LocalAction,
 ) {
     use local_commands::LocalAction;
@@ -435,10 +435,10 @@ fn toggle_explorer_snapped(app: &mut App) {
     }
 }
 
-pub(super) fn handle_chat_keys(
+pub(super) fn handle_chat_keys<W: std::io::Write>(
     app: &mut App,
     key: event::KeyEvent,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<W>>,
 ) {
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -2758,6 +2758,70 @@ mod tests {
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());
         assert!(app.chat.history_pos.is_none());
+    }
+
+    fn esc_key() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    fn sink_terminal() -> Terminal<CrosstermBackend<std::io::Sink>> {
+        Terminal::new(CrosstermBackend::new(std::io::sink())).unwrap()
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_editor_normal_mode() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ChatPane;
+        app.chat.editor.mode = EditorMode::Normal;
+
+        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        assert!(app.chat.visible, "Esc must not close the chat screen");
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_activity_pane() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ActivityPane;
+
+        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        assert!(app.chat.visible, "Esc must not close the chat screen");
+        assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_pattern_select() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::PatternSelect;
+
+        handle_chat_keys(&mut app, esc_key(), &mut sink_terminal());
+        assert!(app.chat.visible, "Esc must not close pattern select");
+        assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
+    }
+
+    #[test]
+    fn palette_open_dashboard_closes_chat() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+
+        execute_local_action(
+            &mut app,
+            &mut sink_terminal(),
+            local_commands::LocalAction::OpenDashboard,
+        );
+        assert!(!app.chat.visible);
     }
 
     #[test]

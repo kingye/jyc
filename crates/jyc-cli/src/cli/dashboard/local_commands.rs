@@ -84,14 +84,18 @@ pub fn local_commands() -> &'static [LocalCommand] {
         LocalCommand {
             name: "new chat",
             description: "Start a new chat (select a pattern)",
-            keybinding: "c",
+            // `c` is only bound on the dashboard screen — no hint here so
+            // the chat palette doesn't advertise a key that types into the
+            // editor.
+            keybinding: "",
             scope: Shared,
             action: LocalAction::NewChat,
         },
         LocalCommand {
             name: "reload config",
             description: "Reload server configuration",
-            keybinding: "R",
+            // `R` is only bound on the dashboard screen (see `new chat`).
+            keybinding: "",
             scope: Shared,
             action: LocalAction::ReloadConfig,
         },

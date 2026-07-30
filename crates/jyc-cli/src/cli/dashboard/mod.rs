@@ -17,7 +17,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Widget, Wrap},
 };
-use std::io::{Stdout, stdout};
+use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -35,6 +35,7 @@ use super::command_popup::*;
 
 mod chat;
 mod local_commands;
+mod palette;
 mod ws;
 use chat::*;
 use ws::*;
@@ -86,11 +87,22 @@ struct App {
     table_state: TableState,
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
-    pending_reset: Option<(String, std::time::Instant)>,
     /// Set by the explorer pane when it switches the chat to a new
     /// thread; the async poll loop picks it up and hydrates the live
     /// buffers so the chat pane shows the new thread's history.
     pending_hydrate: Option<(String, String)>,
+
+    /// Set by the palette `new chat` action; the async poll loop runs the
+    /// pattern-select flow (needs InspectClient for `list_patterns`).
+    pending_new_chat: bool,
+
+    /// Set by the palette `reload config` action; the async poll loop runs
+    /// the reload (needs InspectClient).
+    pending_reload_config: bool,
+
+    /// Open command palette on the dashboard screen (dashboard + shared
+    /// commands).
+    palette: Option<palette::Palette>,
 
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
@@ -122,8 +134,10 @@ impl App {
             table_state: TableState::default(),
             should_quit: false,
             status_message: None,
-            pending_reset: None,
             pending_hydrate: None,
+            pending_new_chat: false,
+            pending_reload_config: false,
+            palette: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
@@ -136,20 +150,11 @@ impl App {
         self.status_message = Some((msg, std::time::Instant::now()));
     }
 
-    fn clear_pending_reset(&mut self) {
-        self.pending_reset = None;
-    }
-
     fn tick_status(&mut self) {
         if let Some((_, at)) = &self.status_message
             && at.elapsed() > Duration::from_secs(5)
         {
             self.status_message = None;
-        }
-        if let Some((_, at)) = &self.pending_reset
-            && at.elapsed() > Duration::from_secs(3)
-        {
-            self.pending_reset = None;
         }
     }
 
@@ -490,6 +495,16 @@ pub async fn run(
                 hydrate_live(&mut client, &mut app, &channel, &thread).await;
             }
 
+            // Palette actions deferred for the same reason.
+            if app.pending_new_chat {
+                app.pending_new_chat = false;
+                start_new_chat(&mut app, &args.addr, &mut client).await;
+            }
+            if app.pending_reload_config {
+                app.pending_reload_config = false;
+                reload_server_config(&mut app, &mut client, &mut last_poll).await;
+            }
+
             // Check for WebSocket events
             while let Ok(event) = app.chat.ws_rx.try_recv() {
                 app.handle_ws_event(event);
@@ -820,6 +835,81 @@ async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, 
     }
 }
 
+/// Start a new chat: fetch patterns via REST and open the chat screen in
+/// pattern-select mode. Used by the `c` key and the palette `new chat`
+/// action (via `pending_new_chat`).
+async fn start_new_chat(app: &mut App, addr: &str, client: &mut InspectClient) {
+    let channel = app.state.as_ref().and_then(|o| {
+        o.channels
+            .iter()
+            .find(|c| c.channel_type == "websocket")
+            .map(|c| c.name.clone())
+    });
+    if let Some(channel) = channel {
+        app.chat
+            .open_pattern_select(addr, &channel, client, app.token.clone())
+            .await;
+    } else {
+        app.set_status("No websocket channel configured".to_string());
+    }
+}
+
+/// Open the chat screen for the table-selected thread: websocket chat for
+/// websocket threads, detail mode otherwise. Used by the Enter key and the
+/// palette `open chat` action.
+async fn open_selected_thread_chat(app: &mut App, client: &mut InspectClient, addr: &str) {
+    let thread_info = app.state.as_ref().and_then(|s| {
+        app.table_state
+            .selected()
+            .and_then(|i| s.threads.get(i))
+            .map(|t| {
+                let is_ws = s
+                    .channels
+                    .iter()
+                    .find(|c| c.name == t.channel)
+                    .is_some_and(|c| c.channel_type == "websocket");
+                (t.name.clone(), t.channel.clone(), is_ws)
+            })
+    });
+    if let Some((name, channel, is_ws)) = thread_info {
+        if is_ws {
+            app.chat
+                .open(addr, Some(&channel), Some(&name), app.token.clone());
+        } else {
+            app.chat
+                .open_thread_detail(&channel, &name, app.state.as_ref());
+        }
+        // Chat WS takes over live events. Close the overview WS
+        // so we don't have two connections to the same thread.
+        close_overview_ws(app);
+        // REST hydrate the live buffers (activity + chat) so the
+        // activity pane and chat progress show recent entries
+        // immediately. WS events append to the same buffers.
+        hydrate_live(client, app, &channel, &name).await;
+    }
+}
+
+/// Reload the server configuration. Used by the `R` key and the palette
+/// `reload config` action (via `pending_reload_config`).
+async fn reload_server_config(
+    app: &mut App,
+    client: &mut InspectClient,
+    last_poll: &mut std::time::Instant,
+) {
+    match client.reload_config().await {
+        Ok((true, msg)) => {
+            app.set_status(format!("Config reloaded: {msg}"));
+            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
+        }
+        Ok((false, msg)) => {
+            app.set_status(format!("Reload failed: {msg}"));
+        }
+        Err(e) => {
+            app.set_status(format!("Reload error: {e:#}"));
+        }
+    }
+}
+
 async fn handle_normal_keys(
     app: &mut App,
     key: event::KeyEvent,
@@ -833,58 +923,45 @@ async fn handle_normal_keys(
         return;
     }
 
-    match key.code {
-        KeyCode::Char('c') => {
-            // Fetch patterns via REST (replaces the old WebSocket
-            // `list_patterns` command) and open the chat in pattern-select
-            // mode. After the user picks a pattern, `select_pattern` opens
-            // a scoped WS to `/ws/<channel>/<thread>`.
-            let overview = app.state.clone();
-            let channel = overview.as_ref().and_then(|o| {
-                o.channels
-                    .iter()
-                    .find(|c| c.channel_type == "websocket")
-                    .map(|c| c.name.clone())
-            });
-            if let Some(channel) = channel {
-                app.chat
-                    .open_pattern_select(addr, &channel, client, app.token.clone())
-                    .await;
-            } else {
-                app.set_status("No websocket channel configured".to_string());
+    // Palette open: delegate all keys to it and dispatch the chosen action.
+    if let Some(ref mut p) = app.palette {
+        match p.handle_key(key) {
+            palette::PaletteResult::Consumed => {}
+            palette::PaletteResult::Closed => app.palette = None,
+            palette::PaletteResult::Action(action) => {
+                app.palette = None;
+                use local_commands::LocalAction;
+                match action {
+                    LocalAction::OpenChat => open_selected_thread_chat(app, client, addr).await,
+                    LocalAction::NewChat => start_new_chat(app, addr, client).await,
+                    LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
+                    LocalAction::Quit => app.should_quit = true,
+                    // Chat-scoped actions are never offered on the dashboard.
+                    _ => {}
+                }
             }
         }
+        return;
+    }
+
+    // Ctrl+P or ":" opens the command palette (dashboard + shared commands).
+    let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
+    let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_p || is_colon {
+        app.palette = Some(palette::Palette::new(
+            local_commands::CommandScope::Dashboard,
+        ));
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('c') => {
+            // After the user picks a pattern, `select_pattern` opens a
+            // scoped WS to `/ws/<channel>/<thread>`.
+            start_new_chat(app, addr, client).await;
+        }
         KeyCode::Enter => {
-            // Enter chat for websocket threads, detail mode for non-websocket threads
-            let thread_info = app.state.as_ref().and_then(|s| {
-                app.table_state
-                    .selected()
-                    .and_then(|i| s.threads.get(i))
-                    .map(|t| {
-                        let is_ws = s
-                            .channels
-                            .iter()
-                            .find(|c| c.name == t.channel)
-                            .is_some_and(|c| c.channel_type == "websocket");
-                        (t.name.clone(), t.channel.clone(), is_ws)
-                    })
-            });
-            if let Some((name, channel, is_ws)) = thread_info {
-                if is_ws {
-                    app.chat
-                        .open(addr, Some(&channel), Some(&name), app.token.clone());
-                } else {
-                    app.chat
-                        .open_thread_detail(&channel, &name, app.state.as_ref());
-                }
-                // Chat WS takes over live events. Close the overview WS
-                // so we don't have two connections to the same thread.
-                close_overview_ws(app);
-                // REST hydrate the live buffers (activity + chat) so the
-                // activity pane and chat progress show recent entries
-                // immediately. WS events append to the same buffers.
-                hydrate_live(client, app, &channel, &name).await;
-            }
+            open_selected_thread_chat(app, client, addr).await;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.next_thread();
@@ -892,67 +969,10 @@ async fn handle_normal_keys(
         KeyCode::Up | KeyCode::Char('k') => {
             app.prev_thread();
         }
-        KeyCode::Char('r') => {
-            // Force refresh
-            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-        }
         KeyCode::Char('R') => {
-            // Reload config
-            match client.reload_config().await {
-                Ok((true, msg)) => {
-                    app.set_status(format!("Config reloaded: {msg}"));
-                    *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-                }
-                Ok((false, msg)) => {
-                    app.set_status(format!("Reload failed: {msg}"));
-                }
-                Err(e) => {
-                    app.set_status(format!("Reload error: {e:#}"));
-                }
-            }
+            reload_server_config(app, client, last_poll).await;
         }
-        KeyCode::Char('s') => {
-            if let Some((ref thread_name, at)) = app.pending_reset {
-                if at.elapsed() <= Duration::from_secs(3) {
-                    let name = thread_name.clone();
-                    app.clear_pending_reset();
-                    match client.reset_session(&name).await {
-                        Ok((true, msg)) => {
-                            app.set_status(format!("Session reset: {msg}"));
-                            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-                        }
-                        Ok((false, msg)) => {
-                            app.set_status(format!("Reset failed: {msg}"));
-                        }
-                        Err(e) => {
-                            app.set_status(format!("Reset error: {e:#}"));
-                        }
-                    }
-                } else {
-                    app.clear_pending_reset();
-                }
-            } else {
-                let thread_name = app.state.as_ref().and_then(|s| {
-                    app.table_state
-                        .selected()
-                        .and_then(|i| s.threads.get(i).map(|t| t.name.clone()))
-                });
-                match thread_name {
-                    Some(name) => {
-                        app.pending_reset = Some((name.clone(), std::time::Instant::now()));
-                        app.set_status(format!(
-                            "Press `s` again to confirm reset session for {name}"
-                        ));
-                    }
-                    None => {
-                        app.set_status("No thread selected".to_string());
-                    }
-                }
-            }
-        }
-        _ => {
-            app.clear_pending_reset();
-        }
+        _ => {}
     }
 }
 
@@ -982,6 +1002,11 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     render_threads(frame, chunks[1], app);
     render_details(frame, chunks[2], app);
     render_status_bar(frame, chunks[3], app);
+
+    // Command palette overlay (dashboard + shared commands).
+    if let Some(ref p) = app.palette {
+        p.render(frame, area);
+    }
 }
 
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
@@ -1278,18 +1303,9 @@ fn close_overview_ws(app: &mut App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = if app.chat.visible {
-        match app.chat.phase {
-            ChatPhase::PatternSelect => {
-                "[↑↓/jk]select [Enter]choose [Esc]back [^Q]quit".to_string()
-            }
-            ChatPhase::Chatting => {
-                "[Tab]focus [↑↓/jk]scroll [gg/G]top/bottom [PgUp/PgDn ^F/^B]page [←→]cursor [^C]cancel [^A]activity [^Z]zen [^E]explorer [^P]palette [Esc]back [^Q]quit".to_string()
-            }
-        }
-    } else {
-        "[^Q]quit [↑↓]select [Enter]chat [r]refresh [R]reload [s]reset [c]new".to_string()
-    };
+    // Shortcuts live in the command palette (Ctrl+P); the status bar only
+    // advertises how to reach them.
+    let help_text = "[^P]palette [^Q]quit".to_string();
 
     // Right-aligned vim mode chip while chatting. 8 cells = padded label width.
     let mode_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {

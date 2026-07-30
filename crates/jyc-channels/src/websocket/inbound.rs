@@ -96,7 +96,6 @@ impl ChannelMatcher for WebsocketMatcher {
 /// (`list_patterns` and `create_thread`). The WebSocket protocol now
 /// only carries the live-message stream:
 /// - `message`: send a chat message to the bound thread
-/// - `reset_session`: clear the AI session for the bound thread
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -113,11 +112,6 @@ enum ClientMessage {
         thread: Option<String>,
         text: String,
     },
-    /// Reset the agent session for the bound thread.
-    /// Accepted as a no-op here — session reset is wired through REST, not
-    /// the WebSocket channel, but the variant must be parseable so the
-    /// dashboard's protocol contract is honored.
-    ResetSession,
     /// Close the connection cleanly. The handler breaks the read loop and
     /// the post-loop helper sends a WS Close frame (`inbound.rs:405-407`).
     Disconnect,
@@ -360,13 +354,6 @@ where
                         } else {
                             tracing::warn!("WebSocket on_message callback not set — message dropped");
                         }
-                    }
-                    ClientMessage::ResetSession => {
-                        // No session-reset wiring on websocket channels.
-                        // Acknowledge the message so the protocol contract
-                        // matches the doc comment; future feature can hook
-                        // into a reset callback here.
-                        tracing::debug!(addr = %addr, "WebSocket reset_session (no-op)");
                     }
                     ClientMessage::Disconnect => {
                         tracing::info!(addr = %addr, "WebSocket client requested disconnect");

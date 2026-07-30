@@ -126,17 +126,6 @@ impl InspectClient {
         }
     }
 
-    /// Send a `reset_session` command to the inspect server.
-    pub async fn reset_session(&mut self, thread_name: &str) -> Result<(bool, String)> {
-        let params = serde_json::json!({ "thread_name": thread_name });
-        let resp = self.send_request("reset_session", Some(params)).await?;
-        match resp {
-            InspectResponse::ResetSessionResult { success, message } => Ok((success, message)),
-            InspectResponse::Error { error } => Ok((false, error)),
-            other => Err(unexpected("reset_session", &other)),
-        }
-    }
-
     /// Fetch enabled pattern names for a channel. Used by the dashboard's
     /// `c` key to populate the pattern-select UI.
     pub async fn list_patterns(&mut self, channel: &str) -> Result<Vec<String>> {
@@ -245,7 +234,6 @@ fn unexpected(method: &str, resp: &InspectResponse) -> anyhow::Error {
         InspectResponse::Overview(_) => "overview",
         InspectResponse::Error { .. } => "error",
         InspectResponse::ReloadResult { .. } => "reload_result",
-        InspectResponse::ResetSessionResult { .. } => "reset_session_result",
         InspectResponse::ActivityHistory { .. } => "activity_history",
         InspectResponse::ChatHistory { .. } => "chat_history",
         InspectResponse::Patterns { .. } => "patterns",
@@ -406,60 +394,6 @@ mod tests {
         let mut client = InspectClient::new("127.0.0.1:1");
         let result = client.get_state().await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_inspect_client_reset_session() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace_dir = tmp.path().to_path_buf();
-        let thread_name = "test-thread";
-        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
-        )
-        .await
-        .unwrap();
-
-        let context = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "test-ch".to_string(),
-                channel_type: "email".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), context, cancel.clone());
-        let _handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let mut client = InspectClient::new(&addr.to_string());
-        let (success, message) = client.reset_session("test-thread").await.unwrap();
-
-        assert!(success, "reset should succeed: {message}");
-        assert!(message.contains("session deleted"));
-        assert!(!jyc_dir.join("agent-session.json").exists());
-
-        cancel.cancel();
     }
 
     /// Overview payload should be much smaller than the full state payload

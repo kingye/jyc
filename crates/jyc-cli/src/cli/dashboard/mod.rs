@@ -35,6 +35,7 @@ use super::command_popup::*;
 
 mod chat;
 mod local_commands;
+mod palette;
 mod ws;
 use chat::*;
 use ws::*;
@@ -92,6 +93,14 @@ struct App {
     /// buffers so the chat pane shows the new thread's history.
     pending_hydrate: Option<(String, String)>,
 
+    /// Set by the palette `new chat` action; the async poll loop runs the
+    /// pattern-select flow (needs InspectClient for `list_patterns`).
+    pending_new_chat: bool,
+
+    /// Set by the palette `reload config` action; the async poll loop runs
+    /// the reload (needs InspectClient).
+    pending_reload_config: bool,
+
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
 
@@ -124,6 +133,8 @@ impl App {
             status_message: None,
             pending_reset: None,
             pending_hydrate: None,
+            pending_new_chat: false,
+            pending_reload_config: false,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
@@ -490,6 +501,16 @@ pub async fn run(
                 hydrate_live(&mut client, &mut app, &channel, &thread).await;
             }
 
+            // Palette actions deferred for the same reason.
+            if app.pending_new_chat {
+                app.pending_new_chat = false;
+                start_new_chat(&mut app, &args.addr, &mut client).await;
+            }
+            if app.pending_reload_config {
+                app.pending_reload_config = false;
+                reload_server_config(&mut app, &mut client, &mut last_poll).await;
+            }
+
             // Check for WebSocket events
             while let Ok(event) = app.chat.ws_rx.try_recv() {
                 app.handle_ws_event(event);
@@ -820,6 +841,46 @@ async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, 
     }
 }
 
+/// Start a new chat: fetch patterns via REST and open the chat screen in
+/// pattern-select mode. Used by the `c` key and the palette `new chat`
+/// action (via `pending_new_chat`).
+async fn start_new_chat(app: &mut App, addr: &str, client: &mut InspectClient) {
+    let channel = app.state.as_ref().and_then(|o| {
+        o.channels
+            .iter()
+            .find(|c| c.channel_type == "websocket")
+            .map(|c| c.name.clone())
+    });
+    if let Some(channel) = channel {
+        app.chat
+            .open_pattern_select(addr, &channel, client, app.token.clone())
+            .await;
+    } else {
+        app.set_status("No websocket channel configured".to_string());
+    }
+}
+
+/// Reload the server configuration. Used by the `R` key and the palette
+/// `reload config` action (via `pending_reload_config`).
+async fn reload_server_config(
+    app: &mut App,
+    client: &mut InspectClient,
+    last_poll: &mut std::time::Instant,
+) {
+    match client.reload_config().await {
+        Ok((true, msg)) => {
+            app.set_status(format!("Config reloaded: {msg}"));
+            *last_poll = std::time::Instant::now() - Duration::from_millis(500);
+        }
+        Ok((false, msg)) => {
+            app.set_status(format!("Reload failed: {msg}"));
+        }
+        Err(e) => {
+            app.set_status(format!("Reload error: {e:#}"));
+        }
+    }
+}
+
 async fn handle_normal_keys(
     app: &mut App,
     key: event::KeyEvent,
@@ -835,24 +896,9 @@ async fn handle_normal_keys(
 
     match key.code {
         KeyCode::Char('c') => {
-            // Fetch patterns via REST (replaces the old WebSocket
-            // `list_patterns` command) and open the chat in pattern-select
-            // mode. After the user picks a pattern, `select_pattern` opens
-            // a scoped WS to `/ws/<channel>/<thread>`.
-            let overview = app.state.clone();
-            let channel = overview.as_ref().and_then(|o| {
-                o.channels
-                    .iter()
-                    .find(|c| c.channel_type == "websocket")
-                    .map(|c| c.name.clone())
-            });
-            if let Some(channel) = channel {
-                app.chat
-                    .open_pattern_select(addr, &channel, client, app.token.clone())
-                    .await;
-            } else {
-                app.set_status("No websocket channel configured".to_string());
-            }
+            // After the user picks a pattern, `select_pattern` opens a
+            // scoped WS to `/ws/<channel>/<thread>`.
+            start_new_chat(app, addr, client).await;
         }
         KeyCode::Enter => {
             // Enter chat for websocket threads, detail mode for non-websocket threads
@@ -897,19 +943,7 @@ async fn handle_normal_keys(
             *last_poll = std::time::Instant::now() - Duration::from_millis(500);
         }
         KeyCode::Char('R') => {
-            // Reload config
-            match client.reload_config().await {
-                Ok((true, msg)) => {
-                    app.set_status(format!("Config reloaded: {msg}"));
-                    *last_poll = std::time::Instant::now() - Duration::from_millis(500);
-                }
-                Ok((false, msg)) => {
-                    app.set_status(format!("Reload failed: {msg}"));
-                }
-                Err(e) => {
-                    app.set_status(format!("Reload error: {e:#}"));
-                }
-            }
+            reload_server_config(app, client, last_poll).await;
         }
         KeyCode::Char('s') => {
             if let Some((ref thread_name, at)) = app.pending_reset {

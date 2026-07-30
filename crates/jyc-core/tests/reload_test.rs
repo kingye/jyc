@@ -136,7 +136,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             build_model: None,
             small_model: None,
             system_prompt: None,
-            max_iterations: 200,
+            max_iterations: 500,
             sse_read_timeout_secs: 120,
             text: None,
             attachments: None,

@@ -166,6 +166,14 @@ All notable changes to JYC will be documented in this file.
   switching threads, falling back to the polled overview status until fresh
   WS events arrive.
 
+- **`[agent].plan_model` and `[agent].build_model` now take effect at
+  runtime.** Previously the slim `jyc_agent::types::AgentConfig` view
+  hardcoded these to `None` when deriving the per-request config, so the
+  top-level config fields were silently ignored (per-pattern and
+  thread-level overrides still worked). The duplicate-type cleanup fixed
+  this as a side effect — `derive_agent_config` now returns
+  `jyc_types::AgentConfig` directly with these fields intact. (#477)
+
 ### Changed
 
 - **Eliminated duplicate agent config types (single source of truth).**
@@ -175,11 +183,12 @@ All notable changes to JYC will be documented in this file.
   takes `&HashMap<String, ProviderDef>`. `derive_agent_config` collapses
   from an 80-line per-field conversion to a 10-line channel-override patch
   (clones `app.agent` and applies `channels.<name>.model` /
-  `small_model`). Net diff: **-282 lines**. The `max_iterations` default
-  in `jyc_types::AgentConfig` is raised from 200 to 500 to match the
-  agent-runtime default (the slim `jyc_agent::types::AgentConfig` had
-  already been silently 500 since v0.3.6 — this is the upstream fix for
-  that divergence). (#477)
+  `small_model`). Net diff: **-198 lines** (4 redundant type
+  definitions + 80 lines of pure copy code → gone). The
+  `max_iterations` default in `jyc_types::AgentConfig` is raised from
+  200 to 500 to match the agent-runtime default (the slim
+  `jyc_agent::types::AgentConfig` had already been silently 500 since
+  v0.3.6 — this is the upstream fix for that divergence). (#477)
 
 - **Decoupled Gitee release sync from the release CI pipeline.** The
   `sync-gitee` job is now a separate workflow (`sync-gitee-release.yml`)

@@ -83,8 +83,8 @@ folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 3. Press `c` to open the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
    - Type a message and press `Shift+Enter` / `Alt+Enter` to send (`Enter` inserts a newline); in Normal (vi) mode `Enter` sends
-   - Press `Esc` to enter Normal (vi) mode; press `Esc` again to go back to pattern selection
-   - Press `Esc` once more at pattern selection to close chat
+   - Press `Esc` to enter Normal (vi) mode
+   - Press `Ctrl+P` to open the command palette and choose `open dashboard` to close the chat (this also works at pattern selection)
 
 ### Chat Pane Controls
 
@@ -99,11 +99,13 @@ starts in Insert mode.
 | `gg` / `G` | Jump to top / bottom of the focused pane (message-area focus) |
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
-| `Esc` | Insert → Normal mode; Normal → back to pattern selection; close chat (at pattern selection); message-area focus → back to input |
-| `Ctrl+E` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
+| `Esc` | Insert → Normal mode; message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
+| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`) and pane actions (zen, explorer, activity, editor, scroll) |
+| `Ctrl+O` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Cycle focus: Input → Message area → Activity pane (skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+A` | Cycle activity pane size: hidden → bottom 20% → bottom 80% → activity-only → hidden |
+| `Ctrl+E` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
 | `Ctrl+Z` | Toggle zen mode: hide (or show) thread info pane and status bar together. If the activity pane is visible, `Ctrl+Z` also hides it. Exiting zen mode restores only info + status, not activity. |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |

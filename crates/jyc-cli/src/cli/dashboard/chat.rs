@@ -115,10 +115,9 @@ pub(super) struct ChatState {
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
     pub(super) command_popup: Option<CommandPopupState>,
-    /// TUI-local command palette entries (zen mode, activity pane, ...).
-    pub(super) local_commands: Vec<CommandInfo>,
-    /// Command palette popup state (TUI-local commands, never sent).
-    pub(super) palette: Option<CommandPopupState>,
+    /// TUI-local command palette (navigation, zen mode, activity pane, ...).
+    /// Never sent to the backend.
+    pub(super) palette: Option<palette::Palette>,
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
     /// Current position in history browsing (None = not browsing).
@@ -286,9 +285,9 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 ///
 /// The TUI is suspended (raw mode off, alternate screen left) while the
 /// editor runs and restored afterwards regardless of the editor outcome.
-pub(super) fn edit_input_externally(
+pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<B>,
 ) -> Result<()> {
     let tmp = tempfile::Builder::new()
         .prefix("jyc-chat-")
@@ -387,13 +386,19 @@ fn explorer_open_selected(app: &mut App) {
 }
 
 /// Execute a TUI-local action selected from the command palette.
-pub(super) fn execute_local_action(
+pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<B>,
     action: local_commands::LocalAction,
 ) {
     use local_commands::LocalAction;
     match action {
+        LocalAction::OpenDashboard => app.chat.close(),
+        // Dashboard-scoped; never offered on the chat screen.
+        LocalAction::OpenChat => {}
+        LocalAction::NewChat => app.pending_new_chat = true,
+        LocalAction::ReloadConfig => app.pending_reload_config = true,
+        LocalAction::Quit => app.should_quit = true,
         LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
         LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
         LocalAction::CycleActivity => app.chat.cycle_activity(),
@@ -430,10 +435,10 @@ fn toggle_explorer_snapped(app: &mut App) {
     }
 }
 
-pub(super) fn handle_chat_keys(
+pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     app: &mut App,
     key: event::KeyEvent,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<B>,
 ) {
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -494,26 +499,26 @@ pub(super) fn handle_chat_keys(
 
     // ── Command palette handling (TUI-local commands, never sent) ──
     if let Some(ref mut palette) = app.chat.palette {
-        match handle_popup_key(key, palette, &app.chat.local_commands, &[]) {
-            PopupAction::None => {}
-            PopupAction::Close => {
+        match palette.handle_key(key) {
+            palette::PaletteResult::Consumed => {}
+            palette::PaletteResult::Closed => {
                 app.chat.palette = None;
             }
-            PopupAction::Send(name) | PopupAction::CopyToInput(name) => {
+            palette::PaletteResult::Action(action) => {
                 app.chat.palette = None;
-                if let Some(action) = local_commands::find_by_name(&name) {
-                    execute_local_action(app, terminal, action);
-                }
+                execute_local_action(app, terminal, action);
             }
         }
         return;
     }
 
-    // Ctrl+P opens the command palette (works from any editor mode).
+    // Ctrl+P opens the command palette (works from any editor mode and in
+    // any chat phase — it is the only way back to the dashboard from
+    // PatternSelect).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_p && app.chat.phase == ChatPhase::Chatting {
+    if is_ctrl_p {
         app.chat.command_popup = None;
-        app.chat.palette = Some(CommandPopupState::new());
+        app.chat.palette = Some(palette::Palette::new(local_commands::CommandScope::Chat));
         return;
     }
 
@@ -528,7 +533,7 @@ pub(super) fn handle_chat_keys(
         && app.chat.command_popup.is_none()
     {
         app.chat.command_popup = None;
-        app.chat.palette = Some(CommandPopupState::new());
+        app.chat.palette = Some(palette::Palette::new(local_commands::CommandScope::Chat));
         return;
     }
 
@@ -570,9 +575,8 @@ pub(super) fn handle_chat_keys(
 
     match app.chat.phase {
         ChatPhase::PatternSelect => match key.code {
-            KeyCode::Esc => {
-                app.chat.close();
-            }
+            // No Esc-back here: returning to the dashboard is done via the
+            // command palette (`open dashboard`, Ctrl+P).
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.chat.pattern_selected > 0 {
                     app.chat.pattern_selected -= 1;
@@ -656,9 +660,8 @@ pub(super) fn handle_chat_keys(
 
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
-                    KeyCode::Esc => {
-                        app.chat.close();
-                    }
+                    // No Esc-back here: returning to the dashboard is done
+                    // via the command palette (`open dashboard`, Ctrl+P).
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
@@ -700,11 +703,9 @@ pub(super) fn handle_chat_keys(
             // Chat input field: vim editor. Everything not matched here is
             // delegated to the edtui event handler.
             match (app.chat.editor.mode, key.code) {
-                // Esc in Normal mode leaves the thread; in other modes the
-                // editor uses it to return to Normal mode.
-                (EditorMode::Normal, KeyCode::Esc) => {
-                    app.chat.close();
-                }
+                // Esc does not leave the thread: returning to the dashboard
+                // is done via the command palette (`open dashboard`, Ctrl+P).
+                // The editor uses Esc to return to Normal mode.
                 // Plain Enter in Insert mode sends the message. Pasted
                 // multi-line text goes through on_paste_event (not key events),
                 // so no paste debounce is needed.
@@ -1652,7 +1653,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
     // ── Command palette overlay (TUI-local commands) ──
     if let Some(ref popup) = app.chat.palette {
-        render_palette_popup(frame, area, popup, &app.chat.local_commands);
+        popup.render(frame, area);
     }
 }
 
@@ -1844,7 +1845,6 @@ impl ChatState {
             commands: vec![],
             models: vec![],
             command_popup: None,
-            local_commands: local_commands::command_infos(),
             palette: None,
             input_history: vec![],
             history_pos: None,
@@ -2758,6 +2758,70 @@ mod tests {
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());
         assert!(app.chat.history_pos.is_none());
+    }
+
+    fn esc_key() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    fn test_terminal() -> Terminal<ratatui::backend::TestBackend> {
+        Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_editor_normal_mode() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ChatPane;
+        app.chat.editor.mode = EditorMode::Normal;
+
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
+        assert!(app.chat.visible, "Esc must not close the chat screen");
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_activity_pane() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ActivityPane;
+
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
+        assert!(app.chat.visible, "Esc must not close the chat screen");
+        assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+    }
+
+    #[test]
+    fn esc_does_not_close_chat_in_pattern_select() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::PatternSelect;
+
+        handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
+        assert!(app.chat.visible, "Esc must not close pattern select");
+        assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
+    }
+
+    #[test]
+    fn palette_open_dashboard_closes_chat() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+
+        execute_local_action(
+            &mut app,
+            &mut test_terminal(),
+            local_commands::LocalAction::OpenDashboard,
+        );
+        assert!(!app.chat.visible);
     }
 
     #[test]

@@ -2875,7 +2875,6 @@ ThreadManager  ──publish──►  ThreadEventBus
 
 ```json
 {"type":"message",       "text":"..."}
-{"type":"reset_session"}
 {"type":"disconnect"}
 ```
 
@@ -2923,7 +2922,7 @@ WsRoute (crates/jyc-inspect/src/server.rs)
   └── Thread { channel, name }: GET /ws/<channel>/<thread>
 
 ThreadProxyHandler (crates/jyc-inspect/src/thread_proxy.rs)
-  ├── inbound {message, reset_session, disconnect}
+  ├── inbound {message, disconnect}
   ├── outbound: filtered events from inspect_broadcast
   └── emits resync on Lagged
 
@@ -2949,14 +2948,13 @@ InspectServer (crates/jyc-inspect/src/server.rs)
   ├── get_thread_activity: read .jyc/activity.jsonl
   ├── get_thread_chat: read chat_history_*.jsonl
   ├── get_state_overview / get_state: handled by handle_request
-  └── reset_session, reload_config: handled by handle_request
+  └── reload_config: handled by handle_request
 
 InspectClient (crates/jyc-inspect/src/client.rs)
   ├── get_state() → InspectState (full, retained for compatibility)
   ├── get_overview() → InspectOverview (slim, used by dashboard poll)
   ├── get_thread_activity(channel, thread, since, limit) → Vec<ActivityEntry>
   ├── get_thread_chat(channel, thread, since, limit) → Vec<ChatMessageEntry>
-  ├── reset_session(thread_name) → (bool, String)
   └── reload_config() → (bool, String)
 
 Dashboard (crates/jyc-cli/src/cli/dashboard/)

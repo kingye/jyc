@@ -37,9 +37,6 @@ enum ClientMessage {
     /// Inject a message into the thread for AI processing.
     #[serde(rename = "message")]
     Message { text: String },
-    /// Reset the agent session for this thread.
-    #[serde(rename = "reset_session")]
-    ResetSession,
     /// Close the WebSocket connection cleanly.
     #[serde(rename = "disconnect")]
     Disconnect,
@@ -165,20 +162,6 @@ impl ThreadProxyHandler {
         .await;
         Ok(())
     }
-
-    /// Handle a `reset_session` request by resetting the agent session for
-    /// this thread via the ThreadManager.
-    async fn handle_reset_session(&self, tm: &Arc<ThreadManager>) -> anyhow::Result<()> {
-        let config = jyc_types::ResetCompressionConfig::default();
-        if let Err(e) = tm.reset_session(&self.thread, &config).await {
-            tracing::warn!(
-                thread = %self.thread,
-                error = %e,
-                "Failed to reset session via thread manager"
-            );
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -213,11 +196,6 @@ impl WebsocketHandler for ThreadProxyHandler {
                                 Ok(ClientMessage::Message { text }) => {
                                     if let Err(e) = self.handle_inbound_message(&tm, text).await {
                                         tracing::warn!(error = %e, "handle_inbound_message failed");
-                                    }
-                                }
-                                Ok(ClientMessage::ResetSession) => {
-                                    if let Err(e) = self.handle_reset_session(&tm).await {
-                                        tracing::warn!(error = %e, "handle_reset_session failed");
                                     }
                                 }
                                 Ok(ClientMessage::Disconnect) => {

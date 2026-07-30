@@ -2495,6 +2495,21 @@ impl ChatState {
         }
     }
 
+    /// Clear the transient per-thread live state (`live_thinking` and
+    /// `live_processing`) without touching the activity/chat buffers.
+    ///
+    /// Called on REST hydrate when switching threads: `live_processing` is
+    /// only updated by WS `processing` events received while the thread is
+    /// watched, so entries go stale while unwatched (a missed completion
+    /// leaves `true` → phantom progress; a missed start leaves `false` →
+    /// no progress). Clearing makes the renderer fall back to the polled
+    /// overview status until fresh WS events arrive.
+    pub(super) fn clear_live_transient(&mut self, channel: &str, thread: &str) {
+        let key = (channel.to_string(), thread.to_string());
+        self.live_thinking.remove(&key);
+        self.live_processing.remove(&key);
+    }
+
     /// Get a snapshot of the live activity buffer for the given (channel, thread).
     /// Returns an empty slice if no live data has been seeded yet.
     #[allow(dead_code)]
@@ -2758,6 +2773,42 @@ mod tests {
         // History must be cleared so it doesn't leak across threads
         assert!(app.chat.input_history.is_empty());
         assert!(app.chat.history_pos.is_none());
+    }
+
+    #[test]
+    fn clear_live_transient_removes_stale_state_for_switched_thread() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+
+        // Stale entries from earlier watches of two threads:
+        // - "done": missed completion event → phantom (true) progress
+        // - "busy": missed start event → false suppresses overview fallback
+        let done = ("chan".to_string(), "done".to_string());
+        let busy = ("chan".to_string(), "busy".to_string());
+        app.chat.live_processing.insert(done.clone(), (true, false));
+        app.chat
+            .live_thinking
+            .insert(done.clone(), "old thinking".into());
+        app.chat
+            .live_processing
+            .insert(busy.clone(), (false, false));
+        app.chat
+            .live_activity
+            .insert(done.clone(), Default::default());
+
+        // Switching to "done" hydrates it: transient state must clear so
+        // the renderer falls back to the polled overview status.
+        app.chat.clear_live_transient("chan", "done");
+
+        assert!(app.chat.live_processing_for("chan", "done").is_none());
+        assert!(app.chat.live_thinking_for("chan", "done").is_none());
+        // Activity/chat buffers are preserved (re-seeded by REST hydrate).
+        assert!(app.chat.live_activity.contains_key(&done));
+        // Other threads' live state is untouched.
+        assert_eq!(
+            app.chat.live_processing_for("chan", "busy"),
+            Some((false, false))
+        );
     }
 
     fn esc_key() -> crossterm::event::KeyEvent {

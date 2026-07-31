@@ -884,7 +884,7 @@ impl ThreadManager {
     /// This includes both actively queued threads and idle threads that have been
     /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
-        use crate::session_state::{read_input_tokens, read_mode_override};
+        use crate::session_state::{read_input_tokens, read_mode_override, read_output_tokens};
 
         // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
@@ -950,6 +950,7 @@ impl ThreadManager {
 
             // Read session state
             let (input_tokens, max_tokens) = read_input_tokens(&thread_path).await;
+            let output_tokens = read_output_tokens(&thread_path).await;
 
             // Read mode first — needed to resolve mode-specific model overrides.
             let mode = read_mode_override(&thread_path).await;
@@ -1053,6 +1054,7 @@ impl ThreadManager {
                 mode,
                 input_tokens,
                 max_tokens,
+                output_tokens,
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,

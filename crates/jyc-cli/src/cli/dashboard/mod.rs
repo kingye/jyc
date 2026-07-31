@@ -1611,6 +1611,7 @@ mod tests {
                     mode: None,
                     input_tokens: None,
                     max_tokens: None,
+                    output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,

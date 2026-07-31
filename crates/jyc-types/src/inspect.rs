@@ -1,55 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// ── Protocol ──
-
-/// Request sent by the dashboard client to the inspect server.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InspectRequest {
-    pub method: String,
-    /// Optional parameters for the method (unused by `get_state`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub params: Option<serde_json::Value>,
-    /// Authorization token for inspect requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_token: Option<String>,
-}
-
-/// Response sent by the inspect server to the dashboard client.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InspectResponse {
-    State(InspectState),
-    /// Slim overview payload — same shape as `InspectState` but with
-    /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`,
-    /// `recent_messages`, and `thinking_text`.
-    Overview(InspectOverview),
-    Error {
-        error: String,
-    },
-    /// Result of a `reload_config` request.
-    ReloadResult {
-        success: bool,
-        message: String,
-    },
-    /// Recent activity entries for a single thread (returned by `get_thread_activity`).
-    ActivityHistory {
-        entries: Vec<ActivityEntry>,
-    },
-    /// Recent chat messages for a single thread (returned by `get_thread_chat`).
-    ChatHistory {
-        entries: Vec<ChatMessageEntry>,
-    },
-    /// Pattern names for a channel (returned by `list_patterns`).
-    Patterns {
-        patterns: Vec<String>,
-    },
-    /// Result of a `create_thread` request.
-    CreateThreadResult {
-        success: bool,
-        message: String,
-    },
-}
-
 // ── State snapshot ──
 
 /// Full runtime state snapshot returned by `get_state`.
@@ -332,25 +282,6 @@ pub const DEFAULT_INSPECT_BIND: &str = "127.0.0.1:9876";
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_inspect_request_serialize() {
-        let req = InspectRequest {
-            method: "get_state".to_string(),
-            params: None,
-            auth_token: None,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("get_state"));
-
-        let parsed: InspectRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.method, "get_state");
-
-        // Backward compat: old requests without params still parse
-        let old_json = r#"{"method":"get_state"}"#;
-        let parsed: InspectRequest = serde_json::from_str(old_json).unwrap();
-        assert_eq!(parsed.method, "get_state");
-        assert!(parsed.params.is_none());
-    }
 
     #[test]
     fn test_inspect_state_serialize_roundtrip() {
@@ -406,35 +337,6 @@ mod tests {
         assert_eq!(parsed.stats.active_workers, 2);
     }
 
-    #[test]
-    fn test_inspect_response_error() {
-        let resp = InspectResponse::Error {
-            error: "unknown method".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("unknown method"));
-        assert!(json.contains(r#""type":"error""#));
-    }
-
-    #[test]
-    fn test_inspect_response_reload_result() {
-        let resp = InspectResponse::ReloadResult {
-            success: true,
-            message: "config reloaded".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"reload_result""#));
-        assert!(json.contains("config reloaded"));
-
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ReloadResult { success, message } => {
-                assert!(success);
-                assert_eq!(message, "config reloaded");
-            }
-            _ => panic!("expected ReloadResult"),
-        }
-    }
 
     #[test]
     fn test_thread_status_display() {
@@ -599,39 +501,10 @@ mod tests {
             models: vec![],
         };
         let json = serde_json::to_string(&overview).unwrap();
-        // InspectOverview is a struct (not an InspectResponse variant), so no `type` tag
+        // InspectOverview is a struct (not a tagged-enum variant), so no `type` tag
         assert!(json.contains(r#""uptime_secs":100"#));
         assert!(json.contains(r#""version":"0.1.0""#));
         let parsed: InspectOverview = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.uptime_secs, 100);
-
-        // But when wrapped in InspectResponse, it gets the `type: "overview"` tag
-        let wrapped = InspectResponse::Overview(overview);
-        let json = serde_json::to_string(&wrapped).unwrap();
-        assert!(json.contains(r#""type":"overview""#));
-    }
-
-    #[test]
-    fn test_activity_history_response_serde() {
-        let resp = InspectResponse::ActivityHistory { entries: vec![] };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"activity_history""#));
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ActivityHistory { entries } => assert!(entries.is_empty()),
-            other => panic!("expected ActivityHistory, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_chat_history_response_serde() {
-        let resp = InspectResponse::ChatHistory { entries: vec![] };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""type":"chat_history""#));
-        let parsed: InspectResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            InspectResponse::ChatHistory { entries } => assert!(entries.is_empty()),
-            other => panic!("expected ChatHistory, got {:?}", other),
-        }
     }
 }

@@ -193,7 +193,7 @@ impl WebsocketInboundAdapter {
 impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ws: axum::extract::ws::WebSocket,
         addr: SocketAddr,
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -203,7 +203,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let on_message = self.on_message.clone();
 
         handle_connection_impl(
-            ws_stream,
+            ws,
             addr,
             channel_name,
             broadcast_rx,
@@ -257,20 +257,26 @@ impl InboundAdapter for WebsocketInboundAdapter {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_connection_impl<S>(
-    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+/// Per-connection message loop for a websocket-type channel.
+///
+/// `axum::extract::ws::WebSocket` is what `WebSocketUpgrade::on_upgrade`
+/// hands the inspect server, so the inbound adapter accepts that type
+/// directly. The loop is equivalent to the previous tungstenite-based
+/// version: read text frames and parse `ClientMessage`; forward
+/// per-channel broadcast and inspect-broadcast events to the client
+/// (filtered for the current channel/thread); handle graceful close.
+async fn handle_connection_impl(
+    ws: axum::extract::ws::WebSocket,
     addr: SocketAddr,
     channel_name: String,
     mut broadcast_rx: broadcast::Receiver<String>,
     mut inspect_broadcast_rx: Option<broadcast::Receiver<String>>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_thread: Option<&str>,
-) -> anyhow::Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
-{
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+) -> anyhow::Result<()> {
+    use axum::extract::ws::Message;
+
+    let (mut ws_tx, mut ws_rx) = ws.split();
 
     tracing::info!(addr = %addr, channel = %channel_name, "WebSocket client connected");
 
@@ -289,85 +295,87 @@ where
                     }
                 };
 
-                if msg.is_close() {
-                    tracing::info!(addr = %addr, "WebSocket client closed connection");
-                    break;
-                }
-
-                let text = match msg.to_text() {
-                    Ok(t) => t,
-                    Err(_) => continue, // ignore binary frames
-                };
-
-                let client_msg: ClientMessage = match serde_json::from_str(text) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::warn!(error = %e, text = %text, "Invalid WebSocket message");
-                        continue;
+                match msg {
+                    Message::Close(_) => {
+                        tracing::info!(addr = %addr, "WebSocket client closed connection");
+                        break;
                     }
-                };
-
-                match client_msg {
-                    ClientMessage::Message { thread, text } => {
-                        // Prefer the URL-scoped thread; fall back to the
-                        // payload's `thread` field for `/ws/<channel>`
-                        // connections where no scope was set.
-                        let thread_name = match thread
-                            .or_else(|| scoped_thread.map(|s| s.to_string()))
-                        {
-                            Some(t) => t,
-                            None => {
-                                tracing::warn!(
-                                    channel = %channel_name,
-                                    "WebSocket Message without thread; ignoring"
-                                );
+                    Message::Text(text) => {
+                        let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                tracing::warn!(error = %e, text = %text, "Invalid WebSocket message");
                                 continue;
                             }
                         };
-                        let message = InboundMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            channel: channel_name.clone(),
-                            channel_uid: "websocket".to_string(),
-                            sender: "user".to_string(),
-                            sender_address: addr.to_string(),
-                            recipients: vec![],
-                            topic: thread_name,
-                            content: MessageContent {
-                                text: Some(text),
-                                html: None,
-                                markdown: None,
-                            },
-                            timestamp: chrono::Utc::now(),
-                            thread_refs: None,
-                            reply_to_id: None,
-                            external_id: None,
-                            attachments: vec![],
-                            metadata: HashMap::new(),
-                            matched_pattern: None,
-                        };
 
-                        let guard = on_message.lock().await;
-                        if let Some(ref callback) = *guard {
-                            if let Err(e) = (callback)(message) {
-                                tracing::error!(error = %e, "WebSocket on_message error");
+                        match client_msg {
+                            ClientMessage::Message { thread, text } => {
+                                // Prefer the URL-scoped thread; fall back to the
+                                // payload's `thread` field for `/ws/<channel>`
+                                // connections where no scope was set.
+                                let thread_name = match thread
+                                    .or_else(|| scoped_thread.map(|s| s.to_string()))
+                                {
+                                    Some(t) => t,
+                                    None => {
+                                        tracing::warn!(
+                                            channel = %channel_name,
+                                            "WebSocket Message without thread; ignoring"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let message = InboundMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    channel: channel_name.clone(),
+                                    channel_uid: "websocket".to_string(),
+                                    sender: "user".to_string(),
+                                    sender_address: addr.to_string(),
+                                    recipients: vec![],
+                                    topic: thread_name,
+                                    content: MessageContent {
+                                        text: Some(text),
+                                        html: None,
+                                        markdown: None,
+                                    },
+                                    timestamp: chrono::Utc::now(),
+                                    thread_refs: None,
+                                    reply_to_id: None,
+                                    external_id: None,
+                                    attachments: vec![],
+                                    metadata: HashMap::new(),
+                                    matched_pattern: None,
+                                };
+
+                                let guard = on_message.lock().await;
+                                if let Some(ref callback) = *guard {
+                                    if let Err(e) = (callback)(message) {
+                                        tracing::error!(error = %e, "WebSocket on_message error");
+                                    }
+                                } else {
+                                    tracing::warn!("WebSocket on_message callback not set — message dropped");
+                                }
                             }
-                        } else {
-                            tracing::warn!("WebSocket on_message callback not set — message dropped");
+                            ClientMessage::Disconnect => {
+                                tracing::info!(addr = %addr, "WebSocket client requested disconnect");
+                                break;
+                            }
+                            ClientMessage::Ping => {
+                                // No-op; axum auto-replies to WS pings at the
+                                // protocol layer.
+                            }
                         }
                     }
-                    ClientMessage::Disconnect => {
-                        tracing::info!(addr = %addr, "WebSocket client requested disconnect");
-                        break;
-                    }
-                    ClientMessage::Ping => {
-                        // No-op; WS-level pings handled by tokio-tungstenite.
-                    }
+                    // Binary / Ping / Pong frames: axum handles pings/pongs;
+                    // binary is not part of this protocol.
+                    _ => {}
                 }
             }
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(payload) => {
-                        if let Err(e) = ws_tx.send(tokio_tungstenite::tungstenite::Message::Text(payload)).await {
+                        if let Err(e) = ws_tx.send(Message::Text(payload)).await {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send broadcast");
                             break;
                         }
@@ -381,7 +389,7 @@ where
                     }
                 }
             }
-            // Inpsect-broadcast events: activity/thinking/chat messages from
+            // Inspect-broadcast events: activity/thinking/chat messages from
             // the ActivityTracker. Filter by (channel, thread) and forward
             // to the WebSocket client alongside the per-channel broadcasts.
             inspect = async {
@@ -395,9 +403,7 @@ where
                         // Only forward events for our channel. If the
                         // connection is thread-scoped, also filter by thread.
                         if should_forward_inspect(&payload, &channel_name, scoped_thread)
-                            && let Err(e) = ws_tx.send(
-                                tokio_tungstenite::tungstenite::Message::Text(payload)
-                            ).await
+                            && let Err(e) = ws_tx.send(Message::Text(payload)).await
                         {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
                             break;
@@ -414,9 +420,8 @@ where
         }
     }
 
-    let _ = ws_tx
-        .send(tokio_tungstenite::tungstenite::Message::Close(None))
-        .await;
+    // Best-effort graceful close; the client may have already disconnected.
+    let _ = ws_tx.send(Message::Close(None)).await;
     tracing::info!(addr = %addr, "WebSocket connection closed");
     Ok(())
 }

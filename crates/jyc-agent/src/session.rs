@@ -229,18 +229,25 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
-/// Auto-resets (with LLM-generated summary) if total tokens exceed max_input_tokens.
+/// Auto-resets when `total_input_tokens` crosses `max_input_tokens`, using
+/// the configured `reset_compression` strategy (same as manual `/reset`).
 ///
 /// `input_tokens` is the tokens reported by the last API call — this already
 /// includes all prior context, so we store it directly (not accumulated).
 ///
 /// `summary_provider` is the provider used to generate the LLM summary when
-/// the auto-reset threshold is crossed. Callers should pass the small model's
-/// provider when configured (`[agent].small_model`), otherwise the main
-/// provider — falling back is the caller's responsibility.
+/// the auto-reset threshold is crossed AND `compression_config.mode` is `Llm`.
+/// Callers should pass the small model's provider when configured
+/// (`[agent].small_model`), otherwise the main provider — falling back is
+/// the caller's responsibility.
 ///
 /// `auto_reset_threshold` is the fraction of context window at which to trigger
 /// auto-reset (0.0~1.0, default 0.95).
+///
+/// `compression_config` controls how the session is compacted on auto-reset.
+/// All three paths — manual `/reset`, pre-loop pre-check, and this post-loop
+/// auto-reset — go through `reset_session()` with this config so user
+/// preferences (`mode`, `keep_pairs`) are honored consistently.
 pub async fn update_tokens(
     thread_path: &Path,
     input_tokens: u64,
@@ -248,6 +255,7 @@ pub async fn update_tokens(
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
     auto_reset_threshold: f64,
+    compression_config: &ResetCompressionConfig,
 ) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -267,26 +275,60 @@ pub async fn update_tokens(
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 
-    // Auto-reset if tokens exceed max context window
+    // Auto-reset if tokens exceed max context window. Delegates to
+    // `reset_session` so the user's `reset_compression` config is honored
+    // (previously this inlined `summarize_context` which always used LLM,
+    // ignoring the configured mode).
     if state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens {
         tracing::info!(
             total_input_tokens = state.total_input_tokens,
             max_input_tokens = state.max_input_tokens,
-            summary_provider = %summary_provider.name(),
-            summary_model = %summary_provider.model(),
-            "Session exceeded max input tokens, auto-resetting with summary"
+            mode = ?compression_config.mode,
+            "Session exceeded max input tokens, auto-resetting with configured compression",
         );
 
-        // Summarize the context using the (small) summary provider.
-        summarize_context(thread_path, summary_provider).await;
+        reset_session(thread_path, compression_config, Some(summary_provider)).await;
 
-        // Reset token counters
+        // reset_session deletes the session file; rebuild it with the
+        // current max_input_tokens and zero counters so the next turn
+        // starts clean.
         state.total_input_tokens = 0;
         state.total_output_tokens = 0;
         state.created_at = chrono::Utc::now().to_rfc3339();
     }
 
     save_session_state(&session_path, &state).await;
+}
+
+/// If the loaded session's tokens exceed the new context window, reset the
+/// session using the configured compression strategy. Must be called BEFORE
+/// the agent loop when the active model changes to a smaller window —
+/// otherwise the first LLM call rejects the oversized context and the
+/// post-loop auto-reset never fires.
+///
+/// Returns `true` if the session was reset.
+pub async fn maybe_reset_for_new_context(
+    thread_path: &Path,
+    new_max_input_tokens: u64,
+    compression_config: &ResetCompressionConfig,
+    provider: Option<&dyn crate::provider::Provider>,
+) -> bool {
+    if new_max_input_tokens == 0 {
+        return false;
+    }
+    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let state = load_session_state(&session_path).await;
+    if state.total_input_tokens < new_max_input_tokens {
+        return false;
+    }
+    tracing::info!(
+        old_tokens = state.total_input_tokens,
+        new_max = new_max_input_tokens,
+        mode = ?compression_config.mode,
+        "Loaded session exceeds new context window; resetting before agent loop",
+    );
+    reset_session(thread_path, compression_config, provider).await;
+    true
 }
 
 // ─── Reset ───────────────────────────────────────────────────────────

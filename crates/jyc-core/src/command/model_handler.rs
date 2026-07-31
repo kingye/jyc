@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use jyc_types::{ModelInfo, ProviderDef};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use crate::session_state;
 
 /// /model command — switch AI model for this thread.
 ///
@@ -147,6 +148,18 @@ impl CommandHandler for ModelCommandHandler {
                     };
                     let override_path = jyc_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
+
+                    // Update `max_input_tokens` for the newly-active model.
+                    if let Some(new_max) = session_state::resolve_active_context_window(
+                        &context.thread_path,
+                        &context.config,
+                        &context.channel,
+                        context.config.agent.auto_reset_threshold,
+                    )
+                    .await
+                    {
+                        session_state::write_max_input_tokens(&context.thread_path, new_max).await;
+                    }
 
                     Ok(CommandResult {
                         success: true,
@@ -441,5 +454,66 @@ mode = "agent"
         assert!(!jyc_dir.join("plan-model-override").exists());
         assert!(!jyc_dir.join("build-model-override").exists());
         assert!(!jyc_dir.join("model-override").exists());
+    }
+
+    #[tokio::test]
+    async fn test_model_writes_max_input_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Pre-existing session with a different max_input_tokens
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"max_input_tokens":100}"#,
+        )
+        .await
+        .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+auto_reset_threshold = 0.95
+
+[agent.providers.deepseek]
+type = "openai-compatible"
+base_url = "https://x"
+api_key_env = "X"
+
+[agent.providers.deepseek.models.deepseek-chat]
+context_window = 64000
+"#,
+            )
+            .unwrap(),
+        );
+        ctx.args = vec!["deepseek/deepseek-chat".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // build-model-override was written
+        assert!(jyc_dir.join("build-model-override").exists());
+        // and max_input_tokens in agent-session.json reflects the new model
+        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["max_input_tokens"], 60800); // 95% of 64000
     }
 }

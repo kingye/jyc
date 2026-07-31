@@ -1374,9 +1374,8 @@ impl AgentService for JycAgentService {
             .unwrap_or(false);
 
         // 7. Run agent loop
-        // Resolve context_window: per-model override > provider default > 128000 fallback
-        // Used for both session token tracking and mid-loop token check
-        const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
+        // Resolve context_window: per-model override > provider default > fallback
+        // (DEFAULT_CONTEXT_WINDOW lives in jyc-core::session_state).
         let model_str = model_override.as_deref().unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
             agent_cfg.providers.get(provider_name).and_then(|p| {
@@ -1389,7 +1388,32 @@ impl AgentService for JycAgentService {
         } else {
             None
         }
-        .or(Some(DEFAULT_CONTEXT_WINDOW));
+        .or(Some(jyc_core::session_state::DEFAULT_CONTEXT_WINDOW));
+
+        // Resolve reset_compression using the matched pattern. This is the
+        // single source of truth shared by manual `/reset`, this pre-loop
+        // pre-check, and the post-loop auto-reset in `update_tokens`.
+        let compression_config = jyc_core::session_state::resolve_reset_compression(
+            &self.config.load(),
+            &self.channel_name,
+            message.matched_pattern.as_deref(),
+        );
+
+        // Pre-loop pre-check: if the active model has a smaller context
+        // window than the loaded session, reset the session BEFORE the
+        // agent loop. Without this, the first LLM call rejects the
+        // oversized context and the post-loop auto-reset never fires.
+        // Uses the same `reset_compression` config as manual `/reset`.
+        if let Some(cw) = context_window {
+            let new_max = (cw as f64 * auto_reset_threshold) as u64;
+            session::maybe_reset_for_new_context(
+                thread_path,
+                new_max,
+                &compression_config,
+                Some(provider.as_ref()),
+            )
+            .await;
+        }
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let additional_write_roots = self.resolve_additional_write_roots(message);
         let thread_managers = self
@@ -1454,6 +1478,7 @@ impl AgentService for JycAgentService {
             context_window,
             summary_provider,
             auto_reset_threshold,
+            &compression_config,
         )
         .await;
 

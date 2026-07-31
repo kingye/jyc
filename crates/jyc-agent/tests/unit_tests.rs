@@ -211,6 +211,7 @@ mod parse_openai_chunk {
 
 mod session {
     use jyc_agent::session;
+    use jyc_types::channel::ResetCompressionConfig;
 
     /// Minimal stub provider that panics if any LLM method is invoked.
     /// Used by `update_tokens` tests where the auto-reset threshold is NOT
@@ -370,7 +371,16 @@ mod session {
         let jyc_dir = tmp.path().join(".jyc");
 
         assert!(!jyc_dir.join("agent-session.json").exists());
-        session::update_tokens(tmp.path(), 1000, 200, Some(100000), &StubProvider, 0.95).await;
+        session::update_tokens(
+            tmp.path(),
+            1000,
+            200,
+            Some(100000),
+            &StubProvider,
+            0.95,
+            &ResetCompressionConfig::default(),
+        )
+        .await;
         assert!(jyc_dir.join("agent-session.json").exists());
 
         // Verify content
@@ -388,9 +398,27 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
 
         // First call
-        session::update_tokens(tmp.path(), 1000, 100, Some(100000), &StubProvider, 0.95).await;
+        session::update_tokens(
+            tmp.path(),
+            1000,
+            100,
+            Some(100000),
+            &StubProvider,
+            0.95,
+            &ResetCompressionConfig::default(),
+        )
+        .await;
         // Second call — input_tokens should be latest, not accumulated
-        session::update_tokens(tmp.path(), 2000, 150, Some(100000), &StubProvider, 0.95).await;
+        session::update_tokens(
+            tmp.path(),
+            2000,
+            150,
+            Some(100000),
+            &StubProvider,
+            0.95,
+            &ResetCompressionConfig::default(),
+        )
+        .await;
 
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -424,6 +452,154 @@ mod session {
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
         assert!(!jyc_dir.join("agent-context.json").exists());
+    }
+
+    /// `update_tokens` post-loop auto-reset now honors `reset_compression.mode = None`.
+    /// Previously it inlined an LLM call; now it goes through `reset_session`.
+    #[tokio::test]
+    async fn update_tokens_auto_reset_with_none_mode_deletes_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        // Session with tokens already over the (small) max — will trigger
+        // auto-reset on the very next update_tokens call.
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":5000,"total_output_tokens":100,"max_input_tokens":1000}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+            .await
+            .unwrap();
+
+        let config = ResetCompressionConfig {
+            mode: jyc_types::channel::CompressionMode::None,
+            keep_pairs: 3,
+        };
+        session::update_tokens(
+            tmp.path(),
+            6000, // still over 1000 → auto-reset fires
+            50,
+            Some(1000),
+            &StubProvider,
+            0.95,
+            &config,
+        )
+        .await;
+
+        // With mode=None, the session file is deleted by reset_session
+        // then recreated by update_tokens with zeroed counters. The
+        // `output_tokens` from THIS call is also discarded because the
+        // reset path explicitly zeros all counters before save.
+        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["total_output_tokens"], 0);
+        assert_eq!(state["max_input_tokens"], 950); // 0.95 * 1000 from the call's context_window
+    }
+
+    /// Pre-check compaction: when the loaded session's tokens exceed the new
+    /// (smaller) context window, the session is reset using the configured
+    /// compression strategy before the agent loop runs.
+    #[tokio::test]
+    async fn maybe_reset_for_new_context_resets_when_oversized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        // Loaded session: 600k tokens, max_input_tokens irrelevant here
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
+        )
+        .await
+        .unwrap();
+        // Some context to compact
+        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+            .await
+            .unwrap();
+
+        let config = ResetCompressionConfig {
+            mode: jyc_types::channel::CompressionMode::None,
+            keep_pairs: 3,
+        };
+        let reset = session::maybe_reset_for_new_context(
+            tmp.path(),
+            250_000, // new max for build model (256k * ~0.95 ≈ 243k; 250k close enough)
+            &config,
+            None,
+        )
+        .await;
+        assert!(reset, "should have triggered reset");
+
+        // With mode=None the session file is deleted, then re-created by
+        // the next call to update_tokens. Here we just assert that the
+        // reset_session path ran (context deleted, session gone or reset).
+        // The exact on-disk state depends on whether anyone re-saves the
+        // session; reset_session itself deletes it.
+        assert!(!jyc_dir.join("agent-context.json").exists());
+    }
+
+    /// Pre-check is a no-op when the loaded session fits the new window.
+    #[tokio::test]
+    async fn maybe_reset_for_new_context_is_noop_when_under_threshold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":100000,"total_output_tokens":0,"max_input_tokens":950000}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+            .await
+            .unwrap();
+
+        let config = ResetCompressionConfig::default();
+        let reset = session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None).await;
+        assert!(!reset, "should not have triggered reset");
+
+        // Both files unchanged
+        let session = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let context = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
+            .await
+            .unwrap();
+        assert!(session.contains("\"total_input_tokens\":100000"));
+        assert_eq!(context, "[]");
+    }
+
+    /// Pre-check is a no-op when `new_max_input_tokens == 0` (caller didn't
+    /// pass a context_window — fall back to the post-loop auto-reset).
+    #[tokio::test]
+    async fn maybe_reset_for_new_context_zero_max_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","total_input_tokens":999999,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+
+        let reset = session::maybe_reset_for_new_context(
+            tmp.path(),
+            0,
+            &ResetCompressionConfig::default(),
+            None,
+        )
+        .await;
+        assert!(!reset);
+        assert!(jyc_dir.join("agent-session.json").exists());
     }
 }
 

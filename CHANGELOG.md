@@ -4,6 +4,18 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Mouse-wheel scroll in the chat message area.** `jyc dashboard` now
+  enables crossterm mouse capture and translates `ScrollUp` /
+  `ScrollDown` events into chat-pane scroll commands when the cursor
+  is over the scrollable message area (above the input editor). The
+  input field, activity pane, thread explorer, and info pane silently
+  absorb wheel events, so scrolling never steals focus from the
+  editor. Hit-testing uses the message-area `Rect` cached during
+  `render_chat_conversation` so the boundary stays correct as the
+  input grows and as the activity / explorer panes toggle.
+
 ### Fixed
 
 - **Token dashboard is visible immediately on new threads.** A brand-new

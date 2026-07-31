@@ -227,6 +227,49 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 
 // ─── Token Tracking ──────────────────────────────────────────────────
 
+/// Ensure `.jyc/agent-session.json` exists at the start of agent
+/// processing. Idempotent: if the file is already present (e.g., from a
+/// prior turn), this is a no-op so existing token counts and `created_at`
+/// are preserved.
+///
+/// Without this, a brand-new thread — or one whose session was just
+/// deleted by `/reset` or `/new` — has no `agent-session.json` on disk
+/// until the first mid-loop `persist_tokens` call after the first LLM
+/// response. During that window, the dashboard and outbound-channel
+/// probes (`read_token_state` / `read_input_tokens`) all see `(None,
+/// None, None)`. Pre-creating the file here makes the thread visible
+/// immediately with the correct `max_input_tokens` and zeroed counters.
+///
+/// `context_window` is used to seed `max_input_tokens = context_window *
+/// auto_reset_threshold` (matching the convention used by
+/// `persist_tokens_returning_state`). When `context_window` is `None`,
+/// `max_input_tokens` is left at 0 (the post-loop `update_tokens` will
+/// fill it in on the next turn).
+pub async fn ensure_session_file(
+    thread_path: &Path,
+    context_window: Option<u64>,
+    auto_reset_threshold: f64,
+) {
+    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    if session_path.exists() {
+        // Already there — never overwrite existing token data.
+        return;
+    }
+
+    let mut state = SessionState::default();
+    if let Some(cw) = context_window {
+        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
+    }
+    state.created_at = chrono::Utc::now().to_rfc3339();
+
+    save_session_state(&session_path, &state).await;
+    tracing::info!(
+        file = %session_path.display(),
+        max_input_tokens = state.max_input_tokens,
+        "ensure_session_file: created session file at start of agent processing"
+    );
+}
+
 /// Persist the latest input/output token counts to disk without triggering
 /// auto-reset. Called from the agent loop after every LLM response so the
 /// dashboard polls see fresh data mid-round. The post-loop `update_tokens`

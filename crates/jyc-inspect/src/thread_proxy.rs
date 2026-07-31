@@ -168,7 +168,7 @@ impl ThreadProxyHandler {
 impl WebsocketHandler for ThreadProxyHandler {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ws: axum::extract::ws::WebSocket,
         addr: std::net::SocketAddr,
         _scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -184,13 +184,19 @@ impl WebsocketHandler for ThreadProxyHandler {
             "ThreadProxyHandler: dashboard client connected"
         );
 
-        let (mut write, mut read) = ws_stream.split();
+        // Split the WebSocket into independent read/write halves so the
+        // select! below can drive both concurrently. axum's WebSocket
+        // has the same `split()` shape as tokio_tungstenite's stream:
+        // a `Stream<Item = Result<Message, Error>>` for the read half
+        // and a `Sink<Message>` for the write half.
+        let (mut write, mut read) = ws.split();
 
         loop {
             tokio::select! {
                 msg = read.next() => {
+                    use axum::extract::ws::Message;
                     match msg {
-                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        Some(Ok(Message::Text(text))) => {
                             let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
                             match parsed {
                                 Ok(ClientMessage::Message { text }) => {
@@ -207,7 +213,8 @@ impl WebsocketHandler for ThreadProxyHandler {
                                     break;
                                 }
                                 Ok(ClientMessage::Ping) => {
-                                    // No-op; WS-level pings handled by tokio-tungstenite
+                                    // No-op; axum auto-replies to WS pings at
+                                    // the protocol layer.
                                 }
                                 Err(e) => {
                                     tracing::debug!(
@@ -218,22 +225,14 @@ impl WebsocketHandler for ThreadProxyHandler {
                                 }
                             }
                         }
-                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
-                        Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(payload))) => {
-                            // WS-level ping → reply with pong at the protocol layer
-                            if let Err(e) = write.send(
-                                tokio_tungstenite::tungstenite::Message::Pong(payload)
-                            ).await {
-                                tracing::debug!(error = %e, "Failed to send pong");
-                                break;
-                            }
-                        }
+                        Some(Ok(Message::Close(_))) => break,
+                        // Ignore Binary/Ping/Pong at this layer.
+                        Some(Ok(_)) => {}
                         Some(Err(e)) => {
                             tracing::debug!(error = %e, "WebSocket read error");
                             break;
                         }
                         None => break,
-                        _ => {}
                     }
                 }
                 broadcast = broadcast_rx.recv() => {
@@ -242,24 +241,26 @@ impl WebsocketHandler for ThreadProxyHandler {
                             // Filter to events for this (channel, thread) only.
                             // Payload format: {"type":..., "channel":..., "thread":..., ...}
                             if let Some(filtered) = filter_for_thread(&payload, &channel, &thread)
-                                && let Err(e) = write.send(
-                                    tokio_tungstenite::tungstenite::Message::Text(filtered)
-                                ).await {
-                                    tracing::debug!(error = %e, "Failed to forward event");
-                                    break;
-                                }
+                                && let Err(e) = write
+                                    .send(axum::extract::ws::Message::Text(filtered))
+                                    .await
+                            {
+                                tracing::debug!(error = %e, "Failed to forward event");
+                                break;
+                            }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Send resync event so client re-hydrates via REST
+                            // Send a resync event so the client re-hydrates via REST.
                             let resync = serde_json::json!({
                                 "type": "resync",
                                 "channel": channel,
                                 "thread": thread,
                                 "dropped": n,
                             });
-                            if let Err(e) = write.send(
-                                tokio_tungstenite::tungstenite::Message::Text(resync.to_string())
-                            ).await {
+                            if let Err(e) = write
+                                .send(axum::extract::ws::Message::Text(resync.to_string()))
+                                .await
+                            {
                                 tracing::debug!(error = %e, "Failed to send resync");
                                 break;
                             }

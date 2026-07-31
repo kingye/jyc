@@ -20,20 +20,17 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // Resolve ResetCompressionConfig:
-        // 1. Try to find a matched pattern from the channel config
-        // 2. Fallback to global AgentConfig.reset_compression
-        // 3. Default if neither is set
-        let channel_config = context.config.channels.get(&context.channel);
-        let pattern_reset = channel_config
-            .and_then(|c| c.patterns.as_ref())
-            .and_then(|patterns| {
-                // Use the first pattern's reset_compression as fallback
-                // (pattern matching is done at router level, not available here)
-                patterns.first().and_then(|p| p.reset_compression.clone())
-            });
-        let global_reset = context.config.agent.reset_compression.clone();
-        let reset_config = pattern_reset.or(global_reset).unwrap_or_default();
+        // Resolve ResetCompressionConfig. Best signal we have at command time:
+        // read the matched pattern from disk (written by the message router
+        // when the thread was created). Falls back to first pattern if the
+        // pattern file is missing, then to global [agent].reset_compression,
+        // then to the default (Heuristic).
+        let matched_pattern = crate::session_state::read_pattern(&context.thread_path).await;
+        let reset_config = crate::session_state::resolve_reset_compression(
+            &context.config,
+            &context.channel,
+            matched_pattern.as_deref(),
+        );
 
         if let Some(ref agent) = context.agent {
             let thread_name = context

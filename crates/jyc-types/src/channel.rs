@@ -466,7 +466,7 @@ pub struct ChannelPattern {
 ///
 /// Controls how the context is compressed when a session reset is triggered
 /// (either manually via `/reset` or automatically when tokens exceed the threshold).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMode {
     /// No compression — delete all context on reset.

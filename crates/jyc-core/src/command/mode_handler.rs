@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use crate::session_state;
 
 /// /plan command — switch to plan mode (read-only).
 pub struct PlanCommandHandler;
@@ -22,6 +23,12 @@ impl CommandHandler for PlanCommandHandler {
 
         let override_path = jyc_dir.join("mode-override");
         tokio::fs::write(&override_path, "plan").await?;
+
+        // Update `max_input_tokens` in agent-session.json so the dashboard
+        // reflects the plan model's window immediately (and the pre-loop
+        // pre-check has the right threshold to compare against on the
+        // next turn).
+        refresh_max_input_tokens(&context).await;
 
         // Mode is passed per-prompt (PromptRequest.agent), not per-session.
         // Session is preserved — AI keeps conversation memory.
@@ -55,6 +62,10 @@ impl CommandHandler for BuildCommandHandler {
             tokio::fs::remove_file(&override_path).await?;
         }
 
+        // Same as /plan — update `max_input_tokens` to reflect the new
+        // active model (build model now that mode-override is cleared).
+        refresh_max_input_tokens(&context).await;
+
         // Mode is passed per-prompt (PromptRequest.agent), not per-session.
         // Session is preserved — AI keeps conversation memory.
 
@@ -63,6 +74,22 @@ impl CommandHandler for BuildCommandHandler {
             message: "/build: switched to build mode (full execution)".into(),
             error: None,
         })
+    }
+}
+
+/// Resolve the active model's `max_input_tokens` and write it to
+/// `agent-session.json`. Best-effort: silently no-ops if resolution fails
+/// (the post-loop `update_tokens` will set it on the next turn).
+async fn refresh_max_input_tokens(context: &CommandContext) {
+    let new_max = session_state::resolve_active_context_window(
+        &context.thread_path,
+        &context.config,
+        &context.channel,
+        context.config.agent.auto_reset_threshold,
+    )
+    .await;
+    if let Some(new_max) = new_max {
+        session_state::write_max_input_tokens(&context.thread_path, new_max).await;
     }
 }
 
@@ -154,5 +181,126 @@ mode = "agent"
 
         // Session file should still exist
         assert!(jyc_dir.join("agent-session.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_plan_writes_max_input_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = test_context(tmp.path());
+        // Add a plan_model with a known context_window
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+plan_model = "p/plan-1m"
+build_model = "p/build-256k"
+auto_reset_threshold = 0.95
+
+[agent.providers.p]
+type = "openai-compatible"
+base_url = "https://x"
+api_key_env = "X"
+
+[agent.providers.p.models.plan-1m]
+context_window = 1000000
+
+[agent.providers.p.models.build-256k]
+context_window = 256000
+"#,
+            )
+            .unwrap(),
+        );
+        let handler = PlanCommandHandler;
+        handler.execute(ctx).await.unwrap();
+
+        // max_input_tokens in agent-session.json should reflect plan-1m (95% of 1M = 950k)
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["max_input_tokens"], 950000);
+    }
+
+    #[tokio::test]
+    async fn test_build_writes_max_input_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Start in plan mode (so /build transitions away from it)
+        tokio::fs::write(jyc_dir.join("mode-override"), "plan")
+            .await
+            .unwrap();
+        // Pre-existing session with old max_input_tokens from plan
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"max_input_tokens":950000}"#,
+        )
+        .await
+        .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+plan_model = "p/plan-1m"
+build_model = "p/build-256k"
+auto_reset_threshold = 0.95
+
+[agent.providers.p]
+type = "openai-compatible"
+base_url = "https://x"
+api_key_env = "X"
+
+[agent.providers.p.models.plan-1m]
+context_window = 1000000
+
+[agent.providers.p.models.build-256k]
+context_window = 256000
+"#,
+            )
+            .unwrap(),
+        );
+        let handler = BuildCommandHandler;
+        handler.execute(ctx).await.unwrap();
+
+        // mode-override removed
+        assert!(!jyc_dir.join("mode-override").exists());
+        // max_input_tokens now reflects build-256k (95% of 256k = 243200)
+        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["max_input_tokens"], 243200);
     }
 }

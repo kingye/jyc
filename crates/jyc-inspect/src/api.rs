@@ -20,17 +20,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use jyc_core::{activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history};
 use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::server::{filter_by_since, filter_chat_by_since, is_user_visible_activity, InspectContext};
+use crate::server::{
+    InspectContext, filter_by_since, filter_chat_by_since, is_user_visible_activity,
+};
 
 /// Query parameters for the activity / chat endpoints.
 #[derive(Debug, Default, Deserialize)]
@@ -74,16 +76,28 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
     }
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: msg.into(),
+        }
     }
     pub fn unprocessable(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::UNPROCESSABLE_ENTITY, message: msg.into() }
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg.into(),
+        }
     }
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: msg.into(),
+        }
     }
 }
 
@@ -175,7 +189,9 @@ pub async fn get_patterns(
         .ok_or_else(|| {
             ApiError::not_found(format!("no thread manager found for channel '{channel}'"))
         })?;
-    Ok(Json(PatternsBody { patterns: tm.pattern_names().await }))
+    Ok(Json(PatternsBody {
+        patterns: tm.pattern_names().await,
+    }))
 }
 
 pub async fn post_thread(
@@ -212,11 +228,7 @@ pub async fn post_thread(
     Ok((
         StatusCode::CREATED,
         Json(CreatedThread {
-            message: format!(
-                "thread '{}' registered at {}",
-                body.thread,
-                path.display()
-            ),
+            message: format!("thread '{}' registered at {}", body.thread, path.display()),
         }),
     ))
 }
@@ -252,5 +264,7 @@ pub async fn post_reload_config(
             )));
         }
     }
-    Ok(Json(ReloadBody { message: "configuration reloaded".to_string() }))
+    Ok(Json(ReloadBody {
+        message: "configuration reloaded".to_string(),
+    }))
 }

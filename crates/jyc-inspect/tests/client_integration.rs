@@ -7,7 +7,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use jyc_core::metrics::HealthStats;
 use jyc_inspect::client::InspectClient;
-use jyc_inspect::server::{build_router, InspectContext};
+use jyc_inspect::server::{InspectContext, build_router};
 use jyc_types::{ActivityEntry, ChannelInfo, InspectState, ThreadStatus};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;

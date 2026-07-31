@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use jyc_core::metrics::HealthStats;
-use jyc_inspect::server::{build_router, InspectContext};
+use jyc_inspect::server::{InspectContext, build_router};
 use jyc_types::ChannelInfo;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -135,7 +135,12 @@ async fn same_token_works_for_api_and_ws() {
         .await
         .unwrap();
     // axum returns 404 for /ws/missing (no such channel) — auth passed.
-    assert_eq!(ws_res.status(), 404, "auth should pass; got {}", ws_res.status());
+    assert_eq!(
+        ws_res.status(),
+        404,
+        "auth should pass; got {}",
+        ws_res.status()
+    );
 }
 
 // ─── REST endpoints ──────────────────────────────────────────────────

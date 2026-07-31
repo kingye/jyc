@@ -10,11 +10,11 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 
@@ -43,9 +43,7 @@ pub async fn require_bearer(
         .map(str::trim);
 
     match presented {
-        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => {
-            next.run(req).await
-        }
+        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
         _ => unauthorized_response(),
     }
 }
@@ -75,21 +73,21 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arc_swap::ArcSwap;
     use axum::{
+        Router,
         body::Body,
         http::{Request as HttpRequest, StatusCode},
         middleware::from_fn_with_state,
         routing::get,
-        Router,
     };
+    use jyc_core::metrics::HealthStats;
+    use jyc_types::ChannelInfo;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::sync::Mutex;
     use tower::ServiceExt;
-    use jyc_core::metrics::HealthStats;
-    use jyc_types::ChannelInfo;
-    use arc_swap::ArcSwap;
 
     fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         Arc::new(InspectContext {
@@ -128,7 +126,12 @@ mod tests {
     async fn no_token_configured_allows_request() {
         let app = build_app(ctx_with_token(None));
         let res = app
-            .oneshot(HttpRequest::builder().uri("/probe").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -138,7 +141,12 @@ mod tests {
     async fn missing_authorization_header_returns_401() {
         let app = build_app(ctx_with_token(Some("secret")));
         let res = app
-            .oneshot(HttpRequest::builder().uri("/probe").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);

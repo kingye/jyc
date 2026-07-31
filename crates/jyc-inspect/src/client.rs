@@ -5,14 +5,12 @@
 //! call sites are unchanged.
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use jyc_types::{
-    ActivityEntry, ChatMessageEntry, InspectOverview, InspectState,
-};
+use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
 
 /// HTTP client for the inspect server.
 pub struct InspectClient {
@@ -124,7 +122,11 @@ impl InspectClient {
         let resp = self
             .http
             .post(url)
-            .json(&B { channel, thread, path })
+            .json(&B {
+                channel,
+                thread,
+                path,
+            })
             .send()
             .await
             .context("POST /api/threads request failed")?;
@@ -140,7 +142,11 @@ impl InspectClient {
                 Err::<R, reqwest::Error>(e)
             })
             .await
-            .or_else(|e| Ok(R { message: e.to_string() }))?;
+            .or_else(|e| {
+                Ok(R {
+                    message: e.to_string(),
+                })
+            })?;
         Ok((status.is_success(), r.message))
     }
 
@@ -199,7 +205,11 @@ impl InspectClient {
                 String::from_utf8_lossy(&bytes)
             );
         }
-        serde_json::from_slice(&bytes)
-            .with_context(|| format!("GET {path} response parse failed: {}", String::from_utf8_lossy(&bytes)))
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "GET {path} response parse failed: {}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     }
 }

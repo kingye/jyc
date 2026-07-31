@@ -282,7 +282,6 @@ pub const DEFAULT_INSPECT_BIND: &str = "127.0.0.1:9876";
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_inspect_state_serialize_roundtrip() {
         let state = InspectState {
@@ -336,7 +335,6 @@ mod tests {
         assert_eq!(parsed.threads[0].status, ThreadStatus::Processing);
         assert_eq!(parsed.stats.active_workers, 2);
     }
-
 
     #[test]
     fn test_thread_status_display() {

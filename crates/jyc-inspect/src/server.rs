@@ -1,10 +1,10 @@
 use arc_swap::ArcSwap;
 use axum::{
-    extract::{ws::WebSocketUpgrade, State as AxState},
+    Router,
+    extract::{State as AxState, ws::WebSocketUpgrade},
     middleware::from_fn_with_state,
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -177,7 +177,6 @@ impl InspectServer {
         tracing::debug!("Inspect server shutting down");
         Ok(())
     }
-
 
     /// Resolve the right `WebsocketHandler` for a given route:
     /// - `WsRoute::Thread { channel, name }`:
@@ -1109,10 +1108,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
             "/api/threads/:channel/:thread/chat",
             get(api::get_thread_chat),
         )
-        .route(
-            "/api/channels/:channel/patterns",
-            get(api::get_patterns),
-        )
+        .route("/api/channels/:channel/patterns", get(api::get_patterns))
         .route("/api/threads", post(api::post_thread))
         .route("/api/config/reload", post(api::post_reload_config))
         .route("/ws", get(ws_bare))
@@ -1170,9 +1166,10 @@ async fn ws_upgrade_for_route(
             tracing::debug!(error = %e, "ws route resolution failed");
             ws.on_upgrade(|socket| async move {
                 let mut s = socket;
-                let _ = s.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
+                let _ = s
+                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                    .await;
             })
         }
     }
 }
-

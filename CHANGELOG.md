@@ -28,6 +28,14 @@ All notable changes to JYC will be documented in this file.
   turn instead of waiting for it to be recomputed on the next successful
   LLM call.
 
+- **`/reset` now uses the matched pattern's `reset_compression`.**
+  Previously `/reset` used the first pattern on the channel as a fallback
+  (the command handler had no access to the matched pattern). It now
+  reads `.jyc/pattern` and resolves against the actual matched pattern,
+  falling back to the first pattern only when the pattern file is
+  missing. Threads that span multiple patterns with different
+  `reset_compression` configs will now use the correct one.
+
 ### Added
 
 - **Command palette on the dashboard screen.** `Ctrl+P` or `:` opens the

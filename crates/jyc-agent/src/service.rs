@@ -1374,9 +1374,8 @@ impl AgentService for JycAgentService {
             .unwrap_or(false);
 
         // 7. Run agent loop
-        // Resolve context_window: per-model override > provider default > 128000 fallback
-        // Used for both session token tracking and mid-loop token check
-        const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
+        // Resolve context_window: per-model override > provider default > fallback
+        // (DEFAULT_CONTEXT_WINDOW lives in jyc-core::session_state).
         let model_str = model_override.as_deref().unwrap_or("");
         let context_window = if let Some((provider_name, model_id)) = model_str.split_once('/') {
             agent_cfg.providers.get(provider_name).and_then(|p| {
@@ -1389,7 +1388,7 @@ impl AgentService for JycAgentService {
         } else {
             None
         }
-        .or(Some(DEFAULT_CONTEXT_WINDOW));
+        .or(Some(jyc_core::session_state::DEFAULT_CONTEXT_WINDOW));
 
         // Resolve reset_compression using the matched pattern. This is the
         // single source of truth shared by manual `/reset`, this pre-loop

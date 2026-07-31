@@ -187,18 +187,17 @@ async fn resolve_active_model(
         }
     };
 
-    // 2. Thread config (`.jyc/config.toml`)
-    let thread_cfg_override = jyc_types::load_thread_config(thread_path)
-        .and_then(|c| c.agent)
+    // 2. Thread config (`.jyc/config.toml`) — read once, then check both
+    //    the mode-specific and the generic `model` field against the same
+    //    loaded value (avoids re-reading the file in the common no-config case).
+    let thread_cfg = jyc_types::load_thread_config(thread_path).and_then(|c| c.agent);
+    let thread_cfg_override = thread_cfg
+        .as_ref()
         .and_then(|a| match mode_override.as_deref() {
             Some("plan") => a.plan_model.clone(),
             _ => a.build_model.clone(),
         })
-        .or_else(|| {
-            jyc_types::load_thread_config(thread_path)
-                .and_then(|c| c.agent)
-                .and_then(|a| a.model.clone())
-        });
+        .or_else(|| thread_cfg.as_ref().and_then(|a| a.model.clone()));
 
     // 3. Pattern (matched or first) — resolved from `config.channels[channel].patterns`
     let pattern_override = {
@@ -215,19 +214,13 @@ async fn resolve_active_model(
         .or_else(|| pat.and_then(|p| p.model.clone()))
     };
 
-    // 4. Global [agent] (apply channel-level override on top of global)
-    let effective_agent = {
-        let mut agent = config.agent.clone();
-        if let Some(ch) = config.channels.get(channel) {
-            if ch.model.is_some() {
-                agent.model = ch.model.clone();
-            }
-            if ch.small_model.is_some() {
-                agent.small_model = ch.small_model.clone();
-            }
-        }
-        agent
-    };
+    // 4. Global [agent] (apply channel-level model override on top of global)
+    let mut effective_agent = config.agent.clone();
+    if let Some(ch) = config.channels.get(channel)
+        && ch.model.is_some()
+    {
+        effective_agent.model = ch.model.clone();
+    }
     let config_override = match mode_override.as_deref() {
         Some("plan") => effective_agent.plan_model.clone(),
         _ => effective_agent.build_model.clone(),
@@ -436,7 +429,7 @@ auto_reset_threshold = 0.95
             None,
         );
         let resolved = resolve_reset_compression(&app, "c", Some("b"));
-        assert!(matches!(resolved.mode, CompressionMode::Llm));
+        assert_eq!(resolved.mode, CompressionMode::Llm);
         assert_eq!(resolved.keep_pairs, 5);
     }
 
@@ -448,7 +441,7 @@ auto_reset_threshold = 0.95
         };
         let app = config_with_patterns(vec![("a", Some(none_cfg))], None);
         let resolved = resolve_reset_compression(&app, "c", None);
-        assert!(matches!(resolved.mode, CompressionMode::None));
+        assert_eq!(resolved.mode, CompressionMode::None);
     }
 
     #[test]
@@ -461,7 +454,7 @@ auto_reset_threshold = 0.95
             }),
         );
         let resolved = resolve_reset_compression(&app, "c", Some("a"));
-        assert!(matches!(resolved.mode, CompressionMode::Llm));
+        assert_eq!(resolved.mode, CompressionMode::Llm);
         assert_eq!(resolved.keep_pairs, 7);
     }
 
@@ -470,7 +463,7 @@ auto_reset_threshold = 0.95
         let app = config_with_patterns(vec![], None);
         let resolved = resolve_reset_compression(&app, "c", Some("a"));
         // Default is Heuristic per #[derive(Default)] on CompressionMode
-        assert!(matches!(resolved.mode, CompressionMode::Heuristic));
+        assert_eq!(resolved.mode, CompressionMode::Heuristic);
         assert_eq!(resolved.keep_pairs, 3);
     }
 

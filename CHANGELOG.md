@@ -4,6 +4,30 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-reset now honors `reset_compression` config.** When the in-loop
+  `update_tokens` auto-reset triggers (input tokens cross 95% of the model
+  context), it now uses the same compression mode (`None` | `Heuristic` |
+  `Llm`) and `keep_pairs` as manual `/reset`. Previously the auto path
+  always used LLM summarization, ignoring the user-configured mode.
+
+- **Build mode auto-compacts when the new model has a smaller context
+  window.** Switching from a 1M-context plan model to a 256k-context build
+  model now resets the session using `reset_compression` *before* the
+  first turn, so the build no longer fails with a context overflow on the
+  first LLM call. The new pre-loop pre-check shares the same
+  `reset_compression` config and `reset_session` implementation as manual
+  `/reset` and the post-loop auto-reset — one compaction path for all
+  three triggers.
+
+- **`max_input_tokens` is updated on every model or mode switch.**
+  `/plan`, `/build`, and `/model` now write the new model's
+  `max_input_tokens` to `.jyc/agent-session.json` immediately, so the
+  dashboard and reply footer reflect the new threshold before the next
+  turn instead of waiting for it to be recomputed on the next successful
+  LLM call.
+
 ### Added
 
 - **Command palette on the dashboard screen.** `Ctrl+P` or `:` opens the

@@ -2633,6 +2633,10 @@ JSON line protocol over TCP. Client sends one JSON object per line, server respo
 }
 ```
 
+> **Full protocol reference.** This section is a high-level overview
+> only. For every method, response variant, server-pushed event, type
+> schema, and worked example, see [`docs/api.md`](docs/api.md).
+
 ### TUI Dashboard Layout
 
 ```

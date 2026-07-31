@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Inspect API & WebSocket API reference** in `docs/api.md`. Covers the
+  7 inspect methods (line-delimited JSON over TCP), all 3 WebSocket URL
+  routes, 6 server-pushed event types, shared type catalog
+  (`InspectState`, `ThreadInfo`, `ActivityEntry`, `ChatMessageEntry`,
+  …), auth model, compatibility notes, and a worked Python example.
+  The stale protocol table in `docs/channels/websocket.md` is replaced
+  with a pointer to the new doc, and `DESIGN.md` cross-links to it.
+
 - **Mouse-wheel scroll in the chat message area.** `jyc dashboard` now
   enables crossterm mouse capture and translates `ScrollUp` /
   `ScrollDown` events into chat-pane scroll commands when the cursor

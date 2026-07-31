@@ -180,15 +180,43 @@ After Ctrl+A three times (activity only):
 
 ## WebSocket Protocol
 
-JSON envelope over WebSocket:
+The websocket channel exposes a subset of the JYC API. For the
+**complete reference** (line-delimited JSON inspect API, full event
+catalog, type schemas, compatibility notes, examples) see
+[`docs/api.md`](../api.md). What follows is a quick summary of the
+websocket channel's specific wire format.
 
-| Direction | Message | Purpose |
-|-----------|---------|---------|
-| Client→Server | `{"type":"list_patterns"}` | Get available patterns |
-| Server→Client | `{"type":"patterns","patterns":["general","coding-help"]}` | Pattern list response |
-| Client→Server | `{"type":"subscribe","thread":"general"}` | Subscribe to thread replies |
-| Client→Server | `{"type":"message","thread":"general","text":"hello"}` | Send message |
-| Server→Client | `{"type":"reply","thread":"general","text":"AI reply..."}` | Broadcast reply |
+### URL routes
+
+| Path                          | Use                                                          |
+|-------------------------------|--------------------------------------------------------------|
+| `ws://<addr>/ws`              | Bare open; the first registered websocket channel handles it. |
+| `ws://<addr>/ws/<channel>`    | Ad-hoc thread on the named websocket channel.                |
+| `ws://<addr>/ws/<channel>/<thread>` | Thread-scoped chat. The URL thread is auto-bound; the client may omit `thread` from `message` payloads. |
+
+### Client → Server messages
+
+```json
+{ "type": "message", "thread": "general", "text": "hello" }
+{ "type": "disconnect" }
+{ "type": "ping" }
+```
+
+> **Note.** The older `list_patterns`, `subscribe`, and `create_thread`
+> client messages have been moved to the REST endpoints
+> [`list_patterns`](../api.md#255-list_patterns) and
+> [`create_thread`](../api.md#256-create_thread) on the inspect
+> server. The websocket channel now carries only the live chat and
+> event stream.
+
+### Server → Client events
+
+The full event catalog (5 broadcast types plus the legacy `reply`)
+lives in [`docs/api.md` §3.5](../api.md#35-server--client-events).
+The websocket channel also publishes a legacy `reply` event from its
+outbound adapter that is **not** seen on the dashboard-side
+`ThreadProxyHandler` — see
+[`docs/api.md` §3.5.5](../api.md#355-reply).
 
 ## Architecture
 

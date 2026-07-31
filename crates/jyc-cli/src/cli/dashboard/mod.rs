@@ -3,15 +3,15 @@ use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use edtui::{EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Lines};
 use ratatui::{
     Frame, Terminal,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -361,6 +361,9 @@ pub async fn run(
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
+    // Enable mouse capture so the chat pane can scroll on wheel events.
+    // Without this, crossterm swallows mouse events at the terminal level.
+    stdout().execute(EnableMouseCapture)?;
 
     // Terminal and its backend are scoped so they drop *before* we restore
     // the terminal. Otherwise the backend's Drop flushes buffered escape
@@ -546,6 +549,9 @@ pub async fn run(
                             .await;
                         }
                     }
+                    Event::Mouse(mouse) if app.chat.visible => {
+                        handle_chat_mouse(&mut app, mouse);
+                    }
                     _ => {}
                 }
             }
@@ -558,6 +564,7 @@ pub async fn run(
 
     // Restore terminal — safe now that no buffered escape codes remain
     stdout().execute(DisableBracketedPaste)?;
+    stdout().execute(DisableMouseCapture)?;
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

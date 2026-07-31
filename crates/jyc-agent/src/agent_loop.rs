@@ -38,6 +38,10 @@ pub struct AgentLoopConfig<'a> {
     /// Use a single `ContentBlock::Text` for text-only prompts.
     pub user_blocks: Vec<ContentBlock>,
     pub working_dir: &'a Path,
+    /// Thread directory on disk. Used to persist token counts after every
+    /// LLM call via `session::persist_tokens`. The post-loop
+    /// `update_tokens` is still the owner of the auto-reset.
+    pub thread_path: &'a Path,
     pub cancel: CancellationToken,
     /// Thread name (for event publishing).
     pub thread_name: &'a str,
@@ -104,6 +108,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         system_prompt,
         user_blocks,
         working_dir,
+        thread_path,
         cancel,
         thread_name,
         event_bus,
@@ -392,6 +397,20 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             )
             .await;
         }
+
+        // Persist latest token counts to disk so dashboard polls see fresh
+        // data mid-round. Called AFTER the mid-loop compression block so
+        // the on-disk value reflects the post-compression state. Does not
+        // trigger auto-reset — that decision belongs to the post-loop
+        // `update_tokens` call in `service.rs`.
+        crate::session::persist_tokens(
+            thread_path,
+            total_input_tokens,
+            total_output_tokens,
+            context_window,
+            auto_reset_threshold,
+        )
+        .await;
 
         // 3. Check for empty response (likely an API error we didn't catch)
         if response.text.is_empty() && response.tool_calls.is_empty() && response.input_tokens == 0
@@ -1917,6 +1936,7 @@ mod cancel_during_tool_tests {
                     text: "test".to_string(),
                 }],
                 working_dir: &working_dir,
+                thread_path: &working_dir,
                 cancel: cancel.clone(),
                 thread_name: "cancel-during-tool",
                 event_bus: None,

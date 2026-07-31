@@ -38,6 +38,21 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Token counts update mid-round, not only at end of round.**
+  The agent loop now persists `agent-session.json` after every LLM
+  response via the new `session::persist_tokens` (sibling of the
+  existing `update_tokens`). Dashboard polls see fresh input/output
+  token counts within ~500 ms instead of waiting until the round
+  finishes. The post-loop `update_tokens` still owns the between-message
+  auto-reset.
+
+- **Output token count in the dashboard thread info pane.** The chat
+  info pane, dashboard threads table cell, and dashboard status line
+  now show the accumulated output token count alongside the input
+  token usage. The session file already stored `total_output_tokens`;
+  the reader just discarded it. New `session_state::read_token_state`
+  returns all three fields in a single file read for the polling path.
+
 - **Command palette on the dashboard screen.** `Ctrl+P` or `:` opens the
   palette on the dashboard (previously chat-only). Palette commands are
   now scoped — `dashboard` (open chat), `chat` (open dashboard, zen,

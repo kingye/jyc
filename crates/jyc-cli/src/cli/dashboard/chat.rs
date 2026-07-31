@@ -1,6 +1,7 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
 //! WebSocket thread chat and non-WebSocket detail mode.
 
+use super::token_render::{input_token_pct, push_output_span, push_tokens_span};
 use super::*;
 
 /// Width of the input prompt gutter ("╰─❯ ").
@@ -989,21 +990,6 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
         })
 }
 
-/// Compute the input-token percentage for a thread, returned as
-/// `Option<u32>` so callers can decide how to render a missing value
-/// (chip shows `–%`, pane omits the row). Uses checked arithmetic to
-/// avoid wrapping when `cur` is very large.
-fn input_token_pct(t: &jyc_types::ThreadSummary) -> Option<u32> {
-    match (t.input_tokens, t.max_tokens) {
-        (Some(cur), Some(max)) if max > 0 => Some(
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0) as u32,
-        ),
-        _ => None,
-    }
-}
-
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///
 /// Displays thread name, channel, pattern, model, mode, tokens, and a
@@ -1040,12 +1026,17 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
-            let pct = input_token_pct(t).unwrap_or(0);
-            out.push(Line::from(vec![
-                Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{cur} / {max} ({pct}%)")),
-            ]));
+        // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
+        let mut token_spans = Vec::with_capacity(2);
+        push_tokens_span(&mut token_spans, t);
+        if !token_spans.is_empty() {
+            out.push(Line::from(token_spans));
+        }
+        // Output row — same pattern.
+        let mut output_spans = Vec::with_capacity(2);
+        push_output_span(&mut output_spans, t);
+        if !output_spans.is_empty() {
+            out.push(Line::from(output_spans));
         }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(
@@ -3279,6 +3270,7 @@ mod tests {
                     mode: None,
                     input_tokens: None,
                     max_tokens: None,
+                    output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
@@ -3315,6 +3307,7 @@ mod tests {
                     mode: None,
                     input_tokens: None,
                     max_tokens: None,
+                    output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
@@ -3350,6 +3343,7 @@ mod tests {
                 mode: None,
                 input_tokens: None,
                 max_tokens: None,
+                output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
                 thread_path: None,
@@ -3429,6 +3423,7 @@ mod tests {
                     mode: None,
                     input_tokens: None,
                     max_tokens: None,
+                    output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
@@ -3442,6 +3437,7 @@ mod tests {
                     mode: None,
                     input_tokens: None,
                     max_tokens: None,
+                    output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
@@ -3552,6 +3548,7 @@ mod tests {
                 mode: None,
                 input_tokens: None,
                 max_tokens: None,
+                output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
                 thread_path: None,

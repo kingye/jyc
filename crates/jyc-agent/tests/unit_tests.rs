@@ -601,6 +601,61 @@ mod session {
         assert!(!reset);
         assert!(jyc_dir.join("agent-session.json").exists());
     }
+
+    /// `persist_tokens` must write the latest input/output counts but NEVER
+    /// trigger `reset_session`, even when input crosses the auto-reset
+    /// threshold. Mid-loop the in-memory `raw_context` is the source of
+    /// truth; the on-disk `agent-context.json` must be left alone until the
+    /// post-loop `update_tokens` runs.
+    #[tokio::test]
+    async fn persist_tokens_does_not_trigger_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+
+        // Seed a context file the reset would otherwise delete.
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let context_before = r#"[{"role":"user","content":"seed"}]"#;
+        tokio::fs::write(jyc_dir.join("agent-context.json"), context_before)
+            .await
+            .unwrap();
+
+        // Call persist_tokens with input well above the 95% threshold.
+        session::persist_tokens(tmp.path(), 100_000, 200, Some(10_000), 0.95).await;
+
+        // Context file untouched.
+        let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
+            .await
+            .unwrap();
+        assert_eq!(context_after, context_before);
+
+        // Session file got the new values.
+        let session = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+        assert_eq!(state["total_input_tokens"], 100_000);
+        assert_eq!(state["total_output_tokens"], 200);
+        assert_eq!(state["max_input_tokens"], 9500);
+    }
+
+    /// Output tokens accumulate across calls (input replaces).
+    #[tokio::test]
+    async fn persist_tokens_accumulates_output_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        session::persist_tokens(tmp.path(), 1000, 100, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1500, 150, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 80, None, 0.95).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+        // input is latest, not accumulated (each API call already includes full context)
+        assert_eq!(state["total_input_tokens"], 2000);
+        // output is accumulated
+        assert_eq!(state["total_output_tokens"], 330);
+    }
 }
 
 mod tool_registry {

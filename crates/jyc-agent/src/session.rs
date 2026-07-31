@@ -227,6 +227,38 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 
 // ─── Token Tracking ──────────────────────────────────────────────────
 
+/// Persist the latest input/output token counts to disk without triggering
+/// auto-reset. Called from the agent loop after every LLM response so the
+/// dashboard polls see fresh data mid-round. The post-loop `update_tokens`
+/// still owns the actual reset decision.
+///
+/// `input_tokens` is the tokens reported by the last API call — stored
+/// directly (not accumulated) since each call already includes the full
+/// context. `output_tokens` accumulates across the round.
+pub async fn persist_tokens(
+    thread_path: &Path,
+    input_tokens: u64,
+    output_tokens: u64,
+    context_window: Option<u64>,
+    auto_reset_threshold: f64,
+) {
+    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let mut state = load_session_state(&session_path).await;
+
+    state.total_input_tokens = input_tokens;
+    state.total_output_tokens += output_tokens;
+
+    if let Some(cw) = context_window {
+        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
+    }
+
+    if state.created_at.is_empty() {
+        state.created_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    save_session_state(&session_path, &state).await;
+}
+
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
 /// Auto-resets when `total_input_tokens` crosses `max_input_tokens`, using

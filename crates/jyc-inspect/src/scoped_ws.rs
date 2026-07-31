@@ -11,21 +11,20 @@
 //! instead — see `thread_proxy.rs`.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::server::WebsocketHandler;
+use crate::server::{DynWebsocketHandler, WebsocketHandler};
 
 /// A wrapper around a channel-specific `WebsocketHandler` that propagates
 /// the URL-scoped thread name from `/ws/<channel>/<thread>` to the inner
 /// handler.
 pub struct ScopedWsHandler {
-    inner: Arc<dyn WebsocketHandler<tokio::net::TcpStream>>,
+    inner: DynWebsocketHandler,
 }
 
 impl ScopedWsHandler {
-    pub fn new(inner: Arc<dyn WebsocketHandler<tokio::net::TcpStream>>) -> Self {
+    pub fn new(inner: DynWebsocketHandler) -> Self {
         Self { inner }
     }
 }
@@ -34,7 +33,7 @@ impl ScopedWsHandler {
 impl WebsocketHandler for ScopedWsHandler {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ws: axum::extract::ws::WebSocket,
         addr: SocketAddr,
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -43,7 +42,7 @@ impl WebsocketHandler for ScopedWsHandler {
             thread = scoped_thread.unwrap_or("?"),
             "ScopedWsHandler: delegating to inner handler with scoped_thread"
         );
-        self.inner.handle(ws_stream, addr, scoped_thread).await
+        self.inner.handle(ws, addr, scoped_thread).await
     }
 }
 
@@ -58,7 +57,7 @@ mod tests {
     impl WebsocketHandler for StubHandler {
         async fn handle(
             &self,
-            _ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+            _ws: axum::extract::ws::WebSocket,
             _addr: SocketAddr,
             _scoped_thread: Option<&str>,
         ) -> anyhow::Result<()> {
@@ -68,8 +67,8 @@ mod tests {
 
     #[test]
     fn scoped_ws_handler_stores_inner() {
-        let stub: Arc<dyn WebsocketHandler> = Arc::new(StubHandler);
+        let stub: DynWebsocketHandler = std::sync::Arc::new(StubHandler);
         let scoped = ScopedWsHandler::new(stub);
-        let _shared: Arc<ScopedWsHandler> = Arc::new(scoped);
+        let _shared: std::sync::Arc<ScopedWsHandler> = std::sync::Arc::new(scoped);
     }
 }

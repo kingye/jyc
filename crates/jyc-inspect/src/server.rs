@@ -43,7 +43,7 @@ pub trait WebsocketHandler: Send + Sync {
     /// (e.g. `WebsocketInboundAdapter`) can ignore it.
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ws: axum::extract::ws::WebSocket,
         addr: std::net::SocketAddr,
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()>;
@@ -1152,7 +1152,7 @@ async fn ws_upgrade_for_route(
     ctx: Arc<InspectContext>,
     route: WsRoute,
 ) -> axum::response::Response {
-    use futures_util::SinkExt;
+    use axum::extract::ws::Message;
     match InspectServer::resolve_ws_handler(&ctx, route) {
         Ok(handler) => {
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
@@ -1164,11 +1164,8 @@ async fn ws_upgrade_for_route(
         }
         Err(e) => {
             tracing::debug!(error = %e, "ws route resolution failed");
-            ws.on_upgrade(|socket| async move {
-                let mut s = socket;
-                let _ = s
-                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
-                    .await;
+            ws.on_upgrade(|mut socket| async move {
+                let _ = socket.send(Message::Close(None)).await;
             })
         }
     }

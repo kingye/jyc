@@ -31,6 +31,21 @@ pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>)
     (None, None)
 }
 
+/// Read accumulated output tokens from the agent session state file.
+/// Returns `None` when the file is missing, malformed, or the value is zero.
+/// The session file already deserializes `total_output_tokens` — this just
+/// surfaces it. Output tokens accumulate across LLM calls in a round.
+pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
+    let agent_path = thread_path.join(".jyc").join("agent-session.json");
+    let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
+        return None;
+    };
+    let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
+        return None;
+    };
+    (state.total_output_tokens > 0).then_some(state.total_output_tokens)
+}
+
 /// Agent session state format.
 #[derive(Debug, Deserialize)]
 struct AgentSessionState {
@@ -302,6 +317,40 @@ mod tests {
         let (current, max) = read_input_tokens(tmp.path()).await;
         assert_eq!(current, None);
         assert_eq!(max, None);
+    }
+
+    #[tokio::test]
+    async fn read_output_tokens_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"total_input_tokens":1000,"total_output_tokens":250,"max_input_tokens":2000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_output_tokens(tmp.path()).await, Some(250));
+    }
+
+    #[tokio::test]
+    async fn read_output_tokens_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_output_tokens(tmp.path()).await, None);
+    }
+
+    #[tokio::test]
+    async fn read_output_tokens_zero_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"total_output_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_output_tokens(tmp.path()).await, None);
     }
 
     #[tokio::test]

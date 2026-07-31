@@ -1101,9 +1101,12 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 ThreadStatus::Error => Style::default().fg(Color::Red),
             };
 
-            let tokens = match (t.input_tokens, t.max_tokens) {
-                (Some(cur), Some(max)) => format!("{}K/{}K", cur / 1000, max / 1000),
-                (Some(cur), None) => format!("{}K", cur / 1000),
+            let tokens = match (t.input_tokens, t.max_tokens, t.output_tokens) {
+                (Some(cur), Some(max), Some(out)) => {
+                    format!("{}K/{}K·{}K out", cur / 1000, max / 1000, out / 1000)
+                }
+                (Some(cur), Some(max), _) => format!("{}K/{}K", cur / 1000, max / 1000),
+                (Some(cur), None, _) => format!("{}K", cur / 1000),
                 _ => "-".to_string(),
             };
 
@@ -1240,6 +1243,14 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().add_modifier(Modifier::BOLD),
         ));
         status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+    }
+    if let Some(out) = selected.output_tokens {
+        status_line.push(Span::raw("  "));
+        status_line.push(Span::styled(
+            "Output: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        status_line.push(Span::raw(format!("{out}")));
     }
     info_lines.push(Line::from(status_line));
 

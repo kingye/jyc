@@ -1047,6 +1047,12 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
                 Span::raw(format!("{cur} / {max} ({pct}%)")),
             ]));
         }
+        if let Some(out_tokens) = t.output_tokens {
+            out.push(Line::from(vec![
+                Span::styled("Output: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(format!("{out_tokens}")),
+            ]));
+        }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(
                 "⏳ AI thinking...",

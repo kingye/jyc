@@ -353,7 +353,7 @@ pub async fn run(
     let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
 
     let mut client = match &token {
-        Some(t) => InspectClient::with_token(&args.addr, t.clone()),
+        Some(t) => InspectClient::with_token(&args.addr, Some(t.as_str())),
         None => InspectClient::new(&args.addr),
     };
 
@@ -608,7 +608,7 @@ pub async fn run_open(
 
     // Resolve websocket channel using inspect state
     let mut client = match &token {
-        Some(t) => InspectClient::with_token(addr, t.clone()),
+        Some(t) => InspectClient::with_token(addr, Some(t.as_str())),
         None => InspectClient::new(addr),
     };
     let channel = resolve_websocket_channel(&mut client, channel).await?;

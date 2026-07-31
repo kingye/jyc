@@ -24,7 +24,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 
-use crate::server::{PrependStream, WebsocketHandler};
+use crate::server::WebsocketHandler;
 
 /// WebSocket messages accepted by `ThreadProxyHandler`.
 ///
@@ -168,7 +168,7 @@ impl ThreadProxyHandler {
 impl WebsocketHandler for ThreadProxyHandler {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
+        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         addr: std::net::SocketAddr,
         _scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {

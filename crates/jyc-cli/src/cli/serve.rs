@@ -1294,13 +1294,13 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config: Some(Arc::clone(&config)),
             workspace_dirs: orchestrator.workspace_dirs(),
             websocket_handlers: {
-                let handlers: HashMap<String, Arc<dyn jyc_inspect::server::WebsocketHandler>> =
+                let handlers: HashMap<String, jyc_inspect::server::DynWebsocketHandler> =
                     websocket_handlers
                         .into_iter()
                         .map(|h| {
                             (
                                 h.channel_name().to_string(),
-                                h as Arc<dyn jyc_inspect::server::WebsocketHandler>,
+                                h as jyc_inspect::server::DynWebsocketHandler,
                             )
                         })
                         .collect();

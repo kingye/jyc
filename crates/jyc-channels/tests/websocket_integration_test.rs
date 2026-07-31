@@ -8,7 +8,6 @@ use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_inspect::server::WebsocketHandler;
 use jyc_types::{InboundAdapter, InboundAdapterOptions, InboundMessage};
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -131,16 +130,11 @@ async fn test_websocket_adapter_start_and_handle() {
     let addr = listener.local_addr().unwrap();
 
     let server_handle = tokio::spawn(async move {
-        let (mut stream, client_addr) = listener.accept().await.unwrap();
+        let (stream, client_addr) = listener.accept().await.unwrap();
 
-        // Read the first byte to detect protocol (same logic as inspect server)
-        let mut first_byte = [0u8; 1];
-        let n = stream.read_exact(&mut first_byte).await.unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(first_byte[0], b'G');
-
-        // Prepend the byte back and perform WebSocket handshake
-        let stream = jyc_inspect::server::PrependStream::new(stream, vec![first_byte[0]]);
+        // With the axum-based inspect server, the WebSocketUpgrade extractor
+        // performs the HTTP upgrade itself and hands us a WebSocketStream
+        // wrapping a raw TcpStream. We simulate that here.
         let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
 
         inbound.handle(ws_stream, client_addr, None).await.unwrap();

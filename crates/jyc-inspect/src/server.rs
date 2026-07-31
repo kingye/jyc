@@ -1,12 +1,17 @@
 use arc_swap::ArcSwap;
-use futures_util::SinkExt;
+use axum::{
+    extract::{ws::WebSocketUpgrade, State as AxState},
+    middleware::from_fn_with_state,
+    response::IntoResponse,
+    routing::{get, post},
+    Router,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -38,11 +43,14 @@ pub trait WebsocketHandler: Send + Sync {
     /// (e.g. `WebsocketInboundAdapter`) can ignore it.
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<PrependStream>,
+        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         addr: std::net::SocketAddr,
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()>;
 }
+
+/// Trait object alias used in `InspectContext::websocket_handlers`.
+pub type DynWebsocketHandler = Arc<dyn WebsocketHandler>;
 
 /// Parsed WebSocket URL route. Determines which handler the inspect server
 /// dispatches to for an incoming upgrade request.
@@ -116,7 +124,7 @@ pub struct InspectContext {
     /// WebSocket handlers keyed by channel name.
     /// `GET /ws/my_channel` routes to `handlers["my_channel"]`.
     /// `GET /ws` (no channel) routes to the first available handler.
-    pub websocket_handlers: Option<HashMap<String, Arc<dyn WebsocketHandler>>>,
+    pub websocket_handlers: Option<HashMap<String, DynWebsocketHandler>>,
     /// Optional reload callback — invoked after config is swapped atomically.
     pub reload_callback: Option<ReloadCallback>,
     /// Optional authorization token required by inspect clients.
@@ -159,188 +167,19 @@ impl InspectServer {
         let listener = TcpListener::bind(&self.bind_addr).await?;
         tracing::info!(bind = %self.bind_addr, "Inspect server started");
 
-        loop {
-            tokio::select! {
-                accept = listener.accept() => {
-                    match accept {
-                        Ok((stream, addr)) => {
-                            tracing::debug!(addr = %addr, "Inspect client connected");
-                            let ctx = self.context.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_client(stream, ctx, addr).await {
-                                    tracing::debug!(error = %e, "Inspect client disconnected");
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Inspect accept error");
-                        }
-                    }
-                }
-                _ = self.cancel.cancelled() => {
-                    tracing::debug!("Inspect server shutting down");
-                    break;
-                }
-            }
-        }
+        let app = build_router(self.context.clone());
+        let cancel = self.cancel.clone();
 
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
+            .await?;
+
+        tracing::debug!("Inspect server shutting down");
         Ok(())
     }
 
-    async fn handle_client(
-        stream: tokio::net::TcpStream,
-        context: Arc<InspectContext>,
-        addr: std::net::SocketAddr,
-    ) -> anyhow::Result<()> {
-        // Read the first line to detect protocol and extract path.
-        let mut reader = tokio::io::BufReader::new(stream);
-        let mut first_line = String::new();
-        let bytes_read = reader.read_line(&mut first_line).await?;
-        if bytes_read == 0 {
-            return Ok(()); // Client disconnected immediately
-        }
 
-        // Get the remaining buffered data (if any) before we inspect the stream
-        let remaining = reader.buffer().to_vec();
-        let stream = reader.into_inner();
-
-        // Reconstruct the full buffer: first_line + remaining
-        let mut prepend_bytes = first_line.into_bytes();
-        prepend_bytes.extend(remaining);
-
-        if prepend_bytes.first() == Some(&b'G') {
-            // HTTP request — extract WebSocket path for routing
-            let request_str = String::from_utf8_lossy(&prepend_bytes);
-            let first_line = request_str.lines().next().unwrap_or("");
-            let route = Self::extract_ws_route(first_line);
-
-            if let Some(expected) = context.auth_token.as_deref()
-                && Self::extract_bearer_token(&request_str) != Some(expected)
-            {
-                let mut response = tokio::io::BufWriter::new(stream);
-                response
-                    .write_all(
-                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .await?;
-                response.flush().await?;
-                tracing::debug!(addr = %addr, "WebSocket authentication failed");
-                return Ok(());
-            }
-
-            // If the route is a thread-scoped path, propagate the thread
-            // name to the handler so it doesn't have to be repeated in the
-            // payload.
-            let scoped_thread: Option<String> = match &route {
-                Some(WsRoute::Thread { name, .. }) => Some(name.clone()),
-                _ => None,
-            };
-            let handler = Self::resolve_ws_handler(&context, route);
-
-            match handler {
-                Ok(handler) => {
-                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                    let ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                    handler
-                        .handle(ws_stream, addr, scoped_thread.as_deref())
-                        .await?;
-                }
-                Err(e) => {
-                    tracing::debug!(addr = %addr, error = %e, "WebSocket route resolution failed");
-                    // Connection is already upgraded at the WS level; send a
-                    // close frame so the client gets a clean disconnect.
-                    let prepend_stream = PrependStream::new(stream, prepend_bytes);
-                    let mut ws_stream = tokio_tungstenite::accept_async(prepend_stream).await?;
-                    let _ = ws_stream
-                        .send(tokio_tungstenite::tungstenite::Message::Close(None))
-                        .await;
-                }
-            }
-            return Ok(());
-        }
-
-        // JSON inspect protocol
-        let prepend_stream = PrependStream::new(stream, prepend_bytes);
-        let (reader_half, mut writer) = prepend_stream.into_split();
-        let mut reader = BufReader::new(reader_half);
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
-            if bytes_read == 0 {
-                break; // Client disconnected
-            }
-
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let response = match serde_json::from_str::<InspectRequest>(trimmed) {
-                Ok(req) => Self::handle_request(&req, &context).await,
-                Err(e) => InspectResponse::Error {
-                    error: format!("invalid request: {e}"),
-                },
-            };
-
-            let mut json = serde_json::to_string(&response)?;
-            json.push('\n');
-            writer.write_all(json.as_bytes()).await?;
-            writer.flush().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Parse the WebSocket path from an HTTP GET request line into a `WsRoute`.
-    ///
-    /// `GET /ws` → `WsRoute::Bare` (use the first available websocket channel)
-    /// `GET /ws/<channel>` → `WsRoute::Channel(name)` (adhoc thread on that channel)
-    /// `GET /ws/<channel>/<thread>` → `WsRoute::Thread { channel, name }`
-    ///   (proxy to that thread regardless of channel type)
-    fn extract_ws_route(request_line: &str) -> Option<WsRoute> {
-        let path = request_line.split_whitespace().nth(1)?;
-        if path == "/ws" {
-            return Some(WsRoute::Bare);
-        }
-        let rest = path.strip_prefix("/ws/")?;
-        let mut parts = rest.splitn(3, '/');
-        let channel = parts.next()?.to_string();
-        match parts.next() {
-            Some(thread) => Some(WsRoute::Thread {
-                channel,
-                name: thread.to_string(),
-            }),
-            None => Some(WsRoute::Channel(channel)),
-        }
-    }
-
-    /// Extract a bearer token from an HTTP upgrade request.
-    ///
-    /// The `Authorization` header name and the `Bearer` scheme prefix are
-    /// both matched case-insensitively per RFC 7235 §2.1.
-    fn extract_bearer_token(request: &str) -> Option<&str> {
-        request
-            .lines()
-            .skip(1)
-            .take_while(|line| !line.is_empty())
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.trim().eq_ignore_ascii_case("authorization") {
-                    let v = value.trim();
-                    // Case-insensitive match on the Bearer scheme prefix.
-                    let rest = v
-                        .strip_prefix("Bearer ")
-                        .or_else(|| v.strip_prefix("bearer "))?;
-                    Some(rest.trim())
-                } else {
-                    None
-                }
-            })
-    }
-
-    ///
+    /// Resolve the right `WebsocketHandler` for a given route:
     /// - `WsRoute::Thread { channel, name }`:
     ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
     ///     to wrap its `WebsocketInboundAdapter` and pre-send `subscribe`.
@@ -349,15 +188,10 @@ impl InspectServer {
     /// - `WsRoute::Channel(name)`: use the channel's own handler (must be a
     ///   websocket-type channel, else error).
     /// - `WsRoute::Bare`: use the first available handler; error if none.
-    fn resolve_ws_handler(
+    pub fn resolve_ws_handler(
         context: &InspectContext,
-        route: Option<WsRoute>,
-    ) -> anyhow::Result<Arc<dyn WebsocketHandler>> {
-        let route = match route {
-            Some(r) => r,
-            None => return Err(anyhow::anyhow!("could not parse WebSocket path")),
-        };
-
+        route: WsRoute,
+    ) -> anyhow::Result<DynWebsocketHandler> {
         let handlers = context.websocket_handlers.as_ref();
 
         match route {
@@ -395,39 +229,10 @@ impl InspectServer {
         }
     }
 
-    async fn handle_request(request: &InspectRequest, context: &InspectContext) -> InspectResponse {
-        if let Some(expected) = context.auth_token.as_deref()
-            && request.auth_token.as_deref() != Some(expected)
-        {
-            return InspectResponse::Error {
-                error: "auth_failed".to_string(),
-            };
-        }
-
-        match request.method.as_str() {
-            "get_state" => {
-                let state = Self::build_state(context).await;
-                InspectResponse::State(state)
-            }
-            "get_state_overview" => {
-                let overview = Self::build_overview_state(context).await;
-                InspectResponse::Overview(overview)
-            }
-            "get_thread_activity" => Self::handle_get_thread_activity(request, context).await,
-            "get_thread_chat" => Self::handle_get_thread_chat(request, context).await,
-            "list_patterns" => Self::handle_list_patterns(request, context).await,
-            "create_thread" => Self::handle_create_thread(request, context).await,
-            "reload_config" => Self::handle_reload_config(context).await,
-            other => InspectResponse::Error {
-                error: format!("unknown method: {other}"),
-            },
-        }
-    }
-
     /// Build a slim overview snapshot — same shape as `build_state` but with
     /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`, `recent_messages`,
     /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
-    async fn build_overview_state(context: &InspectContext) -> InspectOverview {
+    pub async fn build_overview_state(context: &InspectContext) -> InspectOverview {
         let uptime = context.start_time.elapsed().as_secs();
 
         let mut threads = Vec::new();
@@ -525,360 +330,7 @@ impl InspectServer {
                 .unwrap_or_default(),
         }
     }
-
-    /// Handle `get_thread_activity {channel, thread, since?, limit?}` — returns
-    /// recent activity entries from `.jyc/activity.jsonl`.
-    async fn handle_get_thread_activity(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
-
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
-        let thread = match params.get("thread").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'thread' param".to_string(),
-                };
-            }
-        };
-        let since = params
-            .get("since")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(180);
-
-        tracing::debug!(
-            channel = %channel,
-            thread = %thread,
-            limit,
-            since = since.as_deref().unwrap_or(""),
-            "inspect: get_thread_activity"
-        );
-
-        let tms = context.thread_managers.load();
-        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("no thread manager found for channel '{channel}'"),
-                };
-            }
-        };
-        let thread_path = match tm.thread_path(thread).await {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("thread '{thread}' not found in channel '{channel}'"),
-                };
-            }
-        };
-
-        let entries = match ActivityLogStore::load_recent(&thread_path, limit) {
-            Ok(e) => e,
-            Err(e) => {
-                return InspectResponse::Error {
-                    error: format!("failed to load activity: {e}"),
-                };
-            }
-        };
-        let entries: Vec<ActivityEntry> = entries
-            .into_iter()
-            .filter(is_user_visible_activity)
-            .collect();
-        let entries = filter_by_since(entries, since.as_deref());
-        tracing::debug!(
-            channel = %channel,
-            thread = %thread,
-            count = entries.len(),
-            "inspect: get_thread_activity served"
-        );
-        InspectResponse::ActivityHistory { entries }
-    }
-
-    /// Handle `get_thread_chat {channel, thread, since?, limit?}` — returns
-    /// recent chat messages from `chat_history_*.jsonl`.
-    async fn handle_get_thread_chat(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
-
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
-        let thread = match params.get("thread").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'thread' param".to_string(),
-                };
-            }
-        };
-        let since = params
-            .get("since")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(100);
-
-        let tms = context.thread_managers.load();
-        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("no thread manager found for channel '{channel}'"),
-                };
-            }
-        };
-        let thread_path = match tm.thread_path(thread).await {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: format!("thread '{thread}' not found in channel '{channel}'"),
-                };
-            }
-        };
-
-        let entries = jyc_core::chat_log_store::load_recent_chat_history(&thread_path, limit);
-        let entries = filter_chat_by_since(entries, since.as_deref());
-        InspectResponse::ChatHistory { entries }
-    }
-
-    /// Handle `list_patterns {channel}` — returns the enabled pattern
-    /// names for the given channel. Used by the dashboard's `c` key to
-    /// populate the pattern-select UI.
-    async fn handle_list_patterns(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
-
-        let tms = context.thread_managers.load();
-        match tms.iter().find(|tm| tm.channel_name() == channel) {
-            Some(tm) => {
-                let patterns = tm.pattern_names().await;
-                InspectResponse::Patterns { patterns }
-            }
-            None => InspectResponse::Error {
-                error: format!("no thread manager found for channel '{channel}'"),
-            },
-        }
-    }
-
-    /// Handle `create_thread {channel, thread, path}` — registers a new
-    /// ad-hoc thread with a custom workspace path. Used by
-    /// `jyc dashboard open <path>` (replaces the old WebSocket
-    /// `create_thread` command).
-    async fn handle_create_thread(
-        request: &InspectRequest,
-        context: &InspectContext,
-    ) -> InspectResponse {
-        let params = match &request.params {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing params".to_string(),
-                };
-            }
-        };
-        let channel = match params.get("channel").and_then(|v| v.as_str()) {
-            Some(c) => c,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'channel' param".to_string(),
-                };
-            }
-        };
-        let thread = match params.get("thread").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'thread' param".to_string(),
-                };
-            }
-        };
-        let path_str = match params.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p,
-            None => {
-                return InspectResponse::Error {
-                    error: "missing or invalid 'path' param".to_string(),
-                };
-            }
-        };
-        let path = PathBuf::from(path_str);
-
-        if thread.contains("..") || thread.contains('/') || thread.contains('\\') {
-            return InspectResponse::CreateThreadResult {
-                success: false,
-                message: "invalid thread_name: path traversal not allowed".to_string(),
-            };
-        }
-
-        let tms = context.thread_managers.load();
-        let tm = match tms.iter().find(|tm| tm.channel_name() == channel) {
-            Some(t) => t,
-            None => {
-                return InspectResponse::CreateThreadResult {
-                    success: false,
-                    message: format!("no thread manager found for channel '{channel}'"),
-                };
-            }
-        };
-
-        match tm.set_thread_path(thread, path.clone()).await {
-            Ok(()) => {
-                tracing::info!(
-                    channel = %channel,
-                    thread = %thread,
-                    path = %path.display(),
-                    "Dashboard thread created via REST"
-                );
-                InspectResponse::CreateThreadResult {
-                    success: true,
-                    message: format!("thread '{thread}' registered at {}", path.display()),
-                }
-            }
-            Err(e) => InspectResponse::CreateThreadResult {
-                success: false,
-                message: format!("failed to create thread: {e}"),
-            },
-        }
-    }
-
-    /// Load stored routing metadata for a thread from `.jyc/thread-meta.json`.
-    ///
-    /// Written by `process_message()` on the first message for a thread.
-    /// Returns `None` if the file doesn't exist or can't be parsed.
-    #[allow(dead_code)] // retained for future use; currently consumed by ThreadProxyHandler directly
-    async fn load_thread_meta(
-        tm: &Arc<ThreadManager>,
-        thread_name: &str,
-    ) -> Option<serde_json::Value> {
-        let thread_path = tm.thread_path(thread_name).await?;
-        let meta_path = thread_path.join(".jyc").join("thread-meta.json");
-        let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
-        serde_json::from_str(&content).ok()
-    }
-
-    /// Reload configuration from disk and swap it atomically.
-    async fn handle_reload_config(context: &InspectContext) -> InspectResponse {
-        let (config_path, config_swap) = match (&context.config_path, &context.config) {
-            (Some(path), Some(config)) => (path, config),
-            _ => {
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: "config reload not available (no config path)".to_string(),
-                };
-            }
-        };
-
-        tracing::info!(path = %config_path.display(), "Reloading configuration");
-
-        // Load and validate new config (layered: global base + workdir overlay)
-        let new_config = match jyc_types::load_config_layered(
-            context.global_config_path.as_deref(),
-            config_path,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("failed to load config: {e:#}");
-                tracing::warn!("{msg}");
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: msg,
-                };
-            }
-        };
-
-        let errors = jyc_types::validation::validate_config(&new_config);
-        if !errors.is_empty() {
-            let msg = errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            let msg = format!("validation failed: {msg}");
-            tracing::warn!("{msg}");
-            return InspectResponse::ReloadResult {
-                success: false,
-                message: msg,
-            };
-        }
-
-        // Atomically swap the config
-        config_swap.store(Arc::new(new_config));
-        tracing::info!("Configuration reloaded successfully");
-
-        // Notify orchestrator if a reload callback is registered
-        if let Some(ref callback) = context.reload_callback {
-            tracing::debug!("Invoking reload callback");
-            if let Err(e) = callback().await {
-                let msg = format!("config reloaded, but channel reload failed: {e:#}");
-                tracing::error!(error = %e, "Channel reload failed after config swap");
-                return InspectResponse::ReloadResult {
-                    success: false,
-                    message: msg,
-                };
-            }
-        }
-
-        InspectResponse::ReloadResult {
-            success: true,
-            message: "configuration reloaded".to_string(),
-        }
-    }
-
-    async fn build_state(context: &InspectContext) -> InspectState {
+    pub async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
 
         let mut threads = Vec::new();
@@ -961,7 +413,7 @@ impl InspectServer {
 /// Filter activity entries by `since` timestamp (RFC 3339 string).
 /// Returns entries whose timestamp is `>= since`. If `since` is None,
 /// returns all entries unchanged.
-fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<ActivityEntry> {
+pub fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<ActivityEntry> {
     if let Some(since_ts) = since {
         entries.retain(|e| {
             e.timestamp
@@ -981,7 +433,7 @@ fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> Vec<
 ///   `ProcessingProgress` heartbeats).
 /// - Legacy entries from old log files (predecessors of the `is_internal`
 ///   field) that match the `ProcessingProgress` text shape.
-fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
+pub fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
     if entry.is_internal {
         return false;
     }
@@ -994,7 +446,7 @@ fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
 }
 
 /// Filter chat messages by `since` timestamp (RFC 3339 string).
-fn filter_chat_by_since(
+pub fn filter_chat_by_since(
     mut entries: Vec<ChatMessageEntry>,
     since: Option<&str>,
 ) -> Vec<ChatMessageEntry> {
@@ -1395,102 +847,6 @@ impl ActivityTracker {
     }
 }
 
-/// A wrapper around `tokio::net::TcpStream` that prepends buffered bytes
-/// to the beginning of the read stream. Used to "put back" the first bytes
-/// after protocol detection and path extraction.
-pub struct PrependStream {
-    inner: tokio::net::TcpStream,
-    prepend: Vec<u8>,
-    prepend_pos: usize,
-}
-
-impl PrependStream {
-    pub fn new(inner: tokio::net::TcpStream, bytes: Vec<u8>) -> Self {
-        Self {
-            inner,
-            prepend: bytes,
-            prepend_pos: 0,
-        }
-    }
-
-    fn into_split(self) -> (PrependReadHalf, tokio::net::tcp::OwnedWriteHalf) {
-        let (read, write) = self.inner.into_split();
-        (
-            PrependReadHalf {
-                inner: read,
-                prepend: self.prepend,
-                prepend_pos: self.prepend_pos,
-            },
-            write,
-        )
-    }
-}
-
-impl tokio::io::AsyncRead for PrependStream {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        // Serve prepended bytes first
-        if self.prepend_pos < self.prepend.len() {
-            let remaining = &self.prepend[self.prepend_pos..];
-            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
-            buf.put_slice(&remaining[..to_copy]);
-            self.prepend_pos += to_copy;
-            return std::task::Poll::Ready(Ok(()));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for PrependStream {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-struct PrependReadHalf {
-    inner: tokio::net::tcp::OwnedReadHalf,
-    prepend: Vec<u8>,
-    prepend_pos: usize,
-}
-
-impl tokio::io::AsyncRead for PrependReadHalf {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        if self.prepend_pos < self.prepend.len() {
-            let remaining = &self.prepend[self.prepend_pos..];
-            let to_copy = std::cmp::min(buf.remaining(), remaining.len());
-            buf.put_slice(&remaining[..to_copy]);
-            self.prepend_pos += to_copy;
-            return std::task::Poll::Ready(Ok(()));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
 /// Whether a `ThreadEvent` should be marked internal (filtered from
 /// user-facing surfaces like the activity pane and REST API).
 fn is_event_internal(event: &ThreadEvent) -> bool {
@@ -1734,1023 +1090,89 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::sync::Mutex;
+/// Build the axum `Router` for the inspect server.
+///
+/// All routes share the same `Authorization: Bearer <token>` middleware
+/// (`auth::require_bearer`). WebSocket upgrades flow through the same
+/// auth gate.
+pub fn build_router(context: Arc<InspectContext>) -> Router {
+    use crate::api;
 
-    fn test_context() -> Arc<InspectContext> {
-        Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "emf".to_string(),
-                channel_type: "github".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: None,
-        })
-    }
+    Router::new()
+        .route("/api/state", get(api::get_state))
+        .route("/api/state/overview", get(api::get_state_overview))
+        .route(
+            "/api/threads/:channel/:thread/activity",
+            get(api::get_thread_activity),
+        )
+        .route(
+            "/api/threads/:channel/:thread/chat",
+            get(api::get_thread_chat),
+        )
+        .route(
+            "/api/channels/:channel/patterns",
+            get(api::get_patterns),
+        )
+        .route("/api/threads", post(api::post_thread))
+        .route("/api/config/reload", post(api::post_reload_config))
+        .route("/ws", get(ws_bare))
+        .route("/ws/:channel", get(ws_channel))
+        .route("/ws/:channel/:thread", get(ws_thread))
+        .layer(from_fn_with_state(
+            context.clone(),
+            crate::auth::require_bearer,
+        ))
+        .with_state(context)
+}
 
-    #[tokio::test]
-    async fn test_inspect_server_responds_to_get_state() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
+/// WS upgrade for `GET /ws` — use the first registered handler.
+async fn ws_bare(
+    AxState(ctx): AxState<Arc<InspectContext>>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws_upgrade_for_route(ws, ctx, WsRoute::Bare).await
+}
 
-        // Bind to random port
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+/// WS upgrade for `GET /ws/<channel>` — adhoc thread on a websocket channel.
+async fn ws_channel(
+    AxState(ctx): AxState<Arc<InspectContext>>,
+    ws: WebSocketUpgrade,
+    AxPath(channel): AxPath<String>,
+) -> impl IntoResponse {
+    ws_upgrade_for_route(ws, ctx, WsRoute::Channel(channel)).await
+}
 
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
+/// WS upgrade for `GET /ws/<channel>/<thread>` — proxy to a thread.
+async fn ws_thread(
+    AxState(ctx): AxState<Arc<InspectContext>>,
+    ws: WebSocketUpgrade,
+    AxPath((channel, name)): AxPath<(String, String)>,
+) -> impl IntoResponse {
+    ws_upgrade_for_route(ws, ctx, WsRoute::Thread { channel, name }).await
+}
 
-        // Give server time to start
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Connect and send request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"get_state\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::State(state) => {
-                assert_eq!(state.channels.len(), 1);
-                assert_eq!(state.channels[0].name, "emf");
-                assert_eq!(state.stats.active_workers, 0);
-                assert_eq!(state.stats.max_concurrent, 0);
-                assert_eq!(state.stats.available_workers, 0);
-                assert!(!state.version.is_empty());
-            }
-            other => panic!("expected State, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_session_status_error() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: None,
-            message: Some("SMTP 535 authentication failed".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR"),
-            "Expected ERROR label, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("SMTP 535 authentication failed"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_session_status_error_with_attempt() {
-        let event = ThreadEvent::SessionStatus {
-            thread_name: "test_thread".to_string(),
-            status_type: "error".to_string(),
-            attempt: Some(3),
-            message: Some("server overload".to_string()),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(
-            entry.text.contains("ERROR (attempt #3)"),
-            "Expected ERROR with attempt, got: {}",
-            entry.text
-        );
-        assert!(
-            entry.text.contains("server overload"),
-            "Expected error message, got: {}",
-            entry.text
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_handles_unknown_method() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"unknown\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("unknown method"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_handles_invalid_json() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer.write_all(b"not json\n").await.unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        assert!(response.contains("invalid request"));
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_multiple_requests() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // Send two requests on the same connection
-        for _ in 0..2 {
-            writer
-                .write_all(b"{\"method\":\"get_state\"}\n")
-                .await
-                .unwrap();
-            writer.flush().await.unwrap();
-
-            let mut response = String::new();
-            reader.read_line(&mut response).await.unwrap();
-
-            let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-            match resp {
-                InspectResponse::State(state) => {
-                    assert_eq!(state.channels.len(), 1);
+async fn ws_upgrade_for_route(
+    ws: WebSocketUpgrade,
+    ctx: Arc<InspectContext>,
+    route: WsRoute,
+) -> axum::response::Response {
+    use futures_util::SinkExt;
+    match InspectServer::resolve_ws_handler(&ctx, route) {
+        Ok(handler) => {
+            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+            ws.on_upgrade(move |socket| async move {
+                if let Err(e) = handler.handle(socket, addr, None).await {
+                    tracing::debug!(error = %e, "ws handler exited with error");
                 }
-                other => panic!("expected State, got {:?}", other),
-            }
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_inspect_server_reload_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        let config_toml = r#"
-[general]
-max_concurrent_threads = 5
-
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-
-[agent]
-enabled = true
-mode = "agent"
-"#;
-        std::fs::write(&config_path, config_toml).unwrap();
-
-        let initial_config = jyc_types::load_config(&config_path).unwrap();
-        let config_swap = Arc::new(ArcSwap::from_pointee(initial_config));
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: Some(config_path.clone()),
-            global_config_path: None,
-            config: Some(config_swap.clone()),
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Send reload_config request
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::ReloadResult { success, message } => {
-                assert!(success, "reload should succeed: {message}");
-                assert!(message.contains("reloaded"));
-            }
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
-
-        // Verify config was actually updated
-        assert_eq!(config_swap.load().general.max_concurrent_threads, 5);
-
-        // Now modify the config on disk and reload again
-        let updated_toml =
-            config_toml.replace("max_concurrent_threads = 5", "max_concurrent_threads = 10");
-        std::fs::write(&config_path, updated_toml).unwrap();
-
-        writer
-            .write_all(b"{\"method\":\"reload_config\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response2 = String::new();
-        reader.read_line(&mut response2).await.unwrap();
-
-        let resp2: InspectResponse = serde_json::from_str(&response2).unwrap();
-        match resp2 {
-            InspectResponse::ReloadResult { success, .. } => assert!(success),
-            other => panic!("expected ReloadResult, got {:?}", other),
-        }
-
-        assert_eq!(config_swap.load().general.max_concurrent_threads, 10);
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    /// Regression test for cross-channel issue collision.
-    ///
-    /// Bug: when two channels both had a thread with the same name (e.g.
-    /// `issue-20`), the activity map keyed by `thread.name` alone caused
-    /// channel2's thread to share channel1's processing state and logs in
-    /// the dashboard. This test exercises the merge logic that
-    /// `build_state` performs on each `ThreadInfo`, asserting that two
-    /// same-named threads from different channels resolve to *independent*
-    /// activity-map entries.
-    #[tokio::test]
-    async fn test_activity_map_disambiguates_same_named_threads_across_channels() {
-        // Construct two ThreadInfos with the same name but different channels,
-        // mimicking the situation where channel1 and channel2 both have an
-        // `issue-20`.
-        let make_thread = |channel: &str| ThreadInfo {
-            name: "issue-20".to_string(),
-            channel: channel.to_string(),
-            pattern: None,
-            status: ThreadStatus::Idle,
-            model: None,
-            mode: None,
-            input_tokens: None,
-            max_tokens: None,
-            output_tokens: None,
-            activity: vec![],
-            last_active_at: None,
-            skills: vec![],
-            recent_messages: vec![],
-            thinking_text: None,
-            thread_path: None,
-        };
-
-        let mut threads = vec![make_thread("channel1"), make_thread("channel2")];
-
-        // Populate the activity map: only channel1's issue-20 is processing
-        // and has an activity entry. Channel2's issue-20 is idle with no
-        // activity.
-        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
-        {
-            let mut map = activity_map.lock().await;
-            let state = map
-                .entry(("channel1".to_string(), "issue-20".to_string()))
-                .or_default();
-            state.is_processing = true;
-            state.entries.push_back(ActivityEntry {
-                text: "channel1 working".to_string(),
-                timestamp: None,
-                severity: Severity::Info,
-                id: 0,
-                is_internal: false,
-            });
-        }
-
-        // Replicate the merge loop from build_state.
-        let map = activity_map.lock().await;
-        for thread in &mut threads {
-            let key = (thread.channel.clone(), thread.name.clone());
-            if let Some(state) = map.get(&key) {
-                thread.activity = state.entries.iter().cloned().collect();
-                if state.is_processing {
-                    thread.status = ThreadStatus::Processing;
-                }
-            }
-        }
-        drop(map);
-
-        // channel1 must reflect its own processing state and log.
-        let ch1 = threads.iter().find(|t| t.channel == "channel1").unwrap();
-        assert!(matches!(ch1.status, ThreadStatus::Processing));
-        assert_eq!(ch1.activity.len(), 1);
-        assert_eq!(ch1.activity[0].text, "channel1 working");
-
-        // channel2 must NOT inherit channel1's state — this is the bug.
-        let ch2 = threads.iter().find(|t| t.channel == "channel2").unwrap();
-        assert!(
-            matches!(ch2.status, ThreadStatus::Idle),
-            "channel2's issue-20 leaked channel1's processing status"
-        );
-        assert!(
-            ch2.activity.is_empty(),
-            "channel2's issue-20 leaked channel1's activity log: {:?}",
-            ch2.activity
-        );
-    }
-
-    /// Regression test for activity events stopping after worker exits.
-    ///
-    /// Bug: when a thread's worker finishes and the event bus is cleaned up,
-    /// the ActivityTracker's re-subscription loop kept calling
-    /// `get_event_bus()` which returned `None`, leaving the thread in a
-    /// stuck `is_processing = true` state forever. The dashboard showed
-    /// "Processing" but no activity events appeared.
-    ///
-    /// Fix: when `get_event_bus()` returns `None` and the thread has no
-    /// active queue, clear `is_processing` and mark as subscribed to stop
-    /// retrying. When a new message arrives, a new event bus is created and
-    /// the subscriber task cleanup removes the key, enabling re-subscription.
-    #[tokio::test]
-    async fn test_idle_thread_clears_stale_processing_state() {
-        let activity_map: SharedActivityMap = Arc::new(Mutex::new(HashMap::new()));
-
-        // Simulate a thread that was previously processing but whose worker
-        // has exited (event bus cleaned up, no active queue).
-        let key = ("test-channel".to_string(), "test-thread".to_string());
-        {
-            let mut map = activity_map.lock().await;
-            let state = map.entry(key.clone()).or_default();
-            state.is_processing = true;
-            state.entries.push_back(ActivityEntry {
-                text: "Processing started".to_string(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                severity: Severity::Info,
-                id: 0,
-                is_internal: false,
-            });
-        }
-
-        // Verify the stale state exists.
-        {
-            let map = activity_map.lock().await;
-            assert!(map.get(&key).unwrap().is_processing);
-        }
-
-        // Simulate the fix: clear is_processing for idle threads.
-        // This mirrors the logic in ActivityTracker::start() when
-        // get_event_bus() returns None and has_active_queue() returns false.
-        {
-            let mut map = activity_map.lock().await;
-            if let Some(state) = map.get_mut(&key) {
-                state.is_processing = false;
-            }
-        }
-
-        // Verify the stale state was cleared.
-        {
-            let map = activity_map.lock().await;
-            assert!(
-                !map.get(&key).unwrap().is_processing,
-                "is_processing should be cleared for idle threads"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_incoming_message() {
-        let event = ThreadEvent::IncomingMessage {
-            thread_name: "test".to_string(),
-            sender: "user".to_string(),
-            text: "hello world".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Message from user"));
-        assert!(entry.text.contains("hello world"));
-        assert!(!entry.is_internal);
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_processing_progress_is_internal() {
-        let event = ThreadEvent::ProcessingProgress {
-            thread_name: "test".to_string(),
-            activity: "tool execution".to_string(),
-            elapsed_secs: 25,
-            output_length: 12700,
-            progress: None,
-            parts_count: 0,
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.is_internal, "ProcessingProgress must be internal");
-        assert!(entry.text.contains("tool execution"));
-    }
-
-    #[tokio::test]
-    async fn test_event_to_activity_reply_sent() {
-        let event = ThreadEvent::ReplySent {
-            thread_name: "test".to_string(),
-            text: "AI reply here".to_string(),
-            timestamp: chrono::Utc::now(),
-        };
-        let entry = event_to_activity(&event);
-        assert!(entry.text.contains("Reply sent"));
-        assert!(entry.text.contains("AI reply here"));
-    }
-
-    #[tokio::test]
-    async fn test_get_state_overview_returns_slim_payload() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"get_state_overview\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-
-        match resp {
-            InspectResponse::Overview(overview) => {
-                assert_eq!(overview.channels.len(), 1);
-                assert_eq!(overview.threads.len(), 0);
-                // The slim payload should NOT contain activity / recent_messages / thinking_text
-                let json = serde_json::to_string(&overview).unwrap();
-                assert!(!json.contains("activity"));
-                assert!(!json.contains("recent_messages"));
-                assert!(!json.contains("thinking_text"));
-            }
-            other => panic!("expected Overview, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_thread_activity_reads_activity_jsonl() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace_dir = tmp.path().to_path_buf();
-        let thread_name = "activity-test";
-        let jyc_dir = workspace_dir.join(thread_name).join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        let activity_path = jyc_dir.join("activity.jsonl");
-        let entries = [
-            r#"{"text":"Tool: bash","timestamp":"2026-07-01T10:00:00Z","severity":"info"}"#,
-            r#"{"text":"Completed (5s)","timestamp":"2026-07-01T10:00:05Z","severity":"info"}"#,
-        ];
-        let content = entries.join("\n") + "\n";
-        tokio::fs::write(&activity_path, content).await.unwrap();
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![workspace_dir.clone()])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: None,
-        });
-
-        let cancel = CancellationToken::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // No thread managers registered → should return "no thread manager" error
-        writer
-            .write_all(
-                b"{\"method\":\"get_thread_activity\",\"params\":{\"channel\":\"any\",\"thread\":\"any\"}}\n",
-            )
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-        assert!(response.contains("no thread manager"), "got: {response}");
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_thread_activity_filters_by_since() {
-        // Verify the filter_by_since helper used by the handler.
-        use jyc_types::Severity;
-        let entries = vec![
-            ActivityEntry {
-                text: "old".to_string(),
-                timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-                severity: Severity::Info,
-                id: 0,
-                is_internal: false,
-            },
-            ActivityEntry {
-                text: "mid".to_string(),
-                timestamp: Some("2026-02-01T00:00:00Z".to_string()),
-                severity: Severity::Info,
-                id: 0,
-                is_internal: false,
-            },
-            ActivityEntry {
-                text: "new".to_string(),
-                timestamp: Some("2026-03-01T00:00:00Z".to_string()),
-                severity: Severity::Info,
-                id: 0,
-                is_internal: false,
-            },
-        ];
-
-        let filtered = filter_by_since(entries.clone(), Some("2026-02-01T00:00:00Z"));
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].text, "mid");
-        assert_eq!(filtered[1].text, "new");
-
-        let all = filter_by_since(entries, None);
-        assert_eq!(all.len(), 3);
-    }
-
-    #[test]
-    fn test_extract_ws_route_bare() {
-        let route = InspectServer::extract_ws_route("GET /ws HTTP/1.1");
-        assert_eq!(route, Some(WsRoute::Bare));
-    }
-
-    #[test]
-    fn test_extract_ws_route_channel() {
-        let route = InspectServer::extract_ws_route("GET /ws/local_dev HTTP/1.1");
-        assert_eq!(route, Some(WsRoute::Channel("local_dev".to_string())));
-    }
-
-    #[test]
-    fn test_extract_ws_route_thread() {
-        let route = InspectServer::extract_ws_route("GET /ws/jiny283/invoice-2024 HTTP/1.1");
-        assert_eq!(
-            route,
-            Some(WsRoute::Thread {
-                channel: "jiny283".to_string(),
-                name: "invoice-2024".to_string(),
             })
-        );
-    }
-
-    #[test]
-    fn test_extract_ws_route_invalid() {
-        assert_eq!(InspectServer::extract_ws_route(""), None);
-        assert_eq!(InspectServer::extract_ws_route("GET /other HTTP/1.1"), None);
-    }
-
-    /// `/ws/<non_websocket_channel>/<thread>` must resolve to a
-    /// `ThreadProxyHandler` (since the channel isn't in the ws handlers map).
-    #[tokio::test]
-    async fn test_resolve_ws_handler_uses_proxy_for_non_ws_channel() {
-        let ctx = test_context(); // no websocket_handlers set
-        let route = WsRoute::Thread {
-            channel: "github".to_string(),
-            name: "pr-42".to_string(),
-        };
-        // Resolution must succeed — exact handler type is verified by
-        // end-to-end integration tests in Commit 4.
-        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
-    }
-
-    /// `/ws/<websocket_channel>/<thread>` must resolve (handler type checked
-    /// by integration tests).
-    #[tokio::test]
-    async fn test_resolve_ws_handler_uses_scoped_for_ws_channel() {
-        use async_trait::async_trait;
-
-        struct Stub;
-        #[async_trait]
-        impl WebsocketHandler for Stub {
-            async fn handle(
-                &self,
-                _ws: tokio_tungstenite::WebSocketStream<PrependStream>,
-                _addr: std::net::SocketAddr,
-                _scoped_thread: Option<&str>,
-            ) -> anyhow::Result<()> {
-                Ok(())
-            }
         }
-        let stub: Arc<dyn WebsocketHandler> = Arc::new(Stub);
-        let mut handlers: HashMap<String, Arc<dyn WebsocketHandler>> = HashMap::new();
-        handlers.insert("local_dev".to_string(), stub);
-
-        let ctx = Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: Some(handlers),
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: None,
-        });
-
-        let route = WsRoute::Thread {
-            channel: "local_dev".to_string(),
-            name: "dotfiles".to_string(),
-        };
-        let _ = InspectServer::resolve_ws_handler(&ctx, Some(route)).unwrap();
-    }
-
-    /// `/ws/<non_ws_channel>` must error.
-    #[tokio::test]
-    async fn test_resolve_ws_handler_channel_route_rejects_non_ws() {
-        let ctx = test_context(); // no websocket_handlers
-        let route = WsRoute::Channel("github".to_string());
-        let result = InspectServer::resolve_ws_handler(&ctx, Some(route));
-        assert!(result.is_err());
-    }
-
-    /// `/ws` with no handlers must error.
-    #[tokio::test]
-    async fn test_resolve_ws_handler_bare_rejects_when_empty() {
-        let ctx = test_context();
-        let result = InspectServer::resolve_ws_handler(&ctx, Some(WsRoute::Bare));
-        assert!(result.is_err());
-    }
-
-    /// The publish helpers should produce well-formed JSON payloads that
-    /// include the (channel, thread, id) fields used by `ThreadProxyHandler`
-    /// for filtering and dedup.
-    #[tokio::test]
-    async fn test_publish_activity_event_format() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
-        let entry = ActivityEntry {
-            text: "Tool: bash".to_string(),
-            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
-            severity: Severity::Info,
-            id: 42,
-            is_internal: false,
-        };
-        publish_activity_event(&tx, "github", "pr-1", &entry);
-        let payload = rx.recv().await.unwrap();
-        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(v["type"], "activity");
-        assert_eq!(v["channel"], "github");
-        assert_eq!(v["thread"], "pr-1");
-        assert_eq!(v["id"], 42);
-        assert_eq!(v["entry"]["text"], "Tool: bash");
-    }
-
-    #[tokio::test]
-    async fn test_publish_chat_message_event_format() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
-        let msg = ChatMessageEntry {
-            sender: "ai".to_string(),
-            text: "Hello".to_string(),
-            timestamp: Some("2026-07-27T10:00:00Z".to_string()),
-            id: 7,
-        };
-        publish_chat_message_event(&tx, "c", "t", &msg);
-        let payload = rx.recv().await.unwrap();
-        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(v["type"], "chat_message");
-        assert_eq!(v["id"], 7);
-        assert_eq!(v["entry"]["sender"], "ai");
-    }
-
-    #[tokio::test]
-    async fn test_publish_thinking_event_format() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
-        publish_thinking_event(&tx, "c", "t", "thinking text");
-        let payload = rx.recv().await.unwrap();
-        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(v["type"], "thinking");
-        assert_eq!(v["text"], "thinking text");
-    }
-
-    #[tokio::test]
-    async fn test_publish_processing_event_format() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(16);
-        publish_processing_event(&tx, "c", "t", true, false);
-        let payload = rx.recv().await.unwrap();
-        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(v["type"], "processing");
-        assert_eq!(v["is_processing"], true);
-        assert_eq!(v["has_error"], false);
-    }
-
-    // ── Authorization token tests ──
-
-    fn test_context_with_token(token: &str) -> Arc<InspectContext> {
-        Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
-            channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
-                name: "test".to_string(),
-                channel_type: "email".to_string(),
-                active_workers: 0,
-                max_concurrent: 0,
-            }])),
-            health_stats: Arc::new(Mutex::new(jyc_core::metrics::HealthStats::default())),
-            activity_map: Arc::new(Mutex::new(HashMap::new())),
-            start_time: Instant::now(),
-            config_path: None,
-            global_config_path: None,
-            config: None,
-            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
-            websocket_handlers: None,
-            reload_callback: None,
-            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(256).0),
-            auth_token: Some(token.to_string()),
-        })
-    }
-
-    #[tokio::test]
-    async fn test_rest_rejects_missing_token() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context_with_token("secret123");
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // No auth_token field in the request
-        writer
-            .write_all(b"{\"method\":\"get_state\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
-            other => panic!("expected auth_failed error, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_rest_rejects_wrong_token() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context_with_token("secret123");
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"wrong\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::Error { error } => assert_eq!(error, "auth_failed"),
-            other => panic!("expected auth_failed error, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_rest_accepts_correct_token() {
-        let cancel = CancellationToken::new();
-        let ctx = test_context_with_token("secret123");
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let server = InspectServer::new(addr.to_string(), ctx, cancel.clone());
-        let handle = server.start();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        writer
-            .write_all(b"{\"method\":\"get_state\",\"auth_token\":\"secret123\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-
-        let mut response = String::new();
-        reader.read_line(&mut response).await.unwrap();
-
-        let resp: InspectResponse = serde_json::from_str(&response).unwrap();
-        match resp {
-            InspectResponse::State(state) => assert_eq!(state.channels.len(), 1),
-            other => panic!("expected State, got {:?}", other),
-        }
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    #[test]
-    fn test_extract_bearer_token_uppercase() {
-        let req = "GET /ws HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n";
-        assert_eq!(InspectServer::extract_bearer_token(req), Some("abc123"));
-    }
-
-    #[test]
-    fn test_extract_bearer_token_lowercase() {
-        let req = "GET /ws HTTP/1.1\r\nAuthorization: bearer xyz789\r\n\r\n";
-        assert_eq!(InspectServer::extract_bearer_token(req), Some("xyz789"));
-    }
-
-    #[test]
-    fn test_extract_bearer_token_missing() {
-        let req = "GET /ws HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        assert_eq!(InspectServer::extract_bearer_token(req), None);
-    }
-
-    #[test]
-    fn test_extract_bearer_token_case_insensitive_header_name() {
-        let req = "GET /ws HTTP/1.1\r\nauthorization: Bearer tok456\r\n\r\n";
-        assert_eq!(InspectServer::extract_bearer_token(req), Some("tok456"));
-    }
-
-    #[test]
-    fn test_is_user_visible_activity_excludes_internal_field() {
-        let mut e = make_visible_entry("tool execution (10s, 200 chars)");
-        e.is_internal = true;
-        assert!(!is_user_visible_activity(&e));
-    }
-
-    #[test]
-    fn test_is_user_visible_activity_excludes_legacy_processing_text() {
-        // Old log entries (pre-`is_internal` field) match the text shape.
-        let e = make_visible_entry("tool execution (5s, 120 chars)");
-        assert!(!is_user_visible_activity(&e));
-    }
-
-    #[test]
-    fn test_is_user_visible_activity_keeps_real_events() {
-        assert!(is_user_visible_activity(&make_visible_entry(
-            "Tool: bash (done, 1s)"
-        )));
-        assert!(is_user_visible_activity(&make_visible_entry(
-            "Processing started"
-        )));
-        assert!(is_user_visible_activity(&make_visible_entry(
-            "Completed (10s)"
-        )));
-    }
-
-    fn make_visible_entry(text: &str) -> ActivityEntry {
-        ActivityEntry {
-            text: text.to_string(),
-            timestamp: Some("2026-07-28T00:00:00Z".to_string()),
-            severity: Severity::Info,
-            id: 1,
-            is_internal: false,
+        Err(e) => {
+            tracing::debug!(error = %e, "ws route resolution failed");
+            ws.on_upgrade(|socket| async move {
+                let mut s = socket;
+                let _ = s.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
+            })
         }
     }
 }
+

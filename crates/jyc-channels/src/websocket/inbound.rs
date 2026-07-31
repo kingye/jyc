@@ -193,7 +193,7 @@ impl WebsocketInboundAdapter {
 impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
     async fn handle(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<jyc_inspect::server::PrependStream>,
+        ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         addr: SocketAddr,
         scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {

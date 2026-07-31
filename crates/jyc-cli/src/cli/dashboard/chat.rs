@@ -1,8 +1,8 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
 //! WebSocket thread chat and non-WebSocket detail mode.
 
-use super::*;
 use super::token_render::{input_token_pct, push_output_span, push_tokens_span};
+use super::*;
 
 /// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
@@ -989,7 +989,6 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
                 .and_then(|i| state.threads.get(i))
         })
 }
-
 
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///

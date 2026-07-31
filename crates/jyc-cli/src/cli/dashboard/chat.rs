@@ -3,7 +3,6 @@
 
 use super::token_render::{input_token_pct, push_output_span, push_tokens_span};
 use super::*;
-use ratatui::layout::Position;
 
 /// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
@@ -760,7 +759,11 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 /// Hit-testing: the message area is the only pane that responds to the
 /// wheel. The activity, explorer, info, and input areas silently absorb
 /// the event so wheel-over-them keeps the editor's IME-like behaviour
-/// (no accidental focus theft).
+/// (no accidental focus theft). When the wheel does land on the message
+/// area we move focus to `MessageArea` first, so the focus-routed
+/// `scroll_up` / `scroll_down` advance the message offset regardless of
+/// which pane the user was last navigating — otherwise `ActivityPane` /
+/// `ExplorerPane` focus would silently redirect the scroll elsewhere.
 pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     if app.chat.phase != ChatPhase::Chatting {
         return;
@@ -771,6 +774,7 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     if !rect.contains(Position::new(mouse.column, mouse.row)) {
         return;
     }
+    app.chat.focus = ChatFocus::MessageArea;
     match mouse.kind {
         MouseEventKind::ScrollUp => app.chat.scroll_up(),
         MouseEventKind::ScrollDown => app.chat.scroll_down(),
@@ -2988,6 +2992,84 @@ mod tests {
 
         handle_chat_mouse(&mut app, mouse_event(MouseEventKind::ScrollUp, 10, 10));
         assert_eq!(app.chat.scroll, 0);
+    }
+
+    #[test]
+    fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
+        // Regression: when focus is on ActivityPane or ExplorerPane and the
+        // user wheels over the message area, the wheel must advance the
+        // message scroll counter and switch focus to MessageArea — not
+        // silently scroll the activity pane or be a no-op.
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.messages.push(ChatMessage {
+            sender: "user".into(),
+            text: "hi".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+        });
+        app.chat.messages.push(ChatMessage {
+            sender: "ai".into(),
+            text: "hello".into(),
+            timestamp: Some("2026-01-01T00:00:01Z".into()),
+        });
+
+        // --- ActivityPane focus ---
+        app.chat.focus = ChatFocus::ActivityPane;
+        app.chat.scroll = 0;
+        app.chat.activity_scroll = 0;
+        terminal
+            .draw(|f| ui_chat_mode(f, f.area(), &mut app))
+            .unwrap();
+        let rect = app.chat.last_message_area.expect("rect cached");
+        handle_chat_mouse(
+            &mut app,
+            mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y),
+        );
+        assert_eq!(
+            app.chat.focus,
+            ChatFocus::MessageArea,
+            "focus moves to MessageArea"
+        );
+        assert_eq!(app.chat.scroll, 1, "message scroll advances");
+        assert_eq!(app.chat.activity_scroll, 0, "activity pane must not scroll");
+
+        // --- ExplorerPane focus ---
+        let (_tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app2 = App::new(rx2, None);
+        app2.chat.visible = true;
+        app2.chat.phase = ChatPhase::Chatting;
+        app2.chat.thread = Some("jyc".to_string());
+        app2.chat.messages.push(ChatMessage {
+            sender: "user".into(),
+            text: "hi".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+        });
+        app2.chat.messages.push(ChatMessage {
+            sender: "ai".into(),
+            text: "hello".into(),
+            timestamp: Some("2026-01-01T00:00:01Z".into()),
+        });
+        app2.chat.focus = ChatFocus::ExplorerPane;
+        app2.chat.scroll = 0;
+        terminal
+            .draw(|f| ui_chat_mode(f, f.area(), &mut app2))
+            .unwrap();
+        let rect2 = app2.chat.last_message_area.expect("rect cached");
+        handle_chat_mouse(
+            &mut app2,
+            mouse_event(MouseEventKind::ScrollUp, rect2.x + 1, rect2.y),
+        );
+        assert_eq!(
+            app2.chat.focus,
+            ChatFocus::MessageArea,
+            "focus moves to MessageArea"
+        );
+        assert_eq!(app2.chat.scroll, 1, "message scroll advances");
     }
 
     #[test]

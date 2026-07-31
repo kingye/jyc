@@ -3,15 +3,15 @@ use clap::{Args, Subcommand};
 use crossterm::{
     ExecutableCommand,
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
-        KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use edtui::{EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Lines};
 use ratatui::{
     Frame, Terminal,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -564,7 +564,7 @@ pub async fn run(
 
     // Restore terminal — safe now that no buffered escape codes remain
     stdout().execute(DisableBracketedPaste)?;
-    stdout().execute(crossterm::event::DisableMouseCapture)?;
+    stdout().execute(DisableMouseCapture)?;
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

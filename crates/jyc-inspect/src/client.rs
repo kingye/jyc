@@ -131,22 +131,20 @@ impl InspectClient {
             .await
             .context("POST /api/threads request failed")?;
         let status = resp.status();
-        #[derive(serde::Deserialize)]
+        #[derive(serde::Deserialize, Default)]
         struct R {
+            #[serde(default)]
             message: String,
         }
-        let r: R = resp
-            .error_for_status()
-            .or_else(|e| async move {
-                // Even on 4xx we want the body — fall back to error text.
-                Err::<R, reqwest::Error>(e)
-            })
-            .await
-            .or_else(|e| {
-                Ok(R {
-                    message: e.to_string(),
-                })
-            })?;
+        // Parse the body regardless of status; the server's success body
+        // is `{message: "..."}` and failure is `{error: "..."}`.
+        let body_text = resp.text().await.unwrap_or_default();
+        let r: R = match serde_json::from_str(&body_text) {
+            Ok(r) => r,
+            Err(_) => R {
+                message: format!("unexpected response (status {}): {}", status, body_text),
+            },
+        };
         Ok((status.is_success(), r.message))
     }
 

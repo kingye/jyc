@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
 use axum::{
     Router,
-    extract::{State as AxState, ws::WebSocketUpgrade},
+    extract::{Path as AxPath, State as AxState, ws::WebSocketUpgrade},
     middleware::from_fn_with_state,
     response::IntoResponse,
     routing::{get, post},

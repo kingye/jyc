@@ -101,6 +101,7 @@ mod integration_tests {
                     .to_string(),
             }],
             working_dir: tmp.path(),
+            thread_path: tmp.path(),
             cancel,
             thread_name: "test",
             event_bus: None,

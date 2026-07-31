@@ -1431,6 +1431,7 @@ impl AgentService for JycAgentService {
             system_prompt: &system_prompt,
             user_blocks,
             working_dir: thread_path,
+            thread_path,
             cancel: thread_cancel,
             thread_name,
             event_bus: event_bus.as_ref(),

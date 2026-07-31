@@ -242,6 +242,26 @@ pub async fn persist_tokens(
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
+    let _ = persist_tokens_returning_state(
+        thread_path,
+        input_tokens,
+        output_tokens,
+        context_window,
+        auto_reset_threshold,
+    )
+    .await;
+}
+
+/// Like `persist_tokens` but returns the final state and path so callers
+/// (currently only `update_tokens` for the post-loop auto-reset decision)
+/// can inspect threshold-crossing without a second disk read.
+async fn persist_tokens_returning_state(
+    thread_path: &Path,
+    input_tokens: u64,
+    output_tokens: u64,
+    context_window: Option<u64>,
+    auto_reset_threshold: f64,
+) -> (std::path::PathBuf, SessionState) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
@@ -257,6 +277,7 @@ pub async fn persist_tokens(
     }
 
     save_session_state(&session_path, &state).await;
+    (session_path, state)
 }
 
 /// Update token tracking in the session state.
@@ -289,23 +310,17 @@ pub async fn update_tokens(
     auto_reset_threshold: f64,
     compression_config: &ResetCompressionConfig,
 ) {
-    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
-    let mut state = load_session_state(&session_path).await;
-
-    // Store the latest input tokens (not accumulated — each API call includes full context)
-    state.total_input_tokens = input_tokens;
-    state.total_output_tokens += output_tokens;
-
-    if let Some(cw) = context_window {
-        // Use configurable percentage of context window as max input tokens
-        // (reserve (1 - threshold) * 100% for output)
-        state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
-    }
-
-    // Set created_at on first creation
-    if state.created_at.is_empty() {
-        state.created_at = chrono::Utc::now().to_rfc3339();
-    }
+    // Persist the latest token counts. The returned state carries the
+    // post-mutation values so the auto-reset check below doesn't need a
+    // second disk read.
+    let (_, state) = persist_tokens_returning_state(
+        thread_path,
+        input_tokens,
+        output_tokens,
+        context_window,
+        auto_reset_threshold,
+    )
+    .await;
 
     // Auto-reset if tokens exceed max context window. Delegates to
     // `reset_session` so the user's `reset_compression` config is honored
@@ -324,12 +339,8 @@ pub async fn update_tokens(
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
         // starts clean.
-        state.total_input_tokens = 0;
-        state.total_output_tokens = 0;
-        state.created_at = chrono::Utc::now().to_rfc3339();
+        persist_tokens(thread_path, 0, 0, context_window, auto_reset_threshold).await;
     }
-
-    save_session_state(&session_path, &state).await;
 }
 
 /// If the loaded session's tokens exceed the new context window, reset the

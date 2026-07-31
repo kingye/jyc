@@ -257,12 +257,12 @@ pub async fn post_reload_config(
         return Err(ApiError::unprocessable(format!("validation failed: {msg}")));
     }
     config_swap.store(Arc::new(new_config));
-    if let Some(cb) = &ctx.reload_callback {
-        if let Err(e) = cb().await {
-            return Err(ApiError::internal(format!(
-                "config reloaded, but channel reload failed: {e:#}"
-            )));
-        }
+    if let Some(cb) = &ctx.reload_callback
+        && let Err(e) = cb().await
+    {
+        return Err(ApiError::internal(format!(
+            "config reloaded, but channel reload failed: {e:#}"
+        )));
     }
     Ok(Json(ReloadBody {
         message: "configuration reloaded".to_string(),

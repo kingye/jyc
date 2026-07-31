@@ -1414,6 +1414,16 @@ impl AgentService for JycAgentService {
             )
             .await;
         }
+
+        // Ensure the session file exists BEFORE the agent loop runs.
+        // Placed after the pre-loop pre-check because that pre-check may
+        // have deleted the file via `reset_session`. Without this, the
+        // dashboard and outbound probes see `(None, None, None)` for the
+        // window between "user sends message" and "first LLM response
+        // arrives + persist_tokens writes". The helper is a no-op when
+        // the file already exists, so existing token data is preserved.
+        session::ensure_session_file(thread_path, context_window, auto_reset_threshold).await;
+
         let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
         let additional_write_roots = self.resolve_additional_write_roots(message);
         let thread_managers = self

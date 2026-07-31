@@ -6,6 +6,17 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Token dashboard is visible immediately on new threads.** A brand-new
+  thread — or one whose session was just deleted by `/reset` or `/new`
+  — now has `.jyc/agent-session.json` pre-created at the start of
+  agent processing via the new `session::ensure_session_file`. The file
+  is seeded with the active model's `max_input_tokens`, zeroed
+  counters, and a fresh `created_at`, so the dashboard and outbound
+  context-limit probes stop returning `(None, None, None)` during the
+  window between "user sends message" and "first LLM response
+  arrives". The helper is a no-op when the file already exists, so
+  existing token data is never overwritten.
+
 - **Auto-reset now honors `reset_compression` config.** When the in-loop
   `update_tokens` auto-reset triggers (input tokens cross 95% of the model
   context), it now uses the same compression mode (`None` | `Heuristic` |

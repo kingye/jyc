@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 use jyc_core::metrics::HealthStats;
 use jyc_inspect::client::InspectClient;
 use jyc_inspect::server::{InspectContext, build_router};
-use jyc_types::{ActivityEntry, ChannelInfo, InspectState, ThreadStatus};
+use jyc_types::{ActivityEntry, ChannelInfo, InspectState};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 

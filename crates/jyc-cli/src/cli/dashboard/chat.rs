@@ -2,6 +2,7 @@
 //! WebSocket thread chat and non-WebSocket detail mode.
 
 use super::*;
+use super::token_render::{input_token_pct, push_output_span, push_tokens_span};
 
 /// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
@@ -989,20 +990,6 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
         })
 }
 
-/// Compute the input-token percentage for a thread, returned as
-/// `Option<u32>` so callers can decide how to render a missing value
-/// (chip shows `–%`, pane omits the row). Uses checked arithmetic to
-/// avoid wrapping when `cur` is very large.
-fn input_token_pct(t: &jyc_types::ThreadSummary) -> Option<u32> {
-    match (t.input_tokens, t.max_tokens) {
-        (Some(cur), Some(max)) if max > 0 => Some(
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0) as u32,
-        ),
-        _ => None,
-    }
-}
 
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///
@@ -1040,18 +1027,17 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        if let (Some(cur), Some(max)) = (t.input_tokens, t.max_tokens) {
-            let pct = input_token_pct(t).unwrap_or(0);
-            out.push(Line::from(vec![
-                Span::styled("Tokens: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{cur} / {max} ({pct}%)")),
-            ]));
+        // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
+        let mut token_spans = Vec::with_capacity(2);
+        push_tokens_span(&mut token_spans, t);
+        if !token_spans.is_empty() {
+            out.push(Line::from(token_spans));
         }
-        if let Some(out_tokens) = t.output_tokens {
-            out.push(Line::from(vec![
-                Span::styled("Output: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{out_tokens}")),
-            ]));
+        // Output row — same pattern.
+        let mut output_spans = Vec::with_capacity(2);
+        push_output_span(&mut output_spans, t);
+        if !output_spans.is_empty() {
+            out.push(Line::from(output_spans));
         }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(

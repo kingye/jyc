@@ -36,6 +36,7 @@ use super::command_popup::*;
 mod chat;
 mod local_commands;
 mod palette;
+mod token_render;
 mod ws;
 use chat::*;
 use ws::*;
@@ -1229,28 +1230,16 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ];
 
-    if let (Some(cur), Some(max)) = (selected.input_tokens, selected.max_tokens) {
-        let pct = if max > 0 {
-            cur.checked_mul(100)
-                .and_then(|v| v.checked_div(max))
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        status_line.push(Span::raw("  "));
-        status_line.push(Span::styled(
-            "Tokens: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        status_line.push(Span::raw(format!("{cur} / {max} ({pct}%)")));
+    // "Tokens: X / Y (Z%)" — shared with the chat info pane via the
+    // `token_render` module. Prepend a 2-space gap so it doesn't sit
+    // flush against the status chip on the same line.
+    if let (Some(_), Some(_)) = (selected.input_tokens, selected.max_tokens) {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_tokens_span(&mut status_line, selected);
     }
-    if let Some(out) = selected.output_tokens {
-        status_line.push(Span::raw("  "));
-        status_line.push(Span::styled(
-            "Output: ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        status_line.push(Span::raw(format!("{out}")));
+    if selected.output_tokens.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_output_span(&mut status_line, selected);
     }
     info_lines.push(Line::from(status_line));
 

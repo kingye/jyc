@@ -656,6 +656,77 @@ mod session {
         // output is accumulated
         assert_eq!(state["total_output_tokens"], 330);
     }
+
+    /// `ensure_session_file` must create `agent-session.json` for a brand-new
+    /// thread that has none, with `max_input_tokens = context_window *
+    /// auto_reset_threshold`, zeroed counters, and a populated `created_at`.
+    #[tokio::test]
+    async fn ensure_session_file_creates_file_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_path = tmp.path().join(".jyc/agent-session.json");
+
+        assert!(!session_path.exists());
+
+        session::ensure_session_file(tmp.path(), Some(100_000), 0.95).await;
+
+        assert!(session_path.exists());
+
+        let content = tokio::fs::read_to_string(&session_path).await.unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        // Zeroed counters so the dashboard shows "0 / 95000 (0%)" instead
+        // of (None, None, None).
+        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["total_output_tokens"], 0);
+        // max_input_tokens = 100000 * 0.95 = 95000
+        assert_eq!(state["max_input_tokens"], 95_000);
+        // created_at must be populated so the dashboard can show session age.
+        assert!(
+            state["created_at"].as_str().is_some_and(|s| !s.is_empty()),
+            "created_at should be set when the file is freshly created"
+        );
+    }
+
+    /// `ensure_session_file` must NOT touch an existing session file — its
+    /// only job is to create the file when missing. Existing token counts,
+    /// `max_input_tokens`, and `created_at` must be preserved verbatim.
+    #[tokio::test]
+    async fn ensure_session_file_skips_when_file_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        let original = r#"{"created_at":"2026-01-01T00:00:00Z","total_input_tokens":42000,"total_output_tokens":7000,"max_input_tokens":123000}"#;
+        let session_path = jyc_dir.join("agent-session.json");
+        tokio::fs::write(&session_path, original).await.unwrap();
+
+        // Even with a different context_window / threshold, the file must
+        // remain untouched.
+        session::ensure_session_file(tmp.path(), Some(999_999), 0.5).await;
+
+        let after = tokio::fs::read_to_string(&session_path).await.unwrap();
+        assert_eq!(after, original);
+    }
+
+    /// When `context_window` is `None`, `ensure_session_file` still creates
+    /// the file but leaves `max_input_tokens` at 0 (the post-loop
+    /// `update_tokens` will fill it in on the next turn).
+    #[tokio::test]
+    async fn ensure_session_file_creates_with_no_context_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_path = tmp.path().join(".jyc/agent-session.json");
+
+        assert!(!session_path.exists());
+
+        session::ensure_session_file(tmp.path(), None, 0.95).await;
+
+        assert!(session_path.exists());
+
+        let content = tokio::fs::read_to_string(&session_path).await.unwrap();
+        let state: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["total_output_tokens"], 0);
+        assert_eq!(state["max_input_tokens"], 0);
+    }
 }
 
 mod tool_registry {

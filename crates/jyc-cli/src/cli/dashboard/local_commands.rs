@@ -1,15 +1,17 @@
-//! Local (TUI-only) commands for the dashboard command palette.
+//! Local (TUI-only) commands for the leader-key popup.
 //!
 //! Unlike `/` commands (registered in `jyc-core` and executed server-side),
 //! local commands are dispatched entirely within the TUI: navigation,
-//! zen mode, activity pane, external editor, scrolling. The palette reuses
-//! the `/` popup UI but never sends anything to the backend.
+//! zen mode, activity pane, external editor, scrolling. The leader
+//! popup is invoked with `Ctrl+P` (everywhere) or `Space` (Normal mode +
+//! dashboard) and shows all in-scope commands. Typing the assigned
+//! keys (one or two chars) dispatches the action immediately; `Esc`
+//! closes. Multi-char sequences (e.g., `gg` for scroll top) wait for the
+//! next key while a prefix is still ambiguous.
 //!
 //! Each command has a [`CommandScope`] controlling on which screen it is
-//! offered: the palette on a given screen shows commands scoped to that
+//! offered: the leader on a given screen shows commands scoped to that
 //! screen plus all `Shared` commands.
-
-use jyc_types::CommandInfo;
 
 /// Which screen a local command applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +24,7 @@ pub enum CommandScope {
     Shared,
 }
 
-/// A TUI-local action dispatched by the command palette.
+/// A TUI-local action dispatched by the leader-key popup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalAction {
     /// Close the chat screen and return to the dashboard.
@@ -54,141 +56,147 @@ pub enum LocalAction {
     ScrollBottom,
 }
 
-/// Static metadata for one palette entry.
+/// Static metadata for one leader entry.
 pub struct LocalCommand {
     /// Display/filter name (e.g. "toggle zen").
     pub name: &'static str,
     /// Short description shown next to the name.
     pub description: &'static str,
-    /// Keybinding hint shown in the palette (display only).
-    pub keybinding: &'static str,
     /// Which screen offers this command.
     pub scope: CommandScope,
     /// Action to execute when selected.
     pub action: LocalAction,
+    /// Leader keys (1-2 chars) the user types after the leader trigger
+    /// to dispatch this command. Multi-char keys support sequences like
+    /// `gg` (scroll top): the parser waits for the next key when the
+    /// buffer is a prefix of any entry's keys.
+    pub leader_keys: &'static str,
 }
 
-/// All local commands, in palette display order.
+/// All local commands, in leader display order.
 pub fn local_commands() -> &'static [LocalCommand] {
     use CommandScope::{Chat, Dashboard, Shared};
     &[
         LocalCommand {
             name: "open dashboard",
             description: "Close chat and return to the dashboard",
-            keybinding: "",
             scope: Chat,
             action: LocalAction::OpenDashboard,
+            leader_keys: "d",
         },
         LocalCommand {
             name: "open chat",
             description: "Open chat for the selected thread",
-            keybinding: "Enter",
             scope: Dashboard,
             action: LocalAction::OpenChat,
+            leader_keys: "c",
         },
         LocalCommand {
             name: "new chat",
             description: "Start a new chat (select a pattern)",
-            // `c` is only bound on the dashboard screen — no hint here so
-            // the chat palette doesn't advertise a key that types into the
-            // editor.
-            keybinding: "",
             scope: Shared,
             action: LocalAction::NewChat,
+            leader_keys: "n",
         },
         LocalCommand {
             name: "reload config",
             description: "Reload server configuration",
-            // `R` is only bound on the dashboard screen (see `new chat`).
-            keybinding: "",
             scope: Shared,
             action: LocalAction::ReloadConfig,
+            leader_keys: "r",
         },
         LocalCommand {
             name: "quit",
             description: "Quit the TUI",
-            keybinding: "Ctrl+Q",
             scope: Shared,
             action: LocalAction::Quit,
+            leader_keys: "q",
         },
         LocalCommand {
             name: "toggle explorer",
             description: "Show/hide thread explorer pane",
-            keybinding: "Ctrl+E",
             scope: Chat,
             action: LocalAction::ToggleExplorer,
+            leader_keys: "e",
         },
         LocalCommand {
             name: "toggle zen",
             description: "Hide/show info pane and status bar",
-            keybinding: "Ctrl+Z",
             scope: Chat,
             action: LocalAction::ToggleZen,
+            leader_keys: "z",
         },
         LocalCommand {
             name: "activity pane",
             description: "Cycle activity pane size",
-            keybinding: "Ctrl+A",
             scope: Chat,
             action: LocalAction::CycleActivity,
+            leader_keys: "a",
         },
         LocalCommand {
             name: "open in editor",
             description: "Compose input in external $EDITOR",
-            keybinding: "Ctrl+O",
             scope: Chat,
             action: LocalAction::OpenExternalEditor,
+            leader_keys: "o",
         },
         LocalCommand {
             name: "toggle mouse",
             description: "Toggle mouse capture",
-            keybinding: "",
             scope: Shared,
             action: LocalAction::ToggleMouseCapture,
+            leader_keys: "m",
         },
         LocalCommand {
             name: "scroll top",
             description: "Scroll messages to the top",
-            keybinding: "gg",
             scope: Chat,
             action: LocalAction::ScrollTop,
+            leader_keys: "gg",
         },
         LocalCommand {
             name: "scroll bottom",
             description: "Scroll messages to the bottom",
-            keybinding: "G",
             scope: Chat,
             action: LocalAction::ScrollBottom,
+            leader_keys: "G",
         },
     ]
 }
 
-/// Look up the action for a palette entry by exact name.
-pub fn find_by_name(name: &str) -> Option<LocalAction> {
-    local_commands()
-        .iter()
-        .find(|c| c.name == name)
-        .map(|c| c.action)
+/// One leader entry (used by the `Leader` controller).
+#[derive(Debug, Clone)]
+pub struct LeaderEntry {
+    pub keys: &'static str,
+    #[allow(dead_code)]
+    pub name: &'static str,
+    #[allow(dead_code)]
+    pub description: &'static str,
+    #[allow(dead_code)]
+    pub action: LocalAction,
 }
 
-/// Palette entries for one screen as `CommandInfo` for reuse of the `/`
-/// popup UI. Includes commands scoped to `screen` plus all `Shared` ones.
-pub fn command_infos_for(screen: CommandScope) -> Vec<CommandInfo> {
+/// Leader entries for one screen. Includes commands scoped to `screen`
+/// plus all `Shared` ones, in leader display order.
+pub fn leader_entries_for(screen: CommandScope) -> Vec<LeaderEntry> {
     local_commands()
         .iter()
         .filter(|c| c.scope == screen || c.scope == CommandScope::Shared)
-        .map(|c| {
-            let description = if c.keybinding.is_empty() {
-                c.description.to_string()
-            } else {
-                format!("{} · {}", c.description, c.keybinding)
-            };
-            CommandInfo {
-                name: c.name.to_string(),
-                description,
-            }
+        .map(|c| LeaderEntry {
+            keys: c.leader_keys,
+            name: c.name,
+            description: c.description,
+            action: c.action,
         })
         .collect()
+}
+
+/// Look up the action for a leader entry by `keys`.
+pub fn find_action_by_keys(keys: &str) -> Option<LocalAction> {
+    local_commands()
+        .iter()
+        .find(|c| c.leader_keys == keys)
+        .map(|c| c.action)
 }
 
 #[cfg(test)]
@@ -204,61 +212,82 @@ mod tests {
     }
 
     #[test]
-    fn find_by_name_roundtrip() {
-        for cmd in local_commands() {
-            assert_eq!(find_by_name(cmd.name), Some(cmd.action));
-        }
-        assert_eq!(find_by_name("nonexistent"), None);
+    fn leader_keys_are_unique_per_command() {
+        let mut keys: Vec<_> = local_commands().iter().map(|c| c.leader_keys).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), local_commands().len());
     }
 
+    /// No two commands visible in the same scope may share a leader-key
+    /// prefix relationship: dispatch would be ambiguous. A command's keys
+    /// must not be a prefix of (or equal to) any other visible command's
+    /// keys.
     #[test]
-    fn command_infos_for_filters_by_scope() {
-        let dashboard = command_infos_for(CommandScope::Dashboard);
-        let chat = command_infos_for(CommandScope::Chat);
-
-        let dash_names: Vec<_> = dashboard.iter().map(|c| c.name.as_str()).collect();
-        let chat_names: Vec<_> = chat.iter().map(|c| c.name.as_str()).collect();
-
-        // Dashboard screen: dashboard-scoped + shared
-        assert!(dash_names.contains(&"open chat"));
-        assert!(dash_names.contains(&"new chat"));
-        assert!(dash_names.contains(&"reload config"));
-        assert!(dash_names.contains(&"quit"));
-        assert!(!dash_names.contains(&"open dashboard"));
-        assert!(!dash_names.contains(&"toggle zen"));
-
-        // Chat screen: chat-scoped + shared
-        assert!(chat_names.contains(&"open dashboard"));
-        assert!(chat_names.contains(&"toggle zen"));
-        assert!(chat_names.contains(&"new chat"));
-        assert!(chat_names.contains(&"reload config"));
-        assert!(chat_names.contains(&"quit"));
-        assert!(!chat_names.contains(&"open chat"));
-
-        // Shared commands appear on both screens exactly once each.
-        let shared_count = local_commands()
-            .iter()
-            .filter(|c| c.scope == CommandScope::Shared)
-            .count();
-        assert_eq!(
-            dashboard.len() + chat.len(),
-            local_commands().len() + shared_count
-        );
-    }
-
-    #[test]
-    fn command_infos_include_keybinding_when_present() {
-        let infos = command_infos_for(CommandScope::Chat);
-        for info in &infos {
-            let cmd = local_commands()
-                .iter()
-                .find(|c| c.name == info.name)
-                .unwrap();
-            if cmd.keybinding.is_empty() {
-                assert!(!info.description.contains('·'), "{}", info.name);
-            } else {
-                assert!(info.description.contains('·'), "{}", info.name);
+    fn leader_keys_unique_per_scope() {
+        for scope in [CommandScope::Dashboard, CommandScope::Chat] {
+            let entries = leader_entries_for(scope);
+            for (i, a) in entries.iter().enumerate() {
+                for (j, b) in entries.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    assert!(
+                        a.keys != b.keys,
+                        "{scope:?}: duplicate leader key {:?} on {} and {}",
+                        a.keys,
+                        a.name,
+                        b.name
+                    );
+                    assert!(
+                        !a.keys.starts_with(b.keys) && !b.keys.starts_with(a.keys),
+                        "{scope:?}: leader keys {:?} ({}) and {:?} ({}) share a prefix — ambiguous dispatch",
+                        a.keys,
+                        a.name,
+                        b.keys,
+                        b.name
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn find_action_by_keys_roundtrip() {
+        for cmd in local_commands() {
+            assert_eq!(find_action_by_keys(cmd.leader_keys), Some(cmd.action));
+        }
+        assert_eq!(find_action_by_keys("zzzz"), None);
+    }
+
+    #[test]
+    fn leader_entries_for_filters_by_scope() {
+        let dashboard = leader_entries_for(CommandScope::Dashboard);
+        let chat = leader_entries_for(CommandScope::Chat);
+
+        let dash_keys: Vec<_> = dashboard.iter().map(|e| e.keys).collect();
+        let chat_keys: Vec<_> = chat.iter().map(|e| e.keys).collect();
+
+        // Dashboard screen: dashboard-scoped + shared.
+        assert!(dash_keys.contains(&"c"), "open chat must be on dashboard");
+        assert!(dash_keys.contains(&"n"));
+        assert!(dash_keys.contains(&"r"));
+        assert!(dash_keys.contains(&"q"));
+        assert!(
+            !dash_keys.contains(&"d"),
+            "open dashboard must be Chat-only"
+        );
+        assert!(!dash_keys.contains(&"z"));
+
+        // Chat screen: chat-scoped + shared.
+        assert!(chat_keys.contains(&"d"));
+        assert!(chat_keys.contains(&"z"));
+        assert!(chat_keys.contains(&"n"));
+        assert!(chat_keys.contains(&"r"));
+        assert!(chat_keys.contains(&"q"));
+        assert!(
+            !chat_keys.contains(&"c"),
+            "open chat must be Dashboard-only"
+        );
     }
 }

@@ -244,19 +244,6 @@ pub fn render_command_popup(
     render_popup(frame, area, state, commands, models, " Commands ");
 }
 
-/// Render the TUI-local command palette as a centered overlay.
-///
-/// Same UI as the `/` command popup but with a " Palette " title and no
-/// model mode (palette commands are never backend commands).
-pub fn render_palette_popup(
-    frame: &mut Frame,
-    area: Rect,
-    state: &CommandPopupState,
-    commands: &[CommandInfo],
-) {
-    render_popup(frame, area, state, commands, &[], " Palette ");
-}
-
 /// Shared renderer for the command popup and the command palette.
 fn render_popup(
     frame: &mut Frame,

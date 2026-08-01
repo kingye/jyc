@@ -46,6 +46,18 @@ All notable changes to JYC will be documented in this file.
   style matches the existing `LINE_DRAWING` palette used elsewhere in
   the chat screen.
 
+- **Leader-key popup replaces the command palette.** `Ctrl+P` (and
+  `Space` in Normal mode / on the dashboard) now opens a leader-key
+  popup that lists every local command for the current scope with its
+  assigned keys. Typing the keys dispatches the action immediately;
+  `Esc` closes. Multi-char keys (`gg` for scroll top, `G` for scroll
+  bottom) wait for the next key while the buffer is a prefix. The
+  previous filter-palette popup (Ctrl+P + type to filter + Enter to
+  dispatch) and the `:` shortcut are removed; `Ctrl+Q`, `Ctrl+C`, and
+  `Enter` on the dashboard are preserved. Leader keys per scope:
+  chat — `d`, `e`, `z`, `a`, `o`, `gg`, `G`, `n`, `r`, `q`, `m`;
+  dashboard — `c`, `n`, `r`, `q`, `m`.
+
 ## [0.3.13] - 2026-08-01
 
 ### Added

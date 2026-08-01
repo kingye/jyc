@@ -6,44 +6,7 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Inspect REST API.** The inspect server now exposes a real HTTP/1.1
-  REST surface in addition to the WebSocket routes. New endpoints:
-  `GET /api/state`, `GET /api/state/overview`,
-  `GET /api/threads/{channel}/{thread}/activity`,
-  `GET /api/threads/{channel}/{thread}/chat`,
-  `GET /api/channels/{channel}/patterns`,
-  `POST /api/threads`, `POST /api/config/reload`. All endpoints and
-  WebSocket upgrades share one Bearer token (`[inspect].auth_token`)
-  via a single `require_bearer` middleware — the
-  `Authorization: Bearer <token>` header (case-insensitive scheme per
-  RFC 7235 §2.1) gates every route. The Rust client
-  `jyc_inspect::client::InspectClient` now uses `reqwest` internally;
-  its public method names are unchanged so the dashboard call sites
-  are untouched. See `docs/api.md` for the full reference.
-
 - **Mouse-wheel scroll in the chat message area.** `jyc dashboard` now
-
-### Changed
-
-- **BREAKING: removed line-delimited JSON inspect protocol.** The
-  raw-TCP, one-JSON-object-per-line protocol that the inspect server
-  used to accept is gone. All consumers must move to the new HTTP REST
-  endpoints. The WebSocket protocol is unchanged. The
-  `InspectRequest` / `InspectResponse` tagged-union enums are removed
-  from `jyc-types`.
-
-- **Inspect auth is now header-based.** The old `auth_token` field on
-  the JSON request body is replaced by the
-  `Authorization: Bearer <token>` HTTP header on every REST request
-  and WebSocket upgrade. Same single config value, same token. The
-  comparison is constant-time (defense in depth against timing leaks
-  on the WS path's previous `!=` check).
-
-### Removed
-
-- `InspectRequest` and `InspectResponse` enums from
-  `crates/jyc-types/src/inspect.rs`. Replaced by typed REST request
-  bodies and JSON response shapes (status + body).
   enables crossterm mouse capture and translates `ScrollUp` /
   `ScrollDown` events into chat-pane scroll commands when the cursor
   is over the scrollable message area (above the input editor). The
@@ -54,14 +17,6 @@ All notable changes to JYC will be documented in this file.
   input grows and as the activity / explorer panes toggle.
 
 ### Fixed
-
-- **WebSocket chat to a websocket-type channel now works from the
-  dashboard chat pane.** Connecting to `/ws/<channel>/<thread>` now
-  propagates the URL thread name to the channel's WebSocket handler as
-  `scoped_thread`. Previously the inspect server always passed `None`,
-  so messages sent from the chat pane — which rely on the URL scope and
-  omit `thread` from the payload — were dropped with "WebSocket Message
-  without thread; ignoring".
 
 - **Token dashboard is visible immediately on new threads.** A brand-new
   thread — or one whose session was just deleted by `/reset` or `/new`
@@ -965,6 +920,55 @@ All notable changes to JYC will be documented in this file.
   `unicode-width` for accurate CJK character width. (#343)
 
 ## [Unreleased]
+
+### Added
+
+- **Inspect REST API.** The inspect server now exposes a real HTTP/1.1
+  REST surface in addition to the WebSocket routes. New endpoints:
+  `GET /api/state`, `GET /api/state/overview`,
+  `GET /api/threads/{channel}/{thread}/activity`,
+  `GET /api/threads/{channel}/{thread}/chat`,
+  `GET /api/channels/{channel}/patterns`,
+  `POST /api/threads`, `POST /api/config/reload`. All endpoints and
+  WebSocket upgrades share one Bearer token (`[inspect].auth_token`)
+  via a single `require_bearer` middleware — the
+  `Authorization: Bearer <token>` header (case-insensitive scheme per
+  RFC 7235 §2.1) gates every route. The Rust client
+  `jyc_inspect::client::InspectClient` now uses `reqwest` internally;
+  its public method names are unchanged so the dashboard call sites
+  are untouched. See `docs/api.md` for the full reference.
+
+### Changed
+
+- **BREAKING: removed line-delimited JSON inspect protocol.** The
+  raw-TCP, one-JSON-object-per-line protocol that the inspect server
+  used to accept is gone. All consumers must move to the new HTTP REST
+  endpoints. The WebSocket protocol is unchanged. The
+  `InspectRequest` / `InspectResponse` tagged-union enums are removed
+  from `jyc-types`.
+
+- **Inspect auth is now header-based.** The old `auth_token` field on
+  the JSON request body is replaced by the
+  `Authorization: Bearer <token>` HTTP header on every REST request
+  and WebSocket upgrade. Same single config value, same token. The
+  comparison is constant-time (defense in depth against timing leaks
+  on the WS path's previous `!=` check).
+
+### Removed
+
+- `InspectRequest` and `InspectResponse` enums from
+  `crates/jyc-types/src/inspect.rs`. Replaced by typed REST request
+  bodies and JSON response shapes (status + body).
+
+### Fixed
+
+- **WebSocket chat to a websocket-type channel now works from the
+  dashboard chat pane.** Connecting to `/ws/<channel>/<thread>` now
+  propagates the URL thread name to the channel's WebSocket handler as
+  `scoped_thread`. Previously the inspect server always passed `None`,
+  so messages sent from the chat pane — which rely on the URL scope and
+  omit `thread` from the payload — were dropped with "WebSocket Message
+  without thread; ignoring".
 
 ## [0.3.12] - 2026-06-28
 

@@ -1989,7 +1989,7 @@ impl ChatState {
         &mut self,
         addr: &str,
         channel: &str,
-        client: &mut InspectClient,
+        client: &InspectClient,
         token: Option<String>,
     ) {
         self.visible = true;

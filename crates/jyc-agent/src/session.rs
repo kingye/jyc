@@ -24,9 +24,16 @@ pub struct SessionState {
     pub created_at: String,
     /// Current context size in tokens. Equal to the input tokens reported by
     /// the most recent LLM call, since each call sends the full conversation
-    /// context. NOT a sum across calls — for accumulated output tokens see
+    /// context. NOT a sum across calls — for accumulated input tokens see
+    /// `total_input_tokens`, for accumulated output tokens see
     /// `total_output_tokens`.
     pub context_input_tokens: u64,
+    /// Accumulated input tokens across all LLM calls in this session.
+    /// Each call's `input_tokens` (= full context size) is added via `+=`
+    /// from the agent loop, so this represents the cumulative tokens sent
+    /// to the API over the session's lifetime. Reset to 0 on session reset.
+    #[serde(default)]
+    pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
@@ -281,10 +288,13 @@ pub async fn ensure_session_file(
 ///
 /// `input_tokens` is the tokens reported by the last API call — stored
 /// directly (not accumulated) since each call already includes the full
-/// context. `output_tokens` accumulates across the round.
+/// context. `total_input_tokens` and `output_tokens` are running totals
+/// accumulated by the caller (`agent_loop`), passed in as the current sum.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
@@ -292,6 +302,7 @@ pub async fn persist_tokens(
     let _ = persist_tokens_returning_state(
         thread_path,
         input_tokens,
+        total_input_tokens,
         output_tokens,
         context_window,
         auto_reset_threshold,
@@ -305,6 +316,7 @@ pub async fn persist_tokens(
 async fn persist_tokens_returning_state(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
@@ -313,6 +325,7 @@ async fn persist_tokens_returning_state(
     let mut state = load_session_state(&session_path).await;
 
     state.context_input_tokens = input_tokens;
+    state.total_input_tokens = total_input_tokens;
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {
@@ -348,9 +361,11 @@ async fn persist_tokens_returning_state(
 /// All three paths — manual `/reset`, pre-loop pre-check, and this post-loop
 /// auto-reset — go through `reset_session()` with this config so user
 /// preferences (`mode`, `keep_pairs`) are honored consistently.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
@@ -363,6 +378,7 @@ pub async fn update_tokens(
     let (_, state) = persist_tokens_returning_state(
         thread_path,
         input_tokens,
+        total_input_tokens,
         output_tokens,
         context_window,
         auto_reset_threshold,
@@ -386,7 +402,7 @@ pub async fn update_tokens(
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
         // starts clean.
-        persist_tokens(thread_path, 0, 0, context_window, auto_reset_threshold).await;
+        persist_tokens(thread_path, 0, 0, 0, context_window, auto_reset_threshold).await;
     }
 }
 

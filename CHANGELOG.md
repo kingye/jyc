@@ -19,6 +19,18 @@ All notable changes to JYC will be documented in this file.
   it off when working inside tmux and the chip switches to ` MOUSE- `
   immediately. A brief status line confirms the change.
 
+- **Accumulated `total_input_tokens` in the session state.** New field
+  in `.jyc/agent-session.json` that records the running sum of every
+  LLM call's `input_tokens` (= full context size) across the session's
+  lifetime. Distinct from `context_input_tokens` (which holds the most
+  recent call's input size = current context, just renamed in PR
+  #491). The `agent_loop` accumulates per-call input tokens and
+  passes the running total into `persist_tokens`; on auto-reset the
+  counter zeros out alongside `context_input_tokens` and
+  `total_output_tokens`. Visible in the thread info pane (chat) and
+  the dashboard thread info area as a new `Total input: N` row.
+  (#490)
+
 ### Fixed
 
 - **`jyc open` no longer times out on a brand-new ad-hoc thread.**

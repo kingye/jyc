@@ -374,6 +374,7 @@ mod session {
         session::update_tokens(
             tmp.path(),
             1000,
+            1000,
             200,
             Some(100000),
             &StubProvider,
@@ -389,6 +390,7 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 1000);
+        assert_eq!(state["total_input_tokens"], 1000);
         assert_eq!(state["total_output_tokens"], 200);
         assert_eq!(state["max_input_tokens"], 95000); // 95% of 100000
     }
@@ -401,6 +403,7 @@ mod session {
         session::update_tokens(
             tmp.path(),
             1000,
+            1000,
             100,
             Some(100000),
             &StubProvider,
@@ -411,6 +414,7 @@ mod session {
         // Second call — input_tokens should be latest, not accumulated
         session::update_tokens(
             tmp.path(),
+            2000,
             2000,
             150,
             Some(100000),
@@ -425,6 +429,7 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 2000); // Latest, not 3000
+        assert_eq!(state["total_input_tokens"], 2000); // Latest, not 3000
         assert_eq!(state["total_output_tokens"], 250); // Accumulated: 100 + 150
     }
 
@@ -481,6 +486,7 @@ mod session {
         session::update_tokens(
             tmp.path(),
             6000, // still over 1000 → auto-reset fires
+            6000,
             50,
             Some(1000),
             &StubProvider,
@@ -498,6 +504,7 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 0);
+        assert_eq!(state["total_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
         assert_eq!(state["max_input_tokens"], 950); // 0.95 * 1000 from the call's context_window
     }
@@ -620,7 +627,7 @@ mod session {
             .unwrap();
 
         // Call persist_tokens with input well above the 95% threshold.
-        session::persist_tokens(tmp.path(), 100_000, 200, Some(10_000), 0.95).await;
+        session::persist_tokens(tmp.path(), 100_000, 100_000, 200, Some(10_000), 0.95).await;
 
         // Context file untouched.
         let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
@@ -643,9 +650,9 @@ mod session {
     async fn persist_tokens_accumulates_output_tokens() {
         let tmp = tempfile::tempdir().unwrap();
 
-        session::persist_tokens(tmp.path(), 1000, 100, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 1500, 150, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 80, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 150, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 80, None, 0.95).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -653,8 +660,33 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
         // input is latest, not accumulated (each API call already includes full context)
         assert_eq!(state["context_input_tokens"], 2000);
+        // total_input_tokens reflects the running sum that agent_loop passed in
+        assert_eq!(state["total_input_tokens"], 2000);
         // output is accumulated
         assert_eq!(state["total_output_tokens"], 330);
+    }
+
+    /// `total_input_tokens` reflects the running sum that the agent_loop
+    /// accumulator passes in. Simulates three LLM calls with per-call
+    /// `input_tokens` of 1000, 2000, 3000 — agent_loop sums them to
+    /// 1000, 3000, 6000 and passes each running total to persist_tokens.
+    /// The on-disk value reflects the latest passed-in sum (= 6000).
+    #[tokio::test]
+    async fn persist_tokens_total_input_reflects_caller_running_sum() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Three "rounds" where the loop accumulates input_tokens across
+        // internal iterations and passes the running total.
+        session::persist_tokens(tmp.path(), 1000, 1000, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 3000, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 3000, 6000, 0, None, 0.95).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+        assert_eq!(state["context_input_tokens"], 3000);
+        assert_eq!(state["total_input_tokens"], 6000);
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new

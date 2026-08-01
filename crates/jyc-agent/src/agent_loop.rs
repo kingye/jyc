@@ -144,6 +144,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut context_input_tokens: u64 = 0;
+    let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
     let mut reply_text_from_tool: Option<String> = None;
@@ -350,6 +351,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         if response.input_tokens > 0 {
             context_input_tokens = response.input_tokens;
         }
+        total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
 
         // Mid-loop token check: if total input tokens exceed the threshold,
@@ -406,6 +408,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         crate::session::persist_tokens(
             thread_path,
             context_input_tokens,
+            total_input_tokens,
             total_output_tokens,
             context_window,
             auto_reset_threshold,
@@ -456,6 +459,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 reply_sent_by_tool,
                 reply_text_from_tool,
                 input_tokens: context_input_tokens,
+                total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
                 raw_context,
@@ -693,6 +697,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 reply_sent_by_tool: true,
                 reply_text_from_tool,
                 input_tokens: context_input_tokens,
+                total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
                 raw_context,
@@ -744,6 +749,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         reply_sent_by_tool,
         reply_text_from_tool,
         input_tokens: context_input_tokens,
+        total_input_tokens,
         output_tokens: total_output_tokens,
         history,
         raw_context,

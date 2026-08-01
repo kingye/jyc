@@ -34,8 +34,8 @@ use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, ThreadStatus}
 use super::command_popup::*;
 
 mod chat;
+mod leader;
 mod local_commands;
-mod palette;
 mod token_render;
 mod ws;
 use chat::*;
@@ -93,11 +93,11 @@ struct App {
     /// buffers so the chat pane shows the new thread's history.
     pending_hydrate: Option<(String, String)>,
 
-    /// Set by the palette `new chat` action; the async poll loop runs the
+    /// Set by the leader `new chat` (Space/n) action; the async poll loop runs the
     /// pattern-select flow (needs InspectClient for `list_patterns`).
     pending_new_chat: bool,
 
-    /// Set by the palette `reload config` action; the async poll loop runs
+    /// Set by the leader `reload config` (Space/r) action; the async poll loop runs
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
 
@@ -105,14 +105,14 @@ struct App {
     /// chat message area scrolls on wheel events but tmux/terminal-native
     /// text selection is hijacked by the app. When off, tmux select works
     /// but the wheel does nothing. Flipped at runtime by the `toggle
-    /// mouse` command palette entry. Default is `true` to match the
-    /// behaviour introduced by PR #484 — opt out via the palette when
+    /// mouse` leader-key popup entry. Default is `true` to match the
+    /// behaviour introduced by PR #484 — opt out via leader popup when
     /// working inside tmux.
     mouse_capture_enabled: bool,
 
-    /// Open command palette on the dashboard screen (dashboard + shared
-    /// commands).
-    palette: Option<palette::Palette>,
+    /// Open leader-key popup on the dashboard screen (dashboard + shared
+    /// commands). Triggered by `Ctrl+P` or `Space`.
+    leader: Option<leader::Leader>,
 
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
@@ -148,7 +148,7 @@ impl App {
             pending_new_chat: false,
             pending_reload_config: false,
             mouse_capture_enabled: true,
-            palette: None,
+            leader: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
             overview_ws_rx,
@@ -536,7 +536,7 @@ pub async fn run(
                 hydrate_live(&client, &mut app, &channel, &thread).await;
             }
 
-            // Palette actions deferred for the same reason.
+            // Leader actions deferred for the same reason.
             if app.pending_new_chat {
                 app.pending_new_chat = false;
                 start_new_chat(&mut app, &args.addr, &client).await;
@@ -879,7 +879,7 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, thre
 }
 
 /// Start a new chat: fetch patterns via REST and open the chat screen in
-/// pattern-select mode. Used by the `c` key and the palette `new chat`
+/// pattern-select mode. Used by the `c` key and the leader `new chat` (Space/n)
 /// action (via `pending_new_chat`).
 async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
     let channel = app.state.as_ref().and_then(|o| {
@@ -899,7 +899,7 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
 
 /// Open the chat screen for the table-selected thread: websocket chat for
 /// websocket threads, detail mode otherwise. Used by the Enter key and the
-/// palette `open chat` action.
+/// leader `open chat` (Space/c) action.
 async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: &str) {
     let thread_info = app.state.as_ref().and_then(|s| {
         app.table_state
@@ -932,7 +932,7 @@ async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: 
     }
 }
 
-/// Reload the server configuration. Used by the `R` key and the palette
+/// Reload the server configuration. Used by the `R` key and the leader
 /// `reload config` action (via `pending_reload_config`).
 async fn reload_server_config(
     app: &mut App,
@@ -966,13 +966,13 @@ async fn handle_normal_keys(
         return;
     }
 
-    // Palette open: delegate all keys to it and dispatch the chosen action.
-    if let Some(ref mut p) = app.palette {
-        match p.handle_key(key) {
-            palette::PaletteResult::Consumed => {}
-            palette::PaletteResult::Closed => app.palette = None,
-            palette::PaletteResult::Action(action) => {
-                app.palette = None;
+    // Leader open: delegate all keys to it and dispatch the chosen action.
+    if let Some(ref mut leader) = app.leader {
+        match leader.handle_key(key) {
+            leader::LeaderResult::Consumed => {}
+            leader::LeaderResult::Closed => app.leader = None,
+            leader::LeaderResult::Action(action) => {
+                app.leader = None;
                 use local_commands::LocalAction;
                 match action {
                     LocalAction::OpenChat => open_selected_thread_chat(app, client, addr).await,
@@ -988,13 +988,11 @@ async fn handle_normal_keys(
         return;
     }
 
-    // Ctrl+P or ":" opens the command palette (dashboard + shared commands).
+    // Ctrl+P or Space opens the leader popup (dashboard + shared commands).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
-    let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_p || is_colon {
-        app.palette = Some(palette::Palette::new(
-            local_commands::CommandScope::Dashboard,
-        ));
+    let is_space = key.code == KeyCode::Char(' ') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_ctrl_p || is_space {
+        app.leader = Some(leader::Leader::new(local_commands::CommandScope::Dashboard));
         return;
     }
 
@@ -1021,7 +1019,7 @@ async fn handle_normal_keys(
 }
 
 /// Flip the terminal mouse-capture mode (used by the `toggle mouse`
-/// palette action on both dashboard and chat screens). Splits the pure
+/// leader-key action on both dashboard and chat screens). Splits the pure
 /// state flip from the terminal I/O so the rollback path can restore the
 /// previous state if the escape write fails.
 fn toggle_mouse_capture(app: &mut App) {
@@ -1067,9 +1065,9 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     render_details(frame, chunks[2], app);
     render_status_bar(frame, chunks[3], app);
 
-    // Command palette overlay (dashboard + shared commands).
-    if let Some(ref p) = app.palette {
-        p.render(frame, area);
+    // Leader-key popup overlay (dashboard + shared commands).
+    if let Some(ref leader) = app.leader {
+        leader.render(frame, area);
     }
 }
 
@@ -1366,9 +1364,9 @@ fn close_overview_ws(app: &mut App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    // Shortcuts live in the command palette (Ctrl+P); the status bar only
-    // advertises how to reach them.
-    let help_text = "[^P]palette [^Q]quit".to_string();
+    // Shortcuts live in the leader-key popup (Ctrl+P / Space); the status
+    // bar only advertises how to reach them.
+    let help_text = "[^P/Spc]leader [^Q]quit".to_string();
 
     // Right-aligned chips. The vim mode chip shows while chatting (8 cells);
     // the mouse-capture chip is always visible (8 cells, global terminal

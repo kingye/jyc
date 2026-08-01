@@ -19,6 +19,23 @@ All notable changes to JYC will be documented in this file.
   it off when working inside tmux and the chip switches to ` MOUSE- `
   immediately. A brief status line confirms the change.
 
+### Fixed
+
+- **`jyc open` no longer times out on a brand-new ad-hoc thread.**
+  `set_thread_path` now creates `.jyc/` and `.jyc/thread-name` for the
+  registered path. Previously only the bare folder was created, and
+  `list_threads` filtered the entry out (the `path.join(".jyc").is_dir()`
+  guard dropped it), so `wait_for_thread` polled the inspect overview for
+  5 seconds and never saw the new thread — `jyc open` aborted with
+  `Timeout waiting for thread <name> to be created`.
+
+- **Selective borders for chat-pane side panels.** The thread info pane
+  now draws only its `LEFT` edge (against the chat conversation), the
+  thread explorer pane draws only its `RIGHT` edge, and the activity
+  pane draws only its `TOP` edge. The outer / screen-edge borders and
+  the redundant inner borders are gone, so the borderless chat area
+  reads as a single flat surface with three thin separators.
+
 ## [0.3.13] - 2026-08-01
 
 ### Added

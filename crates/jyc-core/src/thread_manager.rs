@@ -787,9 +787,17 @@ impl ThreadManager {
     ///
     /// Subsequent calls to `thread_path(thread_name)` will return this path
     /// instead of the default `<workspace>/<thread_name>/`. The directory
-    /// is created if it does not already exist.
+    /// is created if it does not already exist. `.jyc/thread-name` is also
+    /// written so `list_threads` recognises the entry — without it, the
+    /// `path.join(".jyc").is_dir()` filter in `list_threads` drops the
+    /// entry and `wait_for_thread` times out for fresh ad-hoc threads.
     pub async fn set_thread_path(&self, thread_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
+        let jyc_dir = path.join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await?;
+        tokio::fs::write(jyc_dir.join("thread-name"), thread_name)
+            .await
+            .ok();
         let mut paths = self.thread_paths.lock().await;
         paths.insert(thread_name.to_string(), path);
         Ok(())
@@ -2929,6 +2937,51 @@ mode = "agent"
 
         let paths = tm.custom_thread_paths().await;
         assert!(paths.is_empty());
+
+        tm.shutdown().await;
+    }
+
+    /// Regression test for the `jyc open` ad-hoc thread timeout:
+    ///
+    /// `set_thread_path` must create `.jyc/thread-name` so that the
+    /// `path.join(".jyc").is_dir()` filter in `list_threads` keeps the
+    /// entry. Without it, a freshly-registered ad-hoc thread is dropped
+    /// from the overview and `wait_for_thread` in `run_open` times out
+    /// with "Timeout waiting for thread ... to be created".
+    #[tokio::test]
+    async fn test_set_thread_path_creates_jyc_dir_and_appears_in_list() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let custom_path = tmp.path().join("adhoc-projects");
+        tm.set_thread_path("projects", custom_path.clone())
+            .await
+            .unwrap();
+
+        // `.jyc/` and `.jyc/thread-name` are written by set_thread_path so
+        // list_threads doesn't filter the entry out.
+        assert!(
+            custom_path.join(".jyc").is_dir(),
+            "set_thread_path must create .jyc/"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(custom_path.join(".jyc").join("thread-name"))
+                .await
+                .unwrap()
+                .trim(),
+            "projects",
+            "set_thread_path must write .jyc/thread-name"
+        );
+
+        // The new ad-hoc thread appears in list_threads so the dashboard
+        // overview reports it within the 5s wait_for_thread window.
+        let threads = tm.list_threads().await;
+        assert!(
+            threads.iter().any(|t| t.name == "projects"),
+            "ad-hoc thread should appear in list_threads"
+        );
 
         tm.shutdown().await;
     }

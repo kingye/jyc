@@ -939,9 +939,12 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
+    // Only the right edge (against the chat pane) gets a border. Top,
+    // bottom, and left are at the screen edge or already provided by
+    // the chat pane border, so they're redundant.
     let block = Block::default()
         .title(" Threads ")
-        .borders(Borders::ALL)
+        .borders(Borders::RIGHT)
         .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1042,9 +1045,12 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
 /// processing indicator. Wraps content in a bordered `Block` so it is
 /// visually separable from the borderless chat pane.
 pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) {
+    // Only the left edge (against the chat pane) gets a border. Top,
+    // bottom, and right are at the screen edge or redundant with the
+    // chat pane border.
     let block = Block::default()
         .title(" Thread Info ")
-        .borders(Borders::ALL);
+        .borders(Borders::LEFT);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1773,7 +1779,8 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
         };
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
-    let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
+    // Borders::TOP subtracts one row from the inner area.
+    let inner_height = area.height.saturating_sub(1) as usize;
     // Internal entries (`is_internal=true`) and Thinking heartbeats are
     // excluded from the activity pane. The chat pane's AI progress area
     // handles thinking display; the in-memory log keeps them for debug.
@@ -1801,7 +1808,9 @@ pub(super) fn render_activity_log_inner(
     hscroll: usize,
     focused: bool,
 ) {
-    let mut block = Block::default().title(" Activity ").borders(Borders::ALL);
+    // Only the top edge (against the chat pane) gets a border. Bottom,
+    // left, and right are at the screen edge or redundant.
+    let mut block = Block::default().title(" Activity ").borders(Borders::TOP);
     if focused {
         block = block.border_style(
             Style::default()
@@ -1839,7 +1848,8 @@ pub(super) fn render_activity_log_inner(
         return;
     }
 
-    let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
+    // Borders::TOP subtracts one row from the inner area.
+    let inner_height = area.height.saturating_sub(1) as usize;
     let max_skip = visible.len().saturating_sub(inner_height);
     let skip = max_skip.saturating_sub(scroll_offset);
 

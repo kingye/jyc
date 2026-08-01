@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-agent"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-channels"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "aes",
  "anyhow",
@@ -1794,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-cli"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-core"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-inspect"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-mcp"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1896,7 +1896,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-services"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "async-imap",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-types"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "jyc-utils"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "dirs",

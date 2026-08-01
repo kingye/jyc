@@ -129,15 +129,30 @@ async fn test_websocket_adapter_start_and_handle() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    // With the axum-based inspect server, the WebSocketUpgrade extractor
+    // performs the HTTP upgrade itself and hands the handler an
+    // `axum::extract::ws::WebSocket` (not a raw tungstenite stream).
+    // The simplest way to reproduce that flow is to spin up a minimal
+    // axum router whose only job is to accept the WS upgrade and hand
+    // the resulting WebSocket to the inbound adapter — same as the
+    // production WS dispatch in jyc-inspect's server.
+    let inbound_for_handler = inbound.clone();
+    let app = axum::Router::new().route(
+        "/ws",
+        axum::routing::get(move |ws: axum::extract::ws::WebSocketUpgrade| {
+            let inbound = inbound_for_handler.clone();
+            async move {
+                ws.on_upgrade(move |socket| async move {
+                    let addr = "127.0.0.1:0".parse().unwrap();
+                    if let Err(e) = inbound.handle(socket, addr, None).await {
+                        tracing::warn!(error = %e, "WebSocket handler failed");
+                    }
+                })
+            }
+        }),
+    );
     let server_handle = tokio::spawn(async move {
-        let (stream, client_addr) = listener.accept().await.unwrap();
-
-        // With the axum-based inspect server, the WebSocketUpgrade extractor
-        // performs the HTTP upgrade itself and hands us a WebSocketStream
-        // wrapping a raw TcpStream. We simulate that here.
-        let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
-
-        inbound.handle(ws_stream, client_addr, None).await.unwrap();
+        axum::serve(listener, app).await.unwrap();
     });
 
     // Connect test client

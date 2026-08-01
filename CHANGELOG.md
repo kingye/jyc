@@ -55,6 +55,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **WebSocket chat to a websocket-type channel now works from the
+  dashboard chat pane.** Connecting to `/ws/<channel>/<thread>` now
+  propagates the URL thread name to the channel's WebSocket handler as
+  `scoped_thread`. Previously the inspect server always passed `None`,
+  so messages sent from the chat pane — which rely on the URL scope and
+  omit `thread` from the payload — were dropped with "WebSocket Message
+  without thread; ignoring".
+
 - **Token dashboard is visible immediately on new threads.** A brand-new
   thread — or one whose session was just deleted by `/reset` or `/new`
   — now has `.jyc/agent-session.json` pre-created at the start of

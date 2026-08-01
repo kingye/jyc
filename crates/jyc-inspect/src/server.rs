@@ -1153,11 +1153,20 @@ async fn ws_upgrade_for_route(
     route: WsRoute,
 ) -> axum::response::Response {
     use axum::extract::ws::Message;
+    // Extract the URL-scoped thread name (`/ws/<channel>/<thread>`) before
+    // `resolve_ws_handler` consumes `route`. Handlers that bind the thread
+    // from the URL (e.g. `WebsocketInboundAdapter` wrapped in
+    // `ScopedWsHandler`) rely on this to route inbound chat messages
+    // without requiring a `thread` field in the payload.
+    let scoped_thread: Option<String> = match &route {
+        WsRoute::Thread { name, .. } => Some(name.clone()),
+        _ => None,
+    };
     match InspectServer::resolve_ws_handler(&ctx, route) {
         Ok(handler) => {
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             ws.on_upgrade(move |socket| async move {
-                if let Err(e) = handler.handle(socket, addr, None).await {
+                if let Err(e) = handler.handle(socket, addr, scoped_thread.as_deref()).await {
                     tracing::debug!(error = %e, "ws handler exited with error");
                 }
             })

@@ -79,8 +79,8 @@ pub(super) struct ChatState {
     /// `false` = both hidden (zen mode), `true` = both visible.
     pub(super) info_visible: bool,
     /// Thread explorer pane (left side, 20% width). Default hidden;
-    /// toggled via Ctrl+E / the `toggle explorer` palette command.
-    /// Entering zen mode hides it; exiting zen mode does not restore it.
+    /// toggled via the leader-key popup (`e`). Entering zen mode hides
+    /// it; exiting zen mode does not restore it.
     pub(super) explorer_visible: bool,
     /// Selected row in the explorer pane.
     pub(super) explorer_selected: usize,
@@ -125,9 +125,9 @@ pub(super) struct ChatState {
     pub(super) commands: Vec<CommandInfo>,
     pub(super) models: Vec<ModelInfo>,
     pub(super) command_popup: Option<CommandPopupState>,
-    /// TUI-local command palette (navigation, zen mode, activity pane, ...).
+    /// TUI-local leader-key popup (navigation, zen mode, activity pane, ...).
     /// Never sent to the backend.
-    pub(super) palette: Option<palette::Palette>,
+    pub(super) leader: Option<leader::Leader>,
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
     /// Current position in history browsing (None = not browsing).
@@ -395,7 +395,7 @@ fn explorer_open_selected(app: &mut App) {
     }
 }
 
-/// Execute a TUI-local action selected from the command palette.
+/// Execute a TUI-local action selected from the leader-key popup.
 pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -459,39 +459,6 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // Ctrl+E toggles the thread explorer pane (E = explorer).
-    let is_ctrl_e = key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_e && app.chat.phase == ChatPhase::Chatting {
-        toggle_explorer_snapped(app);
-        return;
-    }
-
-    // Ctrl+O opens an external editor to compose the chat input
-    let is_ctrl_o = key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_o && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
-        if let Err(e) = edit_input_externally(app, terminal) {
-            app.set_status(format!("Editor error: {e:#}"));
-        }
-        return;
-    }
-
-    // Ctrl+A cycles the activity pane size. Replaces the previous Ctrl+W
-    // binding.
-    let is_ctrl_a = key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_a && app.chat.phase == ChatPhase::Chatting {
-        app.chat.cycle_activity();
-        return;
-    }
-
-    // Ctrl+Z toggles zen mode: hides/shows thread info pane + status bar,
-    // and hides the activity pane if it was visible. Exiting zen mode does
-    // not restore the activity pane — only info+status.
-    let is_ctrl_z = key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_z && app.chat.phase == ChatPhase::Chatting {
-        app.chat.toggle_zen_mode();
-        return;
-    }
-
     // Ctrl+C sends /cancel without modifying the input buffer (advertised in
     // CHANGELOG v0.3.12). Routes through `send_message_inner` (not
     // `send_message`) so the editor is untouched. The worker's
@@ -503,48 +470,48 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
-        app.chat.palette = None;
+        app.chat.leader = None;
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
 
-    // ── Command palette handling (TUI-local commands, never sent) ──
-    if let Some(ref mut palette) = app.chat.palette {
-        match palette.handle_key(key) {
-            palette::PaletteResult::Consumed => {}
-            palette::PaletteResult::Closed => {
-                app.chat.palette = None;
+    // ── Leader-key popup handling (TUI-local commands, never sent) ──
+    if let Some(ref mut leader) = app.chat.leader {
+        match leader.handle_key(key) {
+            leader::LeaderResult::Consumed => {}
+            leader::LeaderResult::Closed => {
+                app.chat.leader = None;
             }
-            palette::PaletteResult::Action(action) => {
-                app.chat.palette = None;
+            leader::LeaderResult::Action(action) => {
+                app.chat.leader = None;
                 execute_local_action(app, terminal, action);
             }
         }
         return;
     }
 
-    // Ctrl+P opens the command palette (works from any editor mode and in
-    // any chat phase — it is the only way back to the dashboard from
+    // Ctrl+P is the leader (works from any editor mode and in any chat
+    // phase — it is the only way back to the dashboard from
     // PatternSelect).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_p {
         app.chat.command_popup = None;
-        app.chat.palette = Some(palette::Palette::new(local_commands::CommandScope::Chat));
+        app.chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
         return;
     }
 
-    // ":" opens the command palette in Normal mode (vim-style, symmetric
-    // with "/" opening the backend command popup). Suppressed while the
-    // command popup is open — there ":" is legitimate filter input.
-    let is_colon = key.code == KeyCode::Char(':') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_colon
+    // Space opens the leader in Normal mode (vim-style, symmetric with
+    // "/" opening the backend command popup). Suppressed while the
+    // command popup is open — there Space is legitimate editor input.
+    let is_space = key.code == KeyCode::Char(' ') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_space
         && app.chat.phase == ChatPhase::Chatting
         && app.chat.focus == ChatFocus::ChatPane
         && app.chat.editor.mode == EditorMode::Normal
         && app.chat.command_popup.is_none()
     {
         app.chat.command_popup = None;
-        app.chat.palette = Some(palette::Palette::new(local_commands::CommandScope::Chat));
+        app.chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
         return;
     }
 
@@ -578,7 +545,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             _ => false,
         };
         if should_open {
-            app.chat.palette = None;
+            app.chat.leader = None;
             app.chat.command_popup = Some(CommandPopupState::new());
             return;
         }
@@ -587,7 +554,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     match app.chat.phase {
         ChatPhase::PatternSelect => match key.code {
             // No Esc-back here: returning to the dashboard is done via the
-            // command palette (`open dashboard`, Ctrl+P).
+            // leader-key popup (`open dashboard`, Ctrl+P / Space).
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.chat.pattern_selected > 0 {
                     app.chat.pattern_selected -= 1;
@@ -672,7 +639,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     // No Esc-back here: returning to the dashboard is done
-                    // via the command palette (`open dashboard`, Ctrl+P).
+                    // via the leader-key popup (`open dashboard`, Ctrl+P / Space).
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
@@ -715,7 +682,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             // delegated to the edtui event handler.
             match (app.chat.editor.mode, key.code) {
                 // Esc does not leave the thread: returning to the dashboard
-                // is done via the command palette (`open dashboard`, Ctrl+P).
+                // is done via the leader-key popup (`open dashboard`, Ctrl+P / Space).
                 // The editor uses Esc to return to Normal mode.
                 // Plain Enter in Insert mode sends the message. Pasted
                 // multi-line text goes through on_paste_event (not key events),
@@ -1727,9 +1694,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         render_command_popup(frame, area, popup, &app.chat.commands, &app.chat.models);
     }
 
-    // ── Command palette overlay (TUI-local commands) ──
-    if let Some(ref popup) = app.chat.palette {
-        popup.render(frame, area);
+    // ── Leader-key popup overlay (TUI-local commands) ──
+    if let Some(ref leader) = app.chat.leader {
+        leader.render(frame, area);
     }
 }
 
@@ -1926,7 +1893,7 @@ impl ChatState {
             commands: vec![],
             models: vec![],
             command_popup: None,
-            palette: None,
+            leader: None,
             input_history: vec![],
             history_pos: None,
             token: None,
@@ -3061,7 +3028,7 @@ mod tests {
             timestamp: Some("2026-01-01T00:00:00Z".into()),
         });
 
-        // Opt out of capture (simulating the `toggle mouse` palette
+        // Opt out of capture (simulating the `toggle mouse` leader-key
         // action reaching `apply_mouse_capture`, which we don't exercise
         // here because it writes to real stdout).
         app.mouse_capture_enabled = false;
@@ -3206,7 +3173,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_open_dashboard_closes_chat() {
+    fn leader_open_dashboard_closes_chat() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
         app.chat.visible = true;

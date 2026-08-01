@@ -1239,7 +1239,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     // Thread info panel
     let info_block = Block::default()
         .title(format!(" {} ", selected.name))
-        .borders(Borders::ALL);
+        .borders(Borders::LEFT);
 
     let mut info_lines = vec![];
 

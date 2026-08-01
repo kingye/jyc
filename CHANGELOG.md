@@ -2,7 +2,7 @@
 
 All notable changes to JYC will be documented in this file.
 
-## [Unreleased]
+## [0.3.13] - 2026-08-01
 
 ### Added
 
@@ -918,6 +918,8 @@ All notable changes to JYC will be documented in this file.
   the next line. The input paragraph now uses `Wrap { trim: true }` and the
   height/scroll calculations account for visual (wrapped) line counts using
   `unicode-width` for accurate CJK character width. (#343)
+
+## [Unreleased]
 
 ## [0.3.12] - 2026-06-28
 

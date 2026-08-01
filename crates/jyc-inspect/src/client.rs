@@ -133,8 +133,10 @@ impl InspectClient {
         let status = resp.status();
         #[derive(serde::Deserialize, Default)]
         struct R {
-            #[serde(default)]
-            message: String,
+            // Success: {"message":"..."}; failure: {"error":"..."}.
+            // Read both via serde alias so the same struct works.
+            #[serde(default, alias = "message")]
+            error: String,
         }
         // Parse the body regardless of status; the server's success body
         // is `{message: "..."}` and failure is `{error: "..."}`.
@@ -142,17 +144,19 @@ impl InspectClient {
         let r: R = match serde_json::from_str(&body_text) {
             Ok(r) => r,
             Err(_) => R {
-                message: format!("unexpected response (status {}): {}", status, body_text),
+                error: format!("unexpected response (status {}): {}", status, body_text),
             },
         };
-        Ok((status.is_success(), r.message))
+        Ok((status.is_success(), r.error))
     }
 
     /// Reload config. Returns `(success, message)`.
     pub async fn reload_config(&mut self) -> Result<(bool, String)> {
-        #[derive(serde::Deserialize)]
+        #[derive(serde::Deserialize, Default)]
         struct R {
-            message: String,
+            // Success: {"message":"..."}; failure: {"error":"..."}.
+            #[serde(default, alias = "message")]
+            error: String,
         }
         let url = self.url("/api/config/reload");
         let resp = self
@@ -163,9 +167,9 @@ impl InspectClient {
             .context("POST /api/config/reload request failed")?;
         let status = resp.status();
         let r: R = resp.json().await.unwrap_or(R {
-            message: "failed to parse response".to_string(),
+            error: "failed to parse response".to_string(),
         });
-        Ok((status.is_success(), r.message))
+        Ok((status.is_success(), r.error))
     }
 
     fn url(&self, path: &str) -> Url {

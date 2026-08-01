@@ -352,8 +352,8 @@ pub async fn run(
     // from `<workdir>/auth.token` (which `jyc serve` writes on startup).
     let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
 
-    let mut client = match &token {
-        Some(t) => InspectClient::with_token(&args.addr, t.clone()),
+    let client = match &token {
+        Some(t) => InspectClient::with_token(&args.addr, Some(t.as_str())),
         None => InspectClient::new(&args.addr),
     };
 
@@ -382,7 +382,7 @@ pub async fn run(
             let channel = initial_channel.unwrap_or("");
             app.chat
                 .open(&args.addr, initial_channel, Some(thread), app.token.clone());
-            hydrate_live(&mut client, &mut app, channel, thread).await;
+            hydrate_live(&client, &mut app, channel, thread).await;
         }
 
         loop {
@@ -476,8 +476,7 @@ pub async fn run(
                                     }
                                     let _ = s; // drop the immutable borrow on app.state
                                     if needs_hydrate {
-                                        hydrate_live(&mut client, &mut app, &channel, &thread)
-                                            .await;
+                                        hydrate_live(&client, &mut app, &channel, &thread).await;
                                     }
                                     ensure_overview_ws(&mut app, &args.addr, &channel, &thread);
                                 }
@@ -496,17 +495,17 @@ pub async fn run(
             // switches the chat. Deferred here because the sync key
             // handler can't await on InspectClient.
             if let Some((channel, thread)) = app.pending_hydrate.take() {
-                hydrate_live(&mut client, &mut app, &channel, &thread).await;
+                hydrate_live(&client, &mut app, &channel, &thread).await;
             }
 
             // Palette actions deferred for the same reason.
             if app.pending_new_chat {
                 app.pending_new_chat = false;
-                start_new_chat(&mut app, &args.addr, &mut client).await;
+                start_new_chat(&mut app, &args.addr, &client).await;
             }
             if app.pending_reload_config {
                 app.pending_reload_config = false;
-                reload_server_config(&mut app, &mut client, &mut last_poll).await;
+                reload_server_config(&mut app, &client, &mut last_poll).await;
             }
 
             // Check for WebSocket events
@@ -539,14 +538,8 @@ pub async fn run(
                         if app.chat.visible {
                             handle_chat_keys(&mut app, key, &mut terminal);
                         } else {
-                            handle_normal_keys(
-                                &mut app,
-                                key,
-                                &mut client,
-                                &mut last_poll,
-                                &args.addr,
-                            )
-                            .await;
+                            handle_normal_keys(&mut app, key, &client, &mut last_poll, &args.addr)
+                                .await;
                         }
                     }
                     Event::Mouse(mouse) if app.chat.visible => {
@@ -607,11 +600,11 @@ pub async fn run_open(
     check_existing_thread_name(&path, &thread)?;
 
     // Resolve websocket channel using inspect state
-    let mut client = match &token {
-        Some(t) => InspectClient::with_token(addr, t.clone()),
+    let client = match &token {
+        Some(t) => InspectClient::with_token(addr, Some(t.as_str())),
         None => InspectClient::new(addr),
     };
-    let channel = resolve_websocket_channel(&mut client, channel).await?;
+    let channel = resolve_websocket_channel(&client, channel).await?;
 
     tracing::info!(
         thread = %thread,
@@ -635,7 +628,7 @@ pub async fn run_open(
     }
 
     // Wait for the inspect server to report the thread
-    wait_for_thread(&mut client, &thread, &channel).await?;
+    wait_for_thread(&client, &thread, &channel).await?;
 
     // Open dashboard directly in chat mode for the thread
     run(
@@ -753,7 +746,7 @@ fn check_existing_thread_name(path: &str, thread: &str) -> Result<()> {
 /// If the user explicitly provided `-c`, use it. Otherwise query the inspect
 /// server and auto-select when exactly one websocket channel exists.
 async fn resolve_websocket_channel(
-    client: &mut InspectClient,
+    client: &InspectClient,
     channel: Option<&str>,
 ) -> Result<String> {
     if let Some(name) = channel {
@@ -781,7 +774,7 @@ async fn resolve_websocket_channel(
 }
 
 /// Poll the inspect server until the newly created thread appears in state.
-async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str) -> Result<()> {
+async fn wait_for_thread(client: &InspectClient, thread: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
         let overview = client.get_overview().await?;
         if overview
@@ -805,7 +798,7 @@ async fn wait_for_thread(client: &mut InspectClient, thread: &str, channel: &str
 ///
 /// Errors are logged but not propagated — the buffers will simply be empty
 /// (the activity pane shows "No activity" until the next WS event arrives).
-async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, thread: &str) {
+async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, thread: &str) {
     // Drop stale WS-fed processing/thinking state for this thread (it may
     // have changed while unwatched); the renderer falls back to the polled
     // overview status until fresh WS events arrive.
@@ -850,7 +843,7 @@ async fn hydrate_live(client: &mut InspectClient, app: &mut App, channel: &str, 
 /// Start a new chat: fetch patterns via REST and open the chat screen in
 /// pattern-select mode. Used by the `c` key and the palette `new chat`
 /// action (via `pending_new_chat`).
-async fn start_new_chat(app: &mut App, addr: &str, client: &mut InspectClient) {
+async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
     let channel = app.state.as_ref().and_then(|o| {
         o.channels
             .iter()
@@ -869,7 +862,7 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &mut InspectClient) {
 /// Open the chat screen for the table-selected thread: websocket chat for
 /// websocket threads, detail mode otherwise. Used by the Enter key and the
 /// palette `open chat` action.
-async fn open_selected_thread_chat(app: &mut App, client: &mut InspectClient, addr: &str) {
+async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: &str) {
     let thread_info = app.state.as_ref().and_then(|s| {
         app.table_state
             .selected()
@@ -905,7 +898,7 @@ async fn open_selected_thread_chat(app: &mut App, client: &mut InspectClient, ad
 /// `reload config` action (via `pending_reload_config`).
 async fn reload_server_config(
     app: &mut App,
-    client: &mut InspectClient,
+    client: &InspectClient,
     last_poll: &mut std::time::Instant,
 ) {
     match client.reload_config().await {
@@ -925,7 +918,7 @@ async fn reload_server_config(
 async fn handle_normal_keys(
     app: &mut App,
     key: event::KeyEvent,
-    client: &mut InspectClient,
+    client: &InspectClient,
     last_poll: &mut std::time::Instant,
     addr: &str,
 ) {

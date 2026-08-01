@@ -2593,14 +2593,19 @@ Template directory structure (in workdir):
 ```
 ┌──────────────────────┐         TCP (127.0.0.1:9876)  ┌──────────────────────┐
 │   jyc serve          │  ◄──────────────────────────► │   jyc dashboard      │
-│                       │    JSON line protocol          │   (ratatui TUI)      │
+│                       │   HTTP/1.1 + WS upgrade       │   (ratatui TUI)      │
 │  ┌─────────────────┐ │                                │                      │
-│  │ InspectServer    │ │   {"method":"get_state"}      │  polls every 500ms   │
-│  │ [inspect] config │ │  ◄──────────────────────────  │  persistent TCP conn │
-│  │                  │ │   {channels, threads, stats}   │  auto-reconnect      │
-│  │ queries:         │ │  ──────────────────────────►  │                      │
-│  │  ThreadManagers  │ │                                └──────────────────────┘
-│  │  MetricsCollector│ │
+│  │ InspectServer    │ │   GET  /api/state             │  polls every 500ms   │
+│  │ (axum router)   │ │  ◄──────────────────────────  │  reqwest + Bearer    │
+│  │                  │ │   200 + {channels, threads…}  │  auto-reconnect      │
+│  │ routes:         │ │  ──────────────────────────►  │                      │
+│  │  /api/state     │ │                                └──────────────────────┘
+│  │  /api/state/... │ │
+│  │  /api/threads/* │ │  /ws, /ws/<ch>, /ws/<ch>/<t>  ← WebSocket upgrade
+│  │  /api/...       │ │     Authorization: Bearer …
+│  │  /ws/*          │ │     → 101 Switching Protocols
+│  │  (require_bearer│ │
+│  │   middleware)   │ │
 │  └─────────────────┘ │
 └──────────────────────┘
 ```
@@ -2611,27 +2616,33 @@ Template directory structure (in workdir):
 [inspect]
 enabled = true                      # Default: false
 bind = "127.0.0.1:9876"            # Default: 127.0.0.1:9876
+# auth_token = "..."                # Optional; when set, every request
+                                    # (REST and WS upgrade) must carry
+                                    # `Authorization: Bearer <token>`.
 ```
 
 For Docker (Podman Machine on macOS), use `bind = "0.0.0.0:9876"` and the SSH tunnel script `jyc-podman-tunnel.sh`.
 
 ### Protocol
 
-JSON line protocol over TCP. Client sends one JSON object per line, server responds with one JSON object per line.
+HTTP/1.1 REST over TCP, with WebSocket upgrades on the same port. One
+Bearer token (`auth_token`) gates both REST and WS routes via a single
+`require_bearer` middleware. JSON request and response bodies.
 
-```json
-// Request
-{"method": "get_state"}
+```bash
+# REST
+curl -H 'Authorization: Bearer <token>' http://127.0.0.1:9876/api/state
+# → 200 + { "uptime_secs": 3600, "version": "0.2.1", "channels": [...], ... }
 
-// Response
-{
-  "uptime_secs": 3600,
-  "version": "0.2.1",
-  "channels": [{"name": "emf", "channel_type": "github"}],
-  "threads": [{"name": "issue-42", "channel": "emf", "pattern": "planner", "status": "processing", ...}],
-  "stats": {"active_workers": 2, "total_threads": 3, "max_concurrent": 3, ...}
-}
+# WebSocket upgrade
+wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
+      -H "Authorization: Bearer <token>"
+# → 101 Switching Protocols, then live activity / chat events stream
 ```
+
+> **Full reference.** This section is a high-level overview only. For
+> every route, response shape, server-pushed event, type schema, and
+> worked example, see [`docs/api.md`](docs/api.md).
 
 ### TUI Dashboard Layout
 

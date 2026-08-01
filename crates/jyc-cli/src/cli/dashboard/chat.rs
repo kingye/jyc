@@ -421,6 +421,7 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         }
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
+        LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
     }
 }
 
@@ -765,6 +766,12 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 /// which pane the user was last navigating — otherwise `ActivityPane` /
 /// `ExplorerPane` focus would silently redirect the scroll elsewhere.
 pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
+    // Defensive guard — crossterm shouldn't deliver mouse events when
+    // capture is off, but if one sneaks through (e.g. a queued event
+    // from the toggle moment), do nothing.
+    if !app.mouse_capture_enabled {
+        return;
+    }
     if app.chat.phase != ChatPhase::Chatting {
         return;
     }
@@ -2992,6 +2999,109 @@ mod tests {
 
         handle_chat_mouse(&mut app, mouse_event(MouseEventKind::ScrollUp, 10, 10));
         assert_eq!(app.chat.scroll, 0);
+    }
+
+    #[test]
+    fn mouse_capture_defaults_to_on() {
+        // PR #484 enabled capture at startup; the toggle should only
+        // opt out, not change the default.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let app = App::new(rx, None);
+        assert!(
+            app.mouse_capture_enabled,
+            "default mouse_capture_enabled must be true"
+        );
+    }
+
+    #[test]
+    fn mouse_capture_flip_is_pure_state_change() {
+        // `flip_mouse_capture` must not perform I/O — it only toggles
+        // the bool and returns the new state. Tests can't observe the
+        // escape write, but they can verify the flag and return value.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert!(app.mouse_capture_enabled);
+        assert!(!app.flip_mouse_capture(), "first flip turns capture off");
+        assert!(!app.mouse_capture_enabled);
+        assert!(
+            app.flip_mouse_capture(),
+            "second flip turns capture back on"
+        );
+        assert!(app.mouse_capture_enabled);
+    }
+
+    #[test]
+    fn mouse_scroll_ignored_when_capture_disabled() {
+        // The defensive guard in `handle_chat_mouse`: even with cursor
+        // inside the message area, a wheel event must be a no-op when
+        // the user has toggled capture off (tmux mode).
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.focus = ChatFocus::ChatPane;
+        app.chat.scroll = 0;
+        app.chat.messages.push(ChatMessage {
+            sender: "user".into(),
+            text: "hi".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+        });
+
+        // Opt out of capture (simulating the `toggle mouse` palette
+        // action reaching `apply_mouse_capture`, which we don't exercise
+        // here because it writes to real stdout).
+        app.mouse_capture_enabled = false;
+
+        terminal
+            .draw(|f| ui_chat_mode(f, f.area(), &mut app))
+            .unwrap();
+        let rect = app
+            .chat
+            .last_message_area
+            .expect("render should cache the message rect");
+        let inside = mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y);
+
+        handle_chat_mouse(&mut app, inside);
+        assert_eq!(
+            app.chat.scroll, 0,
+            "wheel must be ignored when mouse capture is off"
+        );
+    }
+
+    #[test]
+    fn apply_mouse_capture_writes_enable_escape_when_on() {
+        // Default state is capture on; `apply_mouse_capture_to` must
+        // emit the EnableMouseCapture sequence. crossterm sets DECSET
+        // modes 1000, 1002, 1003, 1015, and 1006 in one call.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let app = App::new(rx, None);
+        assert!(app.mouse_capture_enabled);
+        let mut buf = Vec::new();
+        app.apply_mouse_capture_to(&mut buf).unwrap();
+        assert_eq!(
+            buf, *b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h",
+            "capture-on must emit EnableMouseCapture"
+        );
+    }
+
+    #[test]
+    fn apply_mouse_capture_writes_disable_escape_when_off() {
+        // After toggling off, `apply_mouse_capture_to` must emit the
+        // DisableMouseCapture sequence (the same DECSET modes cleared
+        // in reverse order).
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert!(!app.flip_mouse_capture());
+        assert!(!app.mouse_capture_enabled);
+        let mut buf = Vec::new();
+        app.apply_mouse_capture_to(&mut buf).unwrap();
+        assert_eq!(
+            buf, *b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+            "capture-off must emit DisableMouseCapture"
+        );
     }
 
     #[test]

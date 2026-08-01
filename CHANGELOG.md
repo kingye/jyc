@@ -36,6 +36,16 @@ All notable changes to JYC will be documented in this file.
   the redundant inner borders are gone, so the borderless chat area
   reads as a single flat surface with three thin separators.
 
+### Changed
+
+- **Pane title separators with `──` prefix.** The activity, thread info,
+  and thread explorer pane titles now start with `── ` so the title row
+  reads as a continuous `─` stripe against the top border. The thread
+  info and explorer panes additionally gain a `TOP` border, giving them
+  a clear separator between the title and the content below. Visual
+  style matches the existing `LINE_DRAWING` palette used elsewhere in
+  the chat screen.
+
 ## [0.3.13] - 2026-08-01
 
 ### Added

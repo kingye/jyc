@@ -2,6 +2,23 @@
 
 All notable changes to JYC will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Mouse-capture status chip.** A right-aligned chip in the dashboard
+  status bar mirrors the vim mode chip format. Peach ` MOUSE+ ` means
+  capture is on (wheel scrolls in chat, tmux drag-to-select is
+  hijacked); muted overlay0 ` MOUSE- ` means capture is off (tmux
+  select works, wheel ignored). Always visible — both dashboard and
+  chat screens.
+
+- **Toggle mouse-wheel capture from the command palette.** New `toggle
+  mouse` palette entry (Shared scope, reachable from both dashboard
+  and chat screens). Default state remains ON (matches PR #484); flip
+  it off when working inside tmux and the chip switches to ` MOUSE- `
+  immediately. A brief status line confirms the change.
+
 ## [0.3.13] - 2026-08-01
 
 ### Added

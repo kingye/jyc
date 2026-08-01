@@ -100,7 +100,7 @@ starts in Insert mode.
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
 | `Esc` | Insert → Normal mode; message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`) and pane actions (zen, explorer, activity, editor, scroll) |
+| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (zen, explorer, activity, editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+O` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Cycle focus: Input → Message area → Activity pane (skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |

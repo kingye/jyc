@@ -43,6 +43,11 @@ pub enum LocalAction {
     CycleActivity,
     /// Open the chat input in an external editor ($EDITOR).
     OpenExternalEditor,
+    /// Toggle terminal mouse capture. While on, the wheel scrolls the
+    /// chat message area (PR #484); while off, tmux/terminal-native
+    /// text selection works. Default is on. A right-aligned status-bar
+    /// chip (mirroring the vim mode chip format) shows the state.
+    ToggleMouseCapture,
     /// Scroll the message area to the top.
     ScrollTop,
     /// Scroll the message area to the bottom.
@@ -133,6 +138,13 @@ pub fn local_commands() -> &'static [LocalCommand] {
             keybinding: "Ctrl+O",
             scope: Chat,
             action: LocalAction::OpenExternalEditor,
+        },
+        LocalCommand {
+            name: "toggle mouse",
+            description: "Toggle mouse capture",
+            keybinding: "",
+            scope: Shared,
+            action: LocalAction::ToggleMouseCapture,
         },
         LocalCommand {
             name: "scroll top",

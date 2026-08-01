@@ -101,6 +101,15 @@ struct App {
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
 
+    /// Whether terminal mouse capture is currently enabled. When on, the
+    /// chat message area scrolls on wheel events but tmux/terminal-native
+    /// text selection is hijacked by the app. When off, tmux select works
+    /// but the wheel does nothing. Flipped at runtime by the `toggle
+    /// mouse` command palette entry. Default is `true` to match the
+    /// behaviour introduced by PR #484 — opt out via the palette when
+    /// working inside tmux.
+    mouse_capture_enabled: bool,
+
     /// Open command palette on the dashboard screen (dashboard + shared
     /// commands).
     palette: Option<palette::Palette>,
@@ -138,6 +147,7 @@ impl App {
             pending_hydrate: None,
             pending_new_chat: false,
             pending_reload_config: false,
+            mouse_capture_enabled: true,
             palette: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
@@ -156,6 +166,30 @@ impl App {
             && at.elapsed() > Duration::from_secs(5)
         {
             self.status_message = None;
+        }
+    }
+
+    /// Pure flip — returns the new state without touching the terminal.
+    /// Split from the I/O so tests can exercise the toggle without a real
+    /// stdout.
+    fn flip_mouse_capture(&mut self) -> bool {
+        self.mouse_capture_enabled = !self.mouse_capture_enabled;
+        self.mouse_capture_enabled
+    }
+
+    /// Emit the terminal escape sequence that matches the current
+    /// `mouse_capture_enabled` state. Called after `flip_mouse_capture`.
+    /// Writes directly to `stdout` (matches the existing
+    /// `EnableMouseCapture` / `DisableMouseCapture` usage at startup and
+    /// shutdown) because crossterm mouse toggles don't go through the
+    /// ratatui backend.
+    fn apply_mouse_capture(&self) -> std::io::Result<()> {
+        use crossterm::ExecutableCommand;
+        let mut out = std::io::stdout().lock();
+        if self.mouse_capture_enabled {
+            out.execute(EnableMouseCapture).map(|_| ())
+        } else {
+            out.execute(DisableMouseCapture).map(|_| ())
         }
     }
 
@@ -941,6 +975,7 @@ async fn handle_normal_keys(
                     LocalAction::NewChat => start_new_chat(app, addr, client).await,
                     LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
                     LocalAction::Quit => app.should_quit = true,
+                    LocalAction::ToggleMouseCapture => toggle_mouse_capture(app),
                     // Chat-scoped actions are never offered on the dashboard.
                     _ => {}
                 }
@@ -978,6 +1013,26 @@ async fn handle_normal_keys(
             reload_server_config(app, client, last_poll).await;
         }
         _ => {}
+    }
+}
+
+/// Flip the terminal mouse-capture mode (used by the `toggle mouse`
+/// palette action on both dashboard and chat screens). Splits the pure
+/// state flip from the terminal I/O so the rollback path can restore the
+/// previous state if the escape write fails.
+fn toggle_mouse_capture(app: &mut App) {
+    let on = app.flip_mouse_capture();
+    if let Err(e) = app.apply_mouse_capture() {
+        // Roll back the flip so `mouse_capture_enabled` matches the
+        // terminal's actual mode.
+        app.mouse_capture_enabled = !on;
+        app.set_status(format!("Mouse capture toggle failed: {e}"));
+    } else {
+        app.set_status(if on {
+            "Mouse capture: on (wheel scrolls; tmux select disabled)".to_string()
+        } else {
+            "Mouse capture: off (tmux select works; wheel ignored)".to_string()
+        });
     }
 }
 
@@ -1311,14 +1366,29 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     // advertises how to reach them.
     let help_text = "[^P]palette [^Q]quit".to_string();
 
-    // Right-aligned vim mode chip while chatting. 8 cells = padded label width.
-    let mode_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
+    // Right-aligned chips. The vim mode chip shows while chatting (8 cells);
+    // the mouse-capture chip is always visible (8 cells, global terminal
+    // state). Mouse chip sits at the rightmost edge; vim chip immediately
+    // to its left when present.
+    let vim_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
         8
     } else {
         0
     };
+    let mouse_width: u16 = 8;
+    let total_right = vim_width + mouse_width;
     let [left_area, right_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(mode_width)]).areas(area);
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(total_right)]).areas(area);
+    let (vim_area, mouse_area) = if vim_width > 0 {
+        let [v, m] = Layout::horizontal([
+            Constraint::Length(vim_width),
+            Constraint::Length(mouse_width),
+        ])
+        .areas(right_area);
+        (Some(v), m)
+    } else {
+        (None, right_area)
+    };
 
     let state = match &app.state {
         Some(s) => s,
@@ -1326,6 +1396,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             let bar = Paragraph::new(format!(" {help_text}"))
                 .style(Style::default().bg(Color::DarkGray).fg(Color::White));
             frame.render_widget(bar, left_area);
+            render_mouse_chip(frame, mouse_area, app.mouse_capture_enabled);
             return;
         }
     };
@@ -1365,7 +1436,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(bar, left_area);
 
     // Right-align the vim mode chip (Catppuccin Mocha palette).
-    if mode_width > 0 {
+    if let Some(vim_area) = vim_area {
         let (label, bg, fg) = match app.chat.editor.mode {
             EditorMode::Normal => (
                 " NORMAL ",
@@ -1393,8 +1464,36 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center);
-        frame.render_widget(mode_para, right_area);
+        frame.render_widget(mode_para, vim_area);
     }
+
+    render_mouse_chip(frame, mouse_area, app.mouse_capture_enabled);
+}
+
+/// Render the right-aligned mouse-capture chip. Same 8-cell padded
+/// format as the vim mode chip (see `render_status_bar`). Peach means
+/// capture is on (wheel scrolls, tmux select disabled); overlay0 means
+/// off (tmux select works, wheel ignored).
+fn render_mouse_chip(frame: &mut Frame, area: Rect, mouse_capture_enabled: bool) {
+    let (label, bg, fg) = if mouse_capture_enabled {
+        (
+            " MOUSE+ ",
+            Color::Rgb(250, 179, 135), // Catppuccin Mocha peach
+            Color::Rgb(30, 30, 46),    // Catppuccin Mocha base
+        )
+    } else {
+        (
+            " MOUSE- ",
+            Color::Rgb(108, 112, 134), // Catppuccin Mocha overlay0
+            Color::Rgb(205, 214, 244), // Catppuccin Mocha text
+        )
+    };
+    let chip = Paragraph::new(Span::styled(
+        label,
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    ))
+    .alignment(Alignment::Center);
+    frame.render_widget(chip, area);
 }
 
 fn format_duration(secs: u64) -> String {

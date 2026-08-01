@@ -100,6 +100,23 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_toggle_mouse_returns_action() {
+        // `toggle mouse` is Shared scope — must be reachable from both
+        // dashboard and chat palettes.
+        for scope in [CommandScope::Dashboard, CommandScope::Chat] {
+            let mut palette = Palette::new(scope);
+            for c in "toggle mouse".chars() {
+                palette.handle_key(key(KeyCode::Char(c)));
+            }
+            assert_eq!(
+                palette.handle_key(key(KeyCode::Enter)),
+                PaletteResult::Action(LocalAction::ToggleMouseCapture),
+                "toggle mouse must be offered on {scope:?}"
+            );
+        }
+    }
+
+    #[test]
     fn enter_without_match_stays_open() {
         let mut palette = Palette::new(CommandScope::Dashboard);
         for c in "zzzzz".chars() {

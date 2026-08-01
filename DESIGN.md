@@ -1805,7 +1805,7 @@ JYC uses the following subset of the OpenCode server API:
 │     → writes opencode.json with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
 │  3. Get or create session (.jyc/opencode-session.json)
-│     - Check token limit: if total_input_tokens > max_input_tokens → new session
+│     - Check token limit: if context_input_tokens > max_input_tokens → new session
 │     - Update max_input_tokens: detect model context or use configured value
 │     - Record if session reset due to token limit for prompt notification
 │  4. Clean up stale signal file
@@ -1868,7 +1868,7 @@ JYC uses the following subset of the OpenCode server API:
 
 - Sessions are created on first use per thread and persisted in `.jyc/opencode-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
-- Sessions track input tokens (`total_input_tokens`) and maximum threshold (`max_input_tokens`)
+- Sessions track input tokens (`context_input_tokens`) and maximum threshold (`max_input_tokens`)
 - Sessions are automatically reset when token limit is exceeded
 - Sessions are deleted for error recovery (ContextOverflow, stale session detection)
 - On session reset: AI prompt includes notification and reference to chat history
@@ -1885,8 +1885,8 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
 
 2. **Token-based Session Management** — Automatic session reset based on input tokens
    - **Token-based reset**:
-     - Session accumulates input tokens (`total_input_tokens`) from each AI processing step
-     - When accumulated tokens exceed `max_input_tokens` threshold, session is automatically reset
+     - Session stores current context size (`context_input_tokens`), which equals the input tokens reported by the most recent LLM call (since each call sends the full conversation context)
+     - When context size exceeds `max_input_tokens` threshold, session is automatically reset
      - Old session is deleted and a new session is created
    - **Token tracking**:
      - Real-time token counting from SSE `step-finish` events
@@ -1922,7 +1922,7 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
        pub last_used_at: String,
        /// Current input tokens (from latest step-finish SSE event)
        #[serde(rename = "totalInputTokens", default)]
-       pub total_input_tokens: u64,
+       pub context_input_tokens: u64,
        /// Resolved max input tokens for this session
        #[serde(rename = "maxInputTokens", default)]
        pub max_input_tokens: u64,

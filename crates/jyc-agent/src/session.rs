@@ -22,7 +22,11 @@ const SESSION_FILE: &str = "agent-session.json";
 pub struct SessionState {
     /// When this session was created (ISO 8601).
     pub created_at: String,
-    pub total_input_tokens: u64,
+    /// Current context size in tokens. Equal to the input tokens reported by
+    /// the most recent LLM call, since each call sends the full conversation
+    /// context. NOT a sum across calls — for accumulated output tokens see
+    /// `total_output_tokens`.
+    pub context_input_tokens: u64,
     pub total_output_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
@@ -308,7 +312,7 @@ async fn persist_tokens_returning_state(
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
-    state.total_input_tokens = input_tokens;
+    state.context_input_tokens = input_tokens;
     state.total_output_tokens += output_tokens;
 
     if let Some(cw) = context_window {
@@ -325,7 +329,7 @@ async fn persist_tokens_returning_state(
 
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
-/// Auto-resets when `total_input_tokens` crosses `max_input_tokens`, using
+/// Auto-resets when `context_input_tokens` crosses `max_input_tokens`, using
 /// the configured `reset_compression` strategy (same as manual `/reset`).
 ///
 /// `input_tokens` is the tokens reported by the last API call — this already
@@ -369,9 +373,9 @@ pub async fn update_tokens(
     // `reset_session` so the user's `reset_compression` config is honored
     // (previously this inlined `summarize_context` which always used LLM,
     // ignoring the configured mode).
-    if state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens {
+    if state.max_input_tokens > 0 && state.context_input_tokens >= state.max_input_tokens {
         tracing::info!(
-            total_input_tokens = state.total_input_tokens,
+            context_input_tokens = state.context_input_tokens,
             max_input_tokens = state.max_input_tokens,
             mode = ?compression_config.mode,
             "Session exceeded max input tokens, auto-resetting with configured compression",
@@ -404,11 +408,11 @@ pub async fn maybe_reset_for_new_context(
     }
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
-    if state.total_input_tokens < new_max_input_tokens {
+    if state.context_input_tokens < new_max_input_tokens {
         return false;
     }
     tracing::info!(
-        old_tokens = state.total_input_tokens,
+        old_tokens = state.context_input_tokens,
         new_max = new_max_input_tokens,
         mode = ?compression_config.mode,
         "Loaded session exceeds new context window; resetting before agent loop",

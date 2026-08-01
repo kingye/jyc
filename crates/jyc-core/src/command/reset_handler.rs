@@ -112,7 +112,7 @@ mode = "agent"
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
+            r#"{"created_at":"2026-01-01","context_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();

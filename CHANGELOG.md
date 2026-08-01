@@ -58,6 +58,17 @@ All notable changes to JYC will be documented in this file.
   chat — `d`, `e`, `z`, `a`, `o`, `gg`, `G`, `n`, `r`, `q`, `m`;
   dashboard — `c`, `n`, `r`, `q`, `m`.
 
+- **Renamed `total_input_tokens` to `context_input_tokens` in
+  `.jyc/agent-session.json`.** The old name was misleading: despite the
+  `total_` prefix, the field stores the input tokens reported by the
+  most recent LLM call (i.e. current context size, since each call sends
+  the full conversation context), not a sum across calls. Only
+  `total_output_tokens` is actually accumulated. The Rust struct
+  field in `SessionState` is renamed accordingly; behavior is
+  unchanged. On-disk session files written by older versions will see
+  the input counter reset to 0 on next load — sessions auto-reset when
+  full so this is a one-time cost per existing thread. (#490)
+
 ## [0.3.13] - 2026-08-01
 
 ### Added

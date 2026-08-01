@@ -288,7 +288,7 @@ mod session {
         // Create session file (needed for load_context to proceed)
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01T00:00:00Z","total_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
         // Save raw context
@@ -313,7 +313,7 @@ mod session {
         // Create session file
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01T00:00:00Z","total_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
         // Save context with an invalid assistant message (null content, no tool_calls)
@@ -344,7 +344,7 @@ mod session {
         // Create session file
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01T00:00:00Z","total_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
         // Save context with only user messages (corrupted)
@@ -388,7 +388,7 @@ mod session {
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["total_input_tokens"], 1000);
+        assert_eq!(state["context_input_tokens"], 1000);
         assert_eq!(state["total_output_tokens"], 200);
         assert_eq!(state["max_input_tokens"], 95000); // 95% of 100000
     }
@@ -424,7 +424,7 @@ mod session {
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["total_input_tokens"], 2000); // Latest, not 3000
+        assert_eq!(state["context_input_tokens"], 2000); // Latest, not 3000
         assert_eq!(state["total_output_tokens"], 250); // Accumulated: 100 + 150
     }
 
@@ -466,7 +466,7 @@ mod session {
         // auto-reset on the very next update_tokens call.
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":5000,"total_output_tokens":100,"max_input_tokens":1000}"#,
+            r#"{"created_at":"2026-01-01","context_input_tokens":5000,"total_output_tokens":100,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();
@@ -497,7 +497,7 @@ mod session {
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
         assert_eq!(state["max_input_tokens"], 950); // 0.95 * 1000 from the call's context_window
     }
@@ -514,7 +514,7 @@ mod session {
         // Loaded session: 600k tokens, max_input_tokens irrelevant here
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
+            r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
         )
         .await
         .unwrap();
@@ -553,7 +553,7 @@ mod session {
 
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":100000,"total_output_tokens":0,"max_input_tokens":950000}"#,
+            r#"{"created_at":"2026-01-01","context_input_tokens":100000,"total_output_tokens":0,"max_input_tokens":950000}"#,
         )
         .await
         .unwrap();
@@ -572,7 +572,7 @@ mod session {
         let context = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
             .await
             .unwrap();
-        assert!(session.contains("\"total_input_tokens\":100000"));
+        assert!(session.contains("\"context_input_tokens\":100000"));
         assert_eq!(context, "[]");
     }
 
@@ -586,7 +586,7 @@ mod session {
 
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"created_at":"2026-01-01","total_input_tokens":999999,"total_output_tokens":0,"max_input_tokens":0}"#,
+            r#"{"created_at":"2026-01-01","context_input_tokens":999999,"total_output_tokens":0,"max_input_tokens":0}"#,
         )
         .await
         .unwrap();
@@ -633,7 +633,7 @@ mod session {
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
-        assert_eq!(state["total_input_tokens"], 100_000);
+        assert_eq!(state["context_input_tokens"], 100_000);
         assert_eq!(state["total_output_tokens"], 200);
         assert_eq!(state["max_input_tokens"], 9500);
     }
@@ -652,7 +652,7 @@ mod session {
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
         // input is latest, not accumulated (each API call already includes full context)
-        assert_eq!(state["total_input_tokens"], 2000);
+        assert_eq!(state["context_input_tokens"], 2000);
         // output is accumulated
         assert_eq!(state["total_output_tokens"], 330);
     }
@@ -675,7 +675,7 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         // Zeroed counters so the dashboard shows "0 / 95000 (0%)" instead
         // of (None, None, None).
-        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
         // max_input_tokens = 100000 * 0.95 = 95000
         assert_eq!(state["max_input_tokens"], 95_000);
@@ -695,7 +695,7 @@ mod session {
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
-        let original = r#"{"created_at":"2026-01-01T00:00:00Z","total_input_tokens":42000,"total_output_tokens":7000,"max_input_tokens":123000}"#;
+        let original = r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":42000,"total_output_tokens":7000,"max_input_tokens":123000}"#;
         let session_path = jyc_dir.join("agent-session.json");
         tokio::fs::write(&session_path, original).await.unwrap();
 
@@ -723,7 +723,7 @@ mod session {
 
         let content = tokio::fs::read_to_string(&session_path).await.unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(state["total_input_tokens"], 0);
+        assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
         assert_eq!(state["max_input_tokens"], 0);
     }

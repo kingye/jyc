@@ -41,7 +41,7 @@ pub async fn read_token_state(thread_path: &Path) -> (Option<u64>, Option<u64>, 
     let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
         return (None, None, None);
     };
-    let current = (state.total_input_tokens > 0).then_some(state.total_input_tokens);
+    let current = (state.context_input_tokens > 0).then_some(state.context_input_tokens);
     let max = (state.max_input_tokens > 0).then_some(state.max_input_tokens);
     let output = (state.total_output_tokens > 0).then_some(state.total_output_tokens);
     (current, max, output)
@@ -51,7 +51,7 @@ pub async fn read_token_state(thread_path: &Path) -> (Option<u64>, Option<u64>, 
 #[derive(Debug, Deserialize)]
 struct AgentSessionState {
     #[serde(default)]
-    total_input_tokens: u64,
+    context_input_tokens: u64,
     #[serde(default)]
     #[allow(dead_code)]
     total_output_tokens: u64,
@@ -274,7 +274,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens": 1000, "max_input_tokens": 2000}"#,
+            r#"{"context_input_tokens": 1000, "max_input_tokens": 2000}"#,
         )
         .await
         .unwrap();
@@ -298,7 +298,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens": 0, "max_input_tokens": 0}"#,
+            r#"{"context_input_tokens": 0, "max_input_tokens": 0}"#,
         )
         .await
         .unwrap();
@@ -327,7 +327,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":1000,"total_output_tokens":250,"max_input_tokens":2000}"#,
+            r#"{"context_input_tokens":1000,"total_output_tokens":250,"max_input_tokens":2000}"#,
         )
         .await
         .unwrap();
@@ -361,7 +361,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":1500,"total_output_tokens":400,"max_input_tokens":10000}"#,
+            r#"{"context_input_tokens":1500,"total_output_tokens":400,"max_input_tokens":10000}"#,
         )
         .await
         .unwrap();
@@ -560,7 +560,7 @@ auto_reset_threshold = 0.95
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":5000,"max_input_tokens":100000}"#,
+            r#"{"context_input_tokens":5000,"max_input_tokens":100000}"#,
         )
         .await
         .unwrap();
@@ -571,7 +571,7 @@ auto_reset_threshold = 0.95
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["max_input_tokens"], 250000);
         // Other fields preserved
-        assert_eq!(state["total_input_tokens"], 5000);
+        assert_eq!(state["context_input_tokens"], 5000);
     }
 
     #[tokio::test]

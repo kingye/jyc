@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
@@ -130,10 +129,6 @@ type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>
 /// upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
-    /// Live application config (carried for API compatibility — pattern
-    /// enumeration is now done via REST `list_patterns`).
-    #[allow(dead_code)]
-    app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.
     broadcast_tx: broadcast::Sender<String>,
     /// Message callback — set during `start()`, used by the WebSocket handler.
@@ -151,14 +146,9 @@ pub struct WebsocketInboundAdapter {
 
 impl WebsocketInboundAdapter {
     /// Create a new websocket inbound adapter.
-    pub fn new(
-        channel_name: String,
-        app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
-        broadcast_tx: broadcast::Sender<String>,
-    ) -> Self {
+    pub fn new(channel_name: String, broadcast_tx: broadcast::Sender<String>) -> Self {
         Self {
             channel_name,
-            app_config,
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
@@ -311,9 +301,10 @@ async fn handle_connection_impl(
 
                         match client_msg {
                             ClientMessage::Message { thread, text } => {
-                                // Prefer the URL-scoped thread; fall back to the
-                                // payload's `thread` field for `/ws/<channel>`
-                                // connections where no scope was set.
+                                // Prefer the payload's `thread` field (an
+                                // explicit override); fall back to the
+                                // URL-scoped thread for `/ws/<channel>/<thread>`
+                                // connections where the payload omits it.
                                 let thread_name = match thread
                                     .or_else(|| scoped_thread.map(|s| s.to_string()))
                                 {

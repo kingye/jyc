@@ -43,19 +43,19 @@ impl InspectClient {
     }
 
     /// Full state snapshot.
-    pub async fn get_state(&mut self) -> Result<InspectState> {
+    pub async fn get_state(&self) -> Result<InspectState> {
         self.get_json("/api/state").await
     }
 
     /// Slim state snapshot (no per-thread activity/messages).
-    pub async fn get_overview(&mut self) -> Result<InspectOverview> {
+    pub async fn get_overview(&self) -> Result<InspectOverview> {
         self.get_json("/api/state/overview").await
     }
 
     /// Recent activity entries for a thread. Filters internal entries
     /// server-side.
     pub async fn get_thread_activity(
-        &mut self,
+        &self,
         channel: &str,
         thread: &str,
         since: Option<&str>,
@@ -74,7 +74,7 @@ impl InspectClient {
 
     /// Recent chat messages for a thread.
     pub async fn get_thread_chat(
-        &mut self,
+        &self,
         channel: &str,
         thread: &str,
         since: Option<&str>,
@@ -92,7 +92,7 @@ impl InspectClient {
     }
 
     /// Pattern names configured for a channel.
-    pub async fn list_patterns(&mut self, channel: &str) -> Result<Vec<String>> {
+    pub async fn list_patterns(&self, channel: &str) -> Result<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct R {
             patterns: Vec<String>,
@@ -105,7 +105,7 @@ impl InspectClient {
 
     /// Register a new ad-hoc thread. Returns `(success, message)`.
     pub async fn create_thread(
-        &mut self,
+        &self,
         channel: &str,
         thread: &str,
         path: &str,
@@ -135,8 +135,8 @@ impl InspectClient {
         struct R {
             // Success: {"message":"..."}; failure: {"error":"..."}.
             // Read both via serde alias so the same struct works.
-            #[serde(default, alias = "message")]
-            error: String,
+            #[serde(default, alias = "error")]
+            message: String,
         }
         // Parse the body regardless of status; the server's success body
         // is `{message: "..."}` and failure is `{error: "..."}`.
@@ -144,19 +144,20 @@ impl InspectClient {
         let r: R = match serde_json::from_str(&body_text) {
             Ok(r) => r,
             Err(_) => R {
-                error: format!("unexpected response (status {}): {}", status, body_text),
+                message: format!("unexpected response (status {}): {}", status, body_text),
             },
         };
-        Ok((status.is_success(), r.error))
+        Ok((status.is_success(), r.message))
     }
 
     /// Reload config. Returns `(success, message)`.
-    pub async fn reload_config(&mut self) -> Result<(bool, String)> {
+    pub async fn reload_config(&self) -> Result<(bool, String)> {
         #[derive(serde::Deserialize, Default)]
         struct R {
             // Success: {"message":"..."}; failure: {"error":"..."}.
-            #[serde(default, alias = "message")]
-            error: String,
+            // Read both via serde alias so the same struct works.
+            #[serde(default, alias = "error")]
+            message: String,
         }
         let url = self.url("/api/config/reload");
         let resp = self
@@ -167,9 +168,9 @@ impl InspectClient {
             .context("POST /api/config/reload request failed")?;
         let status = resp.status();
         let r: R = resp.json().await.unwrap_or(R {
-            error: "failed to parse response".to_string(),
+            message: "failed to parse response".to_string(),
         });
-        Ok((status.is_success(), r.error))
+        Ok((status.is_success(), r.message))
     }
 
     fn url(&self, path: &str) -> Url {
@@ -178,12 +179,12 @@ impl InspectClient {
             .expect("path must be a valid URL fragment")
     }
 
-    async fn get_json<T: DeserializeOwned>(&mut self, path: &str) -> Result<T> {
+    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.get_json_query(path, &[]).await
     }
 
     async fn get_json_query<T: DeserializeOwned>(
-        &mut self,
+        &self,
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T> {

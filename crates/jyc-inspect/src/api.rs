@@ -121,12 +121,13 @@ pub async fn get_state_overview(
     ))
 }
 
-pub async fn get_thread_activity(
-    State(ctx): State<Arc<InspectContext>>,
-    Path((channel, thread)): Path<(String, String)>,
-    Query(q): Query<ThreadQuery>,
-) -> Result<Json<Vec<ActivityEntry>>, ApiError> {
-    let limit = q.limit.unwrap_or(180);
+/// Resolve a `(channel, thread)` pair to its thread directory path.
+/// Returns a descriptive 404 error when the channel or thread is unknown.
+async fn resolve_thread_path(
+    ctx: &InspectContext,
+    channel: &str,
+    thread: &str,
+) -> Result<PathBuf, ApiError> {
     let tm = ctx
         .thread_managers
         .load()
@@ -136,11 +137,20 @@ pub async fn get_thread_activity(
         .ok_or_else(|| {
             ApiError::not_found(format!("no thread manager found for channel '{channel}'"))
         })?;
-    let thread_path = tm.thread_path(&thread).await.ok_or_else(|| {
+    tm.thread_path(thread).await.ok_or_else(|| {
         ApiError::not_found(format!(
             "thread '{thread}' not found in channel '{channel}'"
         ))
-    })?;
+    })
+}
+
+pub async fn get_thread_activity(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, thread)): Path<(String, String)>,
+    Query(q): Query<ThreadQuery>,
+) -> Result<Json<Vec<ActivityEntry>>, ApiError> {
+    let limit = q.limit.unwrap_or(180);
+    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
     let entries = ActivityLogStore::load_recent(&thread_path, limit)
         .map_err(|e| ApiError::internal(format!("failed to load activity: {e}")))?;
     let entries: Vec<ActivityEntry> = entries
@@ -157,20 +167,7 @@ pub async fn get_thread_chat(
     Query(q): Query<ThreadQuery>,
 ) -> Result<Json<Vec<ChatMessageEntry>>, ApiError> {
     let limit = q.limit.unwrap_or(100);
-    let tm = ctx
-        .thread_managers
-        .load()
-        .iter()
-        .find(|tm| tm.channel_name() == channel)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(format!("no thread manager found for channel '{channel}'"))
-        })?;
-    let thread_path = tm.thread_path(&thread).await.ok_or_else(|| {
-        ApiError::not_found(format!(
-            "thread '{thread}' not found in channel '{channel}'"
-        ))
-    })?;
+    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
     let mut entries = load_recent_chat_history(&thread_path, limit);
     entries = filter_chat_by_since(entries, q.since.as_deref());
     Ok(Json(entries))

@@ -53,7 +53,7 @@ async fn start_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
 #[tokio::test]
 async fn client_get_state_with_token() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let state: InspectState = client.get_state().await.unwrap();
     assert!(!state.channels.is_empty());
     assert_eq!(state.channels[0].name, "demo");
@@ -62,7 +62,7 @@ async fn client_get_state_with_token() {
 #[tokio::test]
 async fn client_get_state_without_token_401() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::new(&addr.to_string());
+    let client = InspectClient::new(&addr.to_string());
     let r = client.get_state().await;
     assert!(r.is_err(), "expected error without token, got {:?}", r);
 }
@@ -70,7 +70,7 @@ async fn client_get_state_without_token_401() {
 #[tokio::test]
 async fn client_get_overview_works() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let overview = client.get_overview().await.unwrap();
     assert_eq!(overview.channels.len(), 1);
     assert!(overview.threads.is_empty());
@@ -79,7 +79,7 @@ async fn client_get_overview_works() {
 #[tokio::test]
 async fn client_get_thread_activity_unknown_thread_404() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let r: Result<Vec<ActivityEntry>, _> = client
         .get_thread_activity("demo", "no-such-thread", None, None)
         .await;
@@ -91,7 +91,7 @@ async fn client_get_thread_activity_unknown_thread_404() {
 #[tokio::test]
 async fn client_reload_config_no_path_returns_422() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let (ok, msg) = client.reload_config().await.unwrap();
     assert!(!ok);
     assert!(msg.contains("no config path") || msg.contains("422"));
@@ -100,7 +100,7 @@ async fn client_reload_config_no_path_returns_422() {
 #[tokio::test]
 async fn client_list_patterns_unknown_channel_404() {
     let (addr, _h) = start_server().await;
-    let mut client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
+    let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let r = client.list_patterns("nonexistent").await;
     assert!(r.is_err());
 }

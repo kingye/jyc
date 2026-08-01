@@ -1,7 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use futures_util::{SinkExt, StreamExt};
 use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
@@ -12,96 +10,14 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-fn make_config() -> jyc_types::AppConfig {
-    let patterns = vec![
-        jyc_types::ChannelPattern {
-            name: "general".to_string(),
-            enabled: true,
-            rules: jyc_types::PatternRules::default(),
-            ..Default::default()
-        },
-        jyc_types::ChannelPattern {
-            name: "coding-help".to_string(),
-            enabled: true,
-            rules: jyc_types::PatternRules::default(),
-            ..Default::default()
-        },
-        jyc_types::ChannelPattern {
-            name: "disabled".to_string(),
-            enabled: false,
-            rules: jyc_types::PatternRules::default(),
-            ..Default::default()
-        },
-    ];
-
-    let mut channels = HashMap::new();
-    channels.insert(
-        "test_ws".to_string(),
-        jyc_types::ChannelConfig {
-            channel_type: "websocket".to_string(),
-            inbound: None,
-            outbound: None,
-            feishu: None,
-            gitee: None,
-            github: None,
-            wechat: None,
-            wecom: None,
-            wecom_kf: None,
-            wecom_bot: None,
-            monitor: None,
-            patterns: Some(patterns),
-            agent: None,
-            model: None,
-            small_model: None,
-            footer: None,
-            skills: None,
-            disabled_skills: None,
-            disabled_tools: None,
-            disabled_mcp_servers: None,
-            mcps: None,
-        },
-    );
-
-    jyc_types::AppConfig {
-        general: jyc_types::GeneralConfig::default(),
-        channels,
-        agent: jyc_types::AgentConfig {
-            enabled: false,
-            mode: "static".to_string(),
-            model: None,
-            plan_model: None,
-            build_model: None,
-            small_model: None,
-            system_prompt: None,
-            max_iterations: 500,
-            sse_read_timeout_secs: 120,
-            text: None,
-            attachments: None,
-            providers: HashMap::new(),
-            vision: None,
-            reset_compression: None,
-            auto_reset_threshold: 0.95,
-        },
-        inspect: None,
-        attachments: None,
-        wecom: None,
-        mcps: Vec::new(),
-        scheduler: jyc_types::SchedulerConfig::default(),
-    }
-}
-
 #[tokio::test]
 async fn test_websocket_adapter_start_and_handle() {
-    let app_config = make_config();
-    let config_arc = Arc::new(ArcSwap::from_pointee(app_config));
-
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
     let tmp = tempfile::TempDir::new().unwrap();
     let storage = Arc::new(MessageStorage::new(tmp.path()));
     let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
     let inbound = Arc::new(WebsocketInboundAdapter::new(
         "test_ws".to_string(),
-        Some(config_arc),
         outbound.broadcast_tx(),
     ));
 

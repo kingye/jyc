@@ -233,24 +233,8 @@ impl InspectServer {
     /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
     pub async fn build_overview_state(context: &InspectContext) -> InspectOverview {
         let uptime = context.start_time.elapsed().as_secs();
-
-        let mut threads = Vec::new();
-        let mut total_threads = 0;
-        let mut active_workers = 0;
-        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
-
-        let tms = context.thread_managers.load();
-        for tm in tms.iter() {
-            let tm_threads = tm.list_threads().await;
-            total_threads += tm_threads.len();
-            let stats = tm.get_stats().await;
-            active_workers += stats.active_workers;
-            per_channel_workers.insert(
-                tm.channel_name().to_string(),
-                (stats.active_workers, tm.max_concurrent()),
-            );
-            threads.extend(tm_threads);
-        }
+        let (mut threads, total_threads, active_workers, max_concurrent, per_channel_workers) =
+            collect_thread_snapshot(context).await;
 
         // Override status from activity_map (Processing / Error flags) but skip
         // copying activity/messages/thinking — that's the whole point.
@@ -293,27 +277,9 @@ impl InspectServer {
         // so the dashboard table and chat explorer show one alphabetical list.
         summaries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.channel.cmp(&b.channel)));
 
-        let health = context.health_stats.lock().await;
-        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
-        let stats = GlobalStats {
-            active_workers,
-            total_threads,
-            max_concurrent,
-            available_workers: max_concurrent.saturating_sub(active_workers),
-            messages_received: health.messages_received,
-            messages_processed: health.messages_processed,
-            errors: health.errors,
-        };
-        drop(health);
-
-        let channels = context.channels.load();
-        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
-        for ch in &mut channels {
-            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
-                ch.active_workers = *aw;
-                ch.max_concurrent = *mc;
-            }
-        }
+        let stats =
+            compute_global_stats(context, active_workers, total_threads, max_concurrent).await;
+        let channels = build_channels(context, &per_channel_workers);
 
         InspectOverview {
             uptime_secs: uptime,
@@ -331,24 +297,8 @@ impl InspectServer {
     }
     pub async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
-
-        let mut threads = Vec::new();
-        let mut total_threads = 0;
-        let mut active_workers = 0;
-        let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
-
-        let tms = context.thread_managers.load();
-        for tm in tms.iter() {
-            let tm_threads = tm.list_threads().await;
-            total_threads += tm_threads.len();
-            let stats = tm.get_stats().await;
-            active_workers += stats.active_workers;
-            per_channel_workers.insert(
-                tm.channel_name().to_string(),
-                (stats.active_workers, tm.max_concurrent()),
-            );
-            threads.extend(tm_threads);
-        }
+        let (mut threads, total_threads, active_workers, max_concurrent, per_channel_workers) =
+            collect_thread_snapshot(context).await;
 
         // Merge activity logs and status into threads
         let activity_map = context.activity_map.lock().await;
@@ -370,28 +320,9 @@ impl InspectServer {
         }
         drop(activity_map);
 
-        // Read metrics
-        let health = context.health_stats.lock().await;
-        let max_concurrent: usize = tms.iter().map(|tm| tm.max_concurrent()).sum();
-        let stats = GlobalStats {
-            active_workers,
-            total_threads,
-            max_concurrent,
-            available_workers: max_concurrent.saturating_sub(active_workers),
-            messages_received: health.messages_received,
-            messages_processed: health.messages_processed,
-            errors: health.errors,
-        };
-        drop(health);
-
-        let channels = context.channels.load();
-        let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
-        for ch in &mut channels {
-            if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
-                ch.active_workers = *aw;
-                ch.max_concurrent = *mc;
-            }
-        }
+        let stats =
+            compute_global_stats(context, active_workers, total_threads, max_concurrent).await;
+        let channels = build_channels(context, &per_channel_workers);
 
         InspectState {
             uptime_secs: uptime,
@@ -407,6 +338,84 @@ impl InspectServer {
                 .unwrap_or_default(),
         }
     }
+}
+
+/// Collect threads from all thread managers plus aggregate worker statistics.
+///
+/// Returns `(threads, total_threads, active_workers, max_concurrent,
+/// per_channel_workers)`.
+async fn collect_thread_snapshot(
+    context: &InspectContext,
+) -> (
+    Vec<ThreadInfo>,
+    usize,
+    usize,
+    usize,
+    HashMap<String, (usize, usize)>,
+) {
+    let mut threads = Vec::new();
+    let mut total_threads = 0;
+    let mut active_workers = 0;
+    let mut max_concurrent = 0;
+    let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
+
+    let tms = context.thread_managers.load();
+    for tm in tms.iter() {
+        let tm_threads = tm.list_threads().await;
+        total_threads += tm_threads.len();
+        let stats = tm.get_stats().await;
+        active_workers += stats.active_workers;
+        max_concurrent += tm.max_concurrent();
+        per_channel_workers.insert(
+            tm.channel_name().to_string(),
+            (stats.active_workers, tm.max_concurrent()),
+        );
+        threads.extend(tm_threads);
+    }
+    drop(tms);
+
+    (
+        threads,
+        total_threads,
+        active_workers,
+        max_concurrent,
+        per_channel_workers,
+    )
+}
+
+/// Compute `GlobalStats` from health counters.
+async fn compute_global_stats(
+    context: &InspectContext,
+    active_workers: usize,
+    total_threads: usize,
+    max_concurrent: usize,
+) -> GlobalStats {
+    let health = context.health_stats.lock().await;
+    GlobalStats {
+        active_workers,
+        total_threads,
+        max_concurrent,
+        available_workers: max_concurrent.saturating_sub(active_workers),
+        messages_received: health.messages_received,
+        messages_processed: health.messages_processed,
+        errors: health.errors,
+    }
+}
+
+/// Enrich channel info with per-channel worker counts.
+fn build_channels(
+    context: &InspectContext,
+    per_channel_workers: &HashMap<String, (usize, usize)>,
+) -> Vec<ChannelInfo> {
+    let channels = context.channels.load();
+    let mut channels: Vec<ChannelInfo> = channels.iter().cloned().collect();
+    for ch in &mut channels {
+        if let Some((aw, mc)) = per_channel_workers.get(&ch.name) {
+            ch.active_workers = *aw;
+            ch.max_concurrent = *mc;
+        }
+    }
+    channels
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

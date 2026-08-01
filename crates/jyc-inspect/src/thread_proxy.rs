@@ -170,6 +170,9 @@ impl WebsocketHandler for ThreadProxyHandler {
         &self,
         ws: axum::extract::ws::WebSocket,
         addr: std::net::SocketAddr,
+        // This handler binds `channel` + `thread` at construction time from
+        // the URL (`/ws/<channel>/<thread>`), so the `scoped_thread` passed
+        // by the inspect server is intentionally ignored.
         _scoped_thread: Option<&str>,
     ) -> anyhow::Result<()> {
         let tm = self.find_thread_manager()?;

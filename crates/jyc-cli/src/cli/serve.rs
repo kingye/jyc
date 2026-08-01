@@ -383,11 +383,8 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
                 let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
                 // Store the inbound adapter for later registration with the inspect server
-                let mut handler = WebsocketInboundAdapter::new(
-                    channel_name.to_string(),
-                    Some(config.clone()),
-                    broadcast_tx,
-                );
+                let mut handler =
+                    WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx);
                 handler.set_workspace_dir(workspace_dir.clone());
                 handler.set_inspect_broadcast(inspect_broadcast.clone());
                 let handler = Arc::new(handler);

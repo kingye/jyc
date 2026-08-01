@@ -939,12 +939,13 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // Only the right edge (against the chat pane) gets a border. Top,
-    // bottom, and left are at the screen edge or already provided by
-    // the chat pane border, so they're redundant.
+    // The right edge (against the chat pane) gets a vertical border, and the
+    // top edge carries the title inline with the top border so the title
+    // row acts as a separator between the heading and the thread list
+    // below.
     let block = Block::default()
-        .title(" Threads ")
-        .borders(Borders::RIGHT)
+        .title("── Threads ")
+        .borders(Borders::TOP | Borders::RIGHT)
         .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1045,12 +1046,12 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
 /// processing indicator. Wraps content in a bordered `Block` so it is
 /// visually separable from the borderless chat pane.
 pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) {
-    // Only the left edge (against the chat pane) gets a border. Top,
-    // bottom, and right are at the screen edge or redundant with the
-    // chat pane border.
+    // The left edge (against the chat pane) gets a vertical border, and the
+    // top edge carries the title inline with the top border so the title
+    // row acts as a separator between the heading and the content below.
     let block = Block::default()
-        .title(" Thread Info ")
-        .borders(Borders::LEFT);
+        .title("── Thread Info ")
+        .borders(Borders::TOP | Borders::LEFT);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1810,7 +1811,7 @@ pub(super) fn render_activity_log_inner(
 ) {
     // Only the top edge (against the chat pane) gets a border. Bottom,
     // left, and right are at the screen edge or redundant.
-    let mut block = Block::default().title(" Activity ").borders(Borders::TOP);
+    let mut block = Block::default().title("── Activity ").borders(Borders::TOP);
     if focused {
         block = block.border_style(
             Style::default()
@@ -3892,8 +3893,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer().clone();
         // Selected row sits at the top of the inner area (y=1 once the
-        // border is taken into account). Every cell across it must have
-        // the cyan selection background.
+        // title/border row is taken into account). Every cell across it
+        // must have the cyan selection background.
         for x in 1..(width - 1) {
             let cell = &buffer[(x, 1)];
             assert_eq!(
@@ -3903,6 +3904,101 @@ mod tests {
                 cell.bg
             );
         }
+
+        // Title row (y=0) must start with the `──` prefix followed by the
+        // title text. This guards against regressions in the title format.
+        let title_row: String = (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            title_row.starts_with("── Threads"),
+            "explorer title row should start with `── Threads`, got: {title_row:?}"
+        );
+    }
+
+    /// Regression: the activity pane title row must start with the `──`
+    /// prefix so the heading and the top border form a continuous stripe.
+    #[test]
+    fn activity_pane_title_has_double_dash_prefix() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.focus = ChatFocus::ActivityPane;
+
+        let width = 40;
+        let height = 5;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_activity_log(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        let title_row: String = (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            title_row.starts_with("── Activity"),
+            "activity title row should start with `── Activity`, got: {title_row:?}"
+        );
+    }
+
+    /// Regression: the thread info pane title row must start with the `──`
+    /// prefix and the inner content area must start at y=1 (the top border
+    /// row acts as a separator).
+    #[test]
+    fn thread_info_pane_title_has_double_dash_prefix() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.info_visible = true;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "jyc".to_string(),
+                channel: "local_dev".to_string(),
+                pattern: Some("jyc".to_string()),
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                input_tokens: None,
+                max_tokens: None,
+                output_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+            }],
+            ..Default::default()
+        });
+        app.table_state.select(Some(0));
+
+        let width = 20;
+        let height = 8;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        let title_row: String = (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            title_row.contains("── Thread Info"),
+            "thread info title row should contain `── Thread Info`, got: {title_row:?}"
+        );
     }
 
     fn ctx_with_full_data() -> ChatHeaderCtx<'static> {

@@ -178,19 +178,23 @@ impl App {
     }
 
     /// Emit the terminal escape sequence that matches the current
-    /// `mouse_capture_enabled` state. Called after `flip_mouse_capture`.
-    /// Writes directly to `stdout` (matches the existing
-    /// `EnableMouseCapture` / `DisableMouseCapture` usage at startup and
-    /// shutdown) because crossterm mouse toggles don't go through the
-    /// ratatui backend.
-    fn apply_mouse_capture(&self) -> std::io::Result<()> {
+    /// `mouse_capture_enabled` state. Writes to an arbitrary writer so
+    /// tests can pass a `Vec<u8>` and assert the emitted bytes; the
+    /// thin `apply_mouse_capture` wrapper below threads through stdout.
+    /// Crossterm mouse toggles don't go through the ratatui backend, so
+    /// we write directly here (matches the `EnableMouseCapture` /
+    /// `DisableMouseCapture` usage at startup and shutdown).
+    fn apply_mouse_capture_to<W: std::io::Write>(&self, mut out: W) -> std::io::Result<()> {
         use crossterm::ExecutableCommand;
-        let mut out = std::io::stdout().lock();
         if self.mouse_capture_enabled {
             out.execute(EnableMouseCapture).map(|_| ())
         } else {
             out.execute(DisableMouseCapture).map(|_| ())
         }
+    }
+
+    fn apply_mouse_capture(&self) -> std::io::Result<()> {
+        self.apply_mouse_capture_to(std::io::stdout().lock())
     }
 
     fn next_thread(&mut self) {
@@ -1029,9 +1033,9 @@ fn toggle_mouse_capture(app: &mut App) {
         app.set_status(format!("Mouse capture toggle failed: {e}"));
     } else {
         app.set_status(if on {
-            "Mouse capture: on (wheel scrolls; tmux select disabled)".to_string()
+            "Mouse capture: on".to_string()
         } else {
-            "Mouse capture: off (tmux select works; wheel ignored)".to_string()
+            "Mouse capture: off".to_string()
         });
     }
 }

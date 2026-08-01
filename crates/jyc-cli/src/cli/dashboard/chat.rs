@@ -3072,6 +3072,39 @@ mod tests {
     }
 
     #[test]
+    fn apply_mouse_capture_writes_enable_escape_when_on() {
+        // Default state is capture on; `apply_mouse_capture_to` must
+        // emit the EnableMouseCapture sequence. crossterm sets DECSET
+        // modes 1000, 1002, 1003, 1015, and 1006 in one call.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let app = App::new(rx, None);
+        assert!(app.mouse_capture_enabled);
+        let mut buf = Vec::new();
+        app.apply_mouse_capture_to(&mut buf).unwrap();
+        assert_eq!(
+            buf, *b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h",
+            "capture-on must emit EnableMouseCapture"
+        );
+    }
+
+    #[test]
+    fn apply_mouse_capture_writes_disable_escape_when_off() {
+        // After toggling off, `apply_mouse_capture_to` must emit the
+        // DisableMouseCapture sequence (the same DECSET modes cleared
+        // in reverse order).
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert!(!app.flip_mouse_capture());
+        assert!(!app.mouse_capture_enabled);
+        let mut buf = Vec::new();
+        app.apply_mouse_capture_to(&mut buf).unwrap();
+        assert_eq!(
+            buf, *b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+            "capture-off must emit DisableMouseCapture"
+        );
+    }
+
+    #[test]
     fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
         // Regression: when focus is on ActivityPane or ExplorerPane and the
         // user wheels over the message area, the wheel must advance the

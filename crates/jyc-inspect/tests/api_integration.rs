@@ -134,10 +134,11 @@ async fn same_token_works_for_api_and_ws() {
         .send()
         .await
         .unwrap();
-    // axum returns 404 for /ws/missing (no such channel) — auth passed.
+    // The WS upgrade succeeds with 101 Switching Protocols (auth passed;
+    // the channel resolver runs after the upgrade in production).
     assert_eq!(
         ws_res.status(),
-        404,
+        101,
         "auth should pass; got {}",
         ws_res.status()
     );

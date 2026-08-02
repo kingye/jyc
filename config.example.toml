@@ -297,22 +297,24 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # api_key_env = "ANTHROPIC_API_KEY"
 # # Provider-level billing rates, applied to every model under this
 # # provider unless the model sets its own. See "Cost tracking" below.
-# pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3 }
+# pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
 #
 # [agent.providers.anthropic.models."claude-opus-4-7"]
 # supports_images = true
 # # Model-level rates override the provider default above.
-# pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5 }
+# pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, currency = "USD" }
 
 # --- Cost tracking ---
 #
 # When a model (or its provider) has `pricing` set, jyc computes the cost
 # of every LLM call and shows it in the dashboard and chat Thread Info
-# panes as "Cost: $X session . $Y today". With no `pricing` configured,
+# panes as "Cost: ¥X session . ¥Y today" ($ for USD-priced models).
+# With no `pricing` configured,
 # no cost is computed and the row is hidden.
 #
 # Rates are per 1,000,000 tokens, in whatever currency `currency` names
-# (default "USD"). jyc never converts between currencies. Cost per call:
+# (default "CNY"). jyc never converts between currencies, so a provider
+# billing in USD must set `currency = "USD"` explicitly. Cost per call:
 #
 #   (input_tokens - cache_hit_tokens) * input_per_million  / 1e6
 # + output_tokens                     * output_per_million / 1e6
@@ -326,6 +328,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # type = "openai-compatible"
 # base_url = "https://api.example.cn"
 # api_key_env = "CN_API_KEY"
+# # `currency = "CNY"` is the default and may be omitted; shown here for clarity.
 # pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
 #
 # Two figures are tracked per thread:

@@ -430,14 +430,19 @@ pub struct ModelPricing {
     /// hits at the normal input rate.
     #[serde(default)]
     pub cache_hit_per_million: f64,
-    /// Currency label used for display (e.g. `"USD"`, `"CNY"`).
-    /// Defaults to `"USD"` when omitted. Purely a label — jyc never
-    /// converts between currencies.
+    /// Currency label used for display (e.g. `"CNY"`, `"USD"`).
+    /// Defaults to [`DEFAULT_CURRENCY`] when omitted. Purely a label —
+    /// jyc never converts between currencies, so a provider billing in
+    /// USD must say so explicitly.
     pub currency: Option<String>,
 }
 
 /// Currency assumed when a `ModelPricing` omits `currency`.
-pub const DEFAULT_CURRENCY: &str = "USD";
+///
+/// CNY: jyc's primary deployments price in yuan. Providers billing in
+/// another currency must set `currency` explicitly — no conversion is
+/// ever performed, so this is purely the display label.
+pub const DEFAULT_CURRENCY: &str = "CNY";
 
 impl ModelPricing {
     /// Currency label for display, defaulting to [`DEFAULT_CURRENCY`].

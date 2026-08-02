@@ -376,6 +376,29 @@ async fn persist_tokens_returning_state(
     (session_path, state)
 }
 
+/// Add to `session_cost` without touching the token counters.
+///
+/// Used for ancillary LLM calls (cycle-boundary progress summaries,
+/// context compression on reset) whose tokens are real spend but are not
+/// part of the main loop's context accounting -- folding them into
+/// `total_input_tokens` would corrupt the context-window math that drives
+/// auto-reset. The cost is still recorded so the displayed total is
+/// truthful.
+///
+/// No-op when `cost` is zero (no pricing configured, or the call failed).
+pub async fn add_session_cost(thread_path: &Path, cost: f64) {
+    if cost <= 0.0 {
+        return;
+    }
+    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let mut state = load_session_state(&session_path).await;
+    state.session_cost += cost;
+    if state.created_at.is_empty() {
+        state.created_at = chrono::Utc::now().to_rfc3339();
+    }
+    save_session_state(&session_path, &state).await;
+}
+
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
 /// Auto-resets when `context_input_tokens` crosses `max_input_tokens`, using
@@ -412,6 +435,7 @@ pub async fn update_tokens(
     summary_provider: &dyn crate::provider::Provider,
     auto_reset_threshold: f64,
     compression_config: &ResetCompressionConfig,
+    billing: Option<&BillingContext>,
 ) {
     // Persist the latest token counts. The returned state carries the
     // post-mutation values so the auto-reset check below doesn't need a
@@ -441,7 +465,13 @@ pub async fn update_tokens(
             "Session exceeded max input tokens, auto-resetting with configured compression",
         );
 
-        reset_session(thread_path, compression_config, Some(summary_provider)).await;
+        reset_session(
+            thread_path,
+            compression_config,
+            Some(summary_provider),
+            billing,
+        )
+        .await;
 
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
@@ -473,6 +503,7 @@ pub async fn maybe_reset_for_new_context(
     new_max_input_tokens: u64,
     compression_config: &ResetCompressionConfig,
     provider: Option<&dyn crate::provider::Provider>,
+    billing: Option<&BillingContext>,
 ) -> bool {
     if new_max_input_tokens == 0 {
         return false;
@@ -488,8 +519,21 @@ pub async fn maybe_reset_for_new_context(
         mode = ?compression_config.mode,
         "Loaded session exceeds new context window; resetting before agent loop",
     );
-    reset_session(thread_path, compression_config, provider).await;
+    reset_session(thread_path, compression_config, provider, billing).await;
     true
+}
+
+/// What the ledger needs in order to bill an ancillary LLM call.
+///
+/// Passed as `Option` through the reset path because most callers (e.g.
+/// the `/reset` command) have no pricing in scope; `None` simply means
+/// the call is not billed, matching the unpriced-model behaviour.
+#[derive(Debug, Clone)]
+pub struct BillingContext {
+    /// Rates for the active model.
+    pub pricing: jyc_types::ModelPricing,
+    /// `"provider/model"` label recorded on the ledger entry.
+    pub model_label: String,
 }
 
 // ─── Reset ───────────────────────────────────────────────────────────
@@ -509,6 +553,7 @@ pub async fn reset_session(
     thread_path: &Path,
     config: &ResetCompressionConfig,
     provider: Option<&dyn crate::provider::Provider>,
+    billing: Option<&BillingContext>,
 ) {
     let jyc_dir = thread_path.join(".jyc");
 
@@ -531,7 +576,7 @@ pub async fn reset_session(
         CompressionMode::Llm => {
             if let Some(p) = provider {
                 // LLM summary, then delete session
-                summarize_context(thread_path, p).await;
+                summarize_context(thread_path, p, billing).await;
             } else {
                 // No provider available — fallback to heuristic
                 tracing::warn!(
@@ -558,7 +603,11 @@ pub async fn reset_session(
 /// `provider` should be the small/fast model when configured
 /// (`[agent].small_model`); the caller is responsible for passing the right
 /// provider.
-async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::Provider) {
+async fn summarize_context(
+    thread_path: &Path,
+    provider: &dyn crate::provider::Provider,
+    billing: Option<&BillingContext>,
+) {
     let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
 
     if !context_path.exists() {
@@ -590,8 +639,8 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
     // Render the entire context to plain text and ask the LLM to summarize.
     // Mirrors the cycle-boundary helper in `agent_loop`.
     let joined = render_raw_context_as_text(&raw_context);
-    let summary_text = match generate_context_summary(provider, &joined).await {
-        Ok(s) => s,
+    let (summary_text, usage) = match generate_context_summary(provider, &joined).await {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -614,6 +663,38 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
             summary_text
         ),
     });
+
+    // Bill the compression call. `session_cost` is deliberately NOT updated:
+    // `reset_session` deletes the session file immediately after this returns,
+    // so the session total resets to zero by design. The ledger entry is what
+    // must survive -- this was real spend, and the durable per-day total has
+    // to include it.
+    if let Some(b) = billing {
+        let (input_tokens, output_tokens, cache_hit_tokens) = usage;
+        if input_tokens > 0 || output_tokens > 0 || cache_hit_tokens > 0 {
+            let cost = jyc_types::pricing::compute_cost(
+                &b.pricing,
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+            );
+            let entry = jyc_core::billing_log_store::BillingEntry {
+                ts: chrono::Utc::now().to_rfc3339(),
+                model: b.model_label.clone(),
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+                cost,
+                currency: b.pricing.currency_label().to_string(),
+                kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
+            };
+            if let Err(e) =
+                jyc_core::billing_log_store::BillingLogStore::append(thread_path, &entry)
+            {
+                tracing::warn!(error = %e, "Failed to append context-compression billing entry");
+            }
+        }
+    }
 
     let mut compacted: Vec<serde_json::Value> = Vec::with_capacity(2);
     if let Some(fu) = first_user {
@@ -648,7 +729,7 @@ async fn summarize_context(thread_path: &Path, provider: &dyn crate::provider::P
 async fn generate_context_summary(
     provider: &dyn crate::provider::Provider,
     joined_history: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, (u64, u64, u64))> {
     let system_prompt = "You are summarizing a conversation between a user and an AI agent. \
         Based on the transcript below, produce a faithful, concise summary in the language used \
         in the transcript. Cover:\n\
@@ -666,11 +747,20 @@ async fn generate_context_summary(
         .await?;
 
     let mut text = String::new();
+    // Capture usage so the caller can bill this call. Summarizing the whole
+    // transcript is expensive, and dropping the `Usage` event here is what
+    // previously made compression spend invisible in the ledger.
+    let mut usage = (0u64, 0u64, 0u64);
     use futures::StreamExt;
     let mut stream = std::pin::pin!(stream);
     while let Some(event) = stream.next().await {
         match event {
             Ok(crate::types::StreamEvent::TextDelta(t)) => text.push_str(&t),
+            Ok(crate::types::StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+            }) => usage = (input_tokens, output_tokens, cache_hit_tokens),
             Ok(crate::types::StreamEvent::Done) => break,
             Ok(crate::types::StreamEvent::Error(msg)) => {
                 anyhow::bail!("LLM error during summary: {msg}");
@@ -683,7 +773,7 @@ async fn generate_context_summary(
     if text.is_empty() {
         anyhow::bail!("LLM returned empty context summary");
     }
-    Ok(text)
+    Ok((text, usage))
 }
 
 /// Render `raw_context` as a single plain-text transcript suitable for

@@ -52,8 +52,26 @@ pub struct BillingEntry {
     pub cache_hit_tokens: u64,
     /// Computed cost of this single call, in `currency`.
     pub cost: f64,
-    /// Currency of `cost`, e.g. `"USD"`.
+    /// Currency of `cost`, e.g. `"CNY"`.
     pub currency: String,
+    /// What produced this call, so summarization overhead can be told
+    /// apart from user-facing work: `"call"` for a main agent-loop turn,
+    /// `"summary"` for the ancillary progress / context-compression
+    /// calls. Defaults to `"call"` so ledger lines written before this
+    /// field existed still deserialize.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+}
+
+/// Ledger `kind` for a normal agent-loop LLM call.
+pub const KIND_CALL: &str = "call";
+
+/// Ledger `kind` for an ancillary summarization call (cycle-boundary
+/// progress summary, or context compression on session reset).
+pub const KIND_SUMMARY: &str = "summary";
+
+fn default_kind() -> String {
+    KIND_CALL.to_string()
 }
 
 /// Append-only billing ledger, one file per UTC day per thread.
@@ -145,6 +163,7 @@ mod tests {
             cache_hit_tokens: 500,
             cost,
             currency: currency.to_string(),
+            kind: KIND_CALL.to_string(),
         }
     }
 

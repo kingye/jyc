@@ -14,11 +14,11 @@ const EXAMPLE_PRICING: &str = r#"
 type = "anthropic"
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
-pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3 }
+pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
 
 [agent.providers.anthropic.models."claude-opus-4-7"]
 supports_images = true
-pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5 }
+pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, currency = "USD" }
 "#;
 
 #[test]
@@ -31,7 +31,8 @@ fn example_config_pricing_parses_and_resolves() {
     assert_eq!(model.input_per_million, 15.0);
     assert_eq!(model.output_per_million, 75.0);
     assert_eq!(model.cache_hit_per_million, 1.5);
-    // No explicit currency in the example → documented USD default.
+    // The example declares USD explicitly, because DEFAULT_CURRENCY is CNY
+    // and an Anthropic provider must not be relabelled as yuan.
     assert_eq!(model.currency_label(), "USD");
 
     // A model not listed under the provider inherits the provider rates.

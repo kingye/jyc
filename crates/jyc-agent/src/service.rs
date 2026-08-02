@@ -1396,6 +1396,12 @@ impl AgentService for JycAgentService {
         // `providers` is untouched by `derive_agent_config` (it only overrides
         // model/small_model), so the global config is the right source.
         let pricing = jyc_types::pricing::lookup_pricing(&self.config.load(), model_str);
+        // Same rates, in the shape the reset path needs so context-compression
+        // calls land in the ledger too.
+        let billing_ctx = pricing.as_ref().map(|p| session::BillingContext {
+            pricing: p.clone(),
+            model_label: model_str.to_string(),
+        });
 
         // Resolve reset_compression using the matched pattern. This is the
         // single source of truth shared by manual `/reset`, this pre-loop
@@ -1418,6 +1424,7 @@ impl AgentService for JycAgentService {
                 new_max,
                 &compression_config,
                 Some(provider.as_ref()),
+                billing_ctx.as_ref(),
             )
             .await;
         }
@@ -1501,6 +1508,7 @@ impl AgentService for JycAgentService {
             summary_provider,
             auto_reset_threshold,
             &compression_config,
+            billing_ctx.as_ref(),
         )
         .await;
 
@@ -1551,10 +1559,23 @@ impl AgentService for JycAgentService {
         // Resolve compression config: pattern (not available here) -> agent config
         let resolved_config = config.clone();
 
+        // Bill the compression call against the thread's effective model so
+        // a manual `/reset` still lands in the ledger. Resolved from the
+        // configured model since no per-message override is in scope here.
+        let billing_ctx = agent_cfg.model.as_deref().and_then(|m| {
+            jyc_types::pricing::lookup_pricing(&self.config.load(), m).map(|p| {
+                session::BillingContext {
+                    pricing: p,
+                    model_label: m.to_string(),
+                }
+            })
+        });
+
         session::reset_session(
             thread_path,
             &resolved_config,
             provider.as_deref().map(|p| p as &dyn provider::Provider),
+            billing_ctx.as_ref(),
         )
         .await;
 

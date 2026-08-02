@@ -90,31 +90,35 @@ mod pricing {
         assert_eq!(p.cache_hit_per_million, 0.3);
     }
 
-    /// `currency` defaults to USD when omitted.
+    /// `currency` defaults to CNY when omitted — jyc's primary
+    /// deployments price in yuan, and no conversion is ever performed.
     #[test]
-    fn currency_defaults_to_usd() {
+    fn currency_defaults_to_cny() {
+        let toml = r#"
+            [providers.siliconflow]
+            type = "openai-compatible"
+            pricing = { input_per_million = 3.0, output_per_million = 4.0 }
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        let p = cfg.providers["siliconflow"].pricing.as_ref().unwrap();
+        assert_eq!(p.currency_label(), jyc_types::DEFAULT_CURRENCY);
+        assert_eq!(p.currency_label(), "CNY");
+    }
+
+    /// A USD provider must declare `currency` explicitly, since the
+    /// default is now CNY. Guards against a USD-billed provider being
+    /// silently relabelled as yuan.
+    #[test]
+    fn explicit_currency_is_preserved() {
         let toml = r#"
             [providers.anthropic]
             type = "anthropic"
-            pricing = { input_per_million = 3.0, output_per_million = 15.0 }
+            pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
         "#;
         let cfg: AgentConfig = toml::from_str(toml).unwrap();
         let p = cfg.providers["anthropic"].pricing.as_ref().unwrap();
         assert_eq!(p.currency_label(), "USD");
-    }
-
-    /// A non-USD currency label round-trips (e.g. CNY pricing).
-    #[test]
-    fn explicit_currency_is_preserved() {
-        let toml = r#"
-            [providers.siliconflow]
-            type = "openai-compatible"
-            pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
-        "#;
-        let cfg: AgentConfig = toml::from_str(toml).unwrap();
-        let p = cfg.providers["siliconflow"].pricing.as_ref().unwrap();
-        assert_eq!(p.currency_label(), "CNY");
-        assert_eq!(p.cache_hit_per_million, 0.5);
+        assert_eq!(p.cache_hit_per_million, 0.3);
     }
 
     /// `cache_hit_per_million` defaults to 0.0 when omitted, so providers

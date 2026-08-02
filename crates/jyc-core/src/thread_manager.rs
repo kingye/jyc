@@ -32,7 +32,7 @@ use crate::template_utils::copy_template_files;
 use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
-use jyc_types::{ThreadInfo, ThreadStatus};
+use jyc_types::{ThreadCost, ThreadInfo, ThreadStatus};
 
 /// Per-thread queue stats.
 #[derive(Debug, Clone, Default)]
@@ -892,7 +892,7 @@ impl ThreadManager {
     /// This includes both actively queued threads and idle threads that have been
     /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
-        use crate::session_state::{read_mode_override, read_token_state};
+        use crate::session_state::{read_mode_override, read_session_cost, read_token_state};
 
         // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
@@ -1058,6 +1058,27 @@ impl ThreadManager {
                 Err(_) => None,
             };
 
+            // Resolve accumulated cost: session-scoped from the session
+            // file, today's durable total from the billing ledger. Both are
+            // absent when the model has no configured pricing, in which case
+            // `cost` stays `None` and the dashboard omits the row.
+            let cost = {
+                let session = read_session_cost(&thread_path).await;
+                let today = crate::billing_log_store::BillingLogStore::today_total(&thread_path);
+                match (session, today) {
+                    (None, None) => None,
+                    (session, today) => {
+                        let (today_amount, currency) =
+                            today.unwrap_or_else(|| (0.0, jyc_types::DEFAULT_CURRENCY.to_string()));
+                        Some(ThreadCost {
+                            session: session.unwrap_or(0.0),
+                            today: today_amount,
+                            currency,
+                        })
+                    }
+                }
+            };
+
             threads.push(ThreadInfo {
                 name,
                 channel: self.channel_name.clone(),
@@ -1076,6 +1097,7 @@ impl ThreadManager {
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
+                cost,
             });
         }
 

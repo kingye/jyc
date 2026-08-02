@@ -2,7 +2,8 @@
 //! WebSocket thread chat and non-WebSocket detail mode.
 
 use super::token_render::{
-    input_token_pct, push_cache_hit_span, push_output_span, push_tokens_span, push_total_input_span,
+    input_token_pct, push_cache_hit_span, push_cost_span, push_output_span, push_tokens_span,
+    push_total_input_span,
 };
 use super::*;
 
@@ -1074,6 +1075,13 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
         push_cache_hit_span(&mut cache_hit_spans, t);
         if !cache_hit_spans.is_empty() {
             out.push(Line::from(cache_hit_spans));
+        }
+        // Cost row — session-scoped spend plus today's durable total.
+        // Omitted entirely when the model has no configured pricing.
+        let mut cost_spans = Vec::with_capacity(2);
+        push_cost_span(&mut cost_spans, t);
+        if !cost_spans.is_empty() {
+            out.push(Line::from(cost_spans));
         }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(
@@ -3586,6 +3594,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
+                    cost: None,
                 })
                 .collect(),
             ..Default::default()
@@ -3625,6 +3634,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
+                    cost: None,
                 })
                 .collect(),
             ..Default::default()
@@ -3663,6 +3673,7 @@ mod tests {
                 last_active_at: None,
                 skills: vec![],
                 thread_path: None,
+                cost: None,
             }],
             ..Default::default()
         });
@@ -3745,6 +3756,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
+                    cost: None,
                 },
                 jyc_types::ThreadSummary {
                     name: "other".to_string(),
@@ -3761,6 +3773,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
+                    cost: None,
                 },
             ],
             ..Default::default()
@@ -3874,6 +3887,7 @@ mod tests {
                 last_active_at: None,
                 skills: vec![],
                 thread_path: None,
+                cost: None,
             }],
             ..Default::default()
         });
@@ -3976,6 +3990,7 @@ mod tests {
                 last_active_at: None,
                 skills: vec![],
                 thread_path: None,
+                cost: None,
             }],
             ..Default::default()
         });

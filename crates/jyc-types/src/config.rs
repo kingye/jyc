@@ -436,10 +436,13 @@ pub struct ModelPricing {
     pub currency: Option<String>,
 }
 
+/// Currency assumed when a `ModelPricing` omits `currency`.
+pub const DEFAULT_CURRENCY: &str = "USD";
+
 impl ModelPricing {
-    /// Currency label for display, defaulting to `"USD"` when unset.
+    /// Currency label for display, defaulting to [`DEFAULT_CURRENCY`].
     pub fn currency_label(&self) -> &str {
-        self.currency.as_deref().unwrap_or("USD")
+        self.currency.as_deref().unwrap_or(DEFAULT_CURRENCY)
     }
 }
 

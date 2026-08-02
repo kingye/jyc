@@ -295,9 +295,44 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # type = "anthropic"
 # base_url = "https://api.anthropic.com/v1"
 # api_key_env = "ANTHROPIC_API_KEY"
+# # Provider-level billing rates, applied to every model under this
+# # provider unless the model sets its own. See "Cost tracking" below.
+# pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3 }
 #
 # [agent.providers.anthropic.models."claude-opus-4-7"]
 # supports_images = true
+# # Model-level rates override the provider default above.
+# pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5 }
+
+# --- Cost tracking ---
+#
+# When a model (or its provider) has `pricing` set, jyc computes the cost
+# of every LLM call and shows it in the dashboard and chat Thread Info
+# panes as "Cost: $X session . $Y today". With no `pricing` configured,
+# no cost is computed and the row is hidden.
+#
+# Rates are per 1,000,000 tokens, in whatever currency `currency` names
+# (default "USD"). jyc never converts between currencies. Cost per call:
+#
+#   (input_tokens - cache_hit_tokens) * input_per_million  / 1e6
+# + output_tokens                     * output_per_million / 1e6
+# + cache_hit_tokens                  * cache_hit_per_million / 1e6
+#
+# `cache_hit_per_million` defaults to 0.0; set it equal to
+# `input_per_million` for providers that bill cache hits at the full
+# input rate. A CNY-priced provider, for example:
+#
+# [agent.providers.my_cn_provider]
+# type = "openai-compatible"
+# base_url = "https://api.example.cn"
+# api_key_env = "CN_API_KEY"
+# pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
+#
+# Two figures are tracked per thread:
+#   - session: resets when the agent session resets (context auto-reset,
+#     /reset, or a model switch to a smaller context window)
+#   - today:   durable UTC-day total, appended per call to
+#     <thread>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
 
 # --- Agent Vision Fallback ---
 #

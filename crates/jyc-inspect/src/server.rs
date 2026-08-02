@@ -272,6 +272,7 @@ impl InspectServer {
                 last_active_at: t.last_active_at,
                 skills: t.skills,
                 thread_path: t.thread_path,
+                cost: t.cost,
             })
             .collect();
         // list_threads() sorts within each channel, but threads from multiple

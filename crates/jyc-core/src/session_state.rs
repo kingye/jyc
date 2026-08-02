@@ -41,6 +41,23 @@ pub async fn read_total_cache_hit_tokens(thread_path: &Path) -> Option<u64> {
     cache_hit
 }
 
+/// Read the accumulated cost of the current session.
+///
+/// Returns `None` when the file is missing, malformed, or the cost is
+/// zero — zero covers both "no calls yet" and "model has no configured
+/// pricing", and in either case there is nothing meaningful to show.
+///
+/// Kept separate from `read_token_state` rather than widening its
+/// tuple: cost has a single caller, and threading a sixth element
+/// through four existing helpers would be a much larger change than
+/// one extra read of an already page-cached file.
+pub async fn read_session_cost(thread_path: &Path) -> Option<f64> {
+    let agent_path = thread_path.join(".jyc").join("agent-session.json");
+    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
+    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
+    (state.session_cost > 0.0).then_some(state.session_cost)
+}
+
 /// Read all five token fields in a single file read.
 /// Returns (current_input_tokens, max_input_tokens, output_tokens,
 /// total_input_tokens, total_cache_hit_tokens). Any individual field is
@@ -91,6 +108,8 @@ struct AgentSessionState {
     total_cache_hit_tokens: u64,
     #[serde(default)]
     max_input_tokens: u64,
+    #[serde(default)]
+    session_cost: f64,
 }
 
 /// Read the model override file if it exists.

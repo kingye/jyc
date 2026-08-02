@@ -10,6 +10,7 @@ use reqwest_eventsource::{Event, EventSource};
 use serde_json;
 use std::collections::VecDeque;
 
+use crate::provider::usage::extract_cache_hit_tokens;
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -784,9 +785,11 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if input > 0 || output > 0 {
+            let cache_hit = extract_cache_hit_tokens(usage);
             events.push(StreamEvent::Usage {
                 input_tokens: input,
                 output_tokens: output,
+                cache_hit_tokens: cache_hit,
             });
         }
     }

@@ -84,6 +84,15 @@ pub struct ThreadSummary {
     /// this session. None when the session has no recorded value yet.
     #[serde(default)]
     pub total_input_tokens: Option<u64>,
+    /// Accumulated prompt-cache-hit tokens across all LLM calls in
+    /// this session. Sums each call's `cache_hit_tokens` (= tokens
+    /// served from the provider's prompt cache rather than re-billed
+    /// as fresh input) via `+=`. None when the session has no
+    /// recorded value yet (no calls, or the provider didn't surface
+    /// cache hits). Not shown in the dashboard overview list — only
+    /// in the chat info pane and the dashboard thread info area.
+    #[serde(default)]
+    pub total_cache_hit_tokens: Option<u64>,
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
@@ -139,6 +148,11 @@ pub struct ThreadInfo {
     /// See `ThreadSummary::total_input_tokens` for the full description.
     #[serde(default)]
     pub total_input_tokens: Option<u64>,
+    /// Accumulated prompt-cache-hit tokens across all LLM calls in
+    /// this session. See `ThreadSummary::total_cache_hit_tokens` for
+    /// the full description.
+    #[serde(default)]
+    pub total_cache_hit_tokens: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -316,6 +330,7 @@ mod tests {
                 max_tokens: Some(120000),
                 output_tokens: Some(12345),
                 total_input_tokens: Some(45000),
+                total_cache_hit_tokens: None,
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
@@ -487,6 +502,7 @@ mod tests {
             max_tokens: Some(120000),
             output_tokens: Some(2000),
             total_input_tokens: Some(10000),
+            total_cache_hit_tokens: Some(8000),
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec!["dev-workflow".to_string()],
             thread_path: None,

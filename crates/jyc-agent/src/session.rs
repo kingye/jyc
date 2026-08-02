@@ -35,6 +35,14 @@ pub struct SessionState {
     #[serde(default)]
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    /// Accumulated prompt-cache-hit tokens across all LLM calls in this
+    /// session. Each call's `cache_hit_tokens` is added via `+=` from the
+    /// agent loop. `0` when the provider didn't surface cache hits for
+    /// any call in this session. Reset to 0 on session reset, mirroring
+    /// `total_input_tokens`. See `provider::usage` for the per-vendor
+    /// field mapping.
+    #[serde(default)]
+    pub total_cache_hit_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
@@ -288,14 +296,16 @@ pub async fn ensure_session_file(
 ///
 /// `input_tokens` is the tokens reported by the last API call — stored
 /// directly (not accumulated) since each call already includes the full
-/// context. `total_input_tokens` and `output_tokens` are running totals
-/// accumulated by the caller (`agent_loop`), passed in as the current sum.
+/// context. `total_input_tokens`, `output_tokens`, and
+/// `total_cache_hit_tokens` are running totals accumulated by the caller
+/// (`agent_loop`), passed in as the current sum.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     thread_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
+    total_cache_hit_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
@@ -304,6 +314,7 @@ pub async fn persist_tokens(
         input_tokens,
         total_input_tokens,
         output_tokens,
+        total_cache_hit_tokens,
         context_window,
         auto_reset_threshold,
     )
@@ -313,11 +324,13 @@ pub async fn persist_tokens(
 /// Like `persist_tokens` but returns the final state and path so callers
 /// (currently only `update_tokens` for the post-loop auto-reset decision)
 /// can inspect threshold-crossing without a second disk read.
+#[allow(clippy::too_many_arguments)]
 async fn persist_tokens_returning_state(
     thread_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
+    total_cache_hit_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) -> (std::path::PathBuf, SessionState) {
@@ -327,6 +340,7 @@ async fn persist_tokens_returning_state(
     state.context_input_tokens = input_tokens;
     state.total_input_tokens = total_input_tokens;
     state.total_output_tokens = output_tokens;
+    state.total_cache_hit_tokens = total_cache_hit_tokens;
 
     if let Some(cw) = context_window {
         state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
@@ -367,6 +381,7 @@ pub async fn update_tokens(
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
+    total_cache_hit_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
     auto_reset_threshold: f64,
@@ -380,6 +395,7 @@ pub async fn update_tokens(
         input_tokens,
         total_input_tokens,
         output_tokens,
+        total_cache_hit_tokens,
         context_window,
         auto_reset_threshold,
     )
@@ -402,7 +418,16 @@ pub async fn update_tokens(
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
         // starts clean.
-        persist_tokens(thread_path, 0, 0, 0, context_window, auto_reset_threshold).await;
+        persist_tokens(
+            thread_path,
+            0,
+            0,
+            0,
+            0,
+            context_window,
+            auto_reset_threshold,
+        )
+        .await;
     }
 }
 

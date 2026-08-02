@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod openai_compat;
+pub mod usage;
 
 use anyhow::Result;
 use async_trait::async_trait;

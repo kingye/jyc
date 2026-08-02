@@ -46,6 +46,18 @@ pub struct SessionState {
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
+    /// Accumulated cost of this session, in the currency configured for
+    /// the model(s) used. **The only accumulating field on this struct** —
+    /// every other field is assigned from the caller's running total,
+    /// whereas this one is incremented by each call's cost as it happens
+    /// (see `persist_tokens`).
+    ///
+    /// Scoped to the session: zeroed on reset along with the token
+    /// counters, so it answers "what has this session cost so far". The
+    /// durable per-day ledger lives in `.jyc/bill-YYYY-MM-DD.jsonl`
+    /// (see `jyc_core::billing_log_store`), which no reset touches.
+    #[serde(default)]
+    pub session_cost: f64,
 }
 
 // ─── Conversation Persistence ────────────────────────────────────────
@@ -299,6 +311,10 @@ pub async fn ensure_session_file(
 /// context. `total_input_tokens`, `output_tokens`, and
 /// `total_cache_hit_tokens` are running totals accumulated by the caller
 /// (`agent_loop`), passed in as the current sum.
+///
+/// `call_cost` is the cost of the single call that just completed and is
+/// **added** to `session_cost` (unlike every other field, which is
+/// assigned). Pass `0.0` when the model has no configured pricing.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     thread_path: &Path,
@@ -308,6 +324,7 @@ pub async fn persist_tokens(
     total_cache_hit_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
+    call_cost: f64,
 ) {
     let _ = persist_tokens_returning_state(
         thread_path,
@@ -317,6 +334,7 @@ pub async fn persist_tokens(
         total_cache_hit_tokens,
         context_window,
         auto_reset_threshold,
+        call_cost,
     )
     .await;
 }
@@ -333,6 +351,7 @@ async fn persist_tokens_returning_state(
     total_cache_hit_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
+    call_cost: f64,
 ) -> (std::path::PathBuf, SessionState) {
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -341,6 +360,9 @@ async fn persist_tokens_returning_state(
     state.total_input_tokens = total_input_tokens;
     state.total_output_tokens = output_tokens;
     state.total_cache_hit_tokens = total_cache_hit_tokens;
+    // The one accumulating field: each call's cost adds to the session
+    // total rather than replacing it.
+    state.session_cost += call_cost;
 
     if let Some(cw) = context_window {
         state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
@@ -375,6 +397,10 @@ async fn persist_tokens_returning_state(
 /// All three paths — manual `/reset`, pre-loop pre-check, and this post-loop
 /// auto-reset — go through `reset_session()` with this config so user
 /// preferences (`mode`, `keep_pairs`) are honored consistently.
+///
+/// Does **not** add to `session_cost`: cost is banked per-call inside the
+/// agent loop via `persist_tokens`, so adding here would double-count the
+/// round.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
     thread_path: &Path,
@@ -398,6 +424,8 @@ pub async fn update_tokens(
         total_cache_hit_tokens,
         context_window,
         auto_reset_threshold,
+        // Cost already banked per-call by the agent loop.
+        0.0,
     )
     .await;
 
@@ -417,7 +445,8 @@ pub async fn update_tokens(
 
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
-        // starts clean.
+        // starts clean. session_cost zeroes with them — it is scoped to
+        // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
         persist_tokens(
             thread_path,
             0,
@@ -426,6 +455,7 @@ pub async fn update_tokens(
             0,
             context_window,
             auto_reset_threshold,
+            0.0,
         )
         .await;
     }

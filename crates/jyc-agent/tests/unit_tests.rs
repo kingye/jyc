@@ -640,7 +640,17 @@ mod session {
             .unwrap();
 
         // Call persist_tokens with input well above the 95% threshold.
-        session::persist_tokens(tmp.path(), 100_000, 100_000, 200, 0, Some(10_000), 0.95).await;
+        session::persist_tokens(
+            tmp.path(),
+            100_000,
+            100_000,
+            200,
+            0,
+            Some(10_000),
+            0.95,
+            0.0,
+        )
+        .await;
 
         // Context file untouched.
         let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
@@ -670,9 +680,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -696,9 +706,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -737,6 +747,7 @@ mod session {
                 0, // no cache hits exercised in this loop-pattern test
                 None,
                 0.95,
+                0.0, // cost not exercised here — see session_cost tests
             )
             .await;
         }
@@ -752,6 +763,76 @@ mod session {
         assert_eq!(state["total_input_tokens"], 4500);
         // total_output_tokens = sum across all three calls: 100 + 150 + 80
         assert_eq!(state["total_output_tokens"], 330);
+    }
+
+    /// `session_cost` is the ONE accumulating field: unlike the token
+    /// fields (which are assigned from the caller's running total), each
+    /// call's cost is added to the previous value.
+    #[tokio::test]
+    async fn session_cost_accumulates_across_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.25).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.10).await;
+        session::persist_tokens(tmp.path(), 2000, 4500, 300, 0, None, 0.95, 0.05).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        // 0.25 + 0.10 + 0.05 = 0.40 (accumulated, not replaced by 0.05)
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.40).abs() < 1e-9, "got {cost}");
+    }
+
+    /// A zero `call_cost` (unpriced model) leaves `session_cost` untouched
+    /// rather than resetting it.
+    #[tokio::test]
+    async fn zero_call_cost_preserves_existing_session_cost() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.75).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.0).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.75).abs() < 1e-9, "got {cost}");
+    }
+
+    /// Session files written before this feature have no `session_cost`
+    /// key. `serde(default)` must make them load as 0.0 rather than
+    /// failing to deserialize (which would silently drop token history).
+    #[tokio::test]
+    async fn legacy_session_file_without_cost_field_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc).await.unwrap();
+        tokio::fs::write(
+            jyc.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00+00:00","context_input_tokens":500,
+                "total_input_tokens":500,"total_output_tokens":50,
+                "total_cache_hit_tokens":0,"max_input_tokens":95000}"#,
+        )
+        .await
+        .unwrap();
+
+        // Adding cost to a legacy file starts from 0.0.
+        session::persist_tokens(tmp.path(), 600, 1100, 90, 0, None, 0.95, 0.30).await;
+
+        let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.30).abs() < 1e-9, "got {cost}");
+        // Pre-existing token data survived the load.
+        assert_eq!(state["total_input_tokens"], 1100);
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new

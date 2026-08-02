@@ -424,6 +424,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_cache_hit_tokens,
             context_window,
             auto_reset_threshold,
+            // Per-call cost is wired in a follow-up step; 0.0 keeps
+            // session_cost unchanged until then.
+            0.0,
         )
         .await;
 

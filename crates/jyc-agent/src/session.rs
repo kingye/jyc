@@ -326,7 +326,7 @@ async fn persist_tokens_returning_state(
 
     state.context_input_tokens = input_tokens;
     state.total_input_tokens = total_input_tokens;
-    state.total_output_tokens += output_tokens;
+    state.total_output_tokens = output_tokens;
 
     if let Some(cw) = context_window {
         state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;

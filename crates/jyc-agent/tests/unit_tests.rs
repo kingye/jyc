@@ -395,6 +395,11 @@ mod session {
         assert_eq!(state["max_input_tokens"], 95000); // 95% of 100000
     }
 
+    /// `context_input_tokens` and `total_input_tokens` are stored as passed
+    /// in (= latest call's value, since each call already includes full
+    /// context). `total_output_tokens` is also stored as passed in (= the
+    /// running total accumulated by the caller). No += accumulation
+    /// happens inside `update_tokens` itself.
     #[tokio::test]
     async fn update_tokens_stores_latest_not_accumulated() {
         let tmp = tempfile::tempdir().unwrap();
@@ -411,12 +416,14 @@ mod session {
             &ResetCompressionConfig::default(),
         )
         .await;
-        // Second call — input_tokens should be latest, not accumulated
+        // Second call — caller has accumulated locally. For output, the
+        // running total after call 2 is 100 + 150 = 250, which is what
+        // gets passed in (not just the per-call delta of 150).
         session::update_tokens(
             tmp.path(),
             2000,
             2000,
-            150,
+            250,
             Some(100000),
             &StubProvider,
             0.95,
@@ -430,7 +437,7 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["context_input_tokens"], 2000); // Latest, not 3000
         assert_eq!(state["total_input_tokens"], 2000); // Latest, not 3000
-        assert_eq!(state["total_output_tokens"], 250); // Accumulated: 100 + 150
+        assert_eq!(state["total_output_tokens"], 250); // Caller's running sum
     }
 
     #[tokio::test]
@@ -645,38 +652,44 @@ mod session {
         assert_eq!(state["max_input_tokens"], 9500);
     }
 
-    /// Output tokens accumulate across calls (input replaces).
+    /// Output tokens accumulate upstream in the agent_loop accumulator,
+    /// which sums each call's `output_tokens` and passes the running
+    /// total here. `persist_tokens` stores it as-is (assignment).
+    /// This test verifies the data flow: the on-disk value reflects the
+    /// running total passed in (= 330 across three calls of 100+150+80).
     #[tokio::test]
-    async fn persist_tokens_accumulates_output_tokens() {
+    async fn persist_tokens_stores_total_output_as_passed() {
         let tmp = tempfile::tempdir().unwrap();
 
+        // Simulate three LLM calls with per-call output 100, 150, 80.
+        // agent_loop accumulates locally: 100, 250, 330. Each running
+        // total is passed into persist_tokens.
         session::persist_tokens(tmp.path(), 1000, 1000, 100, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 150, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 80, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 250, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 330, None, 0.95).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
-        // input is latest, not accumulated (each API call already includes full context)
         assert_eq!(state["context_input_tokens"], 2000);
-        // total_input_tokens reflects the running sum that agent_loop passed in
         assert_eq!(state["total_input_tokens"], 2000);
-        // output is accumulated
         assert_eq!(state["total_output_tokens"], 330);
     }
 
-    /// `total_input_tokens` reflects the running sum that the agent_loop
-    /// accumulator passes in. Simulates three LLM calls with per-call
-    /// `input_tokens` of 1000, 2000, 3000 — agent_loop sums them to
-    /// 1000, 3000, 6000 and passes each running total to persist_tokens.
-    /// The on-disk value reflects the latest passed-in sum (= 6000).
+    /// `total_input_tokens` is stored as passed in (assignment, not `+=`).
+    /// The accumulation happens upstream in the agent_loop accumulator,
+    /// which sums each call's `input_tokens` (= full context size) and
+    /// passes the running total here. This test verifies that the
+    /// passed-in sum is what ends up on disk across multiple calls.
     #[tokio::test]
-    async fn persist_tokens_total_input_reflects_caller_running_sum() {
+    async fn persist_tokens_stores_total_input_as_passed() {
         let tmp = tempfile::tempdir().unwrap();
 
-        // Three "rounds" where the loop accumulates input_tokens across
-        // internal iterations and passes the running total.
+        // Simulate three LLM calls with per-call `input_tokens` of
+        // 1000, 2000, 3000 — agent_loop sums them to running totals of
+        // 1000, 3000, 6000 and passes each running total to persist_tokens.
+        // The on-disk value reflects the latest passed-in sum (= 6000).
         session::persist_tokens(tmp.path(), 1000, 1000, 0, None, 0.95).await;
         session::persist_tokens(tmp.path(), 2000, 3000, 0, None, 0.95).await;
         session::persist_tokens(tmp.path(), 3000, 6000, 0, None, 0.95).await;
@@ -687,6 +700,51 @@ mod session {
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
         assert_eq!(state["context_input_tokens"], 3000);
         assert_eq!(state["total_input_tokens"], 6000);
+    }
+
+    /// Mirrors the actual agent_loop accumulation pattern: per call,
+    /// `total_input_tokens += response.input_tokens` and
+    /// `total_output_tokens += response.output_tokens`. Verifies that
+    /// the += accumulation is what produces the value that ends up in
+    /// agent-session.json after a round of multiple LLM calls.
+    #[tokio::test]
+    async fn agent_loop_token_accumulation_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Simulate three LLM calls as agent_loop would accumulate them.
+        let mut context_input_tokens: u64 = 0;
+        let mut total_input_tokens: u64 = 0;
+        let mut total_output_tokens: u64 = 0;
+
+        for (per_call_input, per_call_output) in [(1000, 100), (1500, 150), (2000, 80)] {
+            if per_call_input > 0 {
+                context_input_tokens = per_call_input;
+            }
+            total_input_tokens += per_call_input;
+            total_output_tokens += per_call_output;
+
+            session::persist_tokens(
+                tmp.path(),
+                context_input_tokens,
+                total_input_tokens,
+                total_output_tokens,
+                None,
+                0.95,
+            )
+            .await;
+        }
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        // context_input_tokens = latest call's input (current context size)
+        assert_eq!(state["context_input_tokens"], 2000);
+        // total_input_tokens = sum across all three calls: 1000 + 1500 + 2000
+        assert_eq!(state["total_input_tokens"], 4500);
+        // total_output_tokens = sum across all three calls: 100 + 150 + 80
+        assert_eq!(state["total_output_tokens"], 330);
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new

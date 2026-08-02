@@ -346,16 +346,22 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         )
         .await?;
 
-        // Track tokens: input_tokens from last call is the current context size
-        // (each call sends full context, so latest = total). Output tokens accumulate.
+        // Track tokens across LLM calls in this round:
+        // - `context_input_tokens` = input tokens from the most recent LLM call
+        //   (current context size, since each call sends full context).
+        // - `total_input_tokens` / `total_output_tokens` = running sums across
+        //   every call in this round. Each call's `input_tokens` (= full context
+        //   size) is added via `+=`, so `total_input_tokens` also represents the
+        //   lifetime tokens billed as input by the API for this round.
         if response.input_tokens > 0 {
             context_input_tokens = response.input_tokens;
         }
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
 
-        // Mid-loop token check: if total input tokens exceed the threshold,
-        // compress raw_context in-memory to prevent API 400 on next call.
+        // Mid-loop token check: if the current context size (last call's
+        // input_tokens) exceeds the threshold, compress raw_context
+        // in-memory to prevent API 400 on the next call.
         if let Some(cw) = context_window
             && context_input_tokens >= (cw as f64 * auto_reset_threshold) as u64
         {

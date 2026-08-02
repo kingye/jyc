@@ -95,6 +95,14 @@ pub struct AgentLoopConfig<'a> {
     /// Whether to publish `ThreadEvent::Thinking` events for dashboard display.
     /// Controlled by the `/thinking show/hide` command. Default: `true`.
     pub thinking_enabled: bool,
+    /// Billing rates for the active model. `None` when the model has no
+    /// configured `pricing`, in which case no cost is computed and nothing
+    /// is written to the ledger.
+    pub pricing: Option<jyc_types::ModelPricing>,
+    /// Model identifier (`"provider/model"`) recorded on each ledger entry.
+    /// Only used for billing, so an empty string is harmless when
+    /// `pricing` is `None`.
+    pub model_label: &'a str,
 }
 
 /// Run the agent loop to completion.
@@ -126,6 +134,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         context_window,
         auto_reset_threshold,
         thinking_enabled,
+        pricing,
+        model_label,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -364,6 +374,43 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_output_tokens += response.output_tokens;
         total_cache_hit_tokens += response.cache_hit_tokens;
 
+        // Bill this call from its own usage payload, before anything can
+        // reset or overwrite the round's counters. Doing it per call (rather
+        // than once post-loop) means a round that is cancelled or errors out
+        // still keeps the cost of the calls that did complete, and a
+        // mid-round model switch bills each call at its own rate.
+        //
+        // Ledger write failures are logged and swallowed: billing is
+        // observability and must never fail a user's reply.
+        let call_cost = match pricing.as_ref() {
+            Some(p) if response.input_tokens > 0 || response.output_tokens > 0 => {
+                let cost = jyc_types::pricing::compute_cost(
+                    p,
+                    response.input_tokens,
+                    response.output_tokens,
+                    response.cache_hit_tokens,
+                );
+                let entry = jyc_core::billing_log_store::BillingEntry {
+                    ts: Utc::now().to_rfc3339(),
+                    model: model_label.to_string(),
+                    input_tokens: response.input_tokens,
+                    output_tokens: response.output_tokens,
+                    cache_hit_tokens: response.cache_hit_tokens,
+                    cost,
+                    currency: p.currency_label().to_string(),
+                };
+                if let Err(e) =
+                    jyc_core::billing_log_store::BillingLogStore::append(thread_path, &entry)
+                {
+                    tracing::warn!(error = %e, "Failed to append billing entry");
+                }
+                cost
+            }
+            // No pricing configured, or a call that reported no usage at
+            // all (nothing to bill).
+            _ => 0.0,
+        };
+
         // Mid-loop token check: if the current context size (last call's
         // input_tokens) exceeds the threshold, compress raw_context
         // in-memory to prevent API 400 on the next call.
@@ -424,9 +471,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_cache_hit_tokens,
             context_window,
             auto_reset_threshold,
-            // Per-call cost is wired in a follow-up step; 0.0 keeps
-            // session_cost unchanged until then.
-            0.0,
+            call_cost,
         )
         .await;
 
@@ -1983,6 +2028,8 @@ mod cancel_during_tool_tests {
                 context_window: None,
                 auto_reset_threshold: 0.95,
                 thinking_enabled: false,
+                pricing: None,
+                model_label: "",
             }),
         )
         .await;

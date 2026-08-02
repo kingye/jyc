@@ -1390,6 +1390,13 @@ impl AgentService for JycAgentService {
         }
         .or(Some(jyc_core::session_state::DEFAULT_CONTEXT_WINDOW));
 
+        // Resolve billing rates for the same `provider/model` string that
+        // `context_window` above resolves from. `None` when the model has no
+        // configured pricing, which disables cost tracking for this round.
+        // `providers` is untouched by `derive_agent_config` (it only overrides
+        // model/small_model), so the global config is the right source.
+        let pricing = jyc_types::pricing::lookup_pricing(&self.config.load(), model_str);
+
         // Resolve reset_compression using the matched pattern. This is the
         // single source of truth shared by manual `/reset`, this pre-loop
         // pre-check, and the post-loop auto-reset in `update_tokens`.
@@ -1459,6 +1466,8 @@ impl AgentService for JycAgentService {
             context_window,
             auto_reset_threshold,
             thinking_enabled: read_thinking_enabled(thread_path),
+            pricing,
+            model_label: model_str,
         })
         .await?;
 

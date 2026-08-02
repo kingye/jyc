@@ -1864,3 +1864,140 @@ mod skills {
         assert!(parse_skill_frontmatter(content).is_none());
     }
 }
+
+/// End-to-end billing behaviour: the per-call pattern the agent loop
+/// applies on every LLM response — compute cost from that call's own
+/// usage, append it to the durable ledger, and add it to `session_cost`.
+///
+/// Exercised here rather than by driving the whole loop because the loop
+/// needs a live provider; this covers the exact sequence of calls the
+/// loop makes per response.
+mod billing_integration {
+    use jyc_core::billing_log_store::{BillingEntry, BillingLogStore};
+    use jyc_types::config::ModelPricing;
+    use jyc_types::pricing::compute_cost;
+
+    fn pricing() -> ModelPricing {
+        // Claude-Opus-like rates: $15/M in, $75/M out, $1.50/M cache.
+        ModelPricing {
+            input_per_million: 15.0,
+            output_per_million: 75.0,
+            cache_hit_per_million: 1.5,
+            currency: None,
+        }
+    }
+
+    /// Simulate one LLM call the way `agent_loop` does.
+    async fn bank_one_call(
+        thread_path: &std::path::Path,
+        input: u64,
+        output: u64,
+        cache_hit: u64,
+    ) -> f64 {
+        let p = pricing();
+        let cost = compute_cost(&p, input, output, cache_hit);
+        BillingLogStore::append(
+            thread_path,
+            &BillingEntry {
+                ts: chrono::Utc::now().to_rfc3339(),
+                model: "anthropic/claude-opus-4-7".to_string(),
+                input_tokens: input,
+                output_tokens: output,
+                cache_hit_tokens: cache_hit,
+                cost,
+                currency: p.currency_label().to_string(),
+            },
+        )
+        .unwrap();
+        jyc_agent::session::persist_tokens(
+            thread_path,
+            input,
+            input,
+            output,
+            cache_hit,
+            Some(200_000),
+            0.95,
+            cost,
+        )
+        .await;
+        cost
+    }
+
+    /// Three calls in one round: the ledger gets exactly three lines and
+    /// `session_cost` equals their sum. This is the invariant that makes
+    /// per-call banking correct — no call is dropped or double-counted.
+    #[tokio::test]
+    async fn three_calls_produce_three_ledger_lines_and_summed_session_cost() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        let mut expected = 0.0;
+        for (input, output, cache) in [(1000, 100, 0), (2500, 250, 800), (4000, 90, 3200)] {
+            expected += bank_one_call(path, input, output, cache).await;
+        }
+
+        // Ledger: one line per call.
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        assert_eq!(entries.len(), 3, "one ledger line per LLM call");
+
+        // Ledger total and session_cost agree with the computed sum.
+        let (ledger_total, currency) = BillingLogStore::today_total(path).unwrap();
+        assert!(
+            (ledger_total - expected).abs() < 1e-9,
+            "ledger {ledger_total} vs {expected}"
+        );
+        assert_eq!(currency, "USD");
+
+        let state: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let session_cost = state["session_cost"].as_f64().unwrap();
+        assert!(
+            (session_cost - expected).abs() < 1e-9,
+            "session_cost {session_cost} vs {expected}"
+        );
+    }
+
+    /// The durability guarantee: `session_cost` resets with the session,
+    /// but the ledger does not. After a reset the ledger still holds the
+    /// full day, which is why "today" is read from it and not from
+    /// `agent-session.json`.
+    #[tokio::test]
+    async fn ledger_survives_session_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        let first = bank_one_call(path, 5000, 400, 1000).await;
+
+        // Reset semantics, matching `reset_session`: the session file is
+        // deleted, then rebuilt with zeroed counters by the auto-reset
+        // path's follow-up `persist_tokens(.., 0.0)` call.
+        tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        jyc_agent::session::persist_tokens(path, 0, 0, 0, 0, Some(200_000), 0.95, 0.0).await;
+
+        let after: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after["session_cost"].as_f64().unwrap(),
+            0.0,
+            "session_cost must zero with the session"
+        );
+
+        // ...but the ledger still has the spend.
+        let (ledger_total, _) = BillingLogStore::today_total(path).unwrap();
+        assert!(
+            (ledger_total - first).abs() < 1e-9,
+            "ledger must survive the reset: {ledger_total} vs {first}"
+        );
+    }
+}

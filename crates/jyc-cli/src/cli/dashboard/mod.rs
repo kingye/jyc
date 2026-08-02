@@ -1141,7 +1141,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
         Cell::from("Channel"),
         Cell::from("Pattern"),
         Cell::from("Status"),
-        Cell::from("Tokens"),
+        Cell::from("Context"),
         Cell::from("Last Active"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
@@ -1159,12 +1159,9 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 ThreadStatus::Error => Style::default().fg(Color::Red),
             };
 
-            let tokens = match (t.context_input_tokens, t.max_tokens, t.output_tokens) {
-                (Some(cur), Some(max), Some(out)) => {
-                    format!("{}K/{}K·{}K out", cur / 1000, max / 1000, out / 1000)
-                }
-                (Some(cur), Some(max), _) => format!("{}K/{}K", cur / 1000, max / 1000),
-                (Some(cur), None, _) => format!("{}K", cur / 1000),
+            let tokens = match (t.context_input_tokens, t.max_tokens) {
+                (Some(cur), Some(max)) => format!("{}K/{}K", cur / 1000, max / 1000),
+                (Some(cur), None) => format!("{}K", cur / 1000),
                 _ => "-".to_string(),
             };
 

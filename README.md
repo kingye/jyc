@@ -278,6 +278,8 @@ Key sections:
 - **`[channels.<name>.github]`** -- GitHub settings (owner, repo, token, poll_interval)
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
+- **`[agent.providers.<name>]`** -- LLM provider (type, base_url, api_key_env,
+  `pricing`); `[agent.providers.<name>.models.<id>]` overrides per model
 - **`[inspect]`** -- Inspect server settings (enabled, bind address)
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
@@ -286,6 +288,61 @@ Per-pattern options such as `thread_path` (custom thread directory), `model`
 (per-pattern model override), `access` (filesystem whitelist), and `mcps`
 (per-pattern MCP tools) are configured under `[[channels.<name>.patterns]]`.
 See `config.example.toml` for annotated examples.
+
+### Cost tracking
+
+Set `pricing` on a provider (or an individual model, which takes priority) to
+have jyc compute the cost of every LLM call:
+
+```toml
+[agent.providers.anthropic]
+type = "anthropic"
+# Rates are per 1,000,000 tokens. `currency` is a display label only --
+# jyc never converts between currencies. Default: "CNY", so a provider
+# billing in USD must say so explicitly.
+pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
+
+[agent.providers.anthropic.models."claude-opus-4-7"]
+pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, currency = "USD" }
+```
+
+Cost per call is:
+
+```
+  (input_tokens - cache_hit_tokens) * input_per_million     / 1e6
++ output_tokens                     * output_per_million    / 1e6
++ cache_hit_tokens                  * cache_hit_per_million / 1e6
+```
+
+A CNY-priced provider can omit `currency` entirely, since `"CNY"` is the
+default:
+
+```toml
+[agent.providers.siliconflow]
+type = "openai-compatible"
+pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5 }
+```
+
+Prompt-cache hits are billed at their own (usually much cheaper) rate rather
+than the full input rate. `cache_hit_per_million` defaults to `0.0`; set it
+equal to `input_per_million` for providers that bill cache hits normally.
+
+The dashboard and chat **Thread Info** panes then show
+`Cost: ¥0.0521 session · ¥1.3057 today`:
+
+- **session** -- resets when the agent session resets (context auto-reset,
+  `/reset`, or switching to a model with a smaller context window).
+- **today** -- durable UTC-day total, appended per call to
+  `<thread>/.jyc/bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
+  line records the token counts alongside the cost, so the ledger stays
+  auditable and a corrected rate can be replayed over past usage.
+
+Summarization overhead is billed too -- the cycle-boundary progress summary
+and the context-compression call on session reset each summarize the whole
+transcript, so they are not cheap. Ledger lines carry a `kind` field
+(`"call"` or `"summary"`) so the two can be told apart.
+
+With no `pricing` configured, no cost is tracked and the row is hidden.
 
 See [DESIGN.md](DESIGN.md) for full configuration reference and architecture details.
 

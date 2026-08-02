@@ -83,6 +83,45 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
     }
 }
 
+/// Format a cost amount for display.
+///
+/// Renders `$` for USD and `¥` for CNY (the two currencies the feature
+/// was specified against); any other label is shown as a suffix, so an
+/// unrecognised currency still reads correctly rather than being
+/// mislabelled with the wrong symbol.
+///
+/// Four decimals: a single cheap call can cost well under a cent, and
+/// rounding to 2 places would display it as `0.00`.
+fn format_amount(amount: f64, currency: &str) -> String {
+    match currency {
+        "USD" => format!("${amount:.4}"),
+        "CNY" => format!("¥{amount:.4}"),
+        other => format!("{amount:.4} {other}"),
+    }
+}
+
+/// Append the "Cost: $X session · $Y today" row to `spans`. Pushes
+/// nothing when the thread has no cost data (model without configured
+/// `pricing`), so an unpriced thread shows no row at all rather than a
+/// misleading zero.
+///
+/// `session` resets with the agent session; `today` is the durable
+/// per-day total from the billing ledger — they differ after a reset by
+/// design.
+pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+    if let Some(ref c) = t.cost {
+        spans.push(Span::styled(
+            "Cost: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(
+            "{} session · {} today",
+            format_amount(c.session, &c.currency),
+            format_amount(c.today, &c.currency),
+        )));
+    }
+}
+
 /// Two-space gap used by the dashboard status line between adjacent
 /// chips. Callers on a flat status line prepend this manually before
 /// each row (the chat info pane stacks rows on separate lines and
@@ -115,6 +154,7 @@ mod tests {
             last_active_at: None,
             skills: vec![],
             thread_path: None,
+            cost: None,
         }
     }
 
@@ -206,5 +246,77 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "Cache hits: ");
         assert_eq!(spans[1].content, "640");
+    }
+
+    /// No cost data (unpriced model) → no row, rather than `$0.0000`.
+    #[test]
+    fn push_cost_span_omits_when_no_cost() {
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        let mut spans = Vec::new();
+        push_cost_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    /// Both figures render, and USD uses the `$` symbol.
+    #[test]
+    fn push_cost_span_writes_session_and_today() {
+        let mut t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        t.cost = Some(jyc_types::ThreadCost {
+            session: 0.0521,
+            today: 1.3057,
+            currency: "USD".into(),
+        });
+        let mut spans = Vec::new();
+        push_cost_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Cost: ");
+        assert_eq!(spans[1].content, "$0.0521 session · $1.3057 today");
+    }
+
+    /// CNY renders with `¥`, not a dollar sign.
+    #[test]
+    fn push_cost_span_uses_cny_symbol() {
+        let mut t = summary_with(None, None, None, None, None);
+        t.cost = Some(jyc_types::ThreadCost {
+            session: 2.5,
+            today: 10.0,
+            currency: "CNY".into(),
+        });
+        let mut spans = Vec::new();
+        push_cost_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "¥2.5000 session · ¥10.0000 today");
+    }
+
+    /// An unrecognised currency is suffixed rather than given the wrong
+    /// symbol — including the "mixed" marker for multi-currency days.
+    #[test]
+    fn push_cost_span_suffixes_unknown_currency() {
+        let mut t = summary_with(None, None, None, None, None);
+        t.cost = Some(jyc_types::ThreadCost {
+            session: 1.0,
+            today: 2.0,
+            currency: "mixed".into(),
+        });
+        let mut spans = Vec::new();
+        push_cost_span(&mut spans, &t);
+        assert_eq!(
+            spans[1].content,
+            "1.0000 mixed session · 2.0000 mixed today"
+        );
+    }
+
+    /// Sub-cent costs must not round away to zero — the reason for four
+    /// decimal places.
+    #[test]
+    fn push_cost_span_keeps_sub_cent_precision() {
+        let mut t = summary_with(None, None, None, None, None);
+        t.cost = Some(jyc_types::ThreadCost {
+            session: 0.0003,
+            today: 0.0007,
+            currency: "USD".into(),
+        });
+        let mut spans = Vec::new();
+        push_cost_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "$0.0003 session · $0.0007 today");
     }
 }

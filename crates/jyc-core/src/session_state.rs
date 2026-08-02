@@ -10,7 +10,7 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
 pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>) {
-    let (cur, max, _) = read_token_state(thread_path).await;
+    let (cur, max, _, _) = read_token_state(thread_path).await;
     (cur, max)
 }
 
@@ -19,38 +19,51 @@ pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>)
 /// The session file already deserializes `total_output_tokens` — this just
 /// surfaces it. Output tokens accumulate across LLM calls in a round.
 pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, out) = read_token_state(thread_path).await;
+    let (_, _, out, _) = read_token_state(thread_path).await;
     out
 }
 
-/// Read all three token fields in a single file read.
-/// Returns (current_input_tokens, max_input_tokens, output_tokens). Any
-/// individual field is `None` when the file is missing, malformed, or the
-/// underlying value is zero.
+/// Read accumulated total input tokens from the agent session state file.
+/// Returns `None` when the file is missing, malformed, or the value is zero.
+/// Distinct from `read_input_tokens` (which returns the current context
+/// size); this is the running sum across all LLM calls in the session.
+pub async fn read_total_input_tokens(thread_path: &Path) -> Option<u64> {
+    let (_, _, _, total) = read_token_state(thread_path).await;
+    total
+}
+
+/// Read all four token fields in a single file read.
+/// Returns (current_input_tokens, max_input_tokens, output_tokens,
+/// total_input_tokens). Any individual field is `None` when the file is
+/// missing, malformed, or the underlying value is zero.
 ///
-/// Callers that need all three fields (e.g. `thread_manager::list_threads`)
-/// should use this rather than calling `read_input_tokens` and
-/// `read_output_tokens` separately — saves one file open + JSON parse per
-/// call. The two single-purpose helpers above are thin wrappers retained
-/// for callers that only need one field.
-pub async fn read_token_state(thread_path: &Path) -> (Option<u64>, Option<u64>, Option<u64>) {
+/// Callers that need all four fields (e.g. `thread_manager::list_threads`)
+/// should use this rather than calling the single-purpose helpers above
+/// separately — saves one file open + JSON parse per call.
+pub async fn read_token_state(
+    thread_path: &Path,
+) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
     let agent_path = thread_path.join(".jyc").join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
-    let current = (state.total_input_tokens > 0).then_some(state.total_input_tokens);
+    let current = (state.context_input_tokens > 0).then_some(state.context_input_tokens);
     let max = (state.max_input_tokens > 0).then_some(state.max_input_tokens);
     let output = (state.total_output_tokens > 0).then_some(state.total_output_tokens);
-    (current, max, output)
+    let total_input = (state.total_input_tokens > 0).then_some(state.total_input_tokens);
+    (current, max, output, total_input)
 }
 
 /// Agent session state format.
 #[derive(Debug, Deserialize)]
 struct AgentSessionState {
     #[serde(default)]
+    context_input_tokens: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
     total_input_tokens: u64,
     #[serde(default)]
     #[allow(dead_code)]
@@ -274,7 +287,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens": 1000, "max_input_tokens": 2000}"#,
+            r#"{"context_input_tokens": 1000, "max_input_tokens": 2000}"#,
         )
         .await
         .unwrap();
@@ -298,7 +311,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens": 0, "max_input_tokens": 0}"#,
+            r#"{"context_input_tokens": 0, "max_input_tokens": 0}"#,
         )
         .await
         .unwrap();
@@ -327,7 +340,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":1000,"total_output_tokens":250,"max_input_tokens":2000}"#,
+            r#"{"context_input_tokens":1000,"total_output_tokens":250,"max_input_tokens":2000}"#,
         )
         .await
         .unwrap();
@@ -355,26 +368,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_total_input_tokens_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":1500,"total_input_tokens":4800,"total_output_tokens":250,"max_input_tokens":10000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_total_input_tokens(tmp.path()).await, Some(4800));
+    }
+
+    #[tokio::test]
+    async fn read_total_input_tokens_missing_field_returns_none() {
+        // Old session files (pre-#490 second commit) don't have
+        // total_input_tokens; serde(default) on the field makes it 0,
+        // and the helper converts 0 to None.
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":1000,"max_input_tokens":1000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_total_input_tokens(tmp.path()).await, None);
+    }
+
+    #[tokio::test]
     async fn read_token_state_all_three_fields() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":1500,"total_output_tokens":400,"max_input_tokens":10000}"#,
+            r#"{"context_input_tokens":1500,"total_output_tokens":400,"max_input_tokens":10000}"#,
         )
         .await
         .unwrap();
         assert_eq!(
             read_token_state(tmp.path()).await,
-            (Some(1500), Some(10000), Some(400))
+            (Some(1500), Some(10000), Some(400), None)
         );
     }
 
     #[tokio::test]
     async fn read_token_state_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(read_token_state(tmp.path()).await, (None, None, None));
+        assert_eq!(read_token_state(tmp.path()).await, (None, None, None, None));
     }
 
     #[tokio::test]
@@ -560,7 +604,7 @@ auto_reset_threshold = 0.95
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("agent-session.json"),
-            r#"{"total_input_tokens":5000,"max_input_tokens":100000}"#,
+            r#"{"context_input_tokens":5000,"max_input_tokens":100000}"#,
         )
         .await
         .unwrap();
@@ -571,7 +615,7 @@ auto_reset_threshold = 0.95
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(state["max_input_tokens"], 250000);
         // Other fields preserved
-        assert_eq!(state["total_input_tokens"], 5000);
+        assert_eq!(state["context_input_tokens"], 5000);
     }
 
     #[tokio::test]

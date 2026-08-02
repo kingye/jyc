@@ -19,7 +19,31 @@ All notable changes to JYC will be documented in this file.
   it off when working inside tmux and the chip switches to ` MOUSE- `
   immediately. A brief status line confirms the change.
 
+- **Accumulated `total_input_tokens` in the session state.** New field
+  in `.jyc/agent-session.json` that records the running sum of every
+  LLM call's `input_tokens` (= full context size) across the session's
+  lifetime. Since each call re-sends the full conversation context,
+  this value also represents the **lifetime input tokens billed by the
+  API** for this session (use it for cost tracking). Distinct from
+  `context_input_tokens` (which holds the most recent call's input
+  size = current context, just renamed in PR #491). The `agent_loop`
+  accumulates per-call input tokens and passes the running total
+  into `persist_tokens`; on auto-reset the counter zeros out alongside
+  `context_input_tokens` and `total_output_tokens`. Visible in the
+  thread info pane (chat) and the dashboard thread info area as a
+  new `Total input: N` row. (#490)
+
 ### Fixed
+
+- **`total_output_tokens` no longer double-counts across `agent_loop`
+  iterations.** `persist_tokens` previously did `state.total_output_tokens
+  += output_tokens` while the caller (`agent_loop`) had already
+  accumulated the running sum, so every iteration added the running
+  total on top of itself — the on-disk value grew as a triangular sum
+  (100 + (100+150) + (100+150+80) = 680 instead of 330 for three calls
+  with outputs 100/150/80). Now `persist_tokens` stores `total_output_tokens`
+  as passed in (matching the same contract as `total_input_tokens`),
+  with the caller doing the accumulation. (#490)
 
 - **`jyc open` no longer times out on a brand-new ad-hoc thread.**
   `set_thread_path` now creates `.jyc/` and `.jyc/thread-name` for the
@@ -57,6 +81,17 @@ All notable changes to JYC will be documented in this file.
   `Enter` on the dashboard are preserved. Leader keys per scope:
   chat — `d`, `e`, `z`, `a`, `o`, `gg`, `G`, `n`, `r`, `q`, `m`;
   dashboard — `c`, `n`, `r`, `q`, `m`.
+
+- **Renamed `total_input_tokens` to `context_input_tokens` in
+  `.jyc/agent-session.json`.** The old name was misleading: despite the
+  `total_` prefix, the field stores the input tokens reported by the
+  most recent LLM call (i.e. current context size, since each call sends
+  the full conversation context), not a sum across calls. Only
+  `total_output_tokens` is actually accumulated. The Rust struct
+  field in `SessionState` is renamed accordingly; behavior is
+  unchanged. On-disk session files written by older versions will see
+  the input counter reset to 0 on next load — sessions auto-reset when
+  full so this is a one-time cost per existing thread. (#490)
 
 ## [0.3.13] - 2026-08-01
 

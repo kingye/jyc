@@ -96,7 +96,7 @@ enabled = true
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 
 # Per-pattern auto-reset threshold (0.0~1.0): overrides [agent].auto_reset_threshold.
-# When total_input_tokens >= context_window * threshold, auto-reset triggers.
+# When context_input_tokens >= context_window * threshold, auto-reset triggers.
 # Default: 0.95
 # auto_reset_threshold = 0.9
 
@@ -326,7 +326,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #   - "none": delete all context on reset (no summary)
 # keep_pairs: number of user+assistant pairs to retain in heuristic mode (default: 3)
 # auto_reset_threshold: fraction of context window (0.0~1.0, default: 0.95)
-#   When total_input_tokens >= context_window * auto_reset_threshold, auto-reset triggers.
+#   When context_input_tokens >= context_window * auto_reset_threshold, auto-reset triggers.
 #   Per-pattern `auto_reset_threshold` takes priority.
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 # auto_reset_threshold = 0.95

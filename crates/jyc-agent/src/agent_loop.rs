@@ -143,6 +143,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
     raw_context.push(provider.format_user_message(&user_blocks));
 
+    let mut context_input_tokens: u64 = 0;
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
@@ -186,7 +187,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             tracing::info!(
                 cycle = cycle_count,
                 total_iterations,
-                input_tokens = total_input_tokens,
+                input_tokens = context_input_tokens,
                 "Cycle boundary reached, sending progress reply and continuing"
             );
 
@@ -345,20 +346,27 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         )
         .await?;
 
-        // Track tokens: input_tokens from last call is the current context size
-        // (each call sends full context, so latest = total). Output tokens accumulate.
+        // Track tokens across LLM calls in this round:
+        // - `context_input_tokens` = input tokens from the most recent LLM call
+        //   (current context size, since each call sends full context).
+        // - `total_input_tokens` / `total_output_tokens` = running sums across
+        //   every call in this round. Each call's `input_tokens` (= full context
+        //   size) is added via `+=`, so `total_input_tokens` also represents the
+        //   lifetime tokens billed as input by the API for this round.
         if response.input_tokens > 0 {
-            total_input_tokens = response.input_tokens;
+            context_input_tokens = response.input_tokens;
         }
+        total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
 
-        // Mid-loop token check: if total input tokens exceed the threshold,
-        // compress raw_context in-memory to prevent API 400 on next call.
+        // Mid-loop token check: if the current context size (last call's
+        // input_tokens) exceeds the threshold, compress raw_context
+        // in-memory to prevent API 400 on the next call.
         if let Some(cw) = context_window
-            && total_input_tokens >= (cw as f64 * auto_reset_threshold) as u64
+            && context_input_tokens >= (cw as f64 * auto_reset_threshold) as u64
         {
             let before_count = raw_context.len();
-            let before_tokens = total_input_tokens;
+            let before_tokens = context_input_tokens;
 
             // Apply heuristic compaction: keep last 3 user+assistant pairs.
             // Uses a fixed keep_pairs=3 because mid-loop compression is a
@@ -371,7 +379,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             history = compact_history_heuristic(&history, 3);
 
             // Reset token counter after compression
-            total_input_tokens = 0;
+            context_input_tokens = 0;
 
             tracing::info!(
                 before_messages = before_count,
@@ -405,6 +413,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // `update_tokens` call in `service.rs`.
         crate::session::persist_tokens(
             thread_path,
+            context_input_tokens,
             total_input_tokens,
             total_output_tokens,
             context_window,
@@ -455,7 +464,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 text: response.text,
                 reply_sent_by_tool,
                 reply_text_from_tool,
-                input_tokens: total_input_tokens,
+                input_tokens: context_input_tokens,
+                total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
                 raw_context,
@@ -692,7 +702,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 text: String::new(),
                 reply_sent_by_tool: true,
                 reply_text_from_tool,
-                input_tokens: total_input_tokens,
+                input_tokens: context_input_tokens,
+                total_input_tokens,
                 output_tokens: total_output_tokens,
                 history,
                 raw_context,
@@ -712,7 +723,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     cycle_count + 1,
                     total_iterations + 1,
                     iter_in_cycle + 1,
-                    total_input_tokens
+                    context_input_tokens
                 )),
                 parts_count: total_iterations + 1,
                 output_length: total_output_tokens as usize,
@@ -743,7 +754,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         text: String::new(),
         reply_sent_by_tool,
         reply_text_from_tool,
-        input_tokens: total_input_tokens,
+        input_tokens: context_input_tokens,
+        total_input_tokens,
         output_tokens: total_output_tokens,
         history,
         raw_context,

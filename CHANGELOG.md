@@ -62,6 +62,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Dashboard overview list "Tokens" column → "Context".** The column
+  now shows only `context_input_tokens / max_input_tokens` (e.g.
+  `47K/128K`), dropping the previous `·XK out` suffix. The
+  `total_input_tokens` and `output_tokens` fields are unchanged on
+  `ThreadSummary` and continue to render as separate rows in the chat
+  info pane and the dashboard thread info area. (#490)
+
 - **Pane title separators with `──` prefix.** The activity, thread info,
   and thread explorer pane titles now start with `── ` so the title row
   reads as a continuous `─` stripe against the top border. The thread

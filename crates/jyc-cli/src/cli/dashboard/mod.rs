@@ -1303,6 +1303,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cache_hit_span(&mut status_line, selected);
     }
+    if selected.cost.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_cost_span(&mut status_line, selected);
+    }
     info_lines.push(Line::from(status_line));
 
     info_lines.push(Line::from(vec![
@@ -1723,6 +1727,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     thread_path: None,
+                    cost: None,
                 })
                 .collect(),
             stats: Default::default(),

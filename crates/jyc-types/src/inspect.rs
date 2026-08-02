@@ -103,6 +103,30 @@ pub struct ThreadSummary {
     /// a pattern's `thread_path` override is active).
     #[serde(default)]
     pub thread_path: Option<std::path::PathBuf>,
+    /// Accumulated cost (session + today). `None` when the active model
+    /// has no configured `pricing`, so the row is omitted entirely
+    /// rather than showing a misleading zero.
+    #[serde(default)]
+    pub cost: Option<ThreadCost>,
+}
+
+/// Accumulated cost for a thread, in `currency`.
+///
+/// `session` is scoped to the current agent session and zeroes on
+/// reset (read from `agent-session.json`); `today` is the durable
+/// per-day total from the billing ledger, which no reset touches.
+/// The two are expected to differ after a reset — that is the point
+/// of keeping both.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadCost {
+    /// Cost of the current session so far.
+    pub session: f64,
+    /// Cost accumulated today (UTC day), across sessions.
+    pub today: f64,
+    /// Currency label, e.g. `"USD"`. `"mixed"` when today's entries
+    /// span more than one currency, where the summed amount is not a
+    /// meaningful single figure.
+    pub currency: String,
 }
 
 /// Information about a configured channel.
@@ -173,6 +197,11 @@ pub struct ThreadInfo {
     /// a pattern's `thread_path` override is active).
     #[serde(default)]
     pub thread_path: Option<std::path::PathBuf>,
+    /// Accumulated cost (session + today). `None` when the active model
+    /// has no configured `pricing`, so the row is omitted entirely
+    /// rather than showing a misleading zero.
+    #[serde(default)]
+    pub cost: Option<ThreadCost>,
 }
 
 /// Severity level for an activity entry.
@@ -337,6 +366,7 @@ mod tests {
                 recent_messages: vec![],
                 thinking_text: None,
                 thread_path: None,
+                cost: None,
             }],
             stats: GlobalStats {
                 active_workers: 2,
@@ -506,6 +536,7 @@ mod tests {
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec!["dev-workflow".to_string()],
             thread_path: None,
+            cost: None,
         };
         let json = serde_json::to_string(&summary).unwrap();
         let parsed: ThreadSummary = serde_json::from_str(&json).unwrap();

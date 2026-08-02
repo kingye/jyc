@@ -932,6 +932,7 @@ mod model_id_tests {
             supports_images: None,
             params: None,
             user_agent: None,
+            pricing: None,
         }
     }
 
@@ -947,6 +948,7 @@ mod model_id_tests {
                 supports_images: None,
                 params: None,
                 user_agent: None,
+                pricing: None,
                 models,
             },
         );

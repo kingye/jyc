@@ -186,6 +186,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 21. **Template System** — Initialize new threads with predefined files from `templates/` directory
 22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
 23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (thread manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`thread_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
+24. **BillingLogStore** — Durable per-thread cost ledger. Appends one line per LLM call to `.jyc/bill-YYYY-MM-DD.jsonl` (token counts + computed cost + currency). Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
 
 ### Design Principles: Component Responsibilities
 

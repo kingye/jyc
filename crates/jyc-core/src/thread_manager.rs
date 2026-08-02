@@ -32,7 +32,7 @@ use crate::template_utils::copy_template_files;
 use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
-use jyc_types::{ThreadInfo, ThreadStatus};
+use jyc_types::{ThreadCost, ThreadInfo, ThreadStatus};
 
 /// Per-thread queue stats.
 #[derive(Debug, Clone, Default)]
@@ -892,7 +892,7 @@ impl ThreadManager {
     /// This includes both actively queued threads and idle threads that have been
     /// created but have no messages pending.
     pub async fn list_threads(&self) -> Vec<ThreadInfo> {
-        use crate::session_state::{read_mode_override, read_token_state};
+        use crate::session_state::{read_mode_override, read_session_cost, read_token_state};
 
         // Collect names of actively queued threads
         let queues = self.thread_queues.lock().await;
@@ -1058,6 +1058,52 @@ impl ThreadManager {
                 Err(_) => None,
             };
 
+            // Resolve accumulated cost: session-scoped from the session
+            // file, today's durable total from the billing ledger. Both are
+            // absent when the model has no configured pricing, in which case
+            // `cost` stays `None` and the dashboard omits the row.
+            let cost = {
+                let session = read_session_cost(&thread_path).await;
+                let today = crate::billing_log_store::BillingLogStore::today_total(&thread_path);
+                match (session, today) {
+                    (None, None) => None,
+                    (session, today) => {
+                        // Currency comes from the model's configured pricing,
+                        // NOT from the ledger. The ledger is empty on a fresh
+                        // UTC day while `session_cost` is still carrying spend
+                        // from before midnight, and falling back to a constant
+                        // there would label a CNY amount with `$` (or the
+                        // reverse). A correct amount under the wrong unit is
+                        // worse than showing nothing.
+                        //
+                        // The ledger's own label is still preferred when it
+                        // reports `mixed` — a thread that switched between
+                        // differently-priced models in one day is a real
+                        // signal that config alone cannot express.
+                        let ledger_currency = today.as_ref().map(|(_, c)| c.clone());
+                        let mixed = ledger_currency.as_deref()
+                            == Some(crate::billing_log_store::MIXED_CURRENCY);
+                        let currency = if mixed {
+                            ledger_currency.unwrap_or_default()
+                        } else {
+                            model
+                                .as_deref()
+                                .and_then(|m| {
+                                    jyc_types::pricing::lookup_pricing(&self.config.load(), m)
+                                })
+                                .map(|p| p.currency_label().to_string())
+                                .or(ledger_currency)
+                                .unwrap_or_else(|| jyc_types::DEFAULT_CURRENCY.to_string())
+                        };
+                        Some(ThreadCost {
+                            session: session.unwrap_or(0.0),
+                            today: today.map(|(amount, _)| amount).unwrap_or(0.0),
+                            currency,
+                        })
+                    }
+                }
+            };
+
             threads.push(ThreadInfo {
                 name,
                 channel: self.channel_name.clone(),
@@ -1076,6 +1122,7 @@ impl ThreadManager {
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
+                cost,
             });
         }
 
@@ -3217,6 +3264,140 @@ mode = "agent"
             "Stale entry should be removed from thread_paths"
         );
 
+        tm.shutdown().await;
+    }
+    /// Build a TM whose config prices `cnprov/m1` in CNY, so
+    /// `list_threads` has a real pricing entry to resolve a currency from.
+    fn make_priced_tm(workspace: &std::path::Path) -> Arc<ThreadManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+model = "cnprov/m1"
+[agent.providers.cnprov]
+type = "openai-compatible"
+[agent.providers.cnprov.models.m1]
+pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
+"#,
+            )
+            .unwrap(),
+        ));
+
+        Arc::new(ThreadManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test-channel".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        ))
+    }
+
+    /// Regression: a session carrying spend across UTC midnight has a
+    /// non-zero `session_cost` but an empty ledger for the new day. The
+    /// currency must still come from the model's configured pricing —
+    /// previously it fell back to DEFAULT_CURRENCY, labelling a CNY
+    /// amount with the wrong unit.
+    #[tokio::test]
+    async fn list_threads_currency_from_config_when_ledger_empty() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let thread = workspace.join("t1");
+        std::fs::create_dir_all(thread.join(".jyc")).unwrap();
+        // Session has spend; no bill-<today>.jsonl exists at all.
+        std::fs::write(
+            thread.join(".jyc/agent-session.json"),
+            r#"{"session_cost":0.05,"context_input_tokens":10}"#,
+        )
+        .unwrap();
+
+        let tm = make_priced_tm(&workspace);
+        let threads = tm.list_threads().await;
+        let t = threads
+            .iter()
+            .find(|t| t.name == "t1")
+            .expect("thread listed");
+        let cost = t.cost.as_ref().expect("cost present when session_cost > 0");
+
+        assert_eq!(
+            cost.currency, "CNY",
+            "currency must come from pricing config"
+        );
+        assert!((cost.session - 0.05).abs() < 1e-9);
+        assert_eq!(cost.today, 0.0, "no ledger entries today");
+        tm.shutdown().await;
+    }
+
+    /// A multi-currency day is the one case where the ledger's own label
+    /// wins: config can only name one currency, but the ledger knows the
+    /// thread actually spent in two.
+    #[tokio::test]
+    async fn list_threads_preserves_mixed_currency_from_ledger() {
+        use crate::billing_log_store::{BillingEntry, BillingLogStore, MIXED_CURRENCY};
+
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let thread = workspace.join("t1");
+        std::fs::create_dir_all(thread.join(".jyc")).unwrap();
+
+        for (cost, currency) in [(1.0, "CNY"), (2.0, "USD")] {
+            BillingLogStore::append(
+                &thread,
+                &BillingEntry {
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    model: "cnprov/m1".to_string(),
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    cache_hit_tokens: 0,
+                    cost,
+                    currency: currency.to_string(),
+                    kind: crate::billing_log_store::KIND_CALL.to_string(),
+                },
+            )
+            .unwrap();
+        }
+
+        let tm = make_priced_tm(&workspace);
+        let threads = tm.list_threads().await;
+        let t = threads
+            .iter()
+            .find(|t| t.name == "t1")
+            .expect("thread listed");
+        let cost = t.cost.as_ref().expect("cost present");
+
+        assert_eq!(
+            cost.currency, MIXED_CURRENCY,
+            "ledger's mixed marker must survive, not be replaced by config"
+        );
+        assert!((cost.today - 3.0).abs() < 1e-9);
         tm.shutdown().await;
     }
 }

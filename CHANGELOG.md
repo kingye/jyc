@@ -6,6 +6,44 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Per-model cost tracking.** Models (or their providers) can declare
+  `pricing` rates per 1M tokens — `input_per_million`,
+  `output_per_million`, `cache_hit_per_million`, and an optional
+  `currency` label (default `CNY`; no conversion is ever performed, so a
+  USD-billed provider must set `currency = "USD"` explicitly).
+  Cost per LLM call is
+  `(input - cache_hit) * input_rate + output * output_rate + cache_hit * cache_rate`,
+  so prompt-cache hits are billed at their own (usually cheaper) rate
+  rather than the full input rate. Model-level `pricing` overrides
+  provider-level; with none configured, no cost is tracked and the
+  display is hidden entirely.
+
+  Cost is computed **per call** from that call's own usage payload, not
+  from session totals. This keeps the spend of a round that is cancelled
+  or errors out, and bills each call at its own rate when the model
+  changes mid-round.
+
+  Two figures appear in the dashboard and chat **Thread Info** panes as
+  `Cost: ¥0.0521 session · ¥1.3057 today`:
+  - **session** — accumulated in `session_cost` in
+    `.jyc/agent-session.json`; resets with the session (context
+    auto-reset, `/reset`, or switching to a smaller-context model).
+  - **today** — durable UTC-day total from the new per-thread ledger at
+    `.jyc/bill-YYYY-MM-DD.jsonl`, one line per call, never reset,
+    rotated, or truncated. Each line stores the token counts alongside
+    the cost, so entries stay auditable and a corrected rate can be
+    replayed over past usage. Day-stamped files (matching the existing
+    `chat_history_YYYY-MM-DD.jsonl` convention) keep the dashboard's
+    500 ms poll bounded to a single day of entries rather than
+    re-parsing an ever-growing ledger.
+
+  Ancillary LLM calls are billed too: the cycle-boundary progress
+  summary and the context-compression call on session reset both
+  summarize the whole transcript, so their input is on the order of the
+  context window. Ledger entries carry a `kind` field (`"call"` vs
+  `"summary"`) so summarization overhead can be separated from
+  user-facing spend.
+
 - **Mouse-capture status chip.** A right-aligned chip in the dashboard
   status bar mirrors the vim mode chip format. Peach ` MOUSE+ ` means
   capture is on (wheel scrolls in chat, tmux drag-to-select is

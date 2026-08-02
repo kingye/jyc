@@ -95,6 +95,14 @@ pub struct AgentLoopConfig<'a> {
     /// Whether to publish `ThreadEvent::Thinking` events for dashboard display.
     /// Controlled by the `/thinking show/hide` command. Default: `true`.
     pub thinking_enabled: bool,
+    /// Billing rates for the active model. `None` when the model has no
+    /// configured `pricing`, in which case no cost is computed and nothing
+    /// is written to the ledger.
+    pub pricing: Option<jyc_types::ModelPricing>,
+    /// Model identifier (`"provider/model"`) recorded on each ledger entry.
+    /// Only used for billing, so an empty string is harmless when
+    /// `pricing` is `None`.
+    pub model_label: &'a str,
 }
 
 /// Run the agent loop to completion.
@@ -126,6 +134,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         context_window,
         auto_reset_threshold,
         thinking_enabled,
+        pricing,
+        model_label,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -206,7 +216,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             //
             //    `summary_provider` is the small/fast model from
             //    `[agent].small_model` if configured, else the main provider.
-            let progress_text = generate_summary_from_joined_history(
+            let (progress_text, summary_usage) = generate_summary_from_joined_history(
                 summary_provider,
                 &raw_context,
                 cycle_count,
@@ -216,11 +226,33 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 sse_read_timeout,
             ).await.unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to generate progress summary, using fallback");
-                format!(
-                    "Still working on this task. Cycle {}, ~{} iterations completed. Will continue.",
-                    cycle_count, total_iterations
+                (
+                    format!(
+                        "Still working on this task. Cycle {}, ~{} iterations completed. Will continue.",
+                        cycle_count, total_iterations
+                    ),
+                    // The call failed, so there is nothing to bill.
+                    CallUsage::default(),
                 )
             });
+
+            // Bill the summary call. It summarizes the whole transcript, so
+            // its input is on the order of the context window -- far from
+            // free, and previously invisible in the ledger. `summary_provider`
+            // is `small_model` when configured but falls back to the main
+            // model, so on a default setup this bills at main-model rates.
+            let summary_cost = bill_call(
+                pricing.as_ref(),
+                thread_path,
+                model_label,
+                jyc_core::billing_log_store::KIND_SUMMARY,
+                summary_usage.input_tokens,
+                summary_usage.output_tokens,
+                summary_usage.cache_hit_tokens,
+            );
+            if summary_cost > 0.0 {
+                crate::session::add_session_cost(thread_path, summary_cost).await;
+            }
 
             // 2. Post the progress reply to the user via the reply tool.
             //    This sends the GitHub comment / IM message. We do NOT push
@@ -364,6 +396,21 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_output_tokens += response.output_tokens;
         total_cache_hit_tokens += response.cache_hit_tokens;
 
+        // Bill this call from its own usage payload, before anything can
+        // reset or overwrite the round's counters. Doing it per call (rather
+        // than once post-loop) means a round that is cancelled or errors out
+        // still keeps the cost of the calls that did complete, and a
+        // mid-round model switch bills each call at its own rate.
+        let call_cost = bill_call(
+            pricing.as_ref(),
+            thread_path,
+            model_label,
+            jyc_core::billing_log_store::KIND_CALL,
+            response.input_tokens,
+            response.output_tokens,
+            response.cache_hit_tokens,
+        );
+
         // Mid-loop token check: if the current context size (last call's
         // input_tokens) exceeds the threshold, compress raw_context
         // in-memory to prevent API 400 on the next call.
@@ -424,6 +471,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_cache_hit_tokens,
             context_window,
             auto_reset_threshold,
+            call_cost,
         )
         .await;
 
@@ -771,6 +819,58 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     })
 }
 
+/// Token usage of a single LLM call, carried back from helpers that make
+/// their own calls so the caller can bill them.
+#[derive(Debug, Clone, Copy, Default)]
+struct CallUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_hit_tokens: u64,
+}
+
+/// Compute and record the cost of one LLM call, returning the amount so
+/// the caller can fold it into `session_cost`.
+///
+/// Returns `0.0` when no pricing is configured, or when the provider
+/// reported no usage at all (nothing to bill). Every call that consumes
+/// tokens is billed, including the ancillary summarization calls —
+/// `kind` distinguishes them in the ledger so summarization overhead can
+/// be separated from user-facing spend.
+///
+/// Ledger write failures are logged and swallowed: billing is
+/// observability and must never fail a user's reply.
+#[allow(clippy::too_many_arguments)]
+fn bill_call(
+    pricing: Option<&jyc_types::ModelPricing>,
+    thread_path: &Path,
+    model_label: &str,
+    kind: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_hit_tokens: u64,
+) -> f64 {
+    let Some(p) = pricing else { return 0.0 };
+    if input_tokens == 0 && output_tokens == 0 && cache_hit_tokens == 0 {
+        return 0.0;
+    }
+
+    let cost = jyc_types::pricing::compute_cost(p, input_tokens, output_tokens, cache_hit_tokens);
+    let entry = jyc_core::billing_log_store::BillingEntry {
+        ts: Utc::now().to_rfc3339(),
+        model: model_label.to_string(),
+        input_tokens,
+        output_tokens,
+        cache_hit_tokens,
+        cost,
+        currency: p.currency_label().to_string(),
+        kind: kind.to_string(),
+    };
+    if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(thread_path, &entry) {
+        tracing::warn!(error = %e, kind, "Failed to append billing entry");
+    }
+    cost
+}
+
 /// Generate a progress summary using a separate, isolated LLM call.
 ///
 /// The conversation transcript is rendered into a single plain-text string
@@ -796,7 +896,7 @@ async fn generate_summary_from_joined_history(
     thread_name: &str,
     event_bus: Option<&ThreadEventBusRef>,
     sse_read_timeout: std::time::Duration,
-) -> Result<String> {
+) -> Result<(String, CallUsage)> {
     let summary_system = format!(
         "You are summarizing in-progress work for the user. Based on the transcript below, \
          write a concise 2-3 sentence progress update in the user's language. Format:\n\
@@ -831,7 +931,12 @@ async fn generate_summary_from_joined_history(
         anyhow::bail!("LLM returned empty progress summary");
     }
 
-    Ok(response.text)
+    let usage = CallUsage {
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        cache_hit_tokens: response.cache_hit_tokens,
+    };
+    Ok((response.text, usage))
 }
 
 /// Render `raw_context` (a list of OpenAI/Anthropic-shaped JSON messages)
@@ -1980,6 +2085,8 @@ mod cancel_during_tool_tests {
                 context_window: None,
                 auto_reset_threshold: 0.95,
                 thinking_enabled: false,
+                pricing: None,
+                model_label: "",
             }),
         )
         .await;

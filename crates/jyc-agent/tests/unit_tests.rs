@@ -381,6 +381,7 @@ mod session {
             &StubProvider,
             0.95,
             &ResetCompressionConfig::default(),
+            None,
         )
         .await;
         assert!(jyc_dir.join("agent-session.json").exists());
@@ -417,6 +418,7 @@ mod session {
             &StubProvider,
             0.95,
             &ResetCompressionConfig::default(),
+            None,
         )
         .await;
         // Second call — caller has accumulated locally. For output, the
@@ -432,6 +434,7 @@ mod session {
             &StubProvider,
             0.95,
             &ResetCompressionConfig::default(),
+            None,
         )
         .await;
 
@@ -463,7 +466,7 @@ mod session {
             mode: CompressionMode::Heuristic,
             keep_pairs: 3,
         };
-        session::reset_session(tmp.path(), &config, None).await;
+        session::reset_session(tmp.path(), &config, None, None).await;
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
@@ -504,6 +507,7 @@ mod session {
             &StubProvider,
             0.95,
             &config,
+            None,
         )
         .await;
 
@@ -552,6 +556,7 @@ mod session {
             250_000, // new max for build model (256k * ~0.95 ≈ 243k; 250k close enough)
             &config,
             None,
+            None,
         )
         .await;
         assert!(reset, "should have triggered reset");
@@ -582,7 +587,8 @@ mod session {
             .unwrap();
 
         let config = ResetCompressionConfig::default();
-        let reset = session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None).await;
+        let reset =
+            session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None, None).await;
         assert!(!reset, "should not have triggered reset");
 
         // Both files unchanged
@@ -616,6 +622,7 @@ mod session {
             0,
             &ResetCompressionConfig::default(),
             None,
+            None,
         )
         .await;
         assert!(!reset);
@@ -640,7 +647,17 @@ mod session {
             .unwrap();
 
         // Call persist_tokens with input well above the 95% threshold.
-        session::persist_tokens(tmp.path(), 100_000, 100_000, 200, 0, Some(10_000), 0.95).await;
+        session::persist_tokens(
+            tmp.path(),
+            100_000,
+            100_000,
+            200,
+            0,
+            Some(10_000),
+            0.95,
+            0.0,
+        )
+        .await;
 
         // Context file untouched.
         let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
@@ -670,9 +687,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -696,9 +713,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -737,6 +754,7 @@ mod session {
                 0, // no cache hits exercised in this loop-pattern test
                 None,
                 0.95,
+                0.0, // cost not exercised here — see session_cost tests
             )
             .await;
         }
@@ -752,6 +770,76 @@ mod session {
         assert_eq!(state["total_input_tokens"], 4500);
         // total_output_tokens = sum across all three calls: 100 + 150 + 80
         assert_eq!(state["total_output_tokens"], 330);
+    }
+
+    /// `session_cost` is the ONE accumulating field: unlike the token
+    /// fields (which are assigned from the caller's running total), each
+    /// call's cost is added to the previous value.
+    #[tokio::test]
+    async fn session_cost_accumulates_across_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.25).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.10).await;
+        session::persist_tokens(tmp.path(), 2000, 4500, 300, 0, None, 0.95, 0.05).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        // 0.25 + 0.10 + 0.05 = 0.40 (accumulated, not replaced by 0.05)
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.40).abs() < 1e-9, "got {cost}");
+    }
+
+    /// A zero `call_cost` (unpriced model) leaves `session_cost` untouched
+    /// rather than resetting it.
+    #[tokio::test]
+    async fn zero_call_cost_preserves_existing_session_cost() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.75).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.0).await;
+
+        let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.75).abs() < 1e-9, "got {cost}");
+    }
+
+    /// Session files written before this feature have no `session_cost`
+    /// key. `serde(default)` must make them load as 0.0 rather than
+    /// failing to deserialize (which would silently drop token history).
+    #[tokio::test]
+    async fn legacy_session_file_without_cost_field_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc).await.unwrap();
+        tokio::fs::write(
+            jyc.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00+00:00","context_input_tokens":500,
+                "total_input_tokens":500,"total_output_tokens":50,
+                "total_cache_hit_tokens":0,"max_input_tokens":95000}"#,
+        )
+        .await
+        .unwrap();
+
+        // Adding cost to a legacy file starts from 0.0.
+        session::persist_tokens(tmp.path(), 600, 1100, 90, 0, None, 0.95, 0.30).await;
+
+        let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&session).unwrap();
+
+        let cost = state["session_cost"].as_f64().unwrap();
+        assert!((cost - 0.30).abs() < 1e-9, "got {cost}");
+        // Pre-existing token data survived the load.
+        assert_eq!(state["total_input_tokens"], 1100);
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new
@@ -1781,5 +1869,262 @@ mod skills {
         // Block scalar with no content lines → empty description → None
         let content = "---\nname: n\ndescription: |\n---\n";
         assert!(parse_skill_frontmatter(content).is_none());
+    }
+}
+
+/// End-to-end billing behaviour: the per-call pattern the agent loop
+/// applies on every LLM response — compute cost from that call's own
+/// usage, append it to the durable ledger, and add it to `session_cost`.
+///
+/// Exercised here rather than by driving the whole loop because the loop
+/// needs a live provider; this covers the exact sequence of calls the
+/// loop makes per response.
+mod billing_integration {
+    use jyc_core::billing_log_store::{BillingEntry, BillingLogStore};
+    use jyc_types::config::ModelPricing;
+    use jyc_types::pricing::compute_cost;
+
+    fn pricing() -> ModelPricing {
+        // Claude-Opus-like rates: $15/M in, $75/M out, $1.50/M cache.
+        // `currency` is explicit because DEFAULT_CURRENCY is CNY, and these
+        // are USD rates.
+        ModelPricing {
+            input_per_million: 15.0,
+            output_per_million: 75.0,
+            cache_hit_per_million: 1.5,
+            currency: Some("USD".to_string()),
+        }
+    }
+
+    /// Simulate one LLM call the way `agent_loop` does.
+    async fn bank_one_call(
+        thread_path: &std::path::Path,
+        input: u64,
+        output: u64,
+        cache_hit: u64,
+    ) -> f64 {
+        let p = pricing();
+        let cost = compute_cost(&p, input, output, cache_hit);
+        BillingLogStore::append(
+            thread_path,
+            &BillingEntry {
+                ts: chrono::Utc::now().to_rfc3339(),
+                model: "anthropic/claude-opus-4-7".to_string(),
+                input_tokens: input,
+                output_tokens: output,
+                cache_hit_tokens: cache_hit,
+                cost,
+                currency: p.currency_label().to_string(),
+                kind: jyc_core::billing_log_store::KIND_CALL.to_string(),
+            },
+        )
+        .unwrap();
+        jyc_agent::session::persist_tokens(
+            thread_path,
+            input,
+            input,
+            output,
+            cache_hit,
+            Some(200_000),
+            0.95,
+            cost,
+        )
+        .await;
+        cost
+    }
+
+    /// Three calls in one round: the ledger gets exactly three lines and
+    /// `session_cost` equals their sum. This is the invariant that makes
+    /// per-call banking correct — no call is dropped or double-counted.
+    #[tokio::test]
+    async fn three_calls_produce_three_ledger_lines_and_summed_session_cost() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        let mut expected = 0.0;
+        for (input, output, cache) in [(1000, 100, 0), (2500, 250, 800), (4000, 90, 3200)] {
+            expected += bank_one_call(path, input, output, cache).await;
+        }
+
+        // Ledger: one line per call.
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        assert_eq!(entries.len(), 3, "one ledger line per LLM call");
+
+        // Ledger total and session_cost agree with the computed sum.
+        let (ledger_total, currency) = BillingLogStore::today_total(path).unwrap();
+        assert!(
+            (ledger_total - expected).abs() < 1e-9,
+            "ledger {ledger_total} vs {expected}"
+        );
+        assert_eq!(currency, "USD");
+
+        let state: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let session_cost = state["session_cost"].as_f64().unwrap();
+        assert!(
+            (session_cost - expected).abs() < 1e-9,
+            "session_cost {session_cost} vs {expected}"
+        );
+    }
+
+    /// The durability guarantee: `session_cost` resets with the session,
+    /// but the ledger does not. After a reset the ledger still holds the
+    /// full day, which is why "today" is read from it and not from
+    /// `agent-session.json`.
+    #[tokio::test]
+    async fn ledger_survives_session_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        let first = bank_one_call(path, 5000, 400, 1000).await;
+
+        // Reset semantics, matching `reset_session`: the session file is
+        // deleted, then rebuilt with zeroed counters by the auto-reset
+        // path's follow-up `persist_tokens(.., 0.0)` call.
+        tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        jyc_agent::session::persist_tokens(path, 0, 0, 0, 0, Some(200_000), 0.95, 0.0).await;
+
+        let after: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after["session_cost"].as_f64().unwrap(),
+            0.0,
+            "session_cost must zero with the session"
+        );
+
+        // ...but the ledger still has the spend.
+        let (ledger_total, _) = BillingLogStore::today_total(path).unwrap();
+        assert!(
+            (ledger_total - first).abs() < 1e-9,
+            "ledger must survive the reset: {ledger_total} vs {first}"
+        );
+    }
+    /// Regression for the review finding: ancillary summarization calls
+    /// used to discard their usage entirely, so `today` silently
+    /// undercounted. They must now land in the ledger, tagged `summary`
+    /// so overhead is separable from user-facing spend.
+    #[tokio::test]
+    async fn summary_calls_are_billed_and_tagged() {
+        use jyc_core::billing_log_store::{KIND_CALL, KIND_SUMMARY};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+        let p = pricing();
+
+        // One normal call...
+        bank_one_call(path, 1000, 100, 0).await;
+
+        // ...and one summary call, billed the way the agent loop does it.
+        let summary_cost = jyc_types::pricing::compute_cost(&p, 40_000, 300, 0);
+        BillingLogStore::append(
+            path,
+            &BillingEntry {
+                ts: chrono::Utc::now().to_rfc3339(),
+                model: "anthropic/claude-opus-4-7".to_string(),
+                input_tokens: 40_000,
+                output_tokens: 300,
+                cache_hit_tokens: 0,
+                cost: summary_cost,
+                currency: p.currency_label().to_string(),
+                kind: KIND_SUMMARY.to_string(),
+            },
+        )
+        .unwrap();
+        jyc_agent::session::add_session_cost(path, summary_cost).await;
+
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        assert_eq!(entries.len(), 2, "both the call and the summary are billed");
+
+        let kinds: Vec<&str> = entries.iter().map(|e| e.kind.as_str()).collect();
+        assert!(kinds.contains(&KIND_CALL), "main call tagged 'call'");
+        assert!(kinds.contains(&KIND_SUMMARY), "summary tagged 'summary'");
+
+        // A 40K-token summary is not rounding error -- it dominates here,
+        // which is exactly why omitting it undercounted.
+        assert!(
+            summary_cost > 0.0,
+            "summary must carry real cost, not be silently free"
+        );
+
+        // today_total covers both kinds; session_cost includes the summary.
+        let (today, _) = BillingLogStore::today_total(path).unwrap();
+        let expected: f64 = entries.iter().map(|e| e.cost).sum();
+        assert!((today - expected).abs() < 1e-9);
+
+        let state: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let session_cost = state["session_cost"].as_f64().unwrap();
+        assert!(
+            (session_cost - expected).abs() < 1e-9,
+            "session_cost {session_cost} must include the summary, expected {expected}"
+        );
+    }
+
+    /// `add_session_cost` must not disturb the token counters -- summary
+    /// tokens are real spend but are NOT part of the main loop's context
+    /// accounting, and folding them in would corrupt the auto-reset math.
+    #[tokio::test]
+    async fn add_session_cost_leaves_token_counters_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        bank_one_call(path, 5000, 400, 1000).await;
+        let before: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        jyc_agent::session::add_session_cost(path, 0.25).await;
+
+        let after: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        for field in [
+            "context_input_tokens",
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_cache_hit_tokens",
+            "max_input_tokens",
+        ] {
+            assert_eq!(before[field], after[field], "{field} must not change");
+        }
+
+        let delta =
+            after["session_cost"].as_f64().unwrap() - before["session_cost"].as_f64().unwrap();
+        assert!((delta - 0.25).abs() < 1e-9, "only session_cost moves");
+    }
+
+    /// A zero / failed summary call must not write a ledger line.
+    #[tokio::test]
+    async fn zero_cost_summary_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+        jyc_agent::session::add_session_cost(path, 0.0).await;
+        assert!(
+            BillingLogStore::today_total(path).is_none(),
+            "no ledger entry for a zero-cost call"
+        );
     }
 }

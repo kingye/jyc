@@ -37,6 +37,7 @@ mod integration_tests {
                 supports_images: None,
                 params: None,
                 user_agent: None,
+                pricing: None,
                 models: HashMap::new(),
             },
         );
@@ -78,6 +79,7 @@ mod integration_tests {
                 supports_images: None,
                 params: None,
                 user_agent: None,
+                pricing: None,
                 models: HashMap::new(),
             },
         );
@@ -119,6 +121,8 @@ mod integration_tests {
             context_window: None,
             auto_reset_threshold: 0.95,
             thinking_enabled: true,
+            pricing: None,
+            model_label: "",
         })
         .await
         .unwrap();

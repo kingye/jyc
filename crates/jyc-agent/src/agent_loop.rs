@@ -1651,19 +1651,7 @@ mod retry_tests {
         }
     }
 
-    /// Drain a receiver synchronously to a Vec, with a small grace timeout
-    /// so any in-flight publishes complete.
-    async fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>) -> Vec<ThreadEvent> {
-        let mut out = Vec::new();
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
-                Ok(Some(e)) => out.push(e),
-                Ok(None) => break, // sender closed
-                Err(_) => break,   // timeout — no more events
-            }
-        }
-        out
-    }
+    use super::event_test_helpers::drain_events;
 
     /// Two transient failures then success → returns Ok, publishes 2 retry events.
     #[tokio::test]
@@ -1932,6 +1920,7 @@ mod retry_tests {
 /// exits without sending a second reminder.
 #[cfg(test)]
 mod no_reply_tests {
+    use super::event_test_helpers::drain_events;
     use super::*;
     use crate::provider::{EventStream, Provider};
     use crate::types::{Message, StreamEvent, ToolDefinition};
@@ -2088,10 +2077,19 @@ mod no_reply_tests {
             no_reply_events.len()
         );
     }
+}
+
+/// Shared test helpers for agent_loop integration tests. Available to
+/// sibling `#[cfg(test)]` mods via `pub(super)`.
+#[cfg(test)]
+mod event_test_helpers {
+    use jyc_core::thread_event::ThreadEvent;
 
     /// Drain a receiver synchronously to a Vec, with a small grace timeout
     /// so any in-flight publishes complete.
-    async fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>) -> Vec<ThreadEvent> {
+    pub(super) async fn drain_events(
+        rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>,
+    ) -> Vec<ThreadEvent> {
         let mut out = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {

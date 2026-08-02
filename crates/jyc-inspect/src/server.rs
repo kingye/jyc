@@ -872,7 +872,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
     let severity = match event {
         ThreadEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
             "error" | "timeout" => Severity::Error,
-            "retry" | "rate_limit" => Severity::Warning,
+            "retry" | "rate_limit" | "no_reply" => Severity::Warning,
             _ => Severity::Info,
         },
         ThreadEvent::ToolCompleted { success: false, .. } => Severity::Error,
@@ -1079,6 +1079,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 "error" => "ERROR",
                 "rate_limit" => "RATE LIMITED",
                 "timeout" => "TIMEOUT",
+                "no_reply" => "NO REPLY",
                 other => other,
             };
             let mut text = match attempt {
@@ -1189,5 +1190,52 @@ async fn ws_upgrade_for_route(
                 let _ = socket.send(Message::Close(None)).await;
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod no_reply_rendering_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn no_reply_event() -> ThreadEvent {
+        ThreadEvent::SessionStatus {
+            thread_name: "t1".to_string(),
+            status_type: "no_reply".to_string(),
+            attempt: None,
+            message: Some("AI produced no text and no tool call".to_string()),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn no_reply_renders_as_warning_no_reply() {
+        let entry = event_to_activity(&no_reply_event());
+        assert_eq!(entry.severity, Severity::Warning);
+        assert!(
+            entry.text.starts_with("NO REPLY"),
+            "expected 'NO REPLY' label, got {:?}",
+            entry.text
+        );
+        assert!(
+            entry.text.contains("AI produced no text and no tool call"),
+            "expected message body in entry text, got {:?}",
+            entry.text
+        );
+        assert!(!entry.is_internal, "no-reply must be user-visible");
+    }
+
+    #[test]
+    fn other_session_statuses_unchanged() {
+        let retry = ThreadEvent::SessionStatus {
+            thread_name: "t1".to_string(),
+            status_type: "retry".to_string(),
+            attempt: Some(2),
+            message: None,
+            timestamp: Utc::now(),
+        };
+        let entry = event_to_activity(&retry);
+        assert_eq!(entry.severity, Severity::Warning);
+        assert!(entry.text.starts_with("RETRY"), "got {:?}", entry.text);
     }
 }

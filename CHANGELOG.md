@@ -115,6 +115,20 @@ All notable changes to JYC will be documented in this file.
   the redundant inner borders are gone, so the borderless chat area
   reads as a single flat surface with three thin separators.
 
+- **No-reply state surfaced in activity pane.** When the agent loop
+  exits with no text and no tool call, neither the `reply_message` tool
+  path nor the raw-text fallback path would deliver anything to the
+  user — `ThreadManager` only logged `WARN: No reply text from AI` and
+  the activity pane showed `ProcessingCompleted (success=true)` with no
+  signal of failure. The activity pane now renders a `NO REPLY`
+  warning entry (severity `Warning`) so operators can see the silent
+  failure. The agent loop also gives the model a single system-reminder
+  nudge: on the first no-reply iteration it appends a user message
+  telling the model that its last turn produced no text and no tool
+  call and instructing it to call `jyc_reply_message` with the final
+  response. If the model still produces no reply after the reminder,
+  the loop exits normally — the reminder is one-shot to bound cost.
+
 ### Changed
 
 - **Dashboard overview list "Tokens" column → "Context".** The column

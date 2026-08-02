@@ -146,6 +146,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut context_input_tokens: u64 = 0;
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
+    // Sum of every LLM call's prompt-cache-hit tokens in this round.
+    // Mirrors `total_input_tokens`; zeroed by callers on session reset
+    // and surfaced to the dashboard as `total_cache_hit_tokens`.
+    let mut total_cache_hit_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
     let mut reply_text_from_tool: Option<String> = None;
     let start_time = Instant::now();
@@ -358,6 +362,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         }
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
+        total_cache_hit_tokens += response.cache_hit_tokens;
 
         // Mid-loop token check: if the current context size (last call's
         // input_tokens) exceeds the threshold, compress raw_context
@@ -416,6 +421,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             context_input_tokens,
             total_input_tokens,
             total_output_tokens,
+            total_cache_hit_tokens,
             context_window,
             auto_reset_threshold,
         )
@@ -467,6 +473,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 input_tokens: context_input_tokens,
                 total_input_tokens,
                 output_tokens: total_output_tokens,
+                total_cache_hit_tokens,
                 history,
                 raw_context,
             });
@@ -705,6 +712,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 input_tokens: context_input_tokens,
                 total_input_tokens,
                 output_tokens: total_output_tokens,
+                total_cache_hit_tokens,
                 history,
                 raw_context,
             });
@@ -757,6 +765,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         input_tokens: context_input_tokens,
         total_input_tokens,
         output_tokens: total_output_tokens,
+        total_cache_hit_tokens,
         history,
         raw_context,
     })
@@ -949,6 +958,9 @@ struct CollectedResponse {
     tool_calls: Vec<ToolCall>,
     input_tokens: u64,
     output_tokens: u64,
+    /// Per-call prompt-cache-hit tokens. `0` when the provider didn't
+    /// surface cache hits for this call.
+    cache_hit_tokens: u64,
 }
 
 impl CollectedResponse {
@@ -1270,9 +1282,11 @@ async fn collect_response(
             StreamEvent::Usage {
                 input_tokens,
                 output_tokens,
+                cache_hit_tokens,
             } => {
                 response.input_tokens = input_tokens;
                 response.output_tokens += output_tokens;
+                response.cache_hit_tokens = cache_hit_tokens;
             }
             StreamEvent::Done => break,
             StreamEvent::Error(msg) => {

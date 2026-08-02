@@ -268,6 +268,7 @@ impl InspectServer {
                 max_tokens: t.max_tokens,
                 output_tokens: t.output_tokens,
                 total_input_tokens: t.total_input_tokens,
+                total_cache_hit_tokens: t.total_cache_hit_tokens,
                 last_active_at: t.last_active_at,
                 skills: t.skills,
                 thread_path: t.thread_path,

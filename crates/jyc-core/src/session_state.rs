@@ -10,7 +10,7 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
 pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>) {
-    let (cur, max, _, _) = read_token_state(thread_path).await;
+    let (cur, max, _, _, _) = read_token_state(thread_path).await;
     (cur, max)
 }
 
@@ -19,7 +19,7 @@ pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>)
 /// The session file already deserializes `total_output_tokens` — this just
 /// surfaces it. Output tokens accumulate across LLM calls in a round.
 pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, out, _) = read_token_state(thread_path).await;
+    let (_, _, out, _, _) = read_token_state(thread_path).await;
     out
 }
 
@@ -28,33 +28,51 @@ pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
 /// Distinct from `read_input_tokens` (which returns the current context
 /// size); this is the running sum across all LLM calls in the session.
 pub async fn read_total_input_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, _, total) = read_token_state(thread_path).await;
+    let (_, _, _, total, _) = read_token_state(thread_path).await;
     total
 }
 
-/// Read all four token fields in a single file read.
+/// Read accumulated prompt-cache-hit tokens from the agent session state
+/// file. Returns `None` when the file is missing, malformed, or the
+/// accumulated value is zero. Mirrors `read_total_input_tokens`; zero
+/// covers both "no calls yet" and "provider didn't surface cache hits".
+pub async fn read_total_cache_hit_tokens(thread_path: &Path) -> Option<u64> {
+    let (_, _, _, _, cache_hit) = read_token_state(thread_path).await;
+    cache_hit
+}
+
+/// Read all five token fields in a single file read.
 /// Returns (current_input_tokens, max_input_tokens, output_tokens,
-/// total_input_tokens). Any individual field is `None` when the file is
-/// missing, malformed, or the underlying value is zero.
+/// total_input_tokens, total_cache_hit_tokens). Any individual field is
+/// `None` when the file is missing, malformed, or the underlying value
+/// is zero.
 ///
-/// Callers that need all four fields (e.g. `thread_manager::list_threads`)
+/// Callers that need all five fields (e.g. `thread_manager::list_threads`)
 /// should use this rather than calling the single-purpose helpers above
 /// separately — saves one file open + JSON parse per call.
 pub async fn read_token_state(
     thread_path: &Path,
-) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
+) -> (
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+) {
     let agent_path = thread_path.join(".jyc").join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
-        return (None, None, None, None);
+        return (None, None, None, None, None);
     };
     let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
-        return (None, None, None, None);
+        return (None, None, None, None, None);
     };
     let current = (state.context_input_tokens > 0).then_some(state.context_input_tokens);
     let max = (state.max_input_tokens > 0).then_some(state.max_input_tokens);
     let output = (state.total_output_tokens > 0).then_some(state.total_output_tokens);
     let total_input = (state.total_input_tokens > 0).then_some(state.total_input_tokens);
-    (current, max, output, total_input)
+    let total_cache_hit =
+        (state.total_cache_hit_tokens > 0).then_some(state.total_cache_hit_tokens);
+    (current, max, output, total_input, total_cache_hit)
 }
 
 /// Agent session state format.
@@ -68,6 +86,9 @@ struct AgentSessionState {
     #[serde(default)]
     #[allow(dead_code)]
     total_output_tokens: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    total_cache_hit_tokens: u64,
     #[serde(default)]
     max_input_tokens: u64,
 }
@@ -399,7 +420,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_token_state_all_three_fields() {
+    async fn read_token_state_all_five_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":1500,"total_output_tokens":400,"total_input_tokens":9000,"total_cache_hit_tokens":3500,"max_input_tokens":10000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_token_state(tmp.path()).await,
+            (Some(1500), Some(10000), Some(400), Some(9000), Some(3500))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_token_state_legacy_file_missing_cache_hit() {
+        // Pre-#493 session files don't carry `total_cache_hit_tokens`;
+        // `#[serde(default)]` fills it with 0, which the helper maps to
+        // `None` like the other zero-valued fields.
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
@@ -411,14 +452,63 @@ mod tests {
         .unwrap();
         assert_eq!(
             read_token_state(tmp.path()).await,
-            (Some(1500), Some(10000), Some(400), None)
+            (Some(1500), Some(10000), Some(400), None, None)
         );
     }
 
     #[tokio::test]
     async fn read_token_state_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(read_token_state(tmp.path()).await, (None, None, None, None));
+        assert_eq!(
+            read_token_state(tmp.path()).await,
+            (None, None, None, None, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_total_cache_hit_tokens_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":1500,"total_input_tokens":9000,"total_output_tokens":250,"total_cache_hit_tokens":4200,"max_input_tokens":10000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, Some(4200));
+    }
+
+    #[tokio::test]
+    async fn read_total_cache_hit_tokens_zero_value_returns_none() {
+        // Zero is treated identically to "missing" — providers that don't
+        // surface cache hits will leave this at 0 forever; the helper
+        // surfaces None so the dashboard's `if let Some(...)` idiom
+        // hides the row entirely.
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"total_cache_hit_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, None);
+    }
+
+    #[tokio::test]
+    async fn read_total_cache_hit_tokens_missing_field_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"context_input_tokens":1000,"max_input_tokens":1000}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, None);
     }
 
     #[tokio::test]

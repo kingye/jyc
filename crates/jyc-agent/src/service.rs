@@ -1487,6 +1487,7 @@ impl AgentService for JycAgentService {
             result.input_tokens,
             result.total_input_tokens,
             result.output_tokens,
+            result.total_cache_hit_tokens,
             context_window,
             summary_provider,
             auto_reset_threshold,

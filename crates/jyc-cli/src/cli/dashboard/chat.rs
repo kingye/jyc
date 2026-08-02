@@ -2,7 +2,7 @@
 //! WebSocket thread chat and non-WebSocket detail mode.
 
 use super::token_render::{
-    input_token_pct, push_output_span, push_tokens_span, push_total_input_span,
+    input_token_pct, push_cache_hit_span, push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 
@@ -1065,6 +1065,15 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
         push_total_input_span(&mut total_input_spans, t);
         if !total_input_spans.is_empty() {
             out.push(Line::from(total_input_spans));
+        }
+        // Cache hits row — accumulated prompt-cache hits across all LLM
+        // calls in the session. Distinct from `total_input_tokens`
+        // (which counts all tokens billed as input); this counts only
+        // the portion served from the provider's prompt cache.
+        let mut cache_hit_spans = Vec::with_capacity(2);
+        push_cache_hit_span(&mut cache_hit_spans, t);
+        if !cache_hit_spans.is_empty() {
+            out.push(Line::from(cache_hit_spans));
         }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(
@@ -3571,6 +3580,7 @@ mod tests {
                     mode: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
+                    total_cache_hit_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3609,6 +3619,7 @@ mod tests {
                     mode: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
+                    total_cache_hit_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3646,6 +3657,7 @@ mod tests {
                 mode: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
+                total_cache_hit_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -3727,6 +3739,7 @@ mod tests {
                     mode: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
+                    total_cache_hit_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3742,6 +3755,7 @@ mod tests {
                     mode: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
+                    total_cache_hit_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3854,6 +3868,7 @@ mod tests {
                 mode: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
+                total_cache_hit_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -3955,6 +3970,7 @@ mod tests {
                 mode: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
+                total_cache_hit_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,

@@ -141,6 +141,11 @@ pub enum StreamEvent {
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        /// Prompt-cache hits reported by the provider for this call.
+        /// `0` when the provider doesn't surface it (or it's absent
+        /// from the `usage` JSON). See `provider::usage` for the
+        /// per-vendor field mapping.
+        cache_hit_tokens: u64,
     },
     /// Stream is complete.
     Done,
@@ -177,6 +182,13 @@ pub struct AgentLoopResult {
     /// per-round accumulation that survives across multiple rounds
     /// through `update_tokens` / `persist_tokens`.
     pub total_input_tokens: u64,
+    /// Accumulated prompt-cache-hit tokens across all LLM calls in
+    /// this round. Each call's `cache_hit_tokens` (= tokens served
+    /// from the provider's prompt cache rather than re-billed as
+    /// fresh input) is summed via `+=`. `0` when no provider in the
+    /// round surfaced cache hits. Mirrors `total_input_tokens` in
+    /// `SessionState` for per-round accumulation.
+    pub total_cache_hit_tokens: u64,
     /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
     /// Raw provider-formatted context (for persistence in agent-context.json).
@@ -352,6 +364,7 @@ mod tests {
             StreamEvent::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                cache_hit_tokens: 0,
             },
             StreamEvent::Done,
             StreamEvent::Error("oops".to_string()),

@@ -33,6 +33,23 @@ All notable changes to JYC will be documented in this file.
   thread info pane (chat) and the dashboard thread info area as a
   new `Total input: N` row. (#490)
 
+- **Prompt-cache hit tracking (`total_cache_hit_tokens`).** New
+  accumulated field on `SessionState`, `ThreadInfo`, and `ThreadSummary`
+  that sums every LLM call's prompt-cache-hit tokens across the
+  session — the portion of input the provider served from its prompt
+  cache rather than re-billing as fresh input. Each provider's
+  `usage` JSON is parsed for the field its vendor uses — first
+  non-zero match wins across the known shapes:
+  `prompt_cache_hit_tokens` at root (DeepSeek), `cached_tokens` at
+  root (Kimi) or under `prompt_tokens_details` (OpenAI / 火山引擎 /
+  MiniMax), or `cache_read_input_tokens + cache_creation_input_tokens`
+  at root (Anthropic). New `provider::usage::extract_cache_hit_tokens`
+  helper centralizes the lookup. Visible in the chat thread info pane
+  and the dashboard thread info area as a new `Cache hits: N` row.
+  Not shown in the dashboard overview list (the `Context` column is
+  already tight and this is a session-level analytic). Zeros on
+  auto-reset alongside the other `total_*` counters.
+
 ### Fixed
 
 - **`total_output_tokens` no longer double-counts across `agent_loop`

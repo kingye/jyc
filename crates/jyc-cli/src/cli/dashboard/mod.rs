@@ -1299,6 +1299,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_total_input_span(&mut status_line, selected);
     }
+    if selected.total_cache_hit_tokens.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_cache_hit_span(&mut status_line, selected);
+    }
     info_lines.push(Line::from(status_line));
 
     info_lines.push(Line::from(vec![
@@ -1713,6 +1717,7 @@ mod tests {
                     mode: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
+                    total_cache_hit_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,

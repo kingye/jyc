@@ -376,6 +376,7 @@ mod session {
             1000,
             1000,
             200,
+            0,
             Some(100000),
             &StubProvider,
             0.95,
@@ -392,6 +393,7 @@ mod session {
         assert_eq!(state["context_input_tokens"], 1000);
         assert_eq!(state["total_input_tokens"], 1000);
         assert_eq!(state["total_output_tokens"], 200);
+        assert_eq!(state["total_cache_hit_tokens"], 0);
         assert_eq!(state["max_input_tokens"], 95000); // 95% of 100000
     }
 
@@ -410,6 +412,7 @@ mod session {
             1000,
             1000,
             100,
+            0,
             Some(100000),
             &StubProvider,
             0.95,
@@ -424,6 +427,7 @@ mod session {
             2000,
             2000,
             250,
+            0,
             Some(100000),
             &StubProvider,
             0.95,
@@ -495,6 +499,7 @@ mod session {
             6000, // still over 1000 → auto-reset fires
             6000,
             50,
+            0,
             Some(1000),
             &StubProvider,
             0.95,
@@ -513,6 +518,7 @@ mod session {
         assert_eq!(state["context_input_tokens"], 0);
         assert_eq!(state["total_input_tokens"], 0);
         assert_eq!(state["total_output_tokens"], 0);
+        assert_eq!(state["total_cache_hit_tokens"], 0);
         assert_eq!(state["max_input_tokens"], 950); // 0.95 * 1000 from the call's context_window
     }
 
@@ -634,7 +640,7 @@ mod session {
             .unwrap();
 
         // Call persist_tokens with input well above the 95% threshold.
-        session::persist_tokens(tmp.path(), 100_000, 100_000, 200, Some(10_000), 0.95).await;
+        session::persist_tokens(tmp.path(), 100_000, 100_000, 200, 0, Some(10_000), 0.95).await;
 
         // Context file untouched.
         let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
@@ -664,9 +670,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 250, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 330, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -690,9 +696,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(tmp.path(), 1000, 1000, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 2000, 3000, 0, None, 0.95).await;
-        session::persist_tokens(tmp.path(), 3000, 6000, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95).await;
+        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -728,6 +734,7 @@ mod session {
                 context_input_tokens,
                 total_input_tokens,
                 total_output_tokens,
+                0, // no cache hits exercised in this loop-pattern test
                 None,
                 0.95,
             )

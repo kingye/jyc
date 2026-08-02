@@ -66,6 +66,23 @@ pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
     }
 }
 
+/// Append the "Cache hits: N" row to `spans`. Pushes nothing when
+/// `total_cache_hit_tokens` is missing. Mirrors `push_total_input_span`
+/// but for prompt-cache hits — the running sum of every LLM call's
+/// cache-hit tokens (= tokens served from the provider's prompt cache
+/// rather than re-billed as fresh input). Not shown in the dashboard
+/// overview list — only the chat info pane and dashboard thread info
+/// area call this.
+pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+    if let Some(cache_hit) = t.total_cache_hit_tokens {
+        spans.push(Span::styled(
+            "Cache hits: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!("{cache_hit}")));
+    }
+}
+
 /// Two-space gap used by the dashboard status line between adjacent
 /// chips. Callers on a flat status line prepend this manually before
 /// each row (the chat info pane stacks rows on separate lines and
@@ -81,6 +98,7 @@ mod tests {
         max: Option<u64>,
         output: Option<u64>,
         total_input: Option<u64>,
+        cache_hit: Option<u64>,
     ) -> ThreadSummary {
         ThreadSummary {
             name: "t".into(),
@@ -93,6 +111,7 @@ mod tests {
             max_tokens: max,
             output_tokens: output,
             total_input_tokens: total_input,
+            total_cache_hit_tokens: cache_hit,
             last_active_at: None,
             skills: vec![],
             thread_path: None,
@@ -101,25 +120,25 @@ mod tests {
 
     #[test]
     fn input_token_pct_basic() {
-        let t = summary_with(Some(5000), Some(10000), None, None);
+        let t = summary_with(Some(5000), Some(10000), None, None, None);
         assert_eq!(input_token_pct(&t), Some(50));
     }
 
     #[test]
     fn input_token_pct_zero_max_returns_none() {
-        let t = summary_with(Some(100), Some(0), None, None);
+        let t = summary_with(Some(100), Some(0), None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn input_token_pct_missing_input_returns_none() {
-        let t = summary_with(None, Some(10000), None, None);
+        let t = summary_with(None, Some(10000), None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn push_tokens_span_omits_when_max_missing() {
-        let t = summary_with(Some(100), None, None, None);
+        let t = summary_with(Some(100), None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -127,7 +146,7 @@ mod tests {
 
     #[test]
     fn push_tokens_span_writes_label_and_value() {
-        let t = summary_with(Some(4750), Some(10000), None, None);
+        let t = summary_with(Some(4750), Some(10000), None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -137,7 +156,7 @@ mod tests {
 
     #[test]
     fn push_output_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), None, None);
+        let t = summary_with(Some(100), Some(10000), None, None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -145,7 +164,7 @@ mod tests {
 
     #[test]
     fn push_output_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(420), None);
+        let t = summary_with(Some(100), Some(10000), Some(420), None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -155,7 +174,7 @@ mod tests {
 
     #[test]
     fn push_total_input_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), None);
+        let t = summary_with(Some(100), Some(10000), Some(50), None, None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -163,11 +182,29 @@ mod tests {
 
     #[test]
     fn push_total_input_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720));
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "Total input: ");
         assert_eq!(spans[1].content, "720");
+    }
+
+    #[test]
+    fn push_cache_hit_span_omits_when_missing() {
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None);
+        let mut spans = Vec::new();
+        push_cache_hit_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn push_cache_hit_span_writes_label_and_value() {
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        let mut spans = Vec::new();
+        push_cache_hit_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Cache hits: ");
+        assert_eq!(spans[1].content, "640");
     }
 }

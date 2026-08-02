@@ -399,6 +399,50 @@ impl Default for AgentConfig {
     }
 }
 
+/// Billing rates for a model, expressed per one million tokens.
+///
+/// The three rates map to the three token classes a provider bills
+/// separately. Cost for a single LLM call is computed by
+/// [`crate::pricing::compute_cost`] as:
+///
+/// ```text
+/// (input_tokens - cache_hit_tokens) * input_per_million     / 1_000_000
+/// + output_tokens                   * output_per_million    / 1_000_000
+/// + cache_hit_tokens                * cache_hit_per_million / 1_000_000
+/// ```
+///
+/// `input_tokens` is the provider-reported prompt size, which *includes*
+/// tokens served from the prompt cache. Subtracting `cache_hit_tokens`
+/// leaves the portion billed at the full input rate, while the cached
+/// portion is billed at the (usually much cheaper) cache-hit rate.
+///
+/// Configurable at provider level (applies to all its models) and at
+/// model level (overrides the provider default). Rates are plain numbers
+/// in whatever currency `currency` names — no conversion is performed.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ModelPricing {
+    /// Price per 1M uncached input tokens (e.g. `3.0` for $3/M).
+    pub input_per_million: f64,
+    /// Price per 1M output tokens (e.g. `15.0` for $15/M).
+    pub output_per_million: f64,
+    /// Price per 1M prompt-cache-hit tokens (e.g. `0.3` for $0.30/M).
+    /// Set equal to `input_per_million` for providers that bill cache
+    /// hits at the normal input rate.
+    #[serde(default)]
+    pub cache_hit_per_million: f64,
+    /// Currency label used for display (e.g. `"USD"`, `"CNY"`).
+    /// Defaults to `"USD"` when omitted. Purely a label — jyc never
+    /// converts between currencies.
+    pub currency: Option<String>,
+}
+
+impl ModelPricing {
+    /// Currency label for display, defaulting to `"USD"` when unset.
+    pub fn currency_label(&self) -> &str {
+        self.currency.as_deref().unwrap_or("USD")
+    }
+}
+
 /// Provider definition for the in-process agent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderDef {
@@ -421,6 +465,10 @@ pub struct ProviderDef {
     /// Optional User-Agent header override for all models under this provider.
     /// Model-level `user_agent` takes precedence over this value.
     pub user_agent: Option<String>,
+    /// Default billing rates for all models under this provider.
+    /// Per-model `ModelDef.pricing` overrides this. When neither is set,
+    /// no cost is computed and the dashboard omits the cost row.
+    pub pricing: Option<ModelPricing>,
     /// Per-model context window overrides
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelDef>,
@@ -446,6 +494,9 @@ pub struct ModelDef {
     /// When set, the provider sends this value as the `User-Agent` header
     /// instead of the HTTP client's default.
     pub user_agent: Option<String>,
+    /// Billing rates for this specific model. Overrides
+    /// `ProviderDef.pricing`.
+    pub pricing: Option<ModelPricing>,
 }
 
 /// Inspect server configuration — exposes runtime state via TCP for the dashboard.

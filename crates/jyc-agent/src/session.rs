@@ -22,6 +22,17 @@ const SESSION_FILE: &str = "agent-session.json";
 pub struct SessionState {
     /// When this session was created (ISO 8601).
     pub created_at: String,
+    /// Current context size in tokens. Equal to the input tokens reported by
+    /// the most recent LLM call, since each call sends the full conversation
+    /// context. NOT a sum across calls — for accumulated input tokens see
+    /// `total_input_tokens`, for accumulated output tokens see
+    /// `total_output_tokens`.
+    pub context_input_tokens: u64,
+    /// Accumulated input tokens across all LLM calls in this session.
+    /// Each call's `input_tokens` (= full context size) is added via `+=`
+    /// from the agent loop, so this represents the cumulative tokens sent
+    /// to the API over the session's lifetime. Reset to 0 on session reset.
+    #[serde(default)]
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     /// Max tokens (context window) for the model.
@@ -277,10 +288,13 @@ pub async fn ensure_session_file(
 ///
 /// `input_tokens` is the tokens reported by the last API call — stored
 /// directly (not accumulated) since each call already includes the full
-/// context. `output_tokens` accumulates across the round.
+/// context. `total_input_tokens` and `output_tokens` are running totals
+/// accumulated by the caller (`agent_loop`), passed in as the current sum.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
@@ -288,6 +302,7 @@ pub async fn persist_tokens(
     let _ = persist_tokens_returning_state(
         thread_path,
         input_tokens,
+        total_input_tokens,
         output_tokens,
         context_window,
         auto_reset_threshold,
@@ -301,6 +316,7 @@ pub async fn persist_tokens(
 async fn persist_tokens_returning_state(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
@@ -308,8 +324,9 @@ async fn persist_tokens_returning_state(
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
-    state.total_input_tokens = input_tokens;
-    state.total_output_tokens += output_tokens;
+    state.context_input_tokens = input_tokens;
+    state.total_input_tokens = total_input_tokens;
+    state.total_output_tokens = output_tokens;
 
     if let Some(cw) = context_window {
         state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
@@ -325,7 +342,7 @@ async fn persist_tokens_returning_state(
 
 /// Update token tracking in the session state.
 /// Creates the session file if it doesn't exist.
-/// Auto-resets when `total_input_tokens` crosses `max_input_tokens`, using
+/// Auto-resets when `context_input_tokens` crosses `max_input_tokens`, using
 /// the configured `reset_compression` strategy (same as manual `/reset`).
 ///
 /// `input_tokens` is the tokens reported by the last API call — this already
@@ -344,9 +361,11 @@ async fn persist_tokens_returning_state(
 /// All three paths — manual `/reset`, pre-loop pre-check, and this post-loop
 /// auto-reset — go through `reset_session()` with this config so user
 /// preferences (`mode`, `keep_pairs`) are honored consistently.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
     thread_path: &Path,
     input_tokens: u64,
+    total_input_tokens: u64,
     output_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
@@ -359,6 +378,7 @@ pub async fn update_tokens(
     let (_, state) = persist_tokens_returning_state(
         thread_path,
         input_tokens,
+        total_input_tokens,
         output_tokens,
         context_window,
         auto_reset_threshold,
@@ -369,9 +389,9 @@ pub async fn update_tokens(
     // `reset_session` so the user's `reset_compression` config is honored
     // (previously this inlined `summarize_context` which always used LLM,
     // ignoring the configured mode).
-    if state.max_input_tokens > 0 && state.total_input_tokens >= state.max_input_tokens {
+    if state.max_input_tokens > 0 && state.context_input_tokens >= state.max_input_tokens {
         tracing::info!(
-            total_input_tokens = state.total_input_tokens,
+            context_input_tokens = state.context_input_tokens,
             max_input_tokens = state.max_input_tokens,
             mode = ?compression_config.mode,
             "Session exceeded max input tokens, auto-resetting with configured compression",
@@ -382,7 +402,7 @@ pub async fn update_tokens(
         // reset_session deletes the session file; rebuild it with the
         // current max_input_tokens and zero counters so the next turn
         // starts clean.
-        persist_tokens(thread_path, 0, 0, context_window, auto_reset_threshold).await;
+        persist_tokens(thread_path, 0, 0, 0, context_window, auto_reset_threshold).await;
     }
 }
 
@@ -404,11 +424,11 @@ pub async fn maybe_reset_for_new_context(
     }
     let session_path = thread_path.join(".jyc").join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
-    if state.total_input_tokens < new_max_input_tokens {
+    if state.context_input_tokens < new_max_input_tokens {
         return false;
     }
     tracing::info!(
-        old_tokens = state.total_input_tokens,
+        old_tokens = state.context_input_tokens,
         new_max = new_max_input_tokens,
         mode = ?compression_config.mode,
         "Loaded session exceeds new context window; resetting before agent loop",

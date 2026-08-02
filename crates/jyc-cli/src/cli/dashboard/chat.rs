@@ -1,7 +1,9 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
 //! WebSocket thread chat and non-WebSocket detail mode.
 
-use super::token_render::{input_token_pct, push_output_span, push_tokens_span};
+use super::token_render::{
+    input_token_pct, push_output_span, push_tokens_span, push_total_input_span,
+};
 use super::*;
 
 /// Width of the input prompt gutter ("╰─❯ ").
@@ -1057,6 +1059,12 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
         push_output_span(&mut output_spans, t);
         if !output_spans.is_empty() {
             out.push(Line::from(output_spans));
+        }
+        // Total input row — accumulated lifetime sum across all LLM calls.
+        let mut total_input_spans = Vec::with_capacity(2);
+        push_total_input_span(&mut total_input_spans, t);
+        if !total_input_spans.is_empty() {
+            out.push(Line::from(total_input_spans));
         }
         if t.status == ThreadStatus::Processing {
             out.push(Line::from(Span::styled(
@@ -3561,7 +3569,8 @@ mod tests {
                     status: jyc_types::ThreadStatus::Idle,
                     model: None,
                     mode: None,
-                    input_tokens: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3598,7 +3607,8 @@ mod tests {
                     status: jyc_types::ThreadStatus::Idle,
                     model: None,
                     mode: None,
-                    input_tokens: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3634,7 +3644,8 @@ mod tests {
                 status: jyc_types::ThreadStatus::Idle,
                 model: None,
                 mode: None,
-                input_tokens: None,
+                context_input_tokens: None,
+                total_input_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -3714,7 +3725,8 @@ mod tests {
                     status: jyc_types::ThreadStatus::Idle,
                     model: None,
                     mode: None,
-                    input_tokens: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3728,7 +3740,8 @@ mod tests {
                     status: jyc_types::ThreadStatus::Idle,
                     model: None,
                     mode: None,
-                    input_tokens: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3839,7 +3852,8 @@ mod tests {
                 status: jyc_types::ThreadStatus::Idle,
                 model: None,
                 mode: None,
-                input_tokens: None,
+                context_input_tokens: None,
+                total_input_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -3939,7 +3953,8 @@ mod tests {
                 status: jyc_types::ThreadStatus::Idle,
                 model: None,
                 mode: None,
-                input_tokens: None,
+                context_input_tokens: None,
+                total_input_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,

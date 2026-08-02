@@ -165,10 +165,18 @@ pub struct AgentLoopResult {
     pub reply_sent_by_tool: bool,
     /// Reply text extracted from the reply_message tool call (if used).
     pub reply_text_from_tool: Option<String>,
-    /// Total input tokens used across all turns.
+    /// Input tokens from the last LLM call in this round (= current
+    /// context size). For the cumulative sum across calls in this round,
+    /// see `total_input_tokens`.
     pub input_tokens: u64,
-    /// Total output tokens used across all turns.
+    /// Total output tokens used across all turns in this round.
     pub output_tokens: u64,
+    /// Accumulated input tokens across all LLM calls in this round.
+    /// Each call's `input_tokens` (= full context size) is summed via
+    /// `+=`. Pairs with `context_input_tokens` in `SessionState` for
+    /// per-round accumulation that survives across multiple rounds
+    /// through `update_tokens` / `persist_tokens`.
+    pub total_input_tokens: u64,
     /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
     /// Raw provider-formatted context (for persistence in agent-context.json).

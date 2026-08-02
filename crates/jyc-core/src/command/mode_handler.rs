@@ -171,7 +171,7 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","total_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
+        tokio::fs::write(jyc_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
             .await
             .unwrap();
 

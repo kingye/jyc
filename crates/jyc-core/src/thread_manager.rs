@@ -957,7 +957,8 @@ impl ThreadManager {
                 .filter(|s| !s.is_empty());
 
             // Read session state
-            let (input_tokens, max_tokens, output_tokens) = read_token_state(&thread_path).await;
+            let (input_tokens, max_tokens, output_tokens, total_input_tokens) =
+                read_token_state(&thread_path).await;
 
             // Read mode first — needed to resolve mode-specific model overrides.
             let mode = read_mode_override(&thread_path).await;
@@ -1059,9 +1060,10 @@ impl ThreadManager {
                 status,
                 model,
                 mode,
-                input_tokens,
+                context_input_tokens: input_tokens,
                 max_tokens,
                 output_tokens,
+                total_input_tokens,
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,

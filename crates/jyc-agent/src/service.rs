@@ -1485,6 +1485,7 @@ impl AgentService for JycAgentService {
         session::update_tokens(
             thread_path,
             result.input_tokens,
+            result.total_input_tokens,
             result.output_tokens,
             context_window,
             summary_provider,

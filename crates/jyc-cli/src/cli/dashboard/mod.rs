@@ -1159,7 +1159,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
                 ThreadStatus::Error => Style::default().fg(Color::Red),
             };
 
-            let tokens = match (t.input_tokens, t.max_tokens, t.output_tokens) {
+            let tokens = match (t.context_input_tokens, t.max_tokens, t.output_tokens) {
                 (Some(cur), Some(max), Some(out)) => {
                     format!("{}K/{}K·{}K out", cur / 1000, max / 1000, out / 1000)
                 }
@@ -1290,13 +1290,17 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     // "Tokens: X / Y (Z%)" — shared with the chat info pane via the
     // `token_render` module. Prepend a 2-space gap so it doesn't sit
     // flush against the status chip on the same line.
-    if let (Some(_), Some(_)) = (selected.input_tokens, selected.max_tokens) {
+    if let (Some(_), Some(_)) = (selected.context_input_tokens, selected.max_tokens) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_tokens_span(&mut status_line, selected);
     }
     if selected.output_tokens.is_some() {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_output_span(&mut status_line, selected);
+    }
+    if selected.total_input_tokens.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_total_input_span(&mut status_line, selected);
     }
     info_lines.push(Line::from(status_line));
 
@@ -1710,7 +1714,8 @@ mod tests {
                     status: ThreadStatus::Idle,
                     model: None,
                     mode: None,
-                    input_tokens: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,

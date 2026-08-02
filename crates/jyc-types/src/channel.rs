@@ -439,7 +439,7 @@ pub struct ChannelPattern {
     pub reset_compression: Option<ResetCompressionConfig>,
 
     /// Auto-reset threshold as a fraction of context window (0.0~1.0).
-    /// When `total_input_tokens >= context_window * auto_reset_threshold`,
+    /// When `context_input_tokens >= context_window * auto_reset_threshold`,
     /// auto-reset is triggered.
     /// Falls back to `[agent].auto_reset_threshold` (default 0.95) when unset.
     #[serde(default)]

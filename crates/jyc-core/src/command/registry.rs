@@ -354,9 +354,12 @@ mode = "agent"
         registry.register(Box::new(InjectingHandler));
 
         let output = registry
-            .process_commands("/review
+            .process_commands(
+                "/review
 
-focus on error handling", &test_context())
+focus on error handling",
+                &test_context(),
+            )
             .await
             .unwrap();
 
@@ -383,7 +386,8 @@ focus on error handling", &test_context())
     }
 
     #[tokio::test]
-    async fn test_results_summary() {        let output = CommandOutput {
+    async fn test_results_summary() {
+        let output = CommandOutput {
             results: vec![
                 CommandResult {
                     success: true,

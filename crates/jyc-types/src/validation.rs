@@ -1318,7 +1318,11 @@ user_prompt = "Summarize."
         let config = load_config_from_str(&toml).unwrap();
         assert!(config.commands[0].mode.is_none());
         assert!(config.commands[0].skills.is_none());
-        assert!(!validate_config(&config).iter().any(|e| e.path.starts_with("commands")));
+        assert!(
+            !validate_config(&config)
+                .iter()
+                .any(|e| e.path.starts_with("commands"))
+        );
     }
 
     #[test]
@@ -1375,7 +1379,11 @@ user_prompt = "c"
         );
         let config = load_config_from_str(&toml).unwrap();
         let errors = validate_config(&config);
-        assert!(errors.iter().any(|e| e.message.contains("duplicate command name")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("duplicate command name"))
+        );
         assert!(errors.iter().any(|e| e.path == "commands[2].name"));
     }
 

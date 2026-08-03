@@ -425,6 +425,41 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
+# --- Custom Commands ---
+# User-defined slash commands. Each `[[commands]]` entry adds a `/<name>`
+# command that appears in `/?` and the dashboard command popup (press `/`).
+#
+# Invoking the command:
+#   1. switches the thread to `mode` (when set; `plan` or `build`),
+#   2. tells the agent which `skills` to use (the agent already receives
+#      every discovered skill's path and description, so naming them is
+#      enough for it to read the right SKILL.md),
+#   3. appends `user_prompt` to the message body.
+#
+# Anything you type after the command is kept, with `user_prompt` appended
+# last: `/review focus on error handling` reaches the agent as your text
+# followed by the command's prompt.
+#
+# `name` must not shadow a built-in command (/model, /plan, /build, /reset,
+# /new, /close, /template, /cancel, /?, /pin, /unpin, /thinking).
+#
+# [[commands]]
+# name = "review"
+# description = "Review the current branch for over-engineering"
+# mode = "plan"                                  # optional: plan | build
+# skills = ["pr-review", "ponytail-review"]      # optional
+# user_prompt = """
+# Review the changes on the current branch against main.
+# Report findings grouped by severity. Do not modify any code.
+# """
+#
+# [[commands]]
+# name = "ship"
+# description = "Run checks and prepare a release"
+# mode = "build"
+# skills = ["dev-workflow"]
+# user_prompt = "Run the pre-PR checklist, then summarize what is left to do."
+
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.
 # Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).

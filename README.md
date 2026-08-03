@@ -197,6 +197,37 @@ Send commands at the top of an email body. These commands work across all channe
 | `/template` | Apply template files to thread (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
 
+### Custom Commands
+
+Define your own slash commands in `config.toml`. Each one appears in `/?` and
+the dashboard command popup (press `/`).
+
+```toml
+[[commands]]
+name = "review"
+description = "Review the current branch for over-engineering"
+mode = "plan"                                # optional: plan | build
+skills = ["pr-review", "ponytail-review"]    # optional
+user_prompt = """
+Review the changes on the current branch against main.
+Report findings grouped by severity. Do not modify any code.
+"""
+```
+
+Typing `/review` then:
+
+1. switches the thread to `mode` (when set),
+2. names the `skills` to use — the agent already receives every discovered
+   skill's path and description, so naming them is enough for it to read the
+   right `SKILL.md`,
+3. appends `user_prompt` to the message body.
+
+Text you type after the command is preserved, with `user_prompt` appended last:
+`/review focus on error handling` reaches the agent as your text followed by the
+command's prompt.
+
+`name` must not shadow a built-in command from the table above.
+
 ### Thread-Specific Customization
 
 Place a `system.md` file in a thread's workspace directory to customize the AI's behavior for that thread. See `system.md.example` for a reference.

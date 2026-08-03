@@ -6,6 +6,17 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **System temp dir always within the tool boundary.** `std::env::temp_dir()` is
+  now accepted by both the read and the write path check, so tools have scratch
+  space without per-pattern `access` configuration. Previously every pattern had
+  to repeat the same `access.write` entry, and threads with no matched pattern
+  could not be granted access at all.
+
+  Note the system temp dir is shared and world-writable, so other processes' temp
+  files become readable. Use `access.read` / `access.write` for paths that need to
+  stay private. A `$TMPDIR` of `/` is ignored, since honoring it would disable the
+  boundary entirely. (#499)
+
 - **Anthropic prompt caching.** Requests to `anthropic`-type providers now
   carry the four `cache_control` breakpoints Anthropic allows per request,
   laid out on the last element of each static span: the tools tail, the

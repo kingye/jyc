@@ -79,6 +79,25 @@ pub struct ToolContext<'a> {
     pub outbounds: Option<OutboundsMap>,
 }
 
+/// Whether `canonical` lies inside the system temp dir `tmp`.
+///
+/// `tmp` is canonicalized first: on macOS `env::temp_dir()` yields
+/// `/var/folders/...` while an already-resolved argument arrives as
+/// `/private/var/folders/...`, and a raw comparison would miss the match.
+///
+/// A `tmp` with no parent (i.e. the filesystem root) is rejected: every
+/// absolute path is inside `/`, so honoring it would disable the boundary
+/// entirely. `env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, so
+/// this is reachable via a stray `export TMPDIR=/` in the service
+/// environment rather than being merely theoretical.
+///
+/// Takes `tmp` as a parameter rather than reading the environment so the
+/// degenerate cases stay testable without mutating process state.
+fn is_within_temp_dir(canonical: &Path, tmp: &Path) -> bool {
+    let tmp_canonical = tmp.canonicalize().unwrap_or_else(|_| tmp.to_path_buf());
+    tmp_canonical.parent().is_some() && canonical.starts_with(&tmp_canonical)
+}
+
 impl<'a> ToolContext<'a> {
     /// Construct a context with no extra roots and an empty pending-images queue.
     pub fn new(working_dir: &'a Path) -> Self {
@@ -126,6 +145,12 @@ impl<'a> ToolContext<'a> {
     /// above `working_dir` is a symlink (e.g. the `repo_group` feature
     /// where `repo/ -> /other/path`), the check is skipped. This lets the
     /// agent work with symlinked repos without false positives.
+    ///
+    /// **Temp-dir exemption**: paths under `std::env::temp_dir()` are always
+    /// accepted, so tools have scratch space without per-pattern `access`
+    /// config. Note this makes the shared system temp dir readable. A
+    /// degenerate temp dir (the filesystem root) is ignored — see
+    /// [`is_within_temp_dir`].
     pub fn check_path_boundary(
         &self,
         display_path: &str,
@@ -163,6 +188,11 @@ impl<'a> ToolContext<'a> {
             }
         }
 
+        // System temp dir is always in-boundary: tools need scratch space.
+        if is_within_temp_dir(&canonical, &std::env::temp_dir()) {
+            return Ok(());
+        }
+
         Err(format!(
             "Access denied: path '{}' is outside the working directory",
             display_path
@@ -171,6 +201,9 @@ impl<'a> ToolContext<'a> {
 
     /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
     /// or `additional_write_roots`. Write paths imply read access.
+    ///
+    /// Inherits the symlink and temp-dir exemptions from
+    /// [`Self::check_path_boundary`], which this delegates to first.
     ///
     /// Used by write/edit/bash tools to enforce the write boundary.
     pub fn check_write_boundary(
@@ -274,5 +307,47 @@ impl ToolOutput {
             is_error: true,
             stop_after: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The system temp dir is in-boundary for both read and write, while an
+    /// unrelated absolute path is still denied. Uses `/etc/passwd` as the
+    /// negative case because a `TempDir` working dir now sits inside an
+    /// always-allowed root.
+    #[test]
+    fn temp_dir_is_within_both_boundaries() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+
+        let scratch = std::env::temp_dir().join("jyc-boundary-test.txt");
+        assert!(ctx.check_path_boundary("scratch", &scratch).is_ok());
+        assert!(ctx.check_write_boundary("scratch", &scratch).is_ok());
+
+        let outside = Path::new("/etc/passwd");
+        assert!(ctx.check_path_boundary("passwd", outside).is_err());
+        assert!(ctx.check_write_boundary("passwd", outside).is_err());
+    }
+
+    /// A temp dir of `/` must not be honored: every absolute path is inside
+    /// the root, so accepting it would disable the boundary entirely.
+    /// `env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, so this is a
+    /// reachable misconfiguration.
+    #[test]
+    fn root_temp_dir_is_rejected() {
+        let root = Path::new("/");
+        assert!(!is_within_temp_dir(Path::new("/etc/passwd"), root));
+        assert!(!is_within_temp_dir(
+            Path::new("/home/someone/.ssh/id_rsa"),
+            root
+        ));
+
+        // A normal temp dir still matches, and only on whole components.
+        let tmp = Path::new("/tmp");
+        assert!(is_within_temp_dir(Path::new("/tmp/scratch.txt"), tmp));
+        assert!(!is_within_temp_dir(Path::new("/tmpfoo/escape.txt"), tmp));
     }
 }

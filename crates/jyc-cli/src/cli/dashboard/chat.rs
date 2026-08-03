@@ -114,6 +114,11 @@ pub(super) struct ChatState {
     pub(super) live_thinking: std::collections::BTreeMap<(String, String), String>,
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
+    /// Live loop duration in milliseconds — updated by WS `loop_tick`
+    /// events (4 Hz while a loop is running). Drives the live-duration
+    /// ticker in the dashboard's Details panel, the chat-mode info pane,
+    /// and the chat progress line.
+    pub(super) live_tick_ms: std::collections::BTreeMap<(String, String), u64>,
     /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
@@ -177,6 +182,19 @@ pub(super) fn format_elapsed(timestamp: &Option<String>) -> String {
         format!("{secs}s")
     } else {
         format!("{}m", secs / 60)
+    }
+}
+
+/// Format a wall-clock duration in milliseconds for the live loop ticker.
+/// Below 60s renders one decimal (`"12.4s"`); at or above 60s renders as
+/// `"1m05s"` style. Used by the dashboard Details panel, chat-mode info
+/// pane, and chat progress line.
+pub(super) fn format_elapsed_ms(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{}.{}s", ms / 1000, (ms / 100) % 10)
+    } else {
+        let s = ms / 1000;
+        format!("{}m{:02}s", s / 60, s % 60)
     }
 }
 
@@ -1084,10 +1102,23 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             out.push(Line::from(cost_spans));
         }
         if t.status == ThreadStatus::Processing {
-            out.push(Line::from(Span::styled(
+            let mut thinking_line: Vec<Span> = vec![Span::styled(
                 "⏳ AI thinking...",
                 Style::default().fg(Color::Yellow),
-            )));
+            )];
+            // Append the live-duration ticker when a tick has arrived.
+            // Falls back to the plain `⏳ AI thinking...` line when no
+            // tick has arrived yet (~250 ms lag at startup) — same UX as
+            // the dashboard Details panel.
+            if let Some(ms) = app.chat.live_tick_ms_for(&t.channel, &t.name) {
+                thinking_line.push(Span::styled(
+                    format!(" ({})", format_elapsed_ms(ms)),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            out.push(Line::from(thinking_line));
         }
         out
     } else {
@@ -1466,6 +1497,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
             .map(|s| s.to_string());
 
+        // Live wall-clock ticker (4 Hz). When present, it is the
+        // authoritative elapsed-time display for the last in-progress
+        // line — the polled `last_active_at` it normally shows goes stale
+        // during silent LLM/tool work. Falls back to the polled value
+        // when no tick has arrived yet (~250 ms lag at startup).
+        let live_tick_ms: Option<u64> = live_chan
+            .as_deref()
+            .zip(live_thread.as_deref())
+            .and_then(|(c, t)| app.chat.live_tick_ms_for(c, t));
+
         // Render thinking text first (same wrap + indent as before).
         // This comes from ThreadEvent::Thinking events and is NOT stored
         // in the activity buffer or activity.jsonl.
@@ -1487,10 +1528,17 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         if activity_entries.is_empty() && thinking_text.is_none() {
+            // Prefer the live ticker (4 Hz, fresh) over the static
+            // placeholder when present. Format like `⏳ AI is thinking...
+            // (12.4s)`.
+            let placeholder = match live_tick_ms {
+                Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
+                None => "⏳ AI is thinking...".to_string(),
+            };
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    "⏳ AI is thinking...",
+                    placeholder,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::ITALIC),
@@ -1500,8 +1548,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             let total = activity_entries.len();
             for (idx, a) in activity_entries.iter().enumerate() {
                 let is_last = idx == total - 1;
+                // Prefer the live ticker when present; it ticks during
+                // silent LLM/tool work where `last_active_at` would
+                // otherwise go stale.
                 let elapsed = if is_last {
-                    format_elapsed(&a.timestamp)
+                    match live_tick_ms {
+                        Some(ms) => format_elapsed_ms(ms),
+                        None => format_elapsed(&a.timestamp),
+                    }
                 } else {
                     String::new()
                 };
@@ -1912,6 +1966,7 @@ impl ChatState {
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
             live_processing: std::collections::BTreeMap::new(),
+            live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
             last_hydrated_key: None,
             open_addr: None,
@@ -2375,7 +2430,7 @@ impl ChatState {
         let event_type = parsed.get("type").and_then(|v| v.as_str());
         match event_type {
             Some("activity") | Some("chat_message") | Some("thinking") | Some("processing")
-            | Some("resync") => {
+            | Some("resync") | Some("loop_tick") => {
                 self.handle_live_event(&parsed);
             }
             _ => {}
@@ -2558,11 +2613,21 @@ impl ChatState {
                     // artifacts but keep live_activity as the audit trail
                     // across rounds. Buffer is bounded at 180 entries.
                     self.live_thinking.remove(&key);
+                    self.live_tick_ms.remove(&key);
                     self.awaiting_response = false;
                 } else {
                     // New round started - also clear thinking (in case
                     // the first Thinking event for this round is delayed).
                     self.live_thinking.remove(&key);
+                    self.live_tick_ms.remove(&key);
+                }
+            }
+            "loop_tick" => {
+                // Live wall-clock duration (4 Hz while the loop is alive).
+                // Drives the duration ticker in the dashboard Details
+                // panel, chat-mode info pane, and chat progress line.
+                if let Some(ms) = payload.get("elapsed_ms").and_then(|v| v.as_u64()) {
+                    self.live_tick_ms.insert(key, ms);
                 }
             }
             "resync" => {
@@ -2572,6 +2637,7 @@ impl ChatState {
                 self.live_chat.remove(&key);
                 self.live_thinking.remove(&key);
                 self.live_processing.remove(&key);
+                self.live_tick_ms.remove(&key);
                 self.last_seen_id.remove(&key);
             }
             _ => {}
@@ -2591,6 +2657,7 @@ impl ChatState {
         let key = (channel.to_string(), thread.to_string());
         self.live_thinking.remove(&key);
         self.live_processing.remove(&key);
+        self.live_tick_ms.remove(&key);
     }
 
     /// Get a snapshot of the live activity buffer for the given (channel, thread).
@@ -2621,6 +2688,16 @@ impl ChatState {
             .get(&(channel.to_string(), thread.to_string()))
             .copied()
     }
+    /// Get the live wall-clock elapsed time (milliseconds) for an active
+    /// agent loop on the given (channel, thread). Returns `None` when no
+    /// tick has arrived yet (loop just started) or the loop has ended.
+    /// Used by all three render sites: the dashboard Details panel, the
+    /// chat-mode info pane, and the chat progress line.
+    pub(super) fn live_tick_ms_for(&self, channel: &str, thread: &str) -> Option<u64> {
+        self.live_tick_ms
+            .get(&(channel.to_string(), thread.to_string()))
+            .copied()
+    }
     /// Iterate over the live chat messages for the given (channel, thread).
     /// Used by the dashboard's poll loop to append new messages to the
     /// `chat.messages` vec shown in the chat pane.
@@ -2648,6 +2725,59 @@ static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_elapsed_ms_below_60s() {
+        assert_eq!(format_elapsed_ms(0), "0.0s");
+        assert_eq!(format_elapsed_ms(250), "0.2s");
+        assert_eq!(format_elapsed_ms(999), "0.9s");
+        assert_eq!(format_elapsed_ms(12_400), "12.4s");
+        assert_eq!(format_elapsed_ms(59_999), "59.9s");
+    }
+
+    #[test]
+    fn format_elapsed_ms_at_and_above_60s() {
+        assert_eq!(format_elapsed_ms(60_000), "1m00s");
+        assert_eq!(format_elapsed_ms(65_000), "1m05s");
+        assert_eq!(format_elapsed_ms(125_000), "2m05s");
+        assert_eq!(format_elapsed_ms(3_600_000), "60m00s");
+    }
+
+    #[test]
+    fn live_tick_ms_for_round_trip() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut chat = ChatState::new(rx);
+        // Seed via the WS handler entry-point so we cover the production
+        // path, not a direct map insert.
+        let payload = serde_json::json!({
+            "type": "loop_tick",
+            "channel": "chan",
+            "thread": "t1",
+            "elapsed_ms": 12_400,
+        });
+        chat.handle_live_event(&payload);
+        assert_eq!(chat.live_tick_ms_for("chan", "t1"), Some(12_400));
+        assert_eq!(chat.live_tick_ms_for("chan", "missing"), None);
+
+        // `processing: false` should clear the tick (mirror of new-round).
+        chat.handle_live_event(&serde_json::json!({
+            "type": "processing",
+            "channel": "chan",
+            "thread": "t1",
+            "is_processing": false,
+            "has_error": false,
+        }));
+        assert_eq!(chat.live_tick_ms_for("chan", "t1"), None);
+
+        // And a second tick updates the value.
+        chat.handle_live_event(&serde_json::json!({
+            "type": "loop_tick",
+            "channel": "chan",
+            "thread": "t1",
+            "elapsed_ms": 7_500,
+        }));
+        assert_eq!(chat.live_tick_ms_for("chan", "t1"), Some(7_500));
+    }
 
     #[test]
     fn select_pattern_clears_chat_messages() {

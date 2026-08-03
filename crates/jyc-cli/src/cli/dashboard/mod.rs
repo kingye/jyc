@@ -1283,6 +1283,19 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
             },
         ),
     ];
+    // Live-duration ticker. While the agent loop is alive, append a
+    // yellow italic `(12.4s)` suffix to the status chip so the dashboard
+    // shows wall-clock elapsed time even during silent LLM/tool work.
+    if selected.status == ThreadStatus::Processing
+        && let Some(ms) = app.chat.live_tick_ms_for(&selected.channel, &selected.name)
+    {
+        status_line.push(Span::styled(
+            format!(" ({})", chat::format_elapsed_ms(ms)),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        ));
+    }
 
     // "Tokens: X / Y (Z%)" — shared with the chat info pane via the
     // `token_render` module. Prepend a 2-space gap so it doesn't sit

@@ -6,6 +6,26 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Live processing-duration ticker.** While the agent loop is running, the
+  dashboard now shows a wall-clock elapsed-time indicator that ticks every
+  ~250 ms, so the loop's progress is visible even during silent LLM or tool
+  work (long bash, slow LLM stream, retry backoff) when no iteration has
+  produced a `ProcessingProgress` event yet. The ticker appears in three
+  places:
+
+  - The dashboard's per-thread Details panel (Status chip in
+    `crates/jyc-cli/src/cli/dashboard/mod.rs`).
+  - The chat-mode info pane (`⏳ AI thinking...` line).
+  - The chat progress line (in-flight activity entry / "⏳ AI is
+    thinking..." placeholder).
+
+  Implementation: new `ThreadEvent::LoopTick { elapsed_ms }` variant emitted
+  by a background `tokio` task spawned at loop start; routed by the inspect
+  server as `is_internal` (no activity.jsonl pollution) and broadcast over
+  WebSocket as `{"type":"loop_tick",...}`; consumed by the dashboard into
+  the `ChatState::live_tick_ms` map. Format: `<s>.<tenths>s` below 60s
+  (`12.4s`), `<m>m<ss>s` at/above (`1m05s`).
+
 - **System temp dir always within the tool boundary.** `std::env::temp_dir()` is
   now accepted by both the read and the write path check, so tools have scratch
   space without per-pattern `access` configuration. Previously every pattern had

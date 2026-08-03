@@ -25,6 +25,12 @@ use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, To
 /// Can be overridden via AgentLoopConfig.max_iterations.
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 
+/// Interval between `ThreadEvent::LoopTick` heartbeats while the agent
+/// loop is running. 250 ms = 4 Hz, snappy enough to feel live while cheap
+/// enough to not flood the event bus. Matches the cadence requested by the
+/// dashboard's `live_tick_ms` ticker.
+const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
     pub provider: &'a dyn Provider,
@@ -163,6 +169,21 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut reply_sent_by_tool = false;
     let mut reply_text_from_tool: Option<String> = None;
     let start_time = Instant::now();
+
+    // Spawn the live-duration ticker. While the loop is alive, it publishes
+    // a `ThreadEvent::LoopTick` every LOOP_TICK_INTERVAL so the dashboard
+    // can show the wall-clock elapsed time even during silent LLM/tool work
+    // (when no iteration has produced a `ProcessingProgress` event yet).
+    // The task exits via the cancel token; nothing to join because the
+    // task itself is fire-and-forget and never holds state the caller needs.
+    if let Some(bus) = event_bus {
+        run_ticker(
+            start_time,
+            cancel.clone(),
+            Some(bus.clone()),
+            thread_name.to_string(),
+        );
+    }
 
     // No-reply guard: if the model exits with no text and no tool call, the
     // user receives nothing. We give the model a single system-reminder
@@ -1073,6 +1094,43 @@ async fn publish_event(event_bus: Option<&ThreadEventBusRef>, event: ThreadEvent
     if let Some(bus) = event_bus {
         let _ = bus.publish(event).await;
     }
+}
+
+/// Spawn the live-duration ticker. While the agent loop is alive, the
+/// spawned task publishes a `ThreadEvent::LoopTick` every
+/// `LOOP_TICK_INTERVAL` so the dashboard can show the wall-clock elapsed
+/// time even during silent LLM/tool work (when no iteration has produced
+/// a `ProcessingProgress` event yet). Exits via the cancel token.
+///
+/// Fire-and-forget: the task is owned by the runtime and self-terminates
+/// on cancel; the caller does not need to join it. Returns nothing for
+/// that reason — making it explicit (`JoinHandle`) would force the caller
+/// to plumb the handle through every return path, which is mechanical
+/// work for no observable benefit.
+fn run_ticker(
+    start_time: Instant,
+    cancel: CancellationToken,
+    event_bus: Option<ThreadEventBusRef>,
+    thread_name: String,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(LOOP_TICK_INTERVAL) => {
+                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    let event = ThreadEvent::LoopTick {
+                        thread_name: thread_name.clone(),
+                        elapsed_ms,
+                        timestamp: Utc::now(),
+                    };
+                    if let Some(bus) = event_bus.as_ref() {
+                        let _ = bus.publish(event).await;
+                    }
+                }
+                _ = cancel.cancelled() => break,
+            }
+        }
+    });
 }
 
 /// Truncate a string to a maximum length.
@@ -2337,5 +2395,55 @@ mod cancel_during_tool_tests {
         // Keep `tools` and `provider` alive across the borrow at the call
         // site; both are dropped at end of scope.
         let _ = (&mut tools, &provider);
+    }
+}
+
+/// Verifies the live-duration ticker: spawns `run_ticker` with a fast
+/// interval, observes several `LoopTick` events on the bus, and confirms
+/// the task stops promptly when the cancel token fires.
+#[cfg(test)]
+mod ticker_tests {
+    use super::*;
+    use jyc_core::thread_event::ThreadEvent;
+    use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn run_ticker_publishes_then_exits_on_cancel() {
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+        let start = Instant::now();
+
+        // Spawn the ticker with a fast interval (50 ms) so we don't have
+        // to wait long. Real wall-clock time.
+        run_ticker(
+            start,
+            cancel.clone(),
+            Some(bus.clone()),
+            "thread-x".to_string(),
+        );
+
+        // Wait for at least 3 ticks before cancelling (~150 ms).
+        let mut got = 0u32;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while got < 3 && std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                Ok(Some(ThreadEvent::LoopTick { .. })) => got += 1,
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        assert!(got >= 3, "expected at least 3 LoopTick events, got {got}");
+
+        // Cancel and verify no further tick arrives within 200 ms.
+        cancel.cancel();
+        if let Ok(Some(ThreadEvent::LoopTick { .. })) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            panic!("ticker should not publish after cancel")
+        }
     }
 }

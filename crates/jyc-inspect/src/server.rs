@@ -560,6 +560,28 @@ fn publish_processing_event(
     let _ = bus.send(payload.to_string());
 }
 
+/// Broadcast a 4 Hz wall-clock elapsed tick to dashboard WS clients so the
+/// chat pane, chat-mode info pane, and dashboard Details panel can show a
+/// live duration indicator. Fires only while the loop is alive; not
+/// persisted to `activity.jsonl` (handled upstream via `is_internal`).
+///
+/// Payload format:
+///   {"type":"loop_tick","channel":"...","thread":"...","elapsed_ms":u64}
+fn publish_loop_tick_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    thread: &str,
+    elapsed_ms: u64,
+) {
+    let payload = serde_json::json!({
+        "type": "loop_tick",
+        "channel": channel,
+        "thread": thread,
+        "elapsed_ms": elapsed_ms,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
 /// Background task that subscribes to thread event buses and buffers
 /// activity entries for the inspect server.
 pub struct ActivityTracker;
@@ -830,6 +852,21 @@ impl ActivityTracker {
                                                                             );
                                                                         }
                                                                     }
+
+                                                                    // Live-duration ticker: LoopTick is `is_internal` so it
+                                                                    // was skipped above (no activity.jsonl write, no
+                                                                    // activity-pane entry), but we still want to fan it
+                                                                    // out over WS so the dashboard can render a live
+                                                                    // "12.4s" indicator. The LoopTick variant carries
+                                                                    // the elapsed_ms value directly.
+                                                                    if let ThreadEvent::LoopTick { elapsed_ms, .. } = &event {
+                                                                        publish_loop_tick_event(
+                                                                            &inspect_broadcast_for_task,
+                                                                            &channel_for_task,
+                                                                            &name,
+                                                                            *elapsed_ms,
+                                                                        );
+                                                                    }
                                                                 }
                                                                 None => break,
                                                             }
@@ -872,7 +909,14 @@ fn is_event_internal(event: &ThreadEvent) -> bool {
     // ProcessingProgress heartbeats are emitted frequently during long
     // tool runs to indicate the agent is still working. They're useful
     // for debug logs but noisy in the UI - filter them.
-    matches!(event, ThreadEvent::ProcessingProgress { .. })
+    //
+    // LoopTick is a 4 Hz wall-clock heartbeat that drives the dashboard's
+    // live-duration ticker. Same reasoning as ProcessingProgress: useful
+    // for the WS ticker payload, not for the activity pane.
+    matches!(
+        event,
+        ThreadEvent::ProcessingProgress { .. } | ThreadEvent::LoopTick { .. }
+    )
 }
 
 /// Convert a ThreadEvent into a human-readable ActivityEntry.
@@ -1099,6 +1143,13 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 text.push_str(&format!(": {oneline}"));
             }
             text
+        }
+        // LoopTick is `is_internal` so this match arm should never run in
+        // practice, but the match must be exhaustive. Format it as a
+        // short debug string so a future regression doesn't produce a
+        // confusing fall-through.
+        ThreadEvent::LoopTick { elapsed_ms, .. } => {
+            format!("LoopTick ({elapsed_ms}ms)")
         }
     };
     ActivityEntry {

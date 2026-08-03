@@ -41,6 +41,7 @@ impl CommandHandler for ThinkingCommandHandler {
                         "/thinking: unknown argument '{other}'. Use '/thinking show' or '/thinking hide'"
                     ),
                     error: None,
+                    append_body: None,
                 });
             }
         };
@@ -62,6 +63,7 @@ impl CommandHandler for ThinkingCommandHandler {
             success: true,
             message: message.into(),
             error: None,
+            append_body: None,
         })
     }
 }

@@ -39,6 +39,7 @@ impl CommandHandler for UnpinCommandHandler {
                     success: false,
                     message: e.to_string(),
                     error: Some(e.to_string()),
+                    append_body: None,
                 });
             }
         };
@@ -48,6 +49,7 @@ impl CommandHandler for UnpinCommandHandler {
                 success: false,
                 message: "No websocket channels in config. Nothing to unpin.".into(),
                 error: Some("no websocket channels".into()),
+                append_body: None,
             });
         }
 
@@ -62,6 +64,7 @@ impl CommandHandler for UnpinCommandHandler {
                     ctx.thread_name
                 ),
                 error: Some("pattern not found".into()),
+                append_body: None,
             });
         }
 
@@ -72,6 +75,7 @@ impl CommandHandler for UnpinCommandHandler {
                 ctx.thread_name
             ),
             error: None,
+            append_body: None,
         })
     }
 }

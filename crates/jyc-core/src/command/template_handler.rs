@@ -42,6 +42,7 @@ impl TemplateCommandHandler {
                 success: false,
                 message: "/template: pattern file not found. Cannot determine template.".into(),
                 error: Some("No .jyc/pattern file".to_string()),
+                append_body: None,
             });
         };
 
@@ -63,6 +64,7 @@ impl TemplateCommandHandler {
                         pattern_name
                     ),
                     error: Some("No template in pattern config".to_string()),
+                    append_body: None,
                 });
             }
         };
@@ -78,6 +80,7 @@ impl TemplateCommandHandler {
                     template_name
                 ),
                 error: Some(format!("Template not found: {}", template_name)),
+                append_body: None,
             });
         };
 
@@ -90,6 +93,7 @@ impl TemplateCommandHandler {
                 template_name, copied
             ),
             error: None,
+            append_body: None,
         })
     }
 
@@ -109,6 +113,7 @@ impl TemplateCommandHandler {
                 message: "/template update: pattern file not found. Cannot determine template."
                     .into(),
                 error: Some("No .jyc/pattern file".to_string()),
+                append_body: None,
             });
         };
 
@@ -146,6 +151,7 @@ impl TemplateCommandHandler {
                         pattern_name
                     ),
                     error: Some("No template in pattern config".to_string()),
+                    append_body: None,
                 });
             }
         };
@@ -161,6 +167,7 @@ impl TemplateCommandHandler {
                     template_name
                 ),
                 error: Some(format!("Template not found: {}", template_name)),
+                append_body: None,
             });
         };
 
@@ -173,6 +180,7 @@ impl TemplateCommandHandler {
                 template_name, copied
             ),
             error: None,
+            append_body: None,
         })
     }
 }

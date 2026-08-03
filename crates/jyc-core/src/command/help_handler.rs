@@ -35,6 +35,7 @@ Available commands:\n\
             success: true,
             message: help.into(),
             error: None,
+            append_body: None,
         })
     }
 }

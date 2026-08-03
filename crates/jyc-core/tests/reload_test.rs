@@ -150,6 +150,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
         wecom: None,
         mcps: Vec::new(),
         scheduler: jyc_types::SchedulerConfig::default(),
+        commands: Vec::new(),
     }
 }
 

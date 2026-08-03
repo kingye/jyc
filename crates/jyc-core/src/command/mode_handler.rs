@@ -37,6 +37,7 @@ impl CommandHandler for PlanCommandHandler {
             success: true,
             message: "/plan: switched to plan mode (read-only)".into(),
             error: None,
+            append_body: None,
         })
     }
 }
@@ -73,6 +74,7 @@ impl CommandHandler for BuildCommandHandler {
             success: true,
             message: "/build: switched to build mode (full execution)".into(),
             error: None,
+            append_body: None,
         })
     }
 }

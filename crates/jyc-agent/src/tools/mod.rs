@@ -126,6 +126,10 @@ impl<'a> ToolContext<'a> {
     /// above `working_dir` is a symlink (e.g. the `repo_group` feature
     /// where `repo/ -> /other/path`), the check is skipped. This lets the
     /// agent work with symlinked repos without false positives.
+    ///
+    /// **Temp-dir exemption**: paths under `std::env::temp_dir()` are always
+    /// accepted, so tools have scratch space without per-pattern `access`
+    /// config. Note this makes the shared system temp dir readable.
     pub fn check_path_boundary(
         &self,
         display_path: &str,
@@ -163,6 +167,15 @@ impl<'a> ToolContext<'a> {
             }
         }
 
+        // System temp dir is always in-boundary: tools need scratch space.
+        // Canonicalized because macOS resolves /var/folders/... to
+        // /private/var/folders/..., which a raw prefix match would miss.
+        let tmp = std::env::temp_dir();
+        let tmp_canonical = tmp.canonicalize().unwrap_or(tmp);
+        if canonical.starts_with(&tmp_canonical) {
+            return Ok(());
+        }
+
         Err(format!(
             "Access denied: path '{}' is outside the working directory",
             display_path
@@ -171,6 +184,9 @@ impl<'a> ToolContext<'a> {
 
     /// Check that `resolved` is within `working_dir`, `additional_read_roots`,
     /// or `additional_write_roots`. Write paths imply read access.
+    ///
+    /// Inherits the symlink and temp-dir exemptions from
+    /// [`Self::check_path_boundary`], which this delegates to first.
     ///
     /// Used by write/edit/bash tools to enforce the write boundary.
     pub fn check_write_boundary(

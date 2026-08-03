@@ -27,7 +27,7 @@ Execute shell commands in the working directory.
 - `command` (string, required): The bash command to execute
 - `timeout` (integer, optional): Timeout in seconds (default: 120)
 
-**Security:** Best-effort path boundary check — scans for absolute-path tokens (outside quoted strings) and verifies they are within `working_dir` or configured read/write roots (`access.read` / `access.write`). This is a heuristic, not a sandbox. Full isolation requires OS-level containment.
+**Security:** Best-effort path boundary check — scans for absolute-path tokens (outside quoted strings) and verifies they are within `working_dir`, the system temp dir, or configured read/write roots (`access.read` / `access.write`). This is a heuristic, not a sandbox. Full isolation requires OS-level containment.
 
 **Limits:** Output truncated at 128 KB.
 
@@ -47,7 +47,7 @@ Read a file or directory listing.
 - `offset` (integer, optional): Line number to start from, 1-indexed (default: 1)
 - `limit` (integer, optional): Maximum lines to read (default: 2000)
 
-**Security:** Path must be within `working_dir`, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for `repo_group` setups.
+**Security:** Path must be within `working_dir`, the system temp dir, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for `repo_group` setups.
 
 **Example:**
 ```json
@@ -387,18 +387,38 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | Tool | Boundary Check | Notes |
 |------|---------------|-------|
 | `bash` | `check_write_boundary()` — scans unquoted absolute-path tokens | Not a sandbox; OS-level isolation recommended for untrusted input |
-| `read` | `check_path_boundary()` working_dir + read_roots + write_roots | Symlink exemption for repo_group |
-| `write` | `check_write_boundary()` working_dir + write_roots | Creates parent dirs automatically |
-| `edit` | `check_write_boundary()` working_dir + write_roots | — |
+| `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlink exemption for repo_group |
+| `write` | `check_write_boundary()` working_dir + temp dir + write_roots | Creates parent dirs automatically |
+| `edit` | `check_write_boundary()` working_dir + temp dir + write_roots | — |
 | `glob` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
-| `read_image` | `check_path_boundary()` working_dir + read_roots + write_roots | URL mode requires http(s) |
+| `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
 | `jyc_reply_message` | Attachment path validation | Must be within thread directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
 | `jyc_send_to_thread` | Attachment path validation | Must be within thread directory; target channel must exist |
 
-Read/write roots are configured per-pattern via the `access` sub-table:
+`check_path_boundary()` itself only iterates `additional_read_roots`; write paths
+appear readable because `resolve_additional_read_roots()` merges `access.write`
+into that list when building the context.
+
+### System temp dir
+
+`std::env::temp_dir()` is always within the read *and* write boundary, so tools
+have scratch space without any configuration. The path is canonicalized before
+comparison, since macOS reports the temp dir as `/var/folders/...` while a
+resolved path arrives as `/private/var/folders/...`.
+
+A temp dir of `/` is ignored — every absolute path is inside the root, so
+honoring it would disable the boundary altogether. This matters because
+`env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, and the systemd unit in
+`SYSTEMD.md` sources the operator's shell environment.
+
+Because the system temp dir is shared and world-writable, this also makes other
+processes' temp files readable. Use `access.read` / `access.write` for anything
+that needs a private location.
+
+Additional read/write roots are configured per-pattern via the `access` sub-table:
 
 ```toml
 [channels.xxx.patterns.access]

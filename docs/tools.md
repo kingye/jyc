@@ -398,11 +398,21 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
 | `jyc_send_to_thread` | Attachment path validation | Must be within thread directory; target channel must exist |
 
+`check_path_boundary()` itself only iterates `additional_read_roots`; write paths
+appear readable because `resolve_additional_read_roots()` merges `access.write`
+into that list when building the context.
+
 ### System temp dir
 
 `std::env::temp_dir()` is always within the read *and* write boundary, so tools
 have scratch space without any configuration. The path is canonicalized before
-comparison, since macOS resolves `/var/folders/...` to `/private/var/folders/...`.
+comparison, since macOS reports the temp dir as `/var/folders/...` while a
+resolved path arrives as `/private/var/folders/...`.
+
+A temp dir of `/` is ignored — every absolute path is inside the root, so
+honoring it would disable the boundary altogether. This matters because
+`env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, and the systemd unit in
+`SYSTEMD.md` sources the operator's shell environment.
 
 Because the system temp dir is shared and world-writable, this also makes other
 processes' temp files readable. Use `access.read` / `access.write` for anything

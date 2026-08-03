@@ -31,9 +31,21 @@ impl ToolRegistry {
         self.tools.remove(name);
     }
 
-    /// Get all tool definitions for the LLM.
+    /// Get all tool definitions for the LLM, sorted by name.
+    ///
+    /// The sort is required for prompt caching: providers cache on an exact
+    /// prefix match, and `HashMap` iteration order is randomized per process.
+    /// Without a stable order the serialized `tools` array differs on every
+    /// restart, so the cache breakpoint placed on the last tool would never
+    /// produce a hit (see `provider::anthropic::apply_cache_breakpoints`).
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.to_definition()).collect()
+        let mut defs: Vec<ToolDefinition> =
+            self.tools.values().map(|t| t.to_definition()).collect();
+        // Unstable sort: tool names are unique (they're `HashMap` keys), so
+        // there are no equal elements whose relative order could matter, and
+        // it avoids the scratch allocation a stable sort needs.
+        defs.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 
     /// Execute a tool by name.
@@ -164,6 +176,21 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert!(defs.iter().any(|d| d.name == "tool1"));
         assert!(defs.iter().any(|d| d.name == "tool2"));
+    }
+
+    /// Tool order must be deterministic regardless of registration order,
+    /// because prompt caching needs a byte-identical `tools` prefix across
+    /// requests (and `HashMap` iteration is randomized per process).
+    #[test]
+    fn definitions_are_sorted_by_name() {
+        let mut reg = ToolRegistry::new();
+        for name in ["write", "bash", "read", "edit"] {
+            reg.register(Box::new(MockTool {
+                name: name.to_string(),
+            }));
+        }
+        let names: Vec<String> = reg.definitions().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, vec!["bash", "edit", "read", "write"]);
     }
 
     #[tokio::test]

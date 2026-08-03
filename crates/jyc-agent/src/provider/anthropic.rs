@@ -118,6 +118,10 @@ impl Provider for AnthropicProvider {
             }
         }
 
+        // Prompt-cache breakpoints. See `complete_raw` above for why this
+        // runs after the params merge.
+        apply_cache_breakpoints(&mut body);
+
         // Build request
         let mut req = self
             .client
@@ -336,6 +340,11 @@ impl Provider for AnthropicProvider {
                 body_obj.insert(k.clone(), v.clone());
             }
         }
+
+        // Prompt-cache breakpoints. Applied last so a `system` or `tools`
+        // override coming from `params` is marked too, and cannot clobber
+        // the markers by being merged over them.
+        apply_cache_breakpoints(&mut body);
 
         let mut req = self
             .client
@@ -657,6 +666,103 @@ struct AnthropicTool {
     input_schema: serde_json::Value,
 }
 
+/// An `ephemeral` cache-control marker (Anthropic's 5-minute prompt cache).
+fn ephemeral() -> serde_json::Value {
+    serde_json::json!({ "type": "ephemeral" })
+}
+
+/// Attach a `cache_control` marker to a message's **last content block**.
+///
+/// The marker must sit on a content block, never on the message object
+/// itself — `{"role":"user","cache_control":{...}}` is rejected by the API.
+/// String content (`"content": "hi"`) is normalized into a single text block
+/// first, since a bare string has nowhere to hang the marker.
+///
+/// No-ops when the message has no content blocks to mark.
+fn mark_last_block_cached(msg: &mut serde_json::Value) {
+    // Normalize `content: "text"` → `content: [{"type":"text","text":"text"}]`
+    if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+        msg["content"] = serde_json::json!([{ "type": "text", "text": text }]);
+    }
+
+    if let Some(blocks) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+        && let Some(last) = blocks.last_mut()
+        && let Some(obj) = last.as_object_mut()
+    {
+        obj.insert("cache_control".to_string(), ephemeral());
+    }
+}
+
+/// Insert Anthropic prompt-cache breakpoints into a built request body.
+///
+/// Anthropic allows at most 4 `cache_control` breakpoints per request, and a
+/// breakpoint only pays off when it sits on the **last** element of a static
+/// span — placed mid-flux, every downstream cache entry is invalidated as
+/// soon as the dynamic part changes. The cache prefix is ordered
+/// `tools → system → messages`, so this lays out the standard four:
+///
+/// | # | Position          | Caches                                     |
+/// |---|-------------------|--------------------------------------------|
+/// | 1 | tools tail        | tool schemas (long, and identical per run) |
+/// | 2 | system tail       | tools + system prompt                      |
+/// | 3 | message `n-3`     | rolling conversation history               |
+/// | 4 | message `n-2`     | rolling conversation history               |
+///
+/// Breakpoints #1 and #2 are kept separate rather than collapsed into one:
+/// the tools array is identical across every thread, while the system prompt
+/// varies per thread (working directory, skills, AGENTS.md), so a
+/// tools-only prefix stays shareable between threads.
+///
+/// The newest message is deliberately left unmarked — it changes on every
+/// request, so a breakpoint there would be written and immediately orphaned.
+///
+/// The 4-breakpoint budget is satisfied structurally (1 + 1 + 2), so there is
+/// no runtime counting. Marking is skipped where a span is absent or too
+/// short. Prompts below the model's minimum cacheable length (1024 tokens for
+/// Opus/Sonnet, 2048 for Haiku) are ignored by the API rather than erroring.
+fn apply_cache_breakpoints(body: &mut serde_json::Value) {
+    // #1 — tools tail.
+    if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut())
+        && let Some(last) = tools.last_mut()
+        && let Some(obj) = last.as_object_mut()
+    {
+        obj.insert("cache_control".to_string(), ephemeral());
+    }
+
+    // #2 — system tail. `system` is built as a plain string; promote it to a
+    // single-block array so the marker has a block to attach to.
+    if let Some(text) = body.get("system").and_then(|s| s.as_str()) {
+        if text.is_empty() {
+            // Nothing to cache; leave the field exactly as it was.
+        } else {
+            body["system"] = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": ephemeral(),
+            }]);
+        }
+    } else if let Some(blocks) = body.get_mut("system").and_then(|s| s.as_array_mut())
+        && let Some(last) = blocks.last_mut()
+        && let Some(obj) = last.as_object_mut()
+    {
+        // A caller-supplied `system` array (e.g. via provider `params`).
+        obj.insert("cache_control".to_string(), ephemeral());
+    }
+
+    // #3 / #4 — rolling window over history, skipping the newest message.
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let n = messages.len();
+        // Mark the last two of `messages[..n-1]`: n-3 and n-2.
+        for offset in [3, 2] {
+            if n >= offset
+                && let Some(msg) = messages.get_mut(n - offset)
+            {
+                mark_last_block_cached(msg);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,6 +932,255 @@ mod tests {
         assert!(
             msg.contains("invalid_request_error"),
             "expected upstream error type in captured body, got: {msg}"
+        );
+    }
+
+    /// Recursively count `cache_control` markers anywhere in a JSON value.
+    fn count_breakpoints(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(map) => {
+                let here = usize::from(map.contains_key("cache_control"));
+                here + map.values().map(count_breakpoints).sum::<usize>()
+            }
+            serde_json::Value::Array(items) => items.iter().map(count_breakpoints).sum(),
+            _ => 0,
+        }
+    }
+
+    fn body_with(messages: serde_json::Value, tools: serde_json::Value) -> serde_json::Value {
+        json!({
+            "model": "claude-test",
+            "max_tokens": 16384,
+            "stream": true,
+            "system": "You are a helpful agent.",
+            "tools": tools,
+            "messages": messages,
+        })
+    }
+
+    /// The canonical layout: 4 breakpoints at tools tail, system tail,
+    /// and messages n-3 / n-2 — never more than Anthropic's limit of 4.
+    #[test]
+    fn cache_breakpoints_standard_layout() {
+        let mut body = body_with(
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "m0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "m1"}]},
+                {"role": "user", "content": [{"type": "text", "text": "m2"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "m3"}]},
+                {"role": "user", "content": [{"type": "text", "text": "m4"}]},
+            ]),
+            json!([
+                {"name": "bash", "description": "d", "input_schema": {}},
+                {"name": "write", "description": "d", "input_schema": {}},
+            ]),
+        );
+        apply_cache_breakpoints(&mut body);
+
+        assert_eq!(
+            count_breakpoints(&body),
+            4,
+            "must place exactly 4 breakpoints (Anthropic's per-request max), got: {body:#}"
+        );
+
+        // #1 tools tail — on the LAST tool only.
+        let tools = body["tools"].as_array().unwrap();
+        assert!(tools[0].get("cache_control").is_none(), "first tool");
+        assert!(tools[1].get("cache_control").is_some(), "last tool");
+
+        // #2 system tail — string promoted to a single-block array.
+        let system = body["system"].as_array().expect("system became an array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["text"], "You are a helpful agent.");
+        assert!(system[0].get("cache_control").is_some());
+
+        // #3 / #4 — messages n-3 (idx 2) and n-2 (idx 3); newest (idx 4) clean.
+        let msgs = body["messages"].as_array().unwrap();
+        for (i, expected) in [(0, false), (1, false), (2, true), (3, true), (4, false)] {
+            let marked = msgs[i]["content"][0].get("cache_control").is_some();
+            assert_eq!(marked, expected, "message idx {i} marker mismatch");
+        }
+    }
+
+    /// The marker must land on a message's LAST content block — an assistant
+    /// turn ending in `tool_use` gets it on the tool_use, not the text.
+    #[test]
+    fn cache_breakpoint_marks_last_content_block() {
+        let mut msg = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me look."},
+                {"type": "tool_use", "id": "toolu_1", "name": "grep", "input": {}},
+            ],
+        });
+        mark_last_block_cached(&mut msg);
+
+        assert!(
+            msg["content"][0].get("cache_control").is_none(),
+            "first block must stay unmarked"
+        );
+        assert!(
+            msg["content"][1].get("cache_control").is_some(),
+            "last block must carry the marker"
+        );
+        assert!(
+            msg.get("cache_control").is_none(),
+            "marker must never sit on the message object — the API rejects it"
+        );
+    }
+
+    /// String content has nowhere to hang a marker, so it is normalized into
+    /// a single text block first.
+    #[test]
+    fn cache_breakpoint_normalizes_string_content() {
+        let mut msg = json!({ "role": "user", "content": "plain string" });
+        mark_last_block_cached(&mut msg);
+
+        let blocks = msg["content"].as_array().expect("content became an array");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "plain string");
+        assert!(blocks[0].get("cache_control").is_some());
+    }
+
+    /// Short conversations must not panic or over-mark. With 2 messages only
+    /// n-2 (idx 0) qualifies; the newest stays unmarked.
+    #[test]
+    fn cache_breakpoints_short_conversation() {
+        let mut body = body_with(
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "m0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "m1"}]},
+            ]),
+            json!([{"name": "bash", "description": "d", "input_schema": {}}]),
+        );
+        apply_cache_breakpoints(&mut body);
+
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs[0]["content"][0].get("cache_control").is_some());
+        assert!(msgs[1]["content"][0].get("cache_control").is_none());
+        assert_eq!(count_breakpoints(&body), 3, "tools + system + 1 message");
+    }
+
+    /// A single-message request (the common first turn) marks no messages —
+    /// only the static tools + system spans.
+    #[test]
+    fn cache_breakpoints_single_message() {
+        let mut body = body_with(
+            json!([{"role": "user", "content": [{"type": "text", "text": "hello"}]}]),
+            json!([{"name": "bash", "description": "d", "input_schema": {}}]),
+        );
+        apply_cache_breakpoints(&mut body);
+
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
+        assert_eq!(count_breakpoints(&body), 2, "tools + system only");
+    }
+
+    /// Absent tools and an empty system prompt must be left untouched:
+    /// no `tools` key materialized, no empty system array.
+    #[test]
+    fn cache_breakpoints_no_tools_empty_system() {
+        let mut body = json!({
+            "model": "claude-test",
+            "system": "",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        apply_cache_breakpoints(&mut body);
+
+        assert!(body.get("tools").is_none(), "must not invent a tools key");
+        assert_eq!(body["system"], "", "empty system stays an empty string");
+        assert_eq!(count_breakpoints(&body), 0);
+    }
+
+    /// A caller-supplied `system` array (via provider `params`) already has
+    /// blocks; the marker goes on its last one instead of overwriting it.
+    #[test]
+    fn cache_breakpoints_preserves_caller_system_array() {
+        let mut body = json!({
+            "model": "claude-test",
+            "system": [
+                {"type": "text", "text": "role"},
+                {"type": "text", "text": "knowledge base"},
+            ],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        apply_cache_breakpoints(&mut body);
+
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "caller blocks must be preserved");
+        assert!(system[0].get("cache_control").is_none());
+        assert!(system[1].get("cache_control").is_some());
+    }
+
+    /// End-to-end: the breakpoints must survive into the actual HTTP body
+    /// sent to Anthropic. The helper-level tests only prove the transform;
+    /// this proves it is wired into `complete_raw` (the production path).
+    #[tokio::test]
+    async fn complete_raw_sends_cache_breakpoints_on_the_wire() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let tools = vec![
+            ToolDefinition {
+                name: "bash".to_string(),
+                description: "run".to_string(),
+                input_schema: json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "write".to_string(),
+                description: "write".to_string(),
+                input_schema: json!({"type": "object"}),
+            },
+        ];
+
+        let raw = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "m0"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "m1"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "m2"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "m3"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "m4"}]}),
+        ];
+
+        let provider =
+            AnthropicProvider::new(&server.uri(), "claude-test", Some("k"), None, false).unwrap();
+        let stream = provider
+            .complete_raw(&raw, &tools, "system prompt here")
+            .await
+            .expect("stream");
+        // Drain so the request is definitely issued.
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+
+        assert_eq!(
+            count_breakpoints(&sent),
+            4,
+            "wire body must carry exactly 4 breakpoints, got: {sent:#}"
+        );
+        // system promoted to a block array carrying the marker
+        assert_eq!(sent["system"][0]["text"], "system prompt here");
+        assert!(sent["system"][0].get("cache_control").is_some());
+        // tools sorted upstream by the registry; marker on the last one only
+        assert!(sent["tools"][0].get("cache_control").is_none());
+        assert!(sent["tools"][1].get("cache_control").is_some());
+        // rolling window: idx 2 and 3 marked, newest (idx 4) untouched
+        assert!(sent["messages"][2]["content"][0]["cache_control"].is_object());
+        assert!(sent["messages"][3]["content"][0]["cache_control"].is_object());
+        assert!(
+            sent["messages"][4]["content"][0]
+                .get("cache_control")
+                .is_none()
         );
     }
 

@@ -42,7 +42,7 @@ impl std::fmt::Debug for CommandContext {
 }
 
 /// Result of executing a command.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CommandResult {
     /// Whether the command succeeded
     pub success: bool,
@@ -50,6 +50,11 @@ pub struct CommandResult {
     pub message: String,
     /// Error message (if !success)
     pub error: Option<String>,
+    /// Text to append to the message body before it reaches the agent.
+    ///
+    /// Used by user-defined commands to inject their `user_prompt` (and the
+    /// skills to use) into the prompt. `None` for commands that only reply.
+    pub append_body: Option<String>,
 }
 
 /// Output of unified command processing (parse + execute + strip).

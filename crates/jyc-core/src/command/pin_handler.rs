@@ -39,6 +39,7 @@ impl CommandHandler for PinCommandHandler {
                     success: false,
                     message: e.to_string(),
                     error: Some(e.to_string()),
+                    append_body: None,
                 });
             }
         };
@@ -85,6 +86,7 @@ impl CommandHandler for PinCommandHandler {
                         ctx.thread_name, channel_name
                     ),
                     error: None,
+                    append_body: None,
                 });
             }
 
@@ -105,6 +107,7 @@ impl CommandHandler for PinCommandHandler {
                 ctx.thread_name, channel_name, display_path
             ),
             error: None,
+            append_body: None,
         })
     }
 }

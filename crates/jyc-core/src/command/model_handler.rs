@@ -64,6 +64,7 @@ impl CommandHandler for ModelCommandHandler {
                     success: true,
                     message: "/model: no models configured".into(),
                     error: None,
+                    append_body: None,
                 });
             }
 
@@ -76,6 +77,7 @@ impl CommandHandler for ModelCommandHandler {
                 success: true,
                 message: lines.join("\n"),
                 error: None,
+                append_body: None,
             })
         } else if context.args.len() == 1 && context.args[0] == "reset" {
             // /model reset — remove mode-specific and legacy overrides
@@ -94,12 +96,14 @@ impl CommandHandler for ModelCommandHandler {
                     success: true,
                     message: "/model: reset to default model".into(),
                     error: None,
+                    append_body: None,
                 })
             } else {
                 Ok(CommandResult {
                     success: true,
                     message: "/model: already using default model".into(),
                     error: None,
+                    append_body: None,
                 })
             }
         } else {
@@ -120,6 +124,7 @@ impl CommandHandler for ModelCommandHandler {
                             error: Some(format!(
                                 "Provider '{provider_name}' not found. Available: {available:?}"
                             )),
+                            append_body: None,
                         });
                     };
 
@@ -137,6 +142,7 @@ impl CommandHandler for ModelCommandHandler {
                             error: Some(format!(
                                 "Model '{model_name}' not found in provider '{provider_name}'. Available: {available:?}"
                             )),
+                            append_body: None,
                         });
                     }
 
@@ -165,6 +171,7 @@ impl CommandHandler for ModelCommandHandler {
                         success: true,
                         message: format!("/model: switched to {model_id}"),
                         error: None,
+                        append_body: None,
                     })
                 }
                 _ => Ok(CommandResult {
@@ -173,6 +180,7 @@ impl CommandHandler for ModelCommandHandler {
                     error: Some(
                         "Expected 'provider/model-id' (e.g., 'anthropic/claude-opus-4-6')".into(),
                     ),
+                    append_body: None,
                 }),
             }
         }

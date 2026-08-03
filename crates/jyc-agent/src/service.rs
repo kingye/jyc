@@ -1665,6 +1665,7 @@ mod tests {
             wecom: None,
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
+            commands: Vec::new(),
         };
         Arc::new(ArcSwap::from_pointee(app))
     }
@@ -1922,6 +1923,7 @@ mod tests {
             wecom: None,
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
+            commands: Vec::new(),
         };
         let config = Arc::new(ArcSwap::from_pointee(app));
         let svc = JycAgentService::new(
@@ -2034,6 +2036,7 @@ mod tests {
             wecom: None,
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
+            commands: Vec::new(),
         };
         let cfg = derive_agent_config(&app, "test");
         assert_eq!(cfg.model.as_deref(), Some("override/main"));

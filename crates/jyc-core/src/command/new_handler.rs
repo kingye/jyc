@@ -106,6 +106,7 @@ impl CommandHandler for NewCommandHandler {
             success: true,
             message: msg,
             error: None,
+            append_body: None,
         })
     }
 }

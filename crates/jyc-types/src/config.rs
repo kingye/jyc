@@ -93,7 +93,63 @@ pub struct AppConfig {
     /// and fires due jobs by injecting InboundMessage into ThreadManager.
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+
+    /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
+    #[serde(default)]
+    pub commands: Vec<CustomCommand>,
 }
+
+/// A user-defined slash command declared in `config.toml` as `[[commands]]`.
+///
+/// Invoking `/<name>` switches the thread to `mode` (when set), points the
+/// agent at `skills`, and appends `user_prompt` to the message body. The
+/// command also appears in `/?` and the dashboard command popup.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CustomCommand {
+    /// Command name without the leading slash (e.g. `review`).
+    pub name: String,
+
+    /// Short description shown in `/?` and the command popup.
+    #[serde(default)]
+    pub description: String,
+
+    /// Mode to switch to before running: `plan` or `build`.
+    /// When unset, the current thread mode is left unchanged.
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Skills the agent should use for this command.
+    ///
+    /// These names are surfaced to the agent in the appended prompt. The
+    /// system prompt already lists every discovered skill with its path and
+    /// description, so naming them here is enough for the agent to locate
+    /// and read the corresponding `SKILL.md`.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+
+    /// Instruction text appended to the message body after the command runs.
+    pub user_prompt: String,
+}
+
+/// Names of the built-in slash commands, including the leading slash.
+///
+/// Used to reject `[[commands]]` entries that would shadow a built-in.
+/// `jyc_core::command::all_commands()` has a test asserting it stays in
+/// sync with this list.
+pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
+    "/model",
+    "/plan",
+    "/build",
+    "/reset",
+    "/new",
+    "/close",
+    "/template",
+    "/cancel",
+    "/?",
+    "/pin",
+    "/unpin",
+    "/thinking",
+];
 
 /// General application settings.
 #[derive(Debug, Clone, Deserialize)]

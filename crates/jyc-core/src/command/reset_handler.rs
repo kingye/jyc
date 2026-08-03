@@ -45,6 +45,7 @@ impl CommandHandler for ResetCommandHandler {
                 success: true,
                 message: "/reset: session reset successfully".into(),
                 error: None,
+                append_body: None,
             })
         } else {
             // No agent service available — fallback to direct file deletion
@@ -59,6 +60,7 @@ impl CommandHandler for ResetCommandHandler {
                 success: true,
                 message: "/reset: session deleted (no agent service)".into(),
                 error: None,
+                append_body: None,
             })
         }
     }

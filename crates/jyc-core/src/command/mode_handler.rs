@@ -4,6 +4,35 @@ use async_trait::async_trait;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::session_state;
 
+/// Switch the thread to `mode` (`"plan"` or `"build"`).
+///
+/// Plan mode writes `.jyc/mode-override`; build mode removes it (build is the
+/// default). Also refreshes `max_input_tokens` so the dashboard and the
+/// pre-loop context check see the new model's window immediately.
+///
+/// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
+pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
+    let jyc_dir = context.thread_path.join(".jyc");
+    let override_path = jyc_dir.join("mode-override");
+
+    if mode == "plan" {
+        tokio::fs::create_dir_all(&jyc_dir).await?;
+        tokio::fs::write(&override_path, "plan").await?;
+    } else if override_path.exists() {
+        tokio::fs::remove_file(&override_path).await?;
+    }
+
+    // Update `max_input_tokens` in agent-session.json so the dashboard
+    // reflects the active model's window immediately (and the pre-loop
+    // pre-check has the right threshold to compare against on the
+    // next turn).
+    refresh_max_input_tokens(context).await;
+
+    // Mode is passed per-prompt (PromptRequest.agent), not per-session.
+    // Session is preserved — AI keeps conversation memory.
+    Ok(())
+}
+
 /// /plan command — switch to plan mode (read-only).
 pub struct PlanCommandHandler;
 
@@ -18,25 +47,13 @@ impl CommandHandler for PlanCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.thread_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await?;
-
-        let override_path = jyc_dir.join("mode-override");
-        tokio::fs::write(&override_path, "plan").await?;
-
-        // Update `max_input_tokens` in agent-session.json so the dashboard
-        // reflects the plan model's window immediately (and the pre-loop
-        // pre-check has the right threshold to compare against on the
-        // next turn).
-        refresh_max_input_tokens(&context).await;
-
-        // Mode is passed per-prompt (PromptRequest.agent), not per-session.
-        // Session is preserved — AI keeps conversation memory.
+        set_mode(&context, "plan").await?;
 
         Ok(CommandResult {
             success: true,
             message: "/plan: switched to plan mode (read-only)".into(),
             error: None,
+            append_body: None,
         })
     }
 }
@@ -55,24 +72,13 @@ impl CommandHandler for BuildCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.thread_path.join(".jyc");
-        let override_path = jyc_dir.join("mode-override");
-
-        if override_path.exists() {
-            tokio::fs::remove_file(&override_path).await?;
-        }
-
-        // Same as /plan — update `max_input_tokens` to reflect the new
-        // active model (build model now that mode-override is cleared).
-        refresh_max_input_tokens(&context).await;
-
-        // Mode is passed per-prompt (PromptRequest.agent), not per-session.
-        // Session is preserved — AI keeps conversation memory.
+        set_mode(&context, "build").await?;
 
         Ok(CommandResult {
             success: true,
             message: "/build: switched to build mode (full execution)".into(),
             error: None,
+            append_body: None,
         })
     }
 }

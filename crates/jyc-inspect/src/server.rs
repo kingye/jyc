@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::scoped_ws::ScopedWsHandler;
 use crate::thread_proxy::ThreadProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
-use jyc_core::command::all_commands;
 use jyc_core::command::list_available_models;
+use jyc_core::command::{all_commands, all_commands_with};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::thread_event::ThreadEvent;
 use jyc_core::thread_manager::ThreadManager;
@@ -290,7 +290,11 @@ impl InspectServer {
             channels,
             threads: summaries,
             stats,
-            commands: all_commands(),
+            commands: context
+                .config
+                .as_ref()
+                .map(|cfg| all_commands_with(&cfg.load().commands))
+                .unwrap_or_else(all_commands),
             models: context
                 .config
                 .as_ref()
@@ -333,7 +337,11 @@ impl InspectServer {
             channels,
             threads,
             stats,
-            commands: all_commands(),
+            commands: context
+                .config
+                .as_ref()
+                .map(|cfg| all_commands_with(&cfg.load().commands))
+                .unwrap_or_else(all_commands),
             models: context
                 .config
                 .as_ref()

@@ -14,6 +14,7 @@ use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
 use crate::agent::AgentService;
 use crate::command::cancel_handler::CancelCommandHandler;
 use crate::command::close_handler::CloseCommandHandler;
+use crate::command::custom_handler::CustomCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
@@ -1579,6 +1580,13 @@ async fn process_message(
     command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(ThinkingCommandHandler));
 
+    // User-defined commands from config.toml `[[commands]]`. Registered last,
+    // but `register()` warns on collisions and config validation rejects
+    // names that shadow a built-in.
+    for custom in &config.load().commands {
+        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
+    }
+
     let cmd_context = CommandContext {
         args: vec![],
         thread_path: store_result.thread_path.clone(),
@@ -1830,6 +1838,30 @@ async fn process_message(
                                     thread_manager
                                         .publish_reply_sent(thread_name, &summary)
                                         .await;
+                                }
+
+                                // A command may inject prompt text for the
+                                // agent (user-defined `[[commands]]` append
+                                // their `user_prompt`). The current agent call
+                                // is already running, so re-enqueue the
+                                // injected body to be processed after it
+                                // finishes — dropping it here would silently
+                                // lose the instruction while still reporting
+                                // success.
+                                //
+                                // The command line itself was stripped, so the
+                                // re-enqueued body no longer starts with `/`
+                                // and will not re-enter this branch.
+                                if !output.cleaned_body.trim().is_empty() {
+                                    let mut requeued = qi;
+                                    requeued.message.content.text =
+                                        Some(output.cleaned_body.clone());
+                                    requeued.message.content.markdown = None;
+                                    tracing::info!(
+                                        thread = %thread_name,
+                                        "Re-enqueueing command-injected body for post-AI processing"
+                                    );
+                                    buffered.push(requeued);
                                 }
                             }
                             Err(e) => {

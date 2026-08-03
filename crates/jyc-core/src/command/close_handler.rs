@@ -49,6 +49,7 @@ impl CommandHandler for CloseCommandHandler {
                     context.thread_path
                 ),
                 error: Some("Thread directory name could not be extracted".into()),
+                append_body: None,
             });
         }
 
@@ -65,6 +66,7 @@ impl CommandHandler for CloseCommandHandler {
                      To proceed, send: /close -y  (or /close --confirm)"
                 ),
                 error: None,
+                append_body: None,
             });
         }
 
@@ -75,12 +77,14 @@ impl CommandHandler for CloseCommandHandler {
                     success: true,
                     message: format!("Thread '{}' closed and directory deleted.", thread_name),
                     error: None,
+                    append_body: None,
                 })
             }
             Err(e) => Ok(CommandResult {
                 success: false,
                 message: format!("Failed to close thread '{}'", thread_name),
                 error: Some(e.context("close_thread failed").to_string()),
+                append_body: None,
             }),
         }
     }

@@ -1646,6 +1646,7 @@ mod skills {
             wecom: None,
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
+            commands: Vec::new(),
         };
         JycAgentService::new(
             Arc::new(ArcSwap::from_pointee(app)),

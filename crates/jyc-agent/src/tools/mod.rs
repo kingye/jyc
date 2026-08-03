@@ -292,3 +292,26 @@ impl ToolOutput {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The system temp dir is in-boundary for both read and write, while an
+    /// unrelated absolute path is still denied. Uses `/etc/passwd` as the
+    /// negative case because a `TempDir` working dir now sits inside an
+    /// always-allowed root.
+    #[test]
+    fn temp_dir_is_within_both_boundaries() {
+        let working = tempfile::tempdir().expect("create working dir");
+        let ctx = ToolContext::new(working.path());
+
+        let scratch = std::env::temp_dir().join("jyc-boundary-test.txt");
+        assert!(ctx.check_path_boundary("scratch", &scratch).is_ok());
+        assert!(ctx.check_write_boundary("scratch", &scratch).is_ok());
+
+        let outside = Path::new("/etc/passwd");
+        assert!(ctx.check_path_boundary("passwd", outside).is_err());
+        assert!(ctx.check_write_boundary("passwd", outside).is_err());
+    }
+}

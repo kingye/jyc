@@ -28,6 +28,11 @@ All notable changes to JYC will be documented in this file.
   minimum cacheable length (1024 tokens for Opus/Sonnet, 2048 for Haiku) are
   ignored by the API rather than erroring.
 
+  A provider whose `params` already supplies its own `cache_control` keeps
+  full control: jyc detects the existing markers and adds none of its own,
+  since a 5th breakpoint is a hard API error rather than a silently ignored
+  one.
+
 - **User-defined slash commands.** `config.toml` accepts `[[commands]]`
   entries, each declaring a `name`, `description`, an optional `mode`
   (`plan`/`build`), an optional `skills` list, and a `user_prompt`.

@@ -41,7 +41,10 @@ impl ToolRegistry {
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> =
             self.tools.values().map(|t| t.to_definition()).collect();
-        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        // Unstable sort: tool names are unique (they're `HashMap` keys), so
+        // there are no equal elements whose relative order could matter, and
+        // it avoids the scratch allocation a stable sort needs.
+        defs.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         defs
     }
 

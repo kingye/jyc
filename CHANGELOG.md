@@ -16,8 +16,13 @@ All notable changes to JYC will be documented in this file.
 
   Custom commands appear in `/?` and the dashboard command popup
   alongside the built-ins. Text typed after the command is preserved,
-  with `user_prompt` appended last so it is the most recent instruction.
-  Names that shadow a built-in command are rejected at config validation.
+  with `user_prompt` appended last so it is the most recent instruction —
+  `/review focus on error handling` and `/review` followed by
+  `focus on error handling` on the next line reach the agent identically.
+
+  Names must be lowercase (command lookup is case-insensitive) and must
+  not shadow a built-in; both are rejected at config validation, at
+  startup and on hot reload.
 
   Skill *paths* are not duplicated into the command config: the system
   prompt already lists every discovered skill with its path and

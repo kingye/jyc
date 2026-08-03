@@ -83,8 +83,14 @@ pub fn all_commands() -> Vec<CommandInfo> {
 pub fn all_commands_with(custom: &[CustomCommand]) -> Vec<CommandInfo> {
     let mut commands = all_commands();
     commands.extend(custom.iter().map(|c| CommandInfo {
-        name: format!("/{}", c.name.trim().trim_start_matches('/')),
-        description: c.description.clone(),
+        // Match CustomCommandHandler::new()'s normalization so the popup shows
+        // the name the registry actually dispatches on.
+        name: format!("/{}", c.name.trim().trim_start_matches('/').to_lowercase()),
+        description: if c.description.trim().is_empty() {
+            "(no description)".into()
+        } else {
+            c.description.clone()
+        },
     }));
     commands
 }
@@ -189,5 +195,21 @@ mod tests {
     #[test]
     fn test_all_commands_with_empty_matches_builtin() {
         assert_eq!(all_commands_with(&[]).len(), all_commands().len());
+    }
+
+    #[test]
+    fn test_all_commands_with_falls_back_on_empty_description() {
+        let commands = all_commands_with(&[custom("review", "")]);
+        let entry = commands.iter().find(|c| c.name == "/review").unwrap();
+        assert_eq!(entry.description, "(no description)");
+    }
+
+    /// The popup must show the name the registry dispatches on, which is
+    /// lowercase (see CustomCommandHandler::new).
+    #[test]
+    fn test_all_commands_with_lowercases_name() {
+        let commands = all_commands_with(&[custom("Review", "d")]);
+        assert!(commands.iter().any(|c| c.name == "/review"));
+        assert!(!commands.iter().any(|c| c.name == "/Review"));
     }
 }

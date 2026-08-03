@@ -222,11 +222,21 @@ Typing `/review` then:
    right `SKILL.md`,
 3. appends `user_prompt` to the message body.
 
-Text you type after the command is preserved, with `user_prompt` appended last:
-`/review focus on error handling` reaches the agent as your text followed by the
-command's prompt.
+Text you type after the command is preserved, with `user_prompt` appended last so
+it is the most recent instruction. These two forms are equivalent:
 
-`name` must not shadow a built-in command from the table above.
+```
+/review focus on error handling
+```
+
+```
+/review
+focus on error handling
+```
+
+`name` must be lowercase (command lookup is case-insensitive) and must not
+shadow a built-in command from the table above. Invalid names are rejected at
+startup, not silently ignored.
 
 ### Thread-Specific Customization
 

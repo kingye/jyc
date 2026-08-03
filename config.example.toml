@@ -437,11 +437,16 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   3. appends `user_prompt` to the message body.
 #
 # Anything you type after the command is kept, with `user_prompt` appended
-# last: `/review focus on error handling` reaches the agent as your text
-# followed by the command's prompt.
+# last so it is the most recent instruction. These are equivalent:
+#     /review focus on error handling
+# and
+#     /review
+#     focus on error handling
 #
-# `name` must not shadow a built-in command (/model, /plan, /build, /reset,
-# /new, /close, /template, /cancel, /?, /pin, /unpin, /thinking).
+# `name` must be lowercase (command lookup is case-insensitive) and must not
+# shadow a built-in command (/model, /plan, /build, /reset, /new, /close,
+# /template, /cancel, /?, /pin, /unpin, /thinking). Invalid names fail
+# validation at startup rather than being silently ignored.
 #
 # [[commands]]
 # name = "review"

@@ -45,6 +45,7 @@ impl CommandHandler for CancelCommandHandler {
                     context.thread_path
                 ),
                 error: Some("Thread directory name could not be extracted".into()),
+                append_body: None,
             });
         }
 
@@ -55,6 +56,7 @@ impl CommandHandler for CancelCommandHandler {
                 success: true,
                 message: format!("AI processing cancelled for thread '{}'.", thread_name),
                 error: None,
+                append_body: None,
             })
         } else {
             Ok(CommandResult {
@@ -64,6 +66,7 @@ impl CommandHandler for CancelCommandHandler {
                     thread_name
                 ),
                 error: None,
+                append_body: None,
             })
         }
     }

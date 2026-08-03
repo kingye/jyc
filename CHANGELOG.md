@@ -6,6 +6,29 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **User-defined slash commands.** `config.toml` accepts `[[commands]]`
+  entries, each declaring a `name`, `description`, an optional `mode`
+  (`plan`/`build`), an optional `skills` list, and a `user_prompt`.
+  Invoking `/<name>` switches the thread mode, names the skills the agent
+  should use, and appends `user_prompt` to the message body — so a single
+  command can put the thread in plan mode, point the agent at
+  `pr-review`, and hand it the review instructions.
+
+  Custom commands appear in `/?` and the dashboard command popup
+  alongside the built-ins. Text typed after the command is preserved,
+  with `user_prompt` appended last so it is the most recent instruction —
+  `/review focus on error handling` and `/review` followed by
+  `focus on error handling` on the next line reach the agent identically.
+
+  Names must be lowercase (command lookup is case-insensitive) and must
+  not shadow a built-in; both are rejected at config validation, at
+  startup and on hot reload.
+
+  Skill *paths* are not duplicated into the command config: the system
+  prompt already lists every discovered skill with its path and
+  description, so naming a skill is enough for the agent to locate and
+  read its `SKILL.md`.
+
 - **Per-model cost tracking.** Models (or their providers) can declare
   `pricing` rates per 1M tokens — `input_per_million`,
   `output_per_million`, `cache_hit_per_million`, and an optional

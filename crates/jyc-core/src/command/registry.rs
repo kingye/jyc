@@ -113,6 +113,7 @@ impl CommandRegistry {
                                     success: false,
                                     message: format!("{cmd_name}: error"),
                                     error: Some(e.to_string()),
+                                    append_body: None,
                                 });
                             }
                         }
@@ -130,7 +131,18 @@ impl CommandRegistry {
             }
         }
 
-        let cleaned_body = body_lines.join("\n");
+        let mut cleaned_body = body_lines.join("\n");
+
+        // Append any command-injected prompt text (user-defined commands
+        // contribute their `user_prompt` here). Appended after the user's own
+        // text so the command instruction is the last thing the agent reads.
+        for injected in results.iter().filter_map(|r| r.append_body.as_deref()) {
+            if !cleaned_body.trim().is_empty() {
+                cleaned_body.push_str("\n\n");
+            }
+            cleaned_body.push_str(injected);
+        }
+
         let body_empty = cleaned_body.trim().is_empty();
 
         Ok(CommandOutput {
@@ -172,6 +184,7 @@ mod tests {
                 success: true,
                 message: format!("{}: args={:?}", self.name, ctx.args),
                 error: None,
+                append_body: None,
             })
         }
     }
@@ -298,6 +311,102 @@ mode = "agent"
         assert_eq!(output.cleaned_body, "/unknown stuff\nmore body");
     }
 
+    /// A handler that injects text into the body via `append_body`.
+    struct InjectingHandler;
+
+    /// Echoes received args into `append_body`, proving the registry passes
+    /// same-line args through to the handler rather than discarding them.
+    struct ArgsEchoHandler;
+
+    #[async_trait]
+    impl CommandHandler for ArgsEchoHandler {
+        fn name(&self) -> &str {
+            "/review"
+        }
+        fn description(&self) -> &str {
+            "args echo"
+        }
+        async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
+            Ok(CommandResult {
+                success: true,
+                message: "ok".into(),
+                error: None,
+                append_body: Some(format!("[args={}] PROMPT", ctx.args.join(" "))),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CommandHandler for InjectingHandler {
+        fn name(&self) -> &str {
+            "/review"
+        }
+        fn description(&self) -> &str {
+            "injecting"
+        }
+        async fn execute(&self, _ctx: CommandContext) -> Result<CommandResult> {
+            Ok(CommandResult {
+                success: true,
+                message: "/review: ok".into(),
+                error: None,
+                append_body: Some("Review the code.".into()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_append_body_on_command_only_message() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(InjectingHandler));
+
+        let output = registry
+            .process_commands("/review", &test_context())
+            .await
+            .unwrap();
+
+        // The injected prompt becomes the body, so the message is NOT empty
+        // and therefore still reaches the agent.
+        assert_eq!(output.cleaned_body, "Review the code.");
+        assert!(!output.body_empty);
+    }
+
+    #[tokio::test]
+    async fn test_append_body_appends_after_user_text() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(InjectingHandler));
+
+        let output = registry
+            .process_commands(
+                "/review
+
+focus on error handling",
+                &test_context(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output.cleaned_body,
+            "focus on error handling\n\nReview the code."
+        );
+        assert!(!output.body_empty);
+    }
+
+    #[tokio::test]
+    async fn test_no_append_body_leaves_body_unchanged() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(TestHandler {
+            name: "/model".into(),
+        }));
+
+        let output = registry
+            .process_commands("/model X\n\nhello", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.cleaned_body, "hello");
+    }
+
     #[tokio::test]
     async fn test_results_summary() {
         let output = CommandOutput {
@@ -306,11 +415,13 @@ mode = "agent"
                     success: true,
                     message: "/model: switched to GPT-4".into(),
                     error: None,
+                    append_body: None,
                 },
                 CommandResult {
                     success: false,
                     message: "/plan: failed".into(),
                     error: Some("mode not supported".into()),
+                    append_body: None,
                 },
             ],
             cleaned_body: String::new(),
@@ -320,5 +431,35 @@ mode = "agent"
         let summary = output.results_summary();
         assert!(summary.contains("/model: switched to GPT-4"));
         assert!(summary.contains("Error: mode not supported"));
+    }
+
+    /// End-to-end regression for the documented `/review focus on X` form.
+    /// The registry consumes the entire command line, so args only survive if
+    /// the handler re-injects them via `append_body`.
+    #[tokio::test]
+    async fn test_same_line_args_survive_into_cleaned_body() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(ArgsEchoHandler));
+
+        let output = registry
+            .process_commands("/review focus on error handling", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.cleaned_body, "[args=focus on error handling] PROMPT");
+        assert!(!output.body_empty);
+    }
+
+    #[tokio::test]
+    async fn test_command_without_args_yields_empty_args() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(ArgsEchoHandler));
+
+        let output = registry
+            .process_commands("/review", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.cleaned_body, "[args=] PROMPT");
     }
 }

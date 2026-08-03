@@ -385,6 +385,57 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
+    // Custom commands
+    let mut seen_commands: Vec<&str> = Vec::new();
+    for (i, cmd) in config.commands.iter().enumerate() {
+        let prefix = format!("commands[{i}]");
+
+        let name = cmd.name.trim();
+        if name.is_empty() {
+            errors.push(ValidationError {
+                path: format!("{prefix}.name"),
+                message: "must not be empty".into(),
+            });
+        } else if name.split_whitespace().count() > 1 {
+            errors.push(ValidationError {
+                path: format!("{prefix}.name"),
+                message: format!("must not contain whitespace (got '{name}')"),
+            });
+        } else {
+            let slashed = format!("/{}", name.trim_start_matches('/'));
+            if crate::config::BUILTIN_COMMAND_NAMES.contains(&slashed.as_str()) {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.name"),
+                    message: format!("'{slashed}' shadows a built-in command"),
+                });
+            }
+            if seen_commands.contains(&name) {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.name"),
+                    message: format!("duplicate command name '{name}'"),
+                });
+            }
+            seen_commands.push(name);
+        }
+
+        if let Some(ref mode) = cmd.mode
+            && mode != "plan"
+            && mode != "build"
+        {
+            errors.push(ValidationError {
+                path: format!("{prefix}.mode"),
+                message: format!("must be 'plan' or 'build' (got '{mode}')"),
+            });
+        }
+
+        if cmd.user_prompt.trim().is_empty() {
+            errors.push(ValidationError {
+                path: format!("{prefix}.user_prompt"),
+                message: "must not be empty".into(),
+            });
+        }
+    }
+
     errors
 }
 
@@ -1207,5 +1258,130 @@ mode = "agent"
         assert!(errors.iter().any(|e| {
             e.path.contains("patterns[0].disabled_tools") && e.message.contains("must not be empty")
         }));
+    }
+
+    /// Base config with a valid channel + agent, plus arbitrary extra TOML.
+    fn config_with(extra: &str) -> String {
+        format!(
+            r#"
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+{extra}
+"#
+        )
+    }
+
+    #[test]
+    fn custom_command_valid_passes() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "review"
+description = "Review the PR"
+mode = "plan"
+skills = ["pr-review"]
+user_prompt = "Review it."
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            !errors.iter().any(|e| e.path.starts_with("commands")),
+            "expected no command errors, got: {errors:?}"
+        );
+        assert_eq!(config.commands.len(), 1);
+        assert_eq!(config.commands[0].mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn custom_command_mode_optional_and_defaults_none() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "summarize"
+user_prompt = "Summarize."
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        assert!(config.commands[0].mode.is_none());
+        assert!(config.commands[0].skills.is_none());
+        assert!(!validate_config(&config).iter().any(|e| e.path.starts_with("commands")));
+    }
+
+    #[test]
+    fn custom_command_rejects_builtin_shadow() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "plan"
+user_prompt = "x"
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "commands[0].name" && e.message.contains("shadows a built-in")),
+            "got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn custom_command_rejects_bad_mode_and_empty_prompt() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "review"
+mode = "yolo"
+user_prompt = "   "
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| e.path == "commands[0].mode"));
+        assert!(errors.iter().any(|e| e.path == "commands[0].user_prompt"));
+    }
+
+    #[test]
+    fn custom_command_rejects_duplicates_and_empty_name() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "review"
+user_prompt = "a"
+
+[[commands]]
+name = "review"
+user_prompt = "b"
+
+[[commands]]
+name = ""
+user_prompt = "c"
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.iter().any(|e| e.message.contains("duplicate command name")));
+        assert!(errors.iter().any(|e| e.path == "commands[2].name"));
+    }
+
+    #[test]
+    fn commands_default_to_empty() {
+        let config = load_config_from_str(&config_with("")).unwrap();
+        assert!(config.commands.is_empty());
     }
 }

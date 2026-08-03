@@ -6,6 +6,33 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Anthropic prompt caching.** Requests to `anthropic`-type providers now
+  carry the four `cache_control` breakpoints Anthropic allows per request,
+  laid out on the last element of each static span: the tools tail, the
+  system prompt tail, and the two messages before the newest one (a rolling
+  window over conversation history). The newest message is deliberately left
+  unmarked — it changes every request, so a breakpoint there would be written
+  and immediately orphaned.
+
+  `system` is now sent as a single-element content block array rather than a
+  bare string, since a `cache_control` marker has to attach to a block.
+  Markers land on a message's *last* content block, never on the message
+  object (the API rejects the latter).
+
+  Tools and the system prompt keep separate breakpoints rather than sharing
+  one: the tools array is identical across every thread, while the system
+  prompt varies per thread (working directory, skills, `AGENTS.md`), so a
+  tools-only prefix stays reusable between threads.
+
+  Caching is always on and needs no configuration. Prompts below the model's
+  minimum cacheable length (1024 tokens for Opus/Sonnet, 2048 for Haiku) are
+  ignored by the API rather than erroring.
+
+  A provider whose `params` already supplies its own `cache_control` keeps
+  full control: jyc detects the existing markers and adds none of its own,
+  since a 5th breakpoint is a hard API error rather than a silently ignored
+  one.
+
 - **User-defined slash commands.** `config.toml` accepts `[[commands]]`
   entries, each declaring a `name`, `description`, an optional `mode`
   (`plan`/`build`), an optional `skills` list, and a `user_prompt`.
@@ -113,6 +140,18 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Anthropic cost undercounting with prompt caching.** Anthropic's
+  `input_tokens` counts only the *uncached* portion of the prompt, with
+  `cache_read_input_tokens` and `cache_creation_input_tokens` reported
+  separately and additively — the opposite of every other supported vendor,
+  where `prompt_tokens` already contains `cached_tokens`. Cost computation
+  assumes the latter shape (it derives uncached input as
+  `input - cache_hit`), so a cache-heavy call reported less input than cache
+  hits, the subtraction clamped to zero, and genuinely uncached tokens were
+  billed at nothing. Anthropic usage is now summed back into a total before
+  it reaches the cost function. This was latent until prompt caching was
+  enabled, since both cache buckets were always zero.
+
 - **`total_output_tokens` no longer double-counts across `agent_loop`
   iterations.** `persist_tokens` previously did `state.total_output_tokens
   += output_tokens` while the caller (`agent_loop`) had already
@@ -153,6 +192,12 @@ All notable changes to JYC will be documented in this file.
   the loop exits normally — the reminder is one-shot to bound cost.
 
 ### Changed
+
+- **Tool definitions are sorted by name.** `ToolRegistry::definitions()`
+  iterated a `HashMap`, whose order is randomized per process, so the
+  serialized `tools` array differed on every restart. Prompt caching matches
+  on an exact prefix, so a breakpoint on the last tool could never produce a
+  hit. Sorting also helps prefix caching on OpenAI-compatible providers.
 
 - **Dashboard overview list "Tokens" column → "Context".** The column
   now shows only `context_input_tokens / max_input_tokens` (e.g.

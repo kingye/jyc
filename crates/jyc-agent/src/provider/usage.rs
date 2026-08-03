@@ -82,6 +82,33 @@ pub fn extract_cache_hit_tokens(usage: &Value) -> u64 {
     0
 }
 
+/// Total prompt size for an Anthropic call, including cached tokens.
+///
+/// Anthropic's `input_tokens` counts **only the uncached** portion of the
+/// prompt; `cache_read_input_tokens` and `cache_creation_input_tokens` are
+/// reported separately and are *additive*, not a subset. Every other vendor
+/// here does the opposite — OpenAI's `prompt_tokens` already contains
+/// `cached_tokens`.
+///
+/// [`jyc_types::pricing::compute_cost`] expects the OpenAI shape (it derives
+/// uncached input as `input - cache_hit`), so the Anthropic numbers have to be
+/// summed back into a total before they reach it. Without this, a cache-heavy
+/// call reports less input than cache hits, `saturating_sub` clamps the
+/// uncached remainder to zero, and the genuinely-uncached tokens are billed
+/// at nothing.
+///
+/// ponytail: cache *writes* (`cache_creation_input_tokens`) bill at 1.25x the
+/// input rate but are folded into the single `cache_hit_per_million` bucket
+/// here, so a write is under-costed relative to a read. Split them into their
+/// own rate if write-heavy workloads make the gap matter.
+pub fn anthropic_total_input_tokens(usage: &Value) -> u64 {
+    let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+
+    field("input_tokens")
+        .saturating_add(field("cache_read_input_tokens"))
+        .saturating_add(field("cache_creation_input_tokens"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +251,85 @@ mod tests {
             "prompt_tokens_details": { "cached_tokens": 300 },
         });
         assert_eq!(extract_cache_hit_tokens(&usage), 100);
+    }
+
+    /// Anthropic reports uncached input and the two cache buckets as
+    /// disjoint, additive numbers — the total prompt is their sum.
+    #[test]
+    fn anthropic_total_input_sums_uncached_and_cache_buckets() {
+        let usage = json!({
+            "input_tokens": 2_800,
+            "cache_read_input_tokens": 38_400,
+            "cache_creation_input_tokens": 0,
+        });
+        assert_eq!(anthropic_total_input_tokens(&usage), 41_200);
+    }
+
+    /// A first call writes the cache instead of reading it; the written
+    /// tokens still count toward the prompt total.
+    #[test]
+    fn anthropic_total_input_counts_cache_creation() {
+        let usage = json!({
+            "input_tokens": 500,
+            "cache_creation_input_tokens": 10_000,
+        });
+        assert_eq!(anthropic_total_input_tokens(&usage), 10_500);
+    }
+
+    /// With caching off (every call before this feature landed) the total is
+    /// just `input_tokens` — proving the change is a no-op without cache.
+    #[test]
+    fn anthropic_total_input_without_cache_is_unchanged() {
+        let usage = json!({ "input_tokens": 1_234, "output_tokens": 99 });
+        assert_eq!(anthropic_total_input_tokens(&usage), 1_234);
+    }
+
+    /// The bug this normalization exists to prevent, asserted end-to-end
+    /// through the real cost function.
+    ///
+    /// Raw Anthropic numbers make `input < cache_hit`, so `compute_cost`'s
+    /// `saturating_sub` clamps uncached input to zero and the 2,800 genuinely
+    /// uncached tokens are billed at $0. Normalizing to the total restores
+    /// them.
+    #[test]
+    fn anthropic_normalization_prevents_undercounting_cost() {
+        let pricing = jyc_types::config::ModelPricing {
+            input_per_million: 15.0,
+            output_per_million: 75.0,
+            cache_hit_per_million: 1.5,
+            currency: None,
+        };
+        let usage = json!({
+            "input_tokens": 2_800,
+            "output_tokens": 1_830,
+            "cache_read_input_tokens": 38_400,
+        });
+        let cache_hit = extract_cache_hit_tokens(&usage);
+
+        // Raw (buggy): uncached clamps to 0, so input contributes nothing.
+        let raw = jyc_types::pricing::compute_cost(&pricing, 2_800, 1_830, cache_hit);
+        // Normalized: uncached = 41_200 - 38_400 = 2_800, billed correctly.
+        let fixed = jyc_types::pricing::compute_cost(
+            &pricing,
+            anthropic_total_input_tokens(&usage),
+            1_830,
+            cache_hit,
+        );
+
+        assert!(
+            fixed > raw,
+            "normalized cost must exceed the undercounted one (raw={raw}, fixed={fixed})"
+        );
+        // 2800*15 + 1830*75 + 38400*1.5 = 236,850 / 1e6
+        assert!(
+            (fixed - 0.23685).abs() < 1e-9,
+            "expected 0.23685, got {fixed}"
+        );
+        // The undercount is exactly the 2,800 uncached tokens at $15/M.
+        assert!(
+            ((fixed - raw) - 0.042).abs() < 1e-9,
+            "expected a $0.042 undercount, got {}",
+            fixed - raw
+        );
     }
 }

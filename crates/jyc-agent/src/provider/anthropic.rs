@@ -9,7 +9,7 @@ use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
 
-use crate::provider::usage::extract_cache_hit_tokens;
+use crate::provider::usage::{anthropic_total_input_tokens, extract_cache_hit_tokens};
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -514,10 +514,10 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
         "message_delta" => {
             // May contain usage info
             if let Some(usage) = value.get("usage") {
-                let input = usage
-                    .get("input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                // Normalized to include cached tokens — see
+                // `anthropic_total_input_tokens` for why the raw field is wrong
+                // for cost accounting.
+                let input = anthropic_total_input_tokens(usage);
                 let output = usage
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
@@ -536,10 +536,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
         "message_start" => {
             // Extract initial usage
             if let Some(usage) = value.get("message").and_then(|m| m.get("usage")) {
-                let input = usage
-                    .get("input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let input = anthropic_total_input_tokens(usage);
                 let output = usage
                     .get("output_tokens")
                     .and_then(|v| v.as_u64())
@@ -1182,6 +1179,43 @@ mod tests {
                 .get("cache_control")
                 .is_none()
         );
+    }
+
+    /// The SSE parser must emit the *normalized* input token count (uncached
+    /// plus cache read plus cache write), not Anthropic's raw uncached-only
+    /// figure, or downstream cost accounting clamps uncached input to zero.
+    #[test]
+    fn parse_usage_normalizes_input_tokens_to_include_cache() {
+        let mut state = StreamState::default();
+        let data = json!({
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 2_800,
+                    "output_tokens": 10,
+                    "cache_read_input_tokens": 38_400,
+                    "cache_creation_input_tokens": 0,
+                }
+            }
+        })
+        .to_string();
+
+        let events = parse_anthropic_sse(&data, &mut state).unwrap_or_default();
+        match &events[0] {
+            StreamEvent::Usage {
+                input_tokens,
+                cache_hit_tokens,
+                ..
+            } => {
+                assert_eq!(*input_tokens, 41_200, "must be the normalized total");
+                assert_eq!(*cache_hit_tokens, 38_400);
+                assert!(
+                    *input_tokens >= *cache_hit_tokens,
+                    "input must never be less than cache hits, or cost clamps to zero"
+                );
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
     }
 
     /// Anthropic extended thinking: the opening content_block_start event

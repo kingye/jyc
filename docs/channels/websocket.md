@@ -100,11 +100,11 @@ starts in Insert mode.
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
 | `Esc` | Insert → Normal mode; message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (zen, explorer, activity, editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
+| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (zen, explorer, toggle activity, editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+O` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Cycle focus: Input → Message area → Activity pane (skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
-| `Ctrl+A` | Cycle activity pane size: hidden → bottom 20% → bottom 80% → activity-only → hidden |
+| `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
 | `Ctrl+E` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
 | `Ctrl+Z` | Toggle zen mode: hide (or show) thread info pane and status bar together. If the activity pane is visible, `Ctrl+Z` also hides it. Exiting zen mode restores only info + status, not activity. |
 | `Ctrl+C` | Cancel current AI processing |
@@ -165,16 +165,17 @@ After Ctrl+Z (info + status shown):
 └────────────────────────┘└─────────────┘
  Help bar (1 line)
 
-After Ctrl+A twice (activity 80% bottom):
+After `Ctrl+P` `a` (activity 20% bottom):
 ┌────────────────────────┐
 │ Chat conversation      │
 ├────────────────────────┤
-│ Activity log (80%)     │
+│ Activity log (20%)     │
 └────────────────────────┘
 
-After Ctrl+A three times (activity only):
+After `Ctrl+P` `a` twice (back to hidden):
 ┌────────────────────────┐
-│ Activity log           │
+│ Chat conversation      │
+│ (borderless, full size)│
 └────────────────────────┘
 ```
 

@@ -22,17 +22,39 @@ pub struct CustomCommandHandler {
 }
 
 impl CustomCommandHandler {
-    /// Create a handler for `config`, normalizing the name to include a
-    /// leading slash.
+    /// Create a handler for `config`, normalizing the name to a lowercase,
+    /// slash-prefixed form.
+    ///
+    /// Lowercasing is required: [`CommandRegistry::process_commands`] lowercases
+    /// the incoming command before looking it up, so a handler registered under
+    /// a name containing uppercase could never be found. Config validation
+    /// rejects uppercase names outright, so this is belt-and-braces to keep the
+    /// invariant true regardless of how the handler is constructed.
+    ///
+    /// [`CommandRegistry::process_commands`]: super::registry::CommandRegistry::process_commands
     pub fn new(config: CustomCommand) -> Self {
-        let name = format!("/{}", config.name.trim().trim_start_matches('/'));
+        let name = format!(
+            "/{}",
+            config.name.trim().trim_start_matches('/').to_lowercase()
+        );
         Self { name, config }
     }
 
-    /// Build the text appended to the message body: a skills directive
-    /// (when the command names skills) followed by the `user_prompt`.
-    fn build_append_body(&self) -> String {
+    /// Build the text appended to the message body: any same-line arguments,
+    /// then a skills directive (when the command names skills), then the
+    /// `user_prompt`.
+    ///
+    /// `args` are the words typed after the command on the same line. The
+    /// registry consumes the whole command line, so without this they would be
+    /// silently dropped. Placing them first makes `/review focus on X`
+    /// equivalent to typing `focus on X` on the line below the command.
+    fn build_append_body(&self, args: &[String]) -> String {
         let mut out = String::new();
+
+        if !args.is_empty() {
+            out.push_str(&args.join(" "));
+            out.push_str("\n\n");
+        }
 
         if let Some(skills) = self.config.skills.as_ref().filter(|s| !s.is_empty()) {
             out.push_str(&format!(
@@ -78,7 +100,7 @@ impl CommandHandler for CustomCommandHandler {
             success: true,
             message,
             error: None,
-            append_body: Some(self.build_append_body()),
+            append_body: Some(self.build_append_body(&context.args)),
         })
     }
 }
@@ -100,8 +122,12 @@ mod tests {
     }
 
     fn test_context(thread_path: &Path) -> CommandContext {
+        test_context_with_args(thread_path, vec![])
+    }
+
+    fn test_context_with_args(thread_path: &Path, args: Vec<&str>) -> CommandContext {
         CommandContext {
-            args: vec![],
+            args: args.into_iter().map(|s| s.to_string()).collect(),
             thread_path: thread_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
@@ -236,5 +262,78 @@ mode = "agent"
             result.append_body.unwrap(),
             "Review the diff and report findings."
         );
+    }
+
+    /// Regression: the registry consumes the whole command line, so same-line
+    /// args were silently dropped. README documents `/review focus on X` as
+    /// working, so this locks that claim to the code.
+    #[tokio::test]
+    async fn same_line_args_reach_the_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = CustomCommandHandler::new(cmd(None, None));
+
+        let ctx = test_context_with_args(tmp.path(), vec!["focus", "on", "error", "handling"]);
+        let result = handler.execute(ctx).await.unwrap();
+        let body = result.append_body.unwrap();
+
+        assert!(
+            body.starts_with("focus on error handling"),
+            "args must lead the injected body, got: {body:?}"
+        );
+        assert!(
+            body.trim_end()
+                .ends_with("Review the diff and report findings.")
+        );
+    }
+
+    /// `/review focus on X` and `/review\n\nfocus on X` must reach the agent
+    /// as the same prompt — that equivalence is what the docs promise.
+    #[tokio::test]
+    async fn same_line_args_match_newline_form() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = CustomCommandHandler::new(cmd(None, Some(vec!["pr-review"])));
+
+        let same_line = handler
+            .execute(test_context_with_args(tmp.path(), vec!["focus", "on", "X"]))
+            .await
+            .unwrap()
+            .append_body
+            .unwrap();
+
+        // The newline form leaves "focus on X" in cleaned_body, and the
+        // registry appends append_body after it.
+        let newline_form = format!(
+            "focus on X\n\n{}",
+            handler
+                .execute(test_context(tmp.path()))
+                .await
+                .unwrap()
+                .append_body
+                .unwrap()
+        );
+
+        assert_eq!(same_line, newline_form);
+    }
+
+    #[tokio::test]
+    async fn no_args_leaves_prompt_unprefixed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = CustomCommandHandler::new(cmd(None, None));
+
+        let result = handler.execute(test_context(tmp.path())).await.unwrap();
+
+        assert_eq!(
+            result.append_body.unwrap(),
+            "Review the diff and report findings."
+        );
+    }
+
+    /// The registry lowercases the incoming command before lookup, so the
+    /// registered name must be lowercase or the command is unreachable.
+    #[test]
+    fn name_is_lowercased() {
+        let mut c = cmd(None, None);
+        c.name = "Review".into();
+        assert_eq!(CustomCommandHandler::new(c).name(), "/review");
     }
 }

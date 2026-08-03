@@ -386,7 +386,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     }
 
     // Custom commands
-    let mut seen_commands: Vec<&str> = Vec::new();
+    let mut seen_commands: Vec<String> = Vec::new();
     for (i, cmd) in config.commands.iter().enumerate() {
         let prefix = format!("commands[{i}]");
 
@@ -401,7 +401,17 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 path: format!("{prefix}.name"),
                 message: format!("must not contain whitespace (got '{name}')"),
             });
+        } else if name.chars().any(char::is_uppercase) {
+            // Command lookup is case-insensitive (the registry lowercases the
+            // incoming line), so an uppercase name could never be matched.
+            // Fail loudly rather than silently registering a dead command.
+            errors.push(ValidationError {
+                path: format!("{prefix}.name"),
+                message: format!("must be lowercase (got '{name}')"),
+            });
         } else {
+            // Compare the normalized form: `review` and `/review` both register
+            // as `/review` and would collide at registration time.
             let slashed = format!("/{}", name.trim_start_matches('/'));
             if crate::config::BUILTIN_COMMAND_NAMES.contains(&slashed.as_str()) {
                 errors.push(ValidationError {
@@ -409,13 +419,13 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     message: format!("'{slashed}' shadows a built-in command"),
                 });
             }
-            if seen_commands.contains(&name) {
+            if seen_commands.contains(&slashed) {
                 errors.push(ValidationError {
                     path: format!("{prefix}.name"),
-                    message: format!("duplicate command name '{name}'"),
+                    message: format!("duplicate command name '{slashed}'"),
                 });
             }
-            seen_commands.push(name);
+            seen_commands.push(slashed);
         }
 
         if let Some(ref mode) = cmd.mode
@@ -1391,5 +1401,49 @@ user_prompt = "c"
     fn commands_default_to_empty() {
         let config = load_config_from_str(&config_with("")).unwrap();
         assert!(config.commands.is_empty());
+    }
+
+    #[test]
+    fn custom_command_rejects_uppercase_name() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "Review"
+user_prompt = "x"
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "commands[0].name" && e.message.contains("must be lowercase")),
+            "uppercase names are unreachable (registry lowercases lookups), got: {errors:?}"
+        );
+    }
+
+    /// `review` and `/review` normalize to the same registered name, so the
+    /// duplicate check must compare the normalized form.
+    #[test]
+    fn custom_command_duplicate_detection_normalizes_slash() {
+        let toml = config_with(
+            r#"
+[[commands]]
+name = "review"
+user_prompt = "a"
+
+[[commands]]
+name = "/review"
+user_prompt = "b"
+"#,
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "commands[1].name" && e.message.contains("duplicate")),
+            "'/review' collides with 'review' at registration, got: {errors:?}"
+        );
     }
 }

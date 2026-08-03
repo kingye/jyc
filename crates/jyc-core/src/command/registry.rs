@@ -314,6 +314,28 @@ mode = "agent"
     /// A handler that injects text into the body via `append_body`.
     struct InjectingHandler;
 
+    /// Echoes received args into `append_body`, proving the registry passes
+    /// same-line args through to the handler rather than discarding them.
+    struct ArgsEchoHandler;
+
+    #[async_trait]
+    impl CommandHandler for ArgsEchoHandler {
+        fn name(&self) -> &str {
+            "/review"
+        }
+        fn description(&self) -> &str {
+            "args echo"
+        }
+        async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
+            Ok(CommandResult {
+                success: true,
+                message: "ok".into(),
+                error: None,
+                append_body: Some(format!("[args={}] PROMPT", ctx.args.join(" "))),
+            })
+        }
+    }
+
     #[async_trait]
     impl CommandHandler for InjectingHandler {
         fn name(&self) -> &str {
@@ -409,5 +431,35 @@ focus on error handling",
         let summary = output.results_summary();
         assert!(summary.contains("/model: switched to GPT-4"));
         assert!(summary.contains("Error: mode not supported"));
+    }
+
+    /// End-to-end regression for the documented `/review focus on X` form.
+    /// The registry consumes the entire command line, so args only survive if
+    /// the handler re-injects them via `append_body`.
+    #[tokio::test]
+    async fn test_same_line_args_survive_into_cleaned_body() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(ArgsEchoHandler));
+
+        let output = registry
+            .process_commands("/review focus on error handling", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.cleaned_body, "[args=focus on error handling] PROMPT");
+        assert!(!output.body_empty);
+    }
+
+    #[tokio::test]
+    async fn test_command_without_args_yields_empty_args() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(ArgsEchoHandler));
+
+        let output = registry
+            .process_commands("/review", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.cleaned_body, "[args=] PROMPT");
     }
 }

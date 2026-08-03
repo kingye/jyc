@@ -1839,6 +1839,30 @@ async fn process_message(
                                         .publish_reply_sent(thread_name, &summary)
                                         .await;
                                 }
+
+                                // A command may inject prompt text for the
+                                // agent (user-defined `[[commands]]` append
+                                // their `user_prompt`). The current agent call
+                                // is already running, so re-enqueue the
+                                // injected body to be processed after it
+                                // finishes — dropping it here would silently
+                                // lose the instruction while still reporting
+                                // success.
+                                //
+                                // The command line itself was stripped, so the
+                                // re-enqueued body no longer starts with `/`
+                                // and will not re-enter this branch.
+                                if !output.cleaned_body.trim().is_empty() {
+                                    let mut requeued = qi;
+                                    requeued.message.content.text =
+                                        Some(output.cleaned_body.clone());
+                                    requeued.message.content.markdown = None;
+                                    tracing::info!(
+                                        thread = %thread_name,
+                                        "Re-enqueueing command-injected body for post-AI processing"
+                                    );
+                                    buffered.push(requeued);
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(

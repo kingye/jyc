@@ -663,9 +663,31 @@ struct AnthropicTool {
     input_schema: serde_json::Value,
 }
 
-/// An `ephemeral` cache-control marker (Anthropic's 5-minute prompt cache).
-fn ephemeral() -> serde_json::Value {
-    serde_json::json!({ "type": "ephemeral" })
+/// Attach an `ephemeral` cache-control marker to an array's last element.
+///
+/// No-ops on an empty array or a non-object last element.
+fn mark_last(arr: &mut [serde_json::Value]) {
+    if let Some(obj) = arr.last_mut().and_then(|v| v.as_object_mut()) {
+        obj.insert(
+            "cache_control".to_string(),
+            serde_json::json!({ "type": "ephemeral" }),
+        );
+    }
+}
+
+/// Whether any `cache_control` marker already exists anywhere in the body.
+///
+/// Used to detect caller-supplied markers (a `system` array or tool passed
+/// through provider `params`) so this module doesn't add its own on top and
+/// blow Anthropic's 4-breakpoint ceiling.
+fn has_cache_control(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.contains_key("cache_control") || map.values().any(has_cache_control)
+        }
+        serde_json::Value::Array(items) => items.iter().any(has_cache_control),
+        _ => false,
+    }
 }
 
 /// Attach a `cache_control` marker to a message's **last content block**.
@@ -682,11 +704,8 @@ fn mark_last_block_cached(msg: &mut serde_json::Value) {
         msg["content"] = serde_json::json!([{ "type": "text", "text": text }]);
     }
 
-    if let Some(blocks) = msg.get_mut("content").and_then(|c| c.as_array_mut())
-        && let Some(last) = blocks.last_mut()
-        && let Some(obj) = last.as_object_mut()
-    {
-        obj.insert("cache_control".to_string(), ephemeral());
+    if let Some(blocks) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+        mark_last(blocks);
     }
 }
 
@@ -696,14 +715,8 @@ fn mark_last_block_cached(msg: &mut serde_json::Value) {
 /// breakpoint only pays off when it sits on the **last** element of a static
 /// span — placed mid-flux, every downstream cache entry is invalidated as
 /// soon as the dynamic part changes. The cache prefix is ordered
-/// `tools → system → messages`, so this lays out the standard four:
-///
-/// | # | Position          | Caches                                     |
-/// |---|-------------------|--------------------------------------------|
-/// | 1 | tools tail        | tool schemas (long, and identical per run) |
-/// | 2 | system tail       | tools + system prompt                      |
-/// | 3 | message `n-3`     | rolling conversation history               |
-/// | 4 | message `n-2`     | rolling conversation history               |
+/// `tools → system → messages`, so the four land on the tools tail, the
+/// system tail, and messages `n-3` and `n-2`.
 ///
 /// Breakpoints #1 and #2 are kept separate rather than collapsed into one:
 /// the tools array is identical across every thread, while the system prompt
@@ -713,49 +726,45 @@ fn mark_last_block_cached(msg: &mut serde_json::Value) {
 /// The newest message is deliberately left unmarked — it changes on every
 /// request, so a breakpoint there would be written and immediately orphaned.
 ///
-/// The 4-breakpoint budget is satisfied structurally (1 + 1 + 2), so there is
-/// no runtime counting. Marking is skipped where a span is absent or too
-/// short. Prompts below the model's minimum cacheable length (1024 tokens for
-/// Opus/Sonnet, 2048 for Haiku) are ignored by the API rather than erroring.
+/// The 4-breakpoint budget is satisfied structurally (1 + 1 + 2). The one way
+/// to exceed it is a caller that ships its own `cache_control` via provider
+/// `params`; in that case the caller's layout wins and this is a no-op, since
+/// a 5th breakpoint is a hard API error. Marking is otherwise skipped where a
+/// span is absent or too short. Prompts below the model's minimum cacheable
+/// length (1024 tokens for Opus/Sonnet, 2048 for Haiku) are ignored by the
+/// API rather than erroring.
 fn apply_cache_breakpoints(body: &mut serde_json::Value) {
+    // The caller already placed breakpoints — respect their layout rather
+    // than adding to it and overflowing the per-request limit.
+    if has_cache_control(body) {
+        return;
+    }
+
     // #1 — tools tail.
-    if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut())
-        && let Some(last) = tools.last_mut()
-        && let Some(obj) = last.as_object_mut()
-    {
-        obj.insert("cache_control".to_string(), ephemeral());
+    if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        mark_last(tools);
     }
 
     // #2 — system tail. `system` is built as a plain string; promote it to a
-    // single-block array so the marker has a block to attach to.
-    if let Some(text) = body.get("system").and_then(|s| s.as_str()) {
-        if text.is_empty() {
-            // Nothing to cache; leave the field exactly as it was.
-        } else {
-            body["system"] = serde_json::json!([{
-                "type": "text",
-                "text": text,
-                "cache_control": ephemeral(),
-            }]);
-        }
-    } else if let Some(blocks) = body.get_mut("system").and_then(|s| s.as_array_mut())
-        && let Some(last) = blocks.last_mut()
-        && let Some(obj) = last.as_object_mut()
+    // single-block array so the marker has a block to attach to. An empty
+    // prompt has nothing to cache and is left exactly as it was.
+    if let Some(text) = body
+        .get("system")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
     {
-        // A caller-supplied `system` array (e.g. via provider `params`).
-        obj.insert("cache_control".to_string(), ephemeral());
+        body["system"] = serde_json::json!([{ "type": "text", "text": text }]);
+    }
+    if let Some(blocks) = body.get_mut("system").and_then(|s| s.as_array_mut()) {
+        mark_last(blocks);
     }
 
-    // #3 / #4 — rolling window over history, skipping the newest message.
+    // #3 / #4 — rolling window over history, skipping the newest message:
+    // the last two of `messages[..n-1]`, i.e. `n-3` and `n-2`.
     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let n = messages.len();
-        // Mark the last two of `messages[..n-1]`: n-3 and n-2.
-        for offset in [3, 2] {
-            if n >= offset
-                && let Some(msg) = messages.get_mut(n - offset)
-            {
-                mark_last_block_cached(msg);
-            }
+        for idx in [n.checked_sub(3), n.checked_sub(2)].into_iter().flatten() {
+            mark_last_block_cached(&mut messages[idx]);
         }
     }
 }
@@ -1040,38 +1049,40 @@ mod tests {
         assert!(blocks[0].get("cache_control").is_some());
     }
 
-    /// Short conversations must not panic or over-mark. With 2 messages only
-    /// n-2 (idx 0) qualifies; the newest stays unmarked.
+    /// Conversations shorter than the rolling window must not panic or
+    /// over-mark. The newest message is never marked, so 1 message yields no
+    /// message breakpoints and 2 yields one (at `n-2`, i.e. idx 0). The static
+    /// tools + system spans are always marked, hence the +2.
     #[test]
-    fn cache_breakpoints_short_conversation() {
-        let mut body = body_with(
-            json!([
-                {"role": "user", "content": [{"type": "text", "text": "m0"}]},
-                {"role": "assistant", "content": [{"type": "text", "text": "m1"}]},
-            ]),
-            json!([{"name": "bash", "description": "d", "input_schema": {}}]),
-        );
-        apply_cache_breakpoints(&mut body);
+    fn cache_breakpoints_short_conversations() {
+        for (count, expected_total) in [(1_usize, 2_usize), (2, 3)] {
+            let messages: Vec<serde_json::Value> = (0..count)
+                .map(|i| json!({"role": "user", "content": [{"type": "text", "text": format!("m{i}")}]}))
+                .collect();
+            let mut body = body_with(
+                json!(messages),
+                json!([{"name": "bash", "description": "d", "input_schema": {}}]),
+            );
+            apply_cache_breakpoints(&mut body);
 
-        let msgs = body["messages"].as_array().unwrap();
-        assert!(msgs[0]["content"][0].get("cache_control").is_some());
-        assert!(msgs[1]["content"][0].get("cache_control").is_none());
-        assert_eq!(count_breakpoints(&body), 3, "tools + system + 1 message");
-    }
+            assert_eq!(
+                count_breakpoints(&body),
+                expected_total,
+                "{count} message(s) should yield {expected_total} breakpoints, got: {body:#}"
+            );
 
-    /// A single-message request (the common first turn) marks no messages —
-    /// only the static tools + system spans.
-    #[test]
-    fn cache_breakpoints_single_message() {
-        let mut body = body_with(
-            json!([{"role": "user", "content": [{"type": "text", "text": "hello"}]}]),
-            json!([{"name": "bash", "description": "d", "input_schema": {}}]),
-        );
-        apply_cache_breakpoints(&mut body);
-
-        let msgs = body["messages"].as_array().unwrap();
-        assert!(msgs[0]["content"][0].get("cache_control").is_none());
-        assert_eq!(count_breakpoints(&body), 2, "tools + system only");
+            let msgs = body["messages"].as_array().unwrap();
+            assert!(
+                msgs[count - 1]["content"][0].get("cache_control").is_none(),
+                "newest message must never be marked ({count} message case)"
+            );
+            if count == 2 {
+                assert!(
+                    msgs[0]["content"][0].get("cache_control").is_some(),
+                    "with 2 messages, n-2 (idx 0) must be marked"
+                );
+            }
+        }
     }
 
     /// Absent tools and an empty system prompt must be left untouched:
@@ -1108,6 +1119,61 @@ mod tests {
         assert_eq!(system.len(), 2, "caller blocks must be preserved");
         assert!(system[0].get("cache_control").is_none());
         assert!(system[1].get("cache_control").is_some());
+    }
+
+    /// A caller that ships its own `cache_control` through provider `params`
+    /// owns the layout. Adding our four on top would reach 5+ breakpoints,
+    /// which Anthropic rejects outright — so this must be a no-op.
+    #[test]
+    fn cache_breakpoints_defers_to_caller_supplied_markers() {
+        let caller_system = json!([{
+            "type": "text",
+            "text": "caller knows best",
+            "cache_control": { "type": "ephemeral" },
+        }]);
+        let mut body = body_with(
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "m0"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "m1"}]},
+                {"role": "user", "content": [{"type": "text", "text": "m2"}]},
+            ]),
+            json!([{"name": "bash", "description": "d", "input_schema": {}}]),
+        );
+        body["system"] = caller_system.clone();
+        let before = body.clone();
+
+        apply_cache_breakpoints(&mut body);
+
+        assert_eq!(
+            body, before,
+            "must not touch a body that already carries cache_control"
+        );
+        assert_eq!(
+            count_breakpoints(&body),
+            1,
+            "only the caller's single marker survives, never 5"
+        );
+    }
+
+    /// The same deference applies when the caller's marker is on a tool
+    /// rather than the system prompt — the scan is whole-body.
+    #[test]
+    fn cache_breakpoints_defers_to_caller_marker_on_tools() {
+        let mut body = body_with(
+            json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}]),
+            json!([{
+                "name": "bash",
+                "description": "d",
+                "input_schema": {},
+                "cache_control": { "type": "ephemeral" },
+            }]),
+        );
+        let before = body.clone();
+
+        apply_cache_breakpoints(&mut body);
+
+        assert_eq!(body, before, "caller's tool marker wins");
+        assert_eq!(count_breakpoints(&body), 1);
     }
 
     /// End-to-end: the breakpoints must survive into the actual HTTP body

@@ -414,7 +414,7 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::Quit => app.should_quit = true,
         LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
         LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
-        LocalAction::CycleActivity => app.chat.cycle_activity(),
+        LocalAction::ToggleActivity => app.chat.toggle_activity(),
         LocalAction::OpenExternalEditor => {
             if app.chat.focus == ChatFocus::ChatPane
                 && let Err(e) = edit_input_externally(app, terminal)
@@ -2164,19 +2164,26 @@ impl ChatState {
         };
     }
 
-    /// Cycle the activity pane size. Replaces the legacy `Ctrl+W` behavior.
-    /// 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0.
-    pub(super) fn cycle_activity(&mut self) {
-        self.activity_split = (self.activity_split + 1) % 4;
-        if self.activity_split == 0 && self.focus == ChatFocus::ActivityPane {
-            self.focus = ChatFocus::ChatPane;
+    /// Toggle the activity pane on/off. Showing it restores the bottom 20%
+    /// size (`activity_split = 1`); hiding it zeroes the state and moves
+    /// focus back to the input field when the pane was focused. Triggered
+    /// from the leader-key popup (`Ctrl+P` then `a`).
+    pub(super) fn toggle_activity(&mut self) {
+        if self.activity_split == 0 {
+            self.activity_split = 1;
+        } else {
+            self.activity_split = 0;
+            if self.focus == ChatFocus::ActivityPane {
+                self.focus = ChatFocus::ChatPane;
+            }
         }
     }
 
     /// Toggle zen mode. Zen mode hides the thread info pane, the bottom
     /// status bar, and any visible activity pane. Exiting zen mode
     /// restores the thread info pane and status bar only — the activity
-    /// pane stays hidden until the user re-opens it via `Ctrl+A`.
+    /// pane stays hidden until the user re-opens it via the leader-key
+    /// popup (`Ctrl+P` then `a`).
     pub(super) fn toggle_zen_mode(&mut self) {
         let was_info_visible = self.info_visible;
         // Hide auxiliary UI unconditionally.
@@ -2724,10 +2731,8 @@ mod tests {
         // Activity visible and focused.
         app.chat.activity_split = 1;
         app.chat.focus = ChatFocus::ActivityPane;
-        // Cycle to hidden (0) — focus must fall back to the input field.
-        app.chat.cycle_activity();
-        app.chat.cycle_activity();
-        app.chat.cycle_activity();
+        // Toggle off — focus must fall back to the input field.
+        app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 0);
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
 
@@ -3793,19 +3798,18 @@ mod tests {
     }
 
     #[test]
-    fn cycle_activity_rotates_through_four_states() {
+    fn toggle_activity_shows_and_hides() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
-        // 0 (hidden) → 1 (bottom 20%) → 2 (bottom 80%) → 3 (activity-only) → 0
+        // 0 (hidden) → 1 (bottom 20%) on first toggle; 1 → 0 on second.
         assert_eq!(app.chat.activity_split, 0);
-        app.chat.cycle_activity();
+        app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 1);
-        app.chat.cycle_activity();
-        assert_eq!(app.chat.activity_split, 2);
-        app.chat.cycle_activity();
-        assert_eq!(app.chat.activity_split, 3);
-        app.chat.cycle_activity();
+        app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 0);
+        // Re-show after re-hide still lands on the bottom 20% size.
+        app.chat.toggle_activity();
+        assert_eq!(app.chat.activity_split, 1);
     }
 
     #[test]
@@ -3821,8 +3825,9 @@ mod tests {
         assert!(app.chat.info_visible);
         assert_eq!(app.chat.activity_split, 0);
 
-        // User opens activity via Ctrl+A. Now both info and activity are visible.
-        app.chat.cycle_activity();
+        // User opens activity via the leader popup (`Ctrl+P` then `a`).
+        // Now both info and activity are visible.
+        app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 1);
         assert!(app.chat.info_visible);
 
@@ -3840,22 +3845,22 @@ mod tests {
     }
 
     #[test]
-    fn cycle_resets_after_zen_mode() {
-        // Regression: after Ctrl+Z hides the activity pane, the next Ctrl+A
-        // should restart the cycle from the 20% bottom size, not from
-        // wherever activity was previously.
+    fn toggle_resets_after_zen_mode() {
+        // Regression: after Ctrl+Z hides the activity pane, the next toggle
+        // must show the bottom 20% size, not whatever (no-longer-meaningful)
+        // intermediate state.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
-        // Drive activity to "activity-only" (size 3).
-        app.chat.cycle_activity();
-        app.chat.cycle_activity();
-        app.chat.cycle_activity();
-        assert_eq!(app.chat.activity_split, 3);
-        // Enter zen mode — activity is reset to 0.
+        // Open the activity pane, then hide it again.
+        app.chat.toggle_activity();
+        assert_eq!(app.chat.activity_split, 1);
+        app.chat.toggle_activity();
+        assert_eq!(app.chat.activity_split, 0);
+        // Enter zen mode — activity is reset to 0 (already there).
         app.chat.toggle_zen_mode();
         assert_eq!(app.chat.activity_split, 0);
-        // First Ctrl+A after zen mode must reach the 20% size.
-        app.chat.cycle_activity();
+        // First toggle after zen mode must reach the 20% size.
+        app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 1);
     }
 

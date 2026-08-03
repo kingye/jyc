@@ -41,8 +41,8 @@ pub enum LocalAction {
     ToggleExplorer,
     /// Toggle zen mode (hide/show info pane + status bar).
     ToggleZen,
-    /// Cycle the activity pane through its size states.
-    CycleActivity,
+    /// Show/hide the activity pane (bottom 20% on, hidden off).
+    ToggleActivity,
     /// Open the chat input in an external editor ($EDITOR).
     OpenExternalEditor,
     /// Toggle terminal mouse capture. While on, the wheel scrolls the
@@ -127,10 +127,10 @@ pub fn local_commands() -> &'static [LocalCommand] {
             leader_keys: "z",
         },
         LocalCommand {
-            name: "activity pane",
-            description: "Cycle activity pane size",
+            name: "toggle activity",
+            description: "Show/hide the activity pane",
             scope: Chat,
-            action: LocalAction::CycleActivity,
+            action: LocalAction::ToggleActivity,
             leader_keys: "a",
         },
         LocalCommand {

@@ -158,6 +158,17 @@ All notable changes to JYC will be documented in this file.
   chat — `d`, `e`, `z`, `a`, `o`, `gg`, `G`, `n`, `r`, `q`, `m`;
   dashboard — `c`, `n`, `r`, `q`, `m`.
 
+- **Activity pane leader key toggles on/off instead of cycling sizes.**
+  Pressing `a` in the leader popup (`Ctrl+P` then `a`) now toggles the
+  activity pane between hidden and the bottom 20% layout — the size
+  most users kept it at in practice. The previous four-state cycle
+  (hidden → 20% → 80% → activity-only → hidden) was removed: it took
+  three presses to hide the pane again, and the larger sizes (80%,
+  activity-only) were rarely useful. The internal `activity_split`
+  field still uses the `u8` range so the rendering path is unchanged;
+  only the dispatch behaviour is binary. Focus on the activity pane
+  falls back to the chat input when the pane is hidden.
+
 - **Renamed `total_input_tokens` to `context_input_tokens` in
   `.jyc/agent-session.json`.** The old name was misleading: despite the
   `total_` prefix, the field stores the input tokens reported by the

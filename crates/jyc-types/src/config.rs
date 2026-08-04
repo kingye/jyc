@@ -860,6 +860,7 @@ pub struct ThreadAgentConfig {
 /// production logs; a broken thread config must not crash the agent.
 pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
     let path = thread_path.join(".jyc").join("config.toml");
+    let path_label = path.display().to_string();
     if !path.exists() {
         return None;
     }
@@ -867,17 +868,20 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
-                path = %path.display(),
+                path = %path_label,
                 error = %e,
                 "Failed to read thread config; thread-local MCP overlay will be skipped"
             );
             return None;
         }
     };
-    match toml::from_str(&content) {
+    // Same parse + expand + deserialize pipeline as L1/L2. Errors are
+    // swallowed (warn + None) per the docstring above: a broken thread
+    // config must not crash the agent.
+    match parse_and_deserialize::<ThreadConfig>(&content, &path_label) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "Ignoring invalid thread config");
+            tracing::warn!(path = %path_label, error = %e, "Ignoring invalid thread config");
             None
         }
     }

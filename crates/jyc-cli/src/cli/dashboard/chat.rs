@@ -1528,9 +1528,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         if activity_entries.is_empty() && thinking_text.is_none() {
-            // No activity entry yet (the very first tick of the loop).
-            // Show the live ticker only — there's no "since-event"
-            // number to pair with. Format: `⏳ AI is thinking... (12.4s)`.
+            // Pre-activity placeholder: shown only between ProcessingStarted
+            // and the first ToolStarted/LLMRequestStarted event. There's
+            // no "since-event" numerator to pair with, so we display the
+            // live ticker alone in `(12.4s)` form. This intentionally
+            // diverges from the dual-time format below — there's literally
+            // no `a.timestamp` to compute the left half from.
             let placeholder = match live_tick_ms {
                 Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
                 None => "⏳ AI is thinking...".to_string(),

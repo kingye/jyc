@@ -1428,6 +1428,117 @@ type = "feishu"
         assert!(config.channels.contains_key("local_chan"));
     }
 
+    /// L2 `${VAR}` expansion runs *after* the global/workdir deep-merge.
+    /// Verifies (a) `${VAR}` from the global is expanded when only the
+    /// global defines it, and (b) the workdir's literal overrides the
+    /// global's `${VAR}` reference (overlay wins on scalar keys).
+    #[test]
+    fn test_load_config_layered_expands_env_vars_after_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_path = tmp.path().join("global.toml");
+        let workdir_path = tmp.path().join("config.toml");
+
+        // Global uses a `${VAR}` reference; expansion happens after the
+        // merge, so this is resolved against the env var at load time.
+        std::fs::write(
+            &global_path,
+            r#"
+[agent]
+mode = "static"
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "${JYC_LAYERED_HOST}"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+
+        // Workdir overrides `host` with a literal — should win over the
+        // global's `${VAR}` reference (scalar replacement in `merge_toml`).
+        std::fs::write(
+            &workdir_path,
+            r#"
+[channels.work.inbound]
+host = "literal-host.example.com"
+"#,
+        )
+        .unwrap();
+
+        // SAFETY: existing test pattern; see test_expand_env_vars above.
+        unsafe {
+            std::env::set_var("JYC_LAYERED_HOST", "expanded-from-env.example.com");
+        }
+        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        let work = &config.channels["work"];
+        let inbound = work.inbound.as_ref().expect("inbound must parse");
+        // Workdir's literal wins over the global's `${VAR}` reference.
+        assert_eq!(inbound.host, "literal-host.example.com");
+
+        // SAFETY: cleanup.
+        unsafe {
+            std::env::remove_var("JYC_LAYERED_HOST");
+        }
+    }
+
+    /// Companion to the above: when the workdir *also* uses `${VAR}`
+    /// (and the global is absent), expansion still works. This is the
+    /// simpler path through L2.
+    #[test]
+    fn test_load_config_layered_expands_env_vars_in_workdir_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workdir_path = tmp.path().join("config.toml");
+        // No global path — workdir alone.
+
+        std::fs::write(
+            &workdir_path,
+            r#"
+[agent]
+mode = "static"
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "${JYC_LAYERED_WORKDIR_ONLY_HOST}"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var(
+                "JYC_LAYERED_WORKDIR_ONLY_HOST",
+                "workdir-only-expanded.example.com",
+            );
+        }
+        let config = load_config_layered(None, &workdir_path).unwrap();
+        let work = &config.channels["work"];
+        let inbound = work.inbound.as_ref().expect("inbound must parse");
+        assert_eq!(inbound.host, "workdir-only-expanded.example.com");
+        unsafe {
+            std::env::remove_var("JYC_LAYERED_WORKDIR_ONLY_HOST");
+        }
+    }
+
     #[test]
     fn test_load_config_layered_missing_global_ignored() {
         let tmp = tempfile::tempdir().unwrap();

@@ -2304,6 +2304,65 @@ mod tests {
         assert!(registry.has_tool("read"), "read should still be available");
     }
 
+    /// Verifies that a `<thread_path>/.jyc/config.toml` with `[mcps]` does not
+    /// panic during registry build. Pure resolution correctness is covered by
+    /// `apply_thread_mcp_overlay` unit tests in jyc-types.
+    #[tokio::test]
+    async fn thread_config_with_mcps_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[[mcps]]
+name = "thread-local"
+type = "local"
+command = ["echo", "hello"]
+"#,
+        )
+        .unwrap();
+
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(tmp.path(), false, Some("test"))
+            .await;
+
+        assert!(registry.has_tool("bash"));
+        assert!(registry.has_tool("read"));
+    }
+
+    /// Verifies that `mcps_replace = true` with empty `[[mcps]]` doesn't
+    /// panic — the thread effectively disables all MCPs from the base layer.
+    #[tokio::test]
+    async fn thread_config_mcps_replace_empty_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+mcps_replace = true
+"#,
+        )
+        .unwrap();
+
+        let patterns = vec![ChannelPattern {
+            name: "test".to_string(),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_exclusion(patterns, None, None);
+        let registry = svc
+            .build_tool_registry(tmp.path(), false, Some("test"))
+            .await;
+
+        assert!(registry.has_tool("bash"));
+    }
+
     // ── Skill filtering tests ──────────────────────────────────────────
 
     #[test]

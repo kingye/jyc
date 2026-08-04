@@ -1165,6 +1165,65 @@ mode = "agent"
         assert_eq!(config.general.max_queue_size_per_thread, 10);
     }
 
+    /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML
+    /// loader. `${VAR}` expands at load time; the resolved value lands
+    /// in the `api_key` field.
+    #[test]
+    fn test_provider_api_key_field_parses() {
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "agent"
+
+[agent.providers.anthropic]
+type = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+api_key = "${JYC_LOAD_TEST_API_KEY}"
+"#;
+
+        // SAFETY: see existing test_expand_env_vars above. This test
+        // runs alongside other unit tests; AGENTS.md prefers no env
+        // mutation, but this is a load-time check of ${VAR} expansion
+        // for the new field — the only way to verify it end-to-end
+        // without restructuring the loader to take env as a parameter.
+        unsafe {
+            std::env::set_var("JYC_LOAD_TEST_API_KEY", "loaded-key-123");
+        }
+        let config = load_config_from_str(toml).unwrap();
+        let provider = config
+            .agent
+            .providers
+            .get("anthropic")
+            .expect("anthropic provider must parse");
+        assert_eq!(
+            provider.api_key.as_deref(),
+            Some("loaded-key-123"),
+            "${{VAR}} must expand into api_key"
+        );
+        // legacy field stays None when not set
+        assert!(provider.api_key_env.is_none());
+        unsafe {
+            std::env::remove_var("JYC_LOAD_TEST_API_KEY");
+        }
+    }
+
     #[test]
     fn test_load_config_with_mcps() {
         let toml = r#"

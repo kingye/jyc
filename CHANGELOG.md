@@ -4,6 +4,22 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Provider `api_key` field.** LLM providers now accept `api_key =
+  "${ENV_VAR}"` for credentials, matching the `${VAR}` syntax used for every
+  other secret field in the config (`token`, `password`, `app_secret`,
+  `corp_secret`, `bot_secret`, `encoding_aes_key`):
+  ```toml
+  [agent.providers.anthropic]
+  type = "anthropic"
+  base_url = "https://api.anthropic.com/v1"
+  api_key = "${ANTHROPIC_API_KEY}"   # preferred
+  ```
+  The legacy `api_key_env = "ENV_VAR"` field is retained for backward
+  compatibility. When both fields are set, `api_key_env` wins (legacy
+  precedence) and a warning is logged at startup so the user can clean up.
+
 ### Added
 
 - **Live processing-duration ticker.** While the agent loop is running, the

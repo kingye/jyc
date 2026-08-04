@@ -940,3 +940,45 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [[channels.my_ws.patterns]]
 # name = "general"
 # enabled = true
+
+# --- Per-Thread MCP Overrides (L3) ---
+#
+# Place a `<thread_path>/.jyc/config.toml` to add or replace MCPs for a
+# specific thread (e.g. one GitHub PR, one WeCom conversation). Layered on
+# top of the pattern → channel → global chain. The same `[agent] model`
+# overrides also live here.
+#
+# Default merge = ADDITIVE: thread MCPs union with the inherited set.
+# Same `name` → thread version wins (last-writer-wins on the union).
+#
+# Opt-in REPLACE: set `mcps_replace = true` to fully drop the inherited
+# MCPs and use only the thread's MCP list. Useful when a thread should
+# be isolated from the pattern's tools.
+#
+# Example thread config:
+#
+#   # /<thread>/.jyc/config.toml
+#
+#   [agent]
+#   model = "anthropic/claude-opus-4-7"
+#
+#   # Default: additive. Adds a thread-only MCP without dropping inherited ones.
+#   [[mcps]]
+#   name = "thread-local"
+#   type = "local"
+#   command = ["./local-mcp"]
+#
+#   # Opt-in: full replace. Drop all inherited MCPs.
+#   # mcps_replace = true
+#
+#   # [[mcps]]
+#   # name = "totally-different"
+#   # type = "remote"
+#   # url = "https://example.com/mcp"
+#
+# Note: parse errors in this file are logged at runtime and ignored
+# (a broken thread config must not crash the agent). After starting
+# `jyc serve`, check logs for `Ignoring invalid thread config`
+# warnings to confirm parsing succeeded. Semantic issues (e.g. bad
+# MCP command path) still surface at MCP-load time as normal errors.
+

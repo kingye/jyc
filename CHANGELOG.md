@@ -8,10 +8,10 @@ All notable changes to JYC will be documented in this file.
 
 - **Live processing-duration ticker.** While the agent loop is running, the
   dashboard now shows a wall-clock elapsed-time indicator that ticks every
-  ~250 ms, so the loop's progress is visible even during silent LLM or tool
-  work (long bash, slow LLM stream, retry backoff) when no iteration has
-  produced a `ProcessingProgress` event yet. The ticker appears in three
-  places:
+  ~1 s (with the very first tick fired immediately at t=0), so the loop's
+  progress is visible even during silent LLM or tool work (long bash,
+  slow LLM stream, retry backoff) when no iteration has produced a
+  `ProcessingProgress` event yet. The ticker appears in three places:
 
   - The dashboard's per-thread Details panel (Status chip in
     `crates/jyc-cli/src/cli/dashboard/mod.rs`).
@@ -20,7 +20,7 @@ All notable changes to JYC will be documented in this file.
     thinking..." placeholder), now rendered as a dual-time display:
     `<since-current-activity> / <total-loop-elapsed>` (e.g. `5s / 12.4s`).
     The left number is from the polled activity timestamp (coarse, freezes
-    during silent work); the right is the live ticker (4 Hz, fresh). When
+    during silent work); the right is the live ticker (1 Hz, fresh). When
     they diverge, the loop is in a long silent stretch.
 
   Implementation: new `ThreadEvent::LoopTick { elapsed_ms }` variant emitted
@@ -31,7 +31,7 @@ All notable changes to JYC will be documented in this file.
   (`12.4s`), `<m>m<ss>s` at/above (`1m05s`). The ticker task is bound to
   the loop's lifetime via a `TickerGuard` RAII handle so it terminates on
   every exit path (success, error, cancel, no-reply guard) — without this,
-  the task would leak at 4 Hz until shutdown on natural completion.
+  the task would leak at 1 Hz until shutdown on natural completion.
 
 - **System temp dir always within the tool boundary.** `std::env::temp_dir()` is
   now accepted by both the read and the write path check, so tools have scratch

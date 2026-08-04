@@ -115,9 +115,10 @@ pub(super) struct ChatState {
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
     /// Live loop duration in milliseconds — updated by WS `loop_tick`
-    /// events (4 Hz while a loop is running). Drives the live-duration
-    /// ticker in the dashboard's Details panel, the chat-mode info pane,
-    /// and the chat progress line.
+    /// events (1 Hz while a loop is running, with the first tick fired
+    /// immediately at t=0). Drives the live-duration ticker in the
+    /// dashboard's Details panel, the chat-mode info pane, and the chat
+    /// progress line.
     pub(super) live_tick_ms: std::collections::BTreeMap<(String, String), u64>,
     /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
     /// WS events after reconnect / `resync`.
@@ -1108,8 +1109,9 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             )];
             // Append the live-duration ticker when a tick has arrived.
             // Falls back to the plain `⏳ AI thinking...` line when no
-            // tick has arrived yet (~250 ms lag at startup) — same UX as
-            // the dashboard Details panel.
+            // tick has arrived yet — the first tick fires at t=0 so
+            // this is essentially instantaneous for any loop that runs
+            // long enough to render this view.
             if let Some(ms) = app.chat.live_tick_ms_for(&t.channel, &t.name) {
                 thinking_line.push(Span::styled(
                     format!(" ({})", format_elapsed_ms(ms)),
@@ -1497,11 +1499,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
             .map(|s| s.to_string());
 
-        // Live wall-clock ticker (4 Hz). When present, it is the
-        // authoritative elapsed-time display for the last in-progress
-        // line — the polled `last_active_at` it normally shows goes stale
-        // during silent LLM/tool work. Falls back to the polled value
-        // when no tick has arrived yet (~250 ms lag at startup).
+        // Live wall-clock ticker (1 Hz, with the first tick at t=0). When
+        // present, it is the authoritative elapsed-time display for the
+        // last in-progress line — the polled `last_active_at` it
+        // normally shows goes stale during silent LLM/tool work. Falls
+        // back to the polled value when no tick has arrived yet.
         let live_tick_ms: Option<u64> = live_chan
             .as_deref()
             .zip(live_thread.as_deref())
@@ -1556,7 +1558,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 //           (polled `last_active_at` — coarse, freezes
                 //           during silent LLM/tool work)
                 //   right = wall-clock elapsed since the loop started
-                //           (live ticker at 4 Hz — fresh throughout)
+                //           (live ticker at 1 Hz — fresh throughout)
                 // Diverging numbers mean the loop is in a long silent
                 // stretch: the polled one stops moving, the live one
                 // keeps ticking. The single-value fallback (`X`) is
@@ -2637,9 +2639,10 @@ impl ChatState {
                 }
             }
             "loop_tick" => {
-                // Live wall-clock duration (4 Hz while the loop is alive).
-                // Drives the duration ticker in the dashboard Details
-                // panel, chat-mode info pane, and chat progress line.
+                // Live wall-clock duration (1 Hz while the loop is alive, with the
+                // first tick fired immediately at t=0). Drives the
+                // duration ticker in the dashboard Details panel,
+                // chat-mode info pane, and chat progress line.
                 if let Some(ms) = payload.get("elapsed_ms").and_then(|v| v.as_u64()) {
                     self.live_tick_ms.insert(key, ms);
                 }

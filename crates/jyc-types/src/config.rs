@@ -50,13 +50,34 @@ pub enum McpServerKind {
         enabled: bool,
         /// Bearer token for authentication (without "Bearer " prefix).
         /// Sent as `Authorization: Bearer <token>` header with every request.
+        /// Mutually exclusive with `oauth`; if both are set, validation rejects.
         #[serde(default)]
         auth_header: Option<String>,
         /// Custom HTTP headers to include with every request.
         /// Keys are header names, values are header values.
         #[serde(default)]
         custom_headers: HashMap<String, String>,
+        /// OAuth2 client_credentials grant. When set, a one-shot POST to
+        /// `token_endpoint` is performed at connect time and the resulting
+        /// access token is sent as `Authorization: Bearer`. Token is fetched
+        /// once per MCP connect — no auto-refresh; restart on expiry.
+        #[serde(default)]
+        oauth: Option<OAuthClientCredentialsConfig>,
     },
+}
+
+/// OAuth2 client_credentials grant configuration.
+///
+/// Used by remote MCP servers that require machine-to-machine OAuth2 instead
+/// of a static bearer token. The agent POSTs `grant_type=client_credentials`
+/// to `token_endpoint` at connect time and uses the returned `access_token`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OAuthClientCredentialsConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub token_endpoint: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// Top-level application configuration, deserialized from config.toml.
@@ -1300,11 +1321,13 @@ enabled = true
                 enabled,
                 auth_header,
                 custom_headers,
+                oauth,
             } => {
                 assert_eq!(url, "https://mcp.example.com/handler");
                 assert!(*enabled);
                 assert!(auth_header.is_none());
                 assert!(custom_headers.is_empty());
+                assert!(oauth.is_none());
             }
             _ => panic!("Expected Remote variant for remote_mcp"),
         }
@@ -1807,6 +1830,7 @@ mode = "static"
                 enabled: true,
                 auth_header: None,
                 custom_headers: Default::default(),
+                oauth: None,
             },
             enabled_tools: None,
         }

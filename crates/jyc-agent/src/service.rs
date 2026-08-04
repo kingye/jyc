@@ -2029,6 +2029,7 @@ mod tests {
                         jyc_types::ProviderDef {
                             provider_type: "openai-compatible".to_string(),
                             base_url: Some("http://api.example.com".to_string()),
+                            api_key: None,
                             api_key_env: Some("TEST_KEY".to_string()),
                             context_window: Some(8000),
                             supports_images: None,

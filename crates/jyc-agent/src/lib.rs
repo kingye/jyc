@@ -32,6 +32,7 @@ mod integration_tests {
             ProviderDef {
                 provider_type: "anthropic".to_string(),
                 base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
+                api_key: None,
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                 context_window: None,
                 supports_images: None,
@@ -74,6 +75,7 @@ mod integration_tests {
             ProviderDef {
                 provider_type: "anthropic".to_string(),
                 base_url: Some("http://localhost:6655/anthropic/v1".to_string()),
+                api_key: None,
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                 context_window: None,
                 supports_images: None,

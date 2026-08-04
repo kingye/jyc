@@ -83,16 +83,24 @@ pub fn build_agent_service(
                             .base_url
                             .clone()
                             .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-                        let api_key_env = provider_def
-                            .api_key_env
-                            .clone()
-                            .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
-                        let api_key = std::env::var(&api_key_env).unwrap_or_default();
+                        // Resolve API key: explicit field first, then
+                        // legacy `api_key_env` (with the historical
+                        // DEEPSEEK_API_KEY fallback for vision callers
+                        // who didn't customize their config).
+                        let api_key = if let Some(key) = provider_def.api_key.clone() {
+                            key
+                        } else {
+                            let env_var = provider_def
+                                .api_key_env
+                                .clone()
+                                .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
+                            std::env::var(&env_var).unwrap_or_default()
+                        };
                         if api_key.is_empty() {
                             tracing::warn!(
                                 provider = %v.provider,
-                                api_key_env = %api_key_env,
-                                "Vision fallback: API key not found in environment"
+                                "Vision fallback: API key not found (set api_key or api_key_env in [agent.providers.{}])",
+                                v.provider,
                             );
                             return None;
                         }

@@ -547,12 +547,44 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
                         });
                     }
                 }
-                crate::config::McpServerKind::Remote { url, .. } => {
+                crate::config::McpServerKind::Remote {
+                    url,
+                    auth_header,
+                    oauth,
+                    ..
+                } => {
                     if url.is_empty() {
                         errors.push(ValidationError {
                             path: format!("{mcp_prefix}.url"),
                             message: format!("MCP '{}' remote url is required", mcp.name),
                         });
+                    }
+                    if auth_header.is_some() && oauth.is_some() {
+                        errors.push(ValidationError {
+                            path: format!("{mcp_prefix}.auth_header"),
+                            message: format!(
+                                "MCP '{}' cannot set both auth_header and oauth; pick one",
+                                mcp.name
+                            ),
+                        });
+                    }
+                    if let Some(oauth_cfg) = oauth {
+                        let required = [
+                            ("client_id", &oauth_cfg.client_id),
+                            ("client_secret", &oauth_cfg.client_secret),
+                            ("token_endpoint", &oauth_cfg.token_endpoint),
+                        ];
+                        for (field, value) in &required {
+                            if value.is_empty() {
+                                errors.push(ValidationError {
+                                    path: format!("{mcp_prefix}.oauth.{field}"),
+                                    message: format!(
+                                        "MCP '{}' oauth.{field} must not be empty",
+                                        mcp.name
+                                    ),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -932,6 +964,98 @@ mode = "agent"
             mcp_errors.is_empty(),
             "expected no mcp errors, got: {:?}",
             mcp_errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_mcp_remote_oauth_and_auth_header_conflict() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-remote"
+type = "remote"
+url = "https://mcp.example.com"
+auth_header = "static-token"
+[channels.work.patterns.mcps.oauth]
+client_id = "id"
+client_secret = "secret"
+token_endpoint = "https://idp/token"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path.contains("mcps[0].auth_header")
+                    && e.message.contains("cannot set both")),
+            "expected auth_header+oauth conflict error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_mcp_remote_oauth_empty_client_id() {
+        let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-remote"
+type = "remote"
+url = "https://mcp.example.com"
+[channels.work.patterns.mcps.oauth]
+client_id = ""
+client_secret = "secret"
+token_endpoint = "https://idp/token"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let config = load_config_from_str(toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path.contains("mcps[0].oauth.client_id")),
+            "expected oauth.client_id error, got: {:?}",
+            errors
         );
     }
 

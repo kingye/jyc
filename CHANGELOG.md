@@ -4,6 +4,23 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **OAuth2 client_credentials for remote MCP.** Remote MCP servers in
+  `[[mcps]]` (global, workdir, or thread overlay) now accept an optional
+  `oauth = { client_id, client_secret, token_endpoint, scopes? }` block.
+  When set, the agent POSTs `grant_type=client_credentials` to
+  `token_endpoint` at MCP connect time and uses the returned
+  `access_token` as the Bearer header. Mutually exclusive with the
+  existing static `auth_header` (validation rejects both being set on
+  the same block). Token is fetched once per connect — restart on
+  expiry to pick up a rotated token.
+
+  Multi-level inheritance note: `oauth` participates in the standard
+  L1/L2/L3 MCP overlay merge on `name`. If a deeper layer redefines
+  the same MCP name without re-listing the `oauth` block, the parent's
+  OAuth config is replaced (same behavior as `auth_header`).
+
 ### Changed
 
 - **Provider `api_key` field.** LLM providers now accept `api_key =

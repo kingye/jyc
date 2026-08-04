@@ -581,8 +581,6 @@ fn publish_loop_tick_event(
     });
     let _ = bus.send(payload.to_string());
 }
-
-/// Background task that subscribes to thread event buses and buffers
 /// activity entries for the inspect server.
 pub struct ActivityTracker;
 

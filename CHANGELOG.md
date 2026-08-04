@@ -17,14 +17,21 @@ All notable changes to JYC will be documented in this file.
     `crates/jyc-cli/src/cli/dashboard/mod.rs`).
   - The chat-mode info pane (`⏳ AI thinking...` line).
   - The chat progress line (in-flight activity entry / "⏳ AI is
-    thinking..." placeholder).
+    thinking..." placeholder), now rendered as a dual-time display:
+    `<since-current-activity> / <total-loop-elapsed>` (e.g. `5s / 12.4s`).
+    The left number is from the polled activity timestamp (coarse, freezes
+    during silent work); the right is the live ticker (4 Hz, fresh). When
+    they diverge, the loop is in a long silent stretch.
 
   Implementation: new `ThreadEvent::LoopTick { elapsed_ms }` variant emitted
   by a background `tokio` task spawned at loop start; routed by the inspect
   server as `is_internal` (no activity.jsonl pollution) and broadcast over
   WebSocket as `{"type":"loop_tick",...}`; consumed by the dashboard into
   the `ChatState::live_tick_ms` map. Format: `<s>.<tenths>s` below 60s
-  (`12.4s`), `<m>m<ss>s` at/above (`1m05s`).
+  (`12.4s`), `<m>m<ss>s` at/above (`1m05s`). The ticker task is bound to
+  the loop's lifetime via a `TickerGuard` RAII handle so it terminates on
+  every exit path (success, error, cancel, no-reply guard) — without this,
+  the task would leak at 4 Hz until shutdown on natural completion.
 
 - **System temp dir always within the tool boundary.** `std::env::temp_dir()` is
   now accepted by both the read and the write path check, so tools have scratch

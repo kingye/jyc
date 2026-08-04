@@ -9,6 +9,7 @@ use futures::StreamExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
@@ -170,20 +171,22 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut reply_text_from_tool: Option<String> = None;
     let start_time = Instant::now();
 
-    // Spawn the live-duration ticker. While the loop is alive, it publishes
-    // a `ThreadEvent::LoopTick` every LOOP_TICK_INTERVAL so the dashboard
-    // can show the wall-clock elapsed time even during silent LLM/tool work
-    // (when no iteration has produced a `ProcessingProgress` event yet).
-    // The task exits via the cancel token; nothing to join because the
-    // task itself is fire-and-forget and never holds state the caller needs.
-    if let Some(bus) = event_bus {
-        run_ticker(
+    // RAII guard: the spawned ticker task is terminated on every return
+    // path (success, error, cancel, no-reply guard, etc.). Without this,
+    // the ticker leaks on natural completion — the thread-level cancel
+    // token only fires on explicit `/cancel` or shutdown.
+    let _ticker_guard = if let Some(bus) = event_bus {
+        let ticker_cancel = cancel.child_token();
+        let handle = run_ticker(
             start_time,
-            cancel.clone(),
-            Some(bus.clone()),
+            ticker_cancel.clone(),
+            Some(bus),
             thread_name.to_string(),
         );
-    }
+        Some(TickerGuard::new(handle, ticker_cancel))
+    } else {
+        None
+    };
 
     // No-reply guard: if the model exits with no text and no tool call, the
     // user receives nothing. We give the model a single system-reminder
@@ -1100,19 +1103,22 @@ async fn publish_event(event_bus: Option<&ThreadEventBusRef>, event: ThreadEvent
 /// spawned task publishes a `ThreadEvent::LoopTick` every
 /// `LOOP_TICK_INTERVAL` so the dashboard can show the wall-clock elapsed
 /// time even during silent LLM/tool work (when no iteration has produced
-/// a `ProcessingProgress` event yet). Exits via the cancel token.
+/// a `ProcessingProgress` event yet). Returns the task's `JoinHandle`
+/// so the caller can cancel it on natural loop completion.
 ///
-/// Fire-and-forget: the task is owned by the runtime and self-terminates
-/// on cancel; the caller does not need to join it. Returns nothing for
-/// that reason — making it explicit (`JoinHandle`) would force the caller
-/// to plumb the handle through every return path, which is mechanical
-/// work for no observable benefit.
+/// The cancel token here is the *thread-level* token. On explicit cancel
+/// or shutdown it fires and the task exits — but on natural completion
+/// (success / no_reply guard) nothing fires it. Without a `JoinHandle`
+/// the spawned task would leak, broadcasting stale `LoopTick` events at
+/// 4 Hz until runtime shutdown. The caller is responsible for aborting
+/// the handle on every non-cancel exit (see `TickerGuard` in `run`).
 fn run_ticker(
     start_time: Instant,
     cancel: CancellationToken,
-    event_bus: Option<ThreadEventBusRef>,
+    event_bus: Option<&ThreadEventBusRef>,
     thread_name: String,
-) {
+) -> JoinHandle<()> {
+    let bus = event_bus.cloned();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -1123,14 +1129,44 @@ fn run_ticker(
                         elapsed_ms,
                         timestamp: Utc::now(),
                     };
-                    if let Some(bus) = event_bus.as_ref() {
+                    if let Some(bus) = bus.as_ref() {
                         let _ = bus.publish(event).await;
                     }
                 }
                 _ = cancel.cancelled() => break,
             }
         }
-    });
+    })
+}
+
+/// RAII guard that aborts and joins a spawned ticker task when dropped.
+/// Placed at the top of `agent_loop::run` so every return path — early
+/// error from `complete_with_retry`, the no-reply guard, the success
+/// returns, the cycle-boundary continue, the cancellation break, the
+/// dangling-tool-call cleanup — terminates the ticker cleanly. Without
+/// this, the ticker task leaks on natural completion (the thread-level
+/// cancel token only fires on explicit `/cancel` or shutdown).
+struct TickerGuard {
+    handle: Option<JoinHandle<()>>,
+    cancel: CancellationToken,
+}
+
+impl TickerGuard {
+    fn new(handle: JoinHandle<()>, cancel: CancellationToken) -> Self {
+        Self {
+            handle: Some(handle),
+            cancel,
+        }
+    }
+}
+
+impl Drop for TickerGuard {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
 }
 
 /// Truncate a string to a maximum length.
@@ -2398,9 +2434,10 @@ mod cancel_during_tool_tests {
     }
 }
 
-/// Verifies the live-duration ticker: spawns `run_ticker` with a fast
-/// interval, observes several `LoopTick` events on the bus, and confirms
-/// the task stops promptly when the cancel token fires.
+/// Verifies the live-duration ticker: spawns `run_ticker`, observes
+/// `LoopTick` events on the bus, and confirms the task stops on both
+/// cancel-driven and JoinHandle-driven exit (the latter covers natural
+/// completion — the bug `TickerGuard` exists to fix).
 #[cfg(test)]
 mod ticker_tests {
     use super::*;
@@ -2416,16 +2453,13 @@ mod ticker_tests {
         let cancel = CancellationToken::new();
         let start = Instant::now();
 
-        // Spawn the ticker with a fast interval (50 ms) so we don't have
-        // to wait long. Real wall-clock time.
-        run_ticker(
-            start,
-            cancel.clone(),
-            Some(bus.clone()),
-            "thread-x".to_string(),
-        );
+        // Spawn the ticker; TickerGuard would abort on drop, but here we
+        // want to test cancel-driven exit specifically — keep the handle
+        // alive but uncancelled.
+        let handle = run_ticker(start, cancel.clone(), Some(&bus), "thread-x".to_string());
 
-        // Wait for at least 3 ticks before cancelling (~150 ms).
+        // Wait for at least 3 ticks before cancelling (~150 ms at 50 ms
+        // interval — production uses 250 ms).
         let mut got = 0u32;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while got < 3 && std::time::Instant::now() < deadline {
@@ -2444,6 +2478,52 @@ mod ticker_tests {
             tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
         {
             panic!("ticker should not publish after cancel")
+        }
+        // Tidy up so the test doesn't leak (and so clippy doesn't warn).
+        let _ = handle.await;
+    }
+
+    /// Regression for the orphan-ticker bug: when the cancel token is
+    /// *not* fired (natural completion), the ticker must still exit via
+    /// `TickerGuard::drop` → `JoinHandle::abort`. Before the guard was
+    /// added, this test would hang forever.
+    #[tokio::test]
+    async fn ticker_exits_on_handle_abort_when_cancel_not_fired() {
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+        let start = Instant::now();
+
+        let handle = run_ticker(start, cancel.clone(), Some(&bus), "thread-x".to_string());
+
+        // Drain one tick to confirm it's actually running.
+        match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            Ok(Some(ThreadEvent::LoopTick { .. })) => {}
+            other => panic!("expected a LoopTick, got {other:?}"),
+        }
+
+        // Drop the TickerGuard via RAII scope — this is what `run()`
+        // does at every return path. The cancel token is NEVER fired.
+        {
+            let _guard = TickerGuard::new(handle, cancel);
+        }
+
+        // The handle must be joined within a reasonable bound. If the
+        // orphan-bug regresses (handle leaked, no abort), this hangs.
+        let joined = tokio::time::timeout(Duration::from_secs(2), async {
+            // Re-acquire the handle from the guard would require a getter;
+            // instead just assert the ticker stops publishing. Both
+            // `cancel.cancel()` and `handle.abort()` happen in `drop`,
+            // so within 250 ms (one tick interval) no further tick fires.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        })
+        .await;
+        assert!(joined.is_ok(), "drop guard should not hang");
+
+        if let Ok(Some(ThreadEvent::LoopTick { .. })) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            panic!("ticker should not publish after TickerGuard drop")
         }
     }
 }

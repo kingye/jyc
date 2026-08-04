@@ -1528,9 +1528,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         if activity_entries.is_empty() && thinking_text.is_none() {
-            // Prefer the live ticker (4 Hz, fresh) over the static
-            // placeholder when present. Format like `⏳ AI is thinking...
-            // (12.4s)`.
+            // No activity entry yet (the very first tick of the loop).
+            // Show the live ticker only — there's no "since-event"
+            // number to pair with. Format: `⏳ AI is thinking... (12.4s)`.
             let placeholder = match live_tick_ms {
                 Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
                 None => "⏳ AI is thinking...".to_string(),
@@ -1548,13 +1548,24 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             let total = activity_entries.len();
             for (idx, a) in activity_entries.iter().enumerate() {
                 let is_last = idx == total - 1;
-                // Prefer the live ticker when present; it ticks during
-                // silent LLM/tool work where `last_active_at` would
-                // otherwise go stale.
+                // Dual-time display on the last in-progress line:
+                //   left  = time since the most recent activity event
+                //           (polled `last_active_at` — coarse, freezes
+                //           during silent LLM/tool work)
+                //   right = wall-clock elapsed since the loop started
+                //           (live ticker at 4 Hz — fresh throughout)
+                // Diverging numbers mean the loop is in a long silent
+                // stretch: the polled one stops moving, the live one
+                // keeps ticking. The single-value fallback (`X`) is
+                // preserved for the case where neither source has
+                // produced a usable timestamp yet.
                 let elapsed = if is_last {
-                    match live_tick_ms {
-                        Some(ms) => format_elapsed_ms(ms),
-                        None => format_elapsed(&a.timestamp),
+                    let since_event = format_elapsed(&a.timestamp);
+                    match (since_event.is_empty(), live_tick_ms) {
+                        (false, Some(ms)) => format!("{} / {}", since_event, format_elapsed_ms(ms)),
+                        (false, None) => since_event,
+                        (true, Some(ms)) => format_elapsed_ms(ms),
+                        (true, None) => String::new(),
                     }
                 } else {
                     String::new()

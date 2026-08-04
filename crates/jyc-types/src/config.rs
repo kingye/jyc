@@ -780,24 +780,37 @@ fn parse_toml_value(content: &str, ctx: &str) -> Result<toml::Value> {
     toml::from_str(content).with_context(|| format!("failed to parse TOML: {ctx}"))
 }
 
+/// Read a TOML file into a string and parse it to `toml::Value`. Used by
+/// [`load_config`] (single file) and [`load_config_layered`] (twice — once
+/// for the workdir overlay, once for the global base). No `${VAR}` expansion
+/// at this step; that happens after merging in L2.
+fn read_and_parse(path: &Path) -> Result<toml::Value> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    parse_toml_value(&content, &path.display().to_string())
+}
+
 /// Parse + expand `${VAR}` + deserialize to a typed target. The canonical
-/// "load a TOML config" pipeline. Used by every config loader (L1, L2, L3)
-/// so all three layers run the same code path.
+/// "load a TOML config" pipeline used by the L1 and L3 loaders; L2 uses
+/// [`read_and_parse`] + [`parse_and_deserialize_from_value`] for its
+/// two-file deep-merge path.
 fn parse_and_deserialize<T: serde::de::DeserializeOwned>(content: &str, ctx: &str) -> Result<T> {
-    let mut value = parse_toml_value(content, ctx)?;
+    let value = parse_toml_value(content, ctx)?;
+    parse_and_deserialize_from_value(value, ctx)
+}
+
+/// Run `${VAR}` expansion on a parsed TOML tree, then deserialize to a
+/// typed target. The tail half of [`parse_and_deserialize`] — split out
+/// so `load_config_layered` can call it after deep-merging L1 (base) and
+/// L2 (overlay).
+fn parse_and_deserialize_from_value<T: serde::de::DeserializeOwned>(
+    mut value: toml::Value,
+    ctx: &str,
+) -> Result<T> {
     expand_env_vars(&mut value);
     value
         .try_into()
         .with_context(|| format!("failed to deserialize config: {ctx}"))
-}
-
-/// Read + parse a TOML file into a `toml::Value` (no expansion, no
-/// deserialization). Used by [`load_config_layered`] so the deep-merge
-/// happens between L1 (base) and L2 (overlay) before `${VAR}` expansion.
-fn load_value_for_layered(path: &Path) -> Result<toml::Value> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    parse_toml_value(&content, &path.display().to_string())
 }
 
 /// Load configuration from a TOML file.
@@ -956,21 +969,17 @@ pub fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value {
 pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConfig> {
     // Read + parse the workdir file. L2 is the overlay; L1 (if any) is
     // the base, deep-merged underneath.
-    let mut value = load_value_for_layered(path)?;
+    let mut value = read_and_parse(path)?;
 
     if let Some(global_path) = global.filter(|g| *g != path && g.exists()) {
-        let global_value = load_value_for_layered(global_path)?;
+        let global_value = read_and_parse(global_path)?;
         value = merge_toml(global_value, value);
     }
 
     // Expansion happens after the merge so `${VAR}` resolves identically
-    // regardless of which layer defined the key.
-    let path_label = path.display().to_string();
-    expand_env_vars(&mut value);
-    let config: AppConfig = value
-        .try_into()
-        .with_context(|| format!("failed to deserialize config: {path_label}"))?;
-    Ok(config)
+    // regardless of which layer defined the key. Same expand+deserialize
+    // tail as L1/L3 (see [`parse_and_deserialize_from_value`]).
+    parse_and_deserialize_from_value(value, &path.display().to_string())
 }
 
 /// Recursively expand `${VAR}` patterns in TOML string values
@@ -1005,6 +1014,24 @@ fn expand_env_vars(value: &mut toml::Value) {
 #[cfg(test)]
 mod config_loader_tests {
     use super::*;
+
+    /// Test-only builder for `ProviderDef`. Every field except the two
+    /// API-key fields is irrelevant to the `resolve_api_key` tests; this
+    /// helper shrinks the four test fixtures to one line each.
+    fn provider_with_keys(api_key: Option<&str>, api_key_env: Option<&str>) -> ProviderDef {
+        ProviderDef {
+            provider_type: "anthropic".to_string(),
+            base_url: None,
+            api_key: api_key.map(String::from),
+            api_key_env: api_key_env.map(String::from),
+            context_window: None,
+            supports_images: None,
+            params: None,
+            user_agent: None,
+            pricing: None,
+            models: std::collections::HashMap::new(),
+        }
+    }
 
     #[test]
     fn test_expand_env_vars() {
@@ -1054,18 +1081,7 @@ mod config_loader_tests {
         unsafe {
             std::env::set_var("JYC_RESOLVE_KEY_TEST", "env-key-value");
         }
-        let p = ProviderDef {
-            provider_type: "anthropic".to_string(),
-            base_url: None,
-            api_key: Some("literal-not-used".to_string()),
-            api_key_env: Some("JYC_RESOLVE_KEY_TEST".to_string()),
-            context_window: None,
-            supports_images: None,
-            params: None,
-            user_agent: None,
-            pricing: None,
-            models: std::collections::HashMap::new(),
-        };
+        let p = provider_with_keys(Some("literal-not-used"), Some("JYC_RESOLVE_KEY_TEST"));
         assert_eq!(p.resolve_api_key().as_deref(), Some("env-key-value"));
         unsafe {
             std::env::remove_var("JYC_RESOLVE_KEY_TEST");
@@ -1076,18 +1092,7 @@ mod config_loader_tests {
     /// `${VAR}` value, return that value.
     #[test]
     fn resolve_api_key_falls_back_to_api_key_field() {
-        let p = ProviderDef {
-            provider_type: "anthropic".to_string(),
-            base_url: None,
-            api_key: Some("expanded-key-value".to_string()),
-            api_key_env: None,
-            context_window: None,
-            supports_images: None,
-            params: None,
-            user_agent: None,
-            pricing: None,
-            models: std::collections::HashMap::new(),
-        };
+        let p = provider_with_keys(Some("expanded-key-value"), None);
         assert_eq!(p.resolve_api_key().as_deref(), Some("expanded-key-value"));
     }
 
@@ -1095,36 +1100,14 @@ mod config_loader_tests {
     /// `api_key_env` → `None`.
     #[test]
     fn resolve_api_key_returns_none_when_empty_and_no_env() {
-        let p = ProviderDef {
-            provider_type: "anthropic".to_string(),
-            base_url: None,
-            api_key: Some(String::new()),
-            api_key_env: None,
-            context_window: None,
-            supports_images: None,
-            params: None,
-            user_agent: None,
-            pricing: None,
-            models: std::collections::HashMap::new(),
-        };
+        let p = provider_with_keys(Some(""), None);
         assert_eq!(p.resolve_api_key(), None);
     }
 
     /// Neither field set → `None`.
     #[test]
     fn resolve_api_key_returns_none_when_neither_set() {
-        let p = ProviderDef {
-            provider_type: "anthropic".to_string(),
-            base_url: None,
-            api_key: None,
-            api_key_env: None,
-            context_window: None,
-            supports_images: None,
-            params: None,
-            user_agent: None,
-            pricing: None,
-            models: std::collections::HashMap::new(),
-        };
+        let p = provider_with_keys(None, None);
         assert_eq!(p.resolve_api_key(), None);
     }
 

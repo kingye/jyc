@@ -1564,10 +1564,7 @@ url = "https://example.com/mcp"
         // load-time expansion end-to-end requires it. Test uses a unique
         // env-var name and cleans up; see existing test_expand_env_vars.
         unsafe {
-            std::env::set_var(
-                "JYC_LOAD_THREAD_MODEL",
-                "anthropic/claude-opus-4-7",
-            );
+            std::env::set_var("JYC_LOAD_THREAD_MODEL", "anthropic/claude-opus-4-7");
         }
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");

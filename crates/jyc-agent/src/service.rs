@@ -153,6 +153,18 @@ pub struct JycAgentService {
     outbounds: std::sync::Mutex<Option<OutboundsMap>>,
 }
 
+/// Source layer of an MCP server after the L1 (global) / L2 (channel) /
+/// L3 (thread-local) overlay resolution. Used only to tag entries for the
+/// per-thread observability log; it does not affect tool registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpLayer {
+    Global,
+    Channel,
+    Pattern,
+    ThreadOverride,
+    ThreadReplace,
+}
+
 impl JycAgentService {
     /// Create a new agent service with the given live `AppConfig` handle,
     /// workdir, MCP configs, current channel's patterns, global inbound-attachment
@@ -915,6 +927,8 @@ impl JycAgentService {
     /// compatible fallback).
     async fn build_tool_registry(
         &self,
+        thread_name: &str,
+        thread_path: &Path,
         thread_cfg: Option<&ThreadConfig>,
         supports_images: bool,
         matched_pattern_name: Option<&str>,
@@ -940,6 +954,50 @@ impl JycAgentService {
         let matched_pattern =
             matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
+        // --- L3 thread-local config lifecycle log ---
+        // Always emit one of three outcomes so a remote-deploy grep on
+        // "thread-local MCP" or "thread config loaded" reveals whether the
+        // L3 file was found, valid, and applied. This is the only signal
+        // that tells operators whether the thread-local overlay engaged.
+        let thread_cfg_path = thread_path.join(".jyc").join("config.toml");
+        let configured_mcps = thread_cfg
+            .and_then(|t| t.mcps.as_ref())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let mcps_replace = thread_cfg.map(|t| t.mcps_replace).unwrap_or(false);
+        match thread_cfg {
+            None => tracing::debug!(
+                channel = %self.channel_name,
+                thread = %thread_name,
+                path = %thread_cfg_path.display(),
+                "no thread-local MCP overlay (L3 file absent or unreadable)"
+            ),
+            Some(cfg) if cfg.mcps.is_none() && !cfg.mcps_replace => tracing::debug!(
+                channel = %self.channel_name,
+                thread = %thread_name,
+                path = %thread_cfg_path.display(),
+                configured_mcps = configured_mcps,
+                mcps_replace = mcps_replace,
+                "thread config loaded but has no [[mcps]]; L3 is a no-op"
+            ),
+            Some(cfg) => {
+                let names: Vec<&str> = cfg
+                    .mcps
+                    .as_ref()
+                    .map(|v| v.iter().map(|m| m.name.as_str()).collect())
+                    .unwrap_or_default();
+                tracing::info!(
+                    channel = %self.channel_name,
+                    thread = %thread_name,
+                    path = %thread_cfg_path.display(),
+                    configured_mcps = configured_mcps,
+                    mcps_replace = mcps_replace,
+                    thread_mcp_names = ?names,
+                    "Applied thread-local MCP overlay (L3)"
+                );
+            }
+        }
+
         // --- MCP server exclusion (disabled_mcp_servers) ---
         // Merge channel-level + pattern-level disabled MCP servers
         let disabled_mcp_servers: Vec<&str> = {
@@ -959,12 +1017,17 @@ impl JycAgentService {
             set
         };
 
-        // Resolve MCP configs: pattern → channel → global
-        let base_mcps: &[McpServerConfig] = matched_pattern
-            .and_then(|p| p.mcps.as_ref())
-            .map(|mcps| mcps.as_slice())
-            .or(self.channel_mcp_configs.as_deref())
-            .unwrap_or(self.mcp_configs.as_slice());
+        // Resolve MCP configs: pattern → channel → global. Tag each baseline
+        // entry with its source layer so the per-thread log can show exactly
+        // which MCP came from which config layer.
+        let (base_mcps, base_layer): (&[McpServerConfig], McpLayer) =
+            if let Some(p) = matched_pattern.and_then(|p| p.mcps.as_ref()) {
+                (p.as_slice(), McpLayer::Pattern)
+            } else if let Some(c) = self.channel_mcp_configs.as_deref() {
+                (c, McpLayer::Channel)
+            } else {
+                (self.mcp_configs.as_slice(), McpLayer::Global)
+            };
 
         // Layer thread (L3) MCPs from the pre-loaded <thread_path>/.jyc/config.toml
         // on top: additive by default, opt-in full replace via `mcps_replace = true`.
@@ -973,11 +1036,24 @@ impl JycAgentService {
         let effective_mcps: Vec<McpServerConfig> =
             jyc_types::apply_thread_mcp_overlay(base_mcps, thread_cfg);
 
-        // Filter out disabled MCP servers before loading
-        let filtered_mcp_configs: Vec<McpServerConfig> = effective_mcps
+        // Re-tag the resolved list with the source layer each MCP came from.
+        // `apply_thread_mcp_overlay` keeps base entries in place for unchanged
+        // names and appends new ones; we attribute each by comparing against
+        // the baseline. When `mcps_replace=true` every entry is from the L3.
+        let mut filtered_mcp_configs: Vec<(McpServerConfig, McpLayer)> = effective_mcps
             .into_iter()
-            .filter(|c| !disabled_mcp_servers.contains(&c.name.as_str()))
+            .map(|c| {
+                let layer = if mcps_replace || !base_mcps.iter().any(|b| b.name == c.name) {
+                    McpLayer::ThreadOverride
+                } else {
+                    base_layer
+                };
+                (c, layer)
+            })
             .collect();
+
+        // Filter out disabled MCP servers before loading
+        filtered_mcp_configs.retain(|(c, _)| !disabled_mcp_servers.contains(&c.name.as_str()));
 
         if !disabled_mcp_servers.is_empty() {
             tracing::debug!(
@@ -1019,13 +1095,48 @@ impl JycAgentService {
         let (disabled_server_tools, disabled_plain_tools): (Vec<&str>, Vec<&str>) =
             disabled_tools.into_iter().partition(|t| t.contains('/'));
 
-        // Load external MCP tools from filtered configs
-        if !filtered_mcp_configs.is_empty() {
+        // Per-thread structured log: which MCPs were actually loaded and
+        // which config layer each originated from. Replaces the previous
+        // count-only "Loading external MCP tools" line.
+        if mcps_replace {
+            for (_, l) in filtered_mcp_configs.iter_mut() {
+                *l = McpLayer::ThreadReplace;
+            }
+        }
+        let mcps_total = filtered_mcp_configs.len();
+        if mcps_total > 0 {
+            let mcps: Vec<String> = filtered_mcp_configs
+                .iter()
+                .map(|(c, l)| match l {
+                    McpLayer::Global => format!("{}:global", c.name),
+                    McpLayer::Channel => format!("{}:channel", c.name),
+                    McpLayer::Pattern => format!("{}:pattern", c.name),
+                    McpLayer::ThreadOverride => format!("{}:thread", c.name),
+                    McpLayer::ThreadReplace => format!("{}:thread-replace", c.name),
+                })
+                .collect();
             tracing::info!(
-                mcp_count = filtered_mcp_configs.len(),
-                "Loading external MCP tools"
+                channel = %self.channel_name,
+                thread = %thread_name,
+                pattern = ?matched_pattern_name,
+                mcps_total = mcps_total,
+                from_global = mcps.iter().filter(|s| s.ends_with(":global")).count(),
+                from_channel = mcps.iter().filter(|s| s.ends_with(":channel")).count(),
+                from_pattern = mcps.iter().filter(|s| s.ends_with(":pattern")).count(),
+                from_thread = mcps.iter().filter(|s| s.ends_with(":thread")).count(),
+                from_thread_replace = mcps.iter().filter(|s| s.ends_with(":thread-replace")).count(),
+                mcps = ?mcps,
+                "Resolved MCP servers for thread"
             );
-            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&filtered_mcp_configs).await;
+        }
+
+        // Load external MCP tools from filtered configs
+        let configs: Vec<McpServerConfig> = filtered_mcp_configs
+            .iter()
+            .map(|(c, _)| c.clone())
+            .collect();
+        if !configs.is_empty() {
+            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&configs).await;
             for tool in mcp_tools {
                 // Skip tools matching disabled_server_tools (server/tool format)
                 let source = tool.source();
@@ -1367,6 +1478,8 @@ impl AgentService for JycAgentService {
         // 5. Build tool registry
         let tools = self
             .build_tool_registry(
+                thread_name,
+                thread_path,
                 thread_cfg.as_ref(),
                 provider.supports_images(),
                 message.matched_pattern.as_deref(),
@@ -2070,7 +2183,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2095,7 +2216,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2115,7 +2244,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2142,7 +2279,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, Some(vec!["other".to_string()]));
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         // Registry should still contain built-in tools
         assert!(registry.has_tool("bash"));
@@ -2153,7 +2298,9 @@ mod tests {
     async fn channel_disabled_tools_works_without_pattern_match() {
         // channel-level disabled_tools should apply even when no pattern is matched
         let svc = service_with_exclusion(vec![], Some(vec!["bash".to_string()]), None);
-        let registry = svc.build_tool_registry(None, false, None).await;
+        let registry = svc
+            .build_tool_registry("test", Path::new("/tmp/test-thread"), None, false, None)
+            .await;
 
         assert!(
             !registry.has_tool("bash"),
@@ -2171,7 +2318,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec![]), Some(vec![]));
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         assert!(registry.has_tool("bash"), "bash should still be available");
         assert!(registry.has_tool("jyc_reply_message"));
@@ -2187,7 +2342,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         assert!(!registry.has_tool("bash"));
         assert!(registry.has_tool("read"));
@@ -2211,7 +2374,15 @@ mod tests {
             enabled_tools: None,
         }]);
         let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         // Registry should contain built-in tools (no panic from MCP loading)
         assert!(registry.has_tool("bash"));
@@ -2229,7 +2400,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         // bash is a built-in tool with no source(), so "some_server/bash" won't match it
         assert!(
@@ -2253,7 +2432,15 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         assert!(
             !registry.has_tool("bash"),
@@ -2283,7 +2470,15 @@ mod tests {
             enabled_tools: Some(vec!["allowed_tool".to_string()]),
         }]);
         let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
-        let registry = svc.build_tool_registry(None, false, Some("test")).await;
+        let registry = svc
+            .build_tool_registry(
+                "test",
+                Path::new("/tmp/test-thread"),
+                None,
+                false,
+                Some("test"),
+            )
+            .await;
 
         // Built-in tools should still be present
         assert!(registry.has_tool("bash"), "bash should still be available");
@@ -2318,7 +2513,7 @@ command = ["./thread-mcp"]
         let svc = service_with_exclusion(patterns, None, None);
         let thread_cfg = jyc_types::load_thread_config(tmp.path());
         let registry = svc
-            .build_tool_registry(thread_cfg.as_ref(), false, Some("test"))
+            .build_tool_registry("test", tmp.path(), thread_cfg.as_ref(), false, Some("test"))
             .await;
 
         // Built-in tools still present — confirms the thread config didn't

@@ -191,7 +191,34 @@ All notable changes to JYC will be documented in this file.
   added later, the field will need to be renamed rather than gain a
   new variant.
 
+- **Per-thread MCP load log.** Every `process()` invocation now emits a
+  structured `INFO Resolved MCP servers for thread` line with the
+  channel/thread/pattern, the resolved name list in `name:layer` form,
+  and per-layer counts (`from_global`, `from_channel`, `from_pattern`,
+  `from_thread`, `from_thread_replace`). Replaces the previous count-only
+  `Loading external MCP tools` debug line so operators can directly
+  answer "which MCPs is this thread actually using and where did they
+  come from" from a single log line — useful for diagnosing remote
+  deployments where the L3 thread-local overlay appears to be ignored.
+
+- **L3 thread-config load heartbeat.** A dedicated `debug!` / `info!`
+  line is emitted on every `process()` invocation that resolves the
+  `<thread>/.jyc/config.toml` overlay. Three outcomes are
+  distinguished: file absent (DEBUG), file parsed but no `[[mcps]]`
+  block (DEBUG no-op), and overlay applied (INFO with `configured_mcps`,
+  `mcps_replace`, `thread_mcp_names`). Remote deployments can now
+  distinguish "no file at all" from "file present but unreadable" from
+  "file applied" without instrumenting the agent.
+
 ### Fixed
+
+- **Silent `load_thread_config` I/O failures.** A failed read (e.g.
+  `EACCES` in remote deployments where the agent user can't read the
+  thread-config file) was swallowed by `read_to_string(&path).ok()?`
+  and the L3 overlay dropped with no log. The function now emits a
+  `WARN Failed to read thread config; ...` log carrying the path and
+  underlying error before returning `None`, so the failure mode is
+  visible in production logs.
 
 - **Anthropic cost undercounting with prompt caching.** Anthropic's
   `input_tokens` counts only the *uncached* portion of the prompt, with

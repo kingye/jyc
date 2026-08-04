@@ -790,14 +790,27 @@ pub struct ThreadAgentConfig {
 
 /// Load thread-level overrides from `<thread_path>/.jyc/config.toml`.
 ///
-/// Returns `None` when the file does not exist. Parse errors are logged and
-/// treated as "no overrides" (a broken thread config must not crash the agent).
+/// Returns `None` when the file does not exist, when it cannot be read
+/// (e.g. EACCES in remote deployments — the agent runs under a different
+/// user than the config owner), or when it fails to parse. All non-`Ok`
+/// outcomes are logged at `warn` so the failure mode is visible in
+/// production logs; a broken thread config must not crash the agent.
 pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
     let path = thread_path.join(".jyc").join("config.toml");
     if !path.exists() {
         return None;
     }
-    let content = std::fs::read_to_string(&path).ok()?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Failed to read thread config; thread-local MCP overlay will be skipped"
+            );
+            return None;
+        }
+    };
     match toml::from_str(&content) {
         Ok(cfg) => Some(cfg),
         Err(e) => {

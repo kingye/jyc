@@ -83,19 +83,16 @@ pub fn build_agent_service(
                             .base_url
                             .clone()
                             .unwrap_or_else(|| "https://api.deepseek.com".to_string());
-                        // Resolve API key: explicit field first, then
-                        // legacy `api_key_env` (with the historical
-                        // DEEPSEEK_API_KEY fallback for vision callers
-                        // who didn't customize their config).
-                        let api_key = if let Some(key) = provider_def.api_key.clone() {
-                            key
-                        } else {
-                            let env_var = provider_def
-                                .api_key_env
-                                .clone()
-                                .unwrap_or_else(|| "DEEPSEEK_API_KEY".to_string());
-                            std::env::var(&env_var).unwrap_or_default()
-                        };
+                        // Same precedence as the main provider path:
+                        // `api_key_env` (legacy) wins when both are set,
+                        // else fall back to `api_key`. If the provider
+                        // has neither, fall back to the historical
+                        // DEEPSEEK_API_KEY env var (vision callers who
+                        // never customized their config rely on this).
+                        let api_key = provider_def
+                            .resolve_api_key()
+                            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
+                            .unwrap_or_default();
                         if api_key.is_empty() {
                             tracing::warn!(
                                 provider = %v.provider,

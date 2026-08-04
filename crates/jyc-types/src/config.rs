@@ -871,6 +871,10 @@ pub struct ThreadAgentConfig {
 /// user than the config owner), or when it fails to parse. All non-`Ok`
 /// outcomes are logged at `warn` so the failure mode is visible in
 /// production logs; a broken thread config must not crash the agent.
+///
+/// Structurally mirrors [`load_config_from_str`] but returns
+/// `Option<ThreadConfig>` and swallows errors. `${VAR}` expansion runs
+/// on every string field (via [`parse_and_deserialize`]).
 pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
     let path = thread_path.join(".jyc").join("config.toml");
     let path_label = path.display().to_string();
@@ -888,9 +892,11 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
             return None;
         }
     };
-    // Same parse + expand + deserialize pipeline as L1/L2. Errors are
-    // swallowed (warn + None) per the docstring above: a broken thread
-    // config must not crash the agent.
+    // Same parse + expand + deserialize pipeline as
+    // load_config_from_str / load_config_layered (all four public
+    // loaders now share [`parse_and_deserialize`] for the parse+expand
+    // step). Errors are swallowed (warn + None) per the docstring
+    // above: a broken thread config must not crash the agent.
     match parse_and_deserialize::<ThreadConfig>(&content, &path_label) {
         Ok(cfg) => Some(cfg),
         Err(e) => {

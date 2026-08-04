@@ -807,8 +807,7 @@ fn load_value_for_layered(path: &Path) -> Result<toml::Value> {
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
-
-    load_config_from_str(&content)
+    parse_and_deserialize(&content, &path.display().to_string())
 }
 
 /// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
@@ -888,15 +887,7 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
 ///
 /// Expands `${VAR}` environment variable references, then deserializes.
 pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
-    // First parse as raw TOML Value so we can expand env vars
-    let mut value: toml::Value = toml::from_str(content).context("failed to parse TOML")?;
-
-    expand_env_vars(&mut value);
-
-    // Now deserialize the expanded TOML into our config struct
-    let config: AppConfig = value.try_into().context("failed to deserialize config")?;
-
-    Ok(config)
+    parse_and_deserialize(content, "<inline>")
 }
 
 /// Apply the thread-level (L3) MCP overlay onto a base list.
@@ -959,21 +950,22 @@ pub fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value {
 /// A missing global config file is silently ignored (layering is optional);
 /// a missing `path` config file is an error.
 pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    let mut value: toml::Value = toml::from_str(&content)
-        .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
+    // Read + parse the workdir file. L2 is the overlay; L1 (if any) is
+    // the base, deep-merged underneath.
+    let mut value = load_value_for_layered(path)?;
 
     if let Some(global_path) = global.filter(|g| *g != path && g.exists()) {
-        let global_content = std::fs::read_to_string(global_path)
-            .with_context(|| format!("failed to read config file: {}", global_path.display()))?;
-        let global_value: toml::Value = toml::from_str(&global_content)
-            .with_context(|| format!("failed to parse TOML: {}", global_path.display()))?;
+        let global_value = load_value_for_layered(global_path)?;
         value = merge_toml(global_value, value);
     }
 
+    // Expansion happens after the merge so `${VAR}` resolves identically
+    // regardless of which layer defined the key.
+    let path_label = path.display().to_string();
     expand_env_vars(&mut value);
-    let config: AppConfig = value.try_into().context("failed to deserialize config")?;
+    let config: AppConfig = value
+        .try_into()
+        .with_context(|| format!("failed to deserialize config: {path_label}"))?;
     Ok(config)
 }
 

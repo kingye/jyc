@@ -27,10 +27,13 @@ use crate::types::{AgentLoopResult, ContentBlock, Message, Role, StreamEvent, To
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 
 /// Interval between `ThreadEvent::LoopTick` heartbeats while the agent
-/// loop is running. 250 ms = 4 Hz, snappy enough to feel live while cheap
-/// enough to not flood the event bus. Matches the cadence requested by the
-/// dashboard's `live_tick_ms` ticker.
-const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// loop is running. 1 s = 1 Hz — coarse on purpose so the WS bus and the
+/// dashboard's render loop don't churn. The dashboard re-renders on every
+/// tick; at 1 Hz that's once per second, which matches the cadence of
+/// the OS-level progress indicators (activity monitor, `top`, etc.) the
+/// user is used to. The very first tick fires at t=0 (see
+/// `run_ticker`), so a short sub-second loop still produces one event.
+const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
@@ -179,6 +182,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         let ticker_cancel = cancel.child_token();
         let handle = run_ticker(
             start_time,
+            LOOP_TICK_INTERVAL,
             ticker_cancel.clone(),
             Some(bus),
             thread_name.to_string(),
@@ -1100,20 +1104,26 @@ async fn publish_event(event_bus: Option<&ThreadEventBusRef>, event: ThreadEvent
 }
 
 /// Spawn the live-duration ticker. While the agent loop is alive, the
-/// spawned task publishes a `ThreadEvent::LoopTick` every
-/// `LOOP_TICK_INTERVAL` so the dashboard can show the wall-clock elapsed
-/// time even during silent LLM/tool work (when no iteration has produced
-/// a `ProcessingProgress` event yet). Returns the task's `JoinHandle`
-/// so the caller can cancel it on natural loop completion.
+/// spawned task publishes a `ThreadEvent::LoopTick` every `interval`
+/// (with the very first tick fired immediately at t=0) so the dashboard
+/// can show the wall-clock elapsed time even during silent LLM/tool work
+/// (when no iteration has produced a `ProcessingProgress` event yet).
+/// Returns the task's `JoinHandle` so the caller can cancel it on
+/// natural loop completion.
 ///
 /// The cancel token here is the *thread-level* token. On explicit cancel
 /// or shutdown it fires and the task exits — but on natural completion
 /// (success / no_reply guard) nothing fires it. Without a `JoinHandle`
 /// the spawned task would leak, broadcasting stale `LoopTick` events at
-/// 4 Hz until runtime shutdown. The caller is responsible for aborting
+/// 1 Hz until runtime shutdown. The caller is responsible for aborting
 /// the handle on every non-cancel exit (see `TickerGuard` in `run`).
+///
+/// `interval` is taken as a parameter (rather than reading
+/// `LOOP_TICK_INTERVAL` directly) so tests can use a fast override and
+/// stay under one second.
 fn run_ticker(
     start_time: Instant,
+    interval: std::time::Duration,
     cancel: CancellationToken,
     event_bus: Option<&ThreadEventBusRef>,
     thread_name: String,
@@ -1121,18 +1131,21 @@ fn run_ticker(
     let bus = event_bus.cloned();
     tokio::spawn(async move {
         loop {
+            // Publish first so the very first tick lands at t=0 — the
+            // dashboard's `live_tick_ms_for` otherwise returns None
+            // until the first `interval` elapses, leaving short
+            // sub-second loops invisible.
+            let elapsed_ms = start_time.elapsed().as_millis() as u64;
+            let event = ThreadEvent::LoopTick {
+                thread_name: thread_name.clone(),
+                elapsed_ms,
+                timestamp: Utc::now(),
+            };
+            if let Some(bus) = bus.as_ref() {
+                let _ = bus.publish(event).await;
+            }
             tokio::select! {
-                _ = tokio::time::sleep(LOOP_TICK_INTERVAL) => {
-                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    let event = ThreadEvent::LoopTick {
-                        thread_name: thread_name.clone(),
-                        elapsed_ms,
-                        timestamp: Utc::now(),
-                    };
-                    if let Some(bus) = bus.as_ref() {
-                        let _ = bus.publish(event).await;
-                    }
-                }
+                _ = tokio::time::sleep(interval) => {}
                 _ = cancel.cancelled() => break,
             }
         }
@@ -2453,13 +2466,20 @@ mod ticker_tests {
         let cancel = CancellationToken::new();
         let start = Instant::now();
 
-        // Spawn the ticker; TickerGuard would abort on drop, but here we
-        // want to test cancel-driven exit specifically — keep the handle
-        // alive but uncancelled.
-        let handle = run_ticker(start, cancel.clone(), Some(&bus), "thread-x".to_string());
+        // Spawn with a fast interval so the test finishes in <500 ms
+        // instead of waiting 3+ seconds at the production 1 Hz cadence.
+        let handle = run_ticker(
+            start,
+            Duration::from_millis(50),
+            cancel.clone(),
+            Some(&bus),
+            "thread-x".to_string(),
+        );
 
         // Wait for at least 3 ticks before cancelling (~150 ms at 50 ms
-        // interval — production uses 250 ms).
+        // interval — production uses 1 s). The very first tick fires
+        // immediately at t=0, so we expect ticks more frequently than
+        // the interval suggests.
         let mut got = 0u32;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while got < 3 && std::time::Instant::now() < deadline {
@@ -2483,6 +2503,41 @@ mod ticker_tests {
         let _ = handle.await;
     }
 
+    /// The very first tick must fire at t=0, not at t=`interval` —
+    /// otherwise a sub-second loop produces no event at all and the
+    /// dashboard shows nothing.
+    #[tokio::test]
+    async fn run_ticker_publishes_immediately_at_t_zero() {
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+        let start = Instant::now();
+
+        // Long interval (production cadence), short observation window:
+        // if the first tick waited for the interval, the recv() would
+        // time out before any event landed.
+        let handle = run_ticker(
+            start,
+            Duration::from_secs(1),
+            cancel.clone(),
+            Some(&bus),
+            "thread-x".to_string(),
+        );
+
+        match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+            Ok(Some(ThreadEvent::LoopTick { elapsed_ms, .. })) => {
+                assert!(
+                    elapsed_ms < 50,
+                    "first tick should fire near t=0, got elapsed_ms={elapsed_ms}"
+                );
+            }
+            other => panic!("expected an immediate first LoopTick, got {other:?}"),
+        }
+
+        cancel.cancel();
+        let _ = handle.await;
+    }
+
     /// Regression for the orphan-ticker bug: when the cancel token is
     /// *not* fired (natural completion), the ticker must still exit via
     /// `TickerGuard::drop` → `JoinHandle::abort`. Before the guard was
@@ -2494,7 +2549,13 @@ mod ticker_tests {
         let cancel = CancellationToken::new();
         let start = Instant::now();
 
-        let handle = run_ticker(start, cancel.clone(), Some(&bus), "thread-x".to_string());
+        let handle = run_ticker(
+            start,
+            Duration::from_millis(50),
+            cancel.clone(),
+            Some(&bus),
+            "thread-x".to_string(),
+        );
 
         // Drain one tick to confirm it's actually running.
         match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
@@ -2514,14 +2575,14 @@ mod ticker_tests {
             // Re-acquire the handle from the guard would require a getter;
             // instead just assert the ticker stops publishing. Both
             // `cancel.cancel()` and `handle.abort()` happen in `drop`,
-            // so within 250 ms (one tick interval) no further tick fires.
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            // so within one tick interval (50 ms here) no further tick fires.
+            tokio::time::sleep(Duration::from_millis(150)).await;
         })
         .await;
         assert!(joined.is_ok(), "drop guard should not hang");
 
         if let Ok(Some(ThreadEvent::LoopTick { .. })) =
-            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
         {
             panic!("ticker should not publish after TickerGuard drop")
         }

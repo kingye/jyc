@@ -560,10 +560,12 @@ fn publish_processing_event(
     let _ = bus.send(payload.to_string());
 }
 
-/// Broadcast a 4 Hz wall-clock elapsed tick to dashboard WS clients so the
-/// chat pane, chat-mode info pane, and dashboard Details panel can show a
-/// live duration indicator. Fires only while the loop is alive; not
-/// persisted to `activity.jsonl` (handled upstream via `is_internal`).
+/// Broadcast a 1 Hz wall-clock elapsed tick to dashboard WS clients so
+/// the chat pane, chat-mode info pane, and dashboard Details panel can
+/// show a live duration indicator. The first tick fires at t=0 (see
+/// `run_ticker` in the agent loop) so sub-second loops still emit one
+/// event. Not persisted to `activity.jsonl` (handled upstream via
+/// `is_internal`).
 ///
 /// Payload format:
 ///   {"type":"loop_tick","channel":"...","thread":"...","elapsed_ms":u64}
@@ -855,8 +857,9 @@ impl ActivityTracker {
                                                                     // was skipped above (no activity.jsonl write, no
                                                                     // activity-pane entry), but we still want to fan it
                                                                     // out over WS so the dashboard can render a live
-                                                                    // "12.4s" indicator. The LoopTick variant carries
-                                                                    // the elapsed_ms value directly.
+                                                                    // "12.4s" indicator. LoopTick fires at 1 Hz (with
+                                                                    // the first tick at t=0); the elapsed_ms value
+                                                                    // on the variant is what we forward.
                                                                     if let ThreadEvent::LoopTick { elapsed_ms, .. } = &event {
                                                                         publish_loop_tick_event(
                                                                             &inspect_broadcast_for_task,
@@ -908,9 +911,10 @@ fn is_event_internal(event: &ThreadEvent) -> bool {
     // tool runs to indicate the agent is still working. They're useful
     // for debug logs but noisy in the UI - filter them.
     //
-    // LoopTick is a 4 Hz wall-clock heartbeat that drives the dashboard's
-    // live-duration ticker. Same reasoning as ProcessingProgress: useful
-    // for the WS ticker payload, not for the activity pane.
+    // LoopTick is a 1 Hz wall-clock heartbeat that drives the dashboard's
+    // live-duration ticker (with the first tick fired at t=0). Same
+    // reasoning as ProcessingProgress: useful for the WS ticker
+    // payload, not for the activity pane.
     matches!(
         event,
         ThreadEvent::ProcessingProgress { .. } | ThreadEvent::LoopTick { .. }

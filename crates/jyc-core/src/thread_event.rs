@@ -57,11 +57,12 @@ pub enum ThreadEvent {
 
     /// Loop tick event.
     ///
-    /// Sent periodically (default: every 250 ms) by the agent loop while
-    /// it is running, so the dashboard can show a live elapsed-duration
-    /// indicator that ticks even during silent LLM/tool work. Marked as
-    /// `is_internal` by the inspect server so it doesn't pollute the
-    /// activity pane or activity.jsonl.
+    /// Sent periodically (default: every 1 s, with the first tick fired
+    /// immediately at t=0) by the agent loop while it is running, so the
+    /// dashboard can show a live elapsed-duration indicator that ticks
+    /// even during silent LLM/tool work. Marked as `is_internal` by the
+    /// inspect server so it doesn't pollute the activity pane or
+    /// activity.jsonl.
     LoopTick {
         /// Name of the thread
         thread_name: String,

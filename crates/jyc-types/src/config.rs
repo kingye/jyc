@@ -770,6 +770,36 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use std::path::Path;
 
+/// Parse raw TOML content into a `toml::Value` tree. No `${VAR}` expansion,
+/// no deserialization. Used by [`parse_and_deserialize`] and the L2 layer
+/// merge in [`load_config_layered`].
+///
+/// `ctx` is included in the error message so failures point at the file
+/// the content came from.
+fn parse_toml_value(content: &str, ctx: &str) -> Result<toml::Value> {
+    toml::from_str(content).with_context(|| format!("failed to parse TOML: {ctx}"))
+}
+
+/// Parse + expand `${VAR}` + deserialize to a typed target. The canonical
+/// "load a TOML config" pipeline. Used by every config loader (L1, L2, L3)
+/// so all three layers run the same code path.
+fn parse_and_deserialize<T: serde::de::DeserializeOwned>(content: &str, ctx: &str) -> Result<T> {
+    let mut value = parse_toml_value(content, ctx)?;
+    expand_env_vars(&mut value);
+    value
+        .try_into()
+        .with_context(|| format!("failed to deserialize config: {ctx}"))
+}
+
+/// Read + parse a TOML file into a `toml::Value` (no expansion, no
+/// deserialization). Used by [`load_config_layered`] so the deep-merge
+/// happens between L1 (base) and L2 (overlay) before `${VAR}` expansion.
+fn load_value_for_layered(path: &Path) -> Result<toml::Value> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    parse_toml_value(&content, &path.display().to_string())
+}
+
 /// Load configuration from a TOML file.
 ///
 /// Reads the file, expands `${VAR}` environment variable references,

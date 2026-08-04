@@ -569,32 +569,21 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
                         });
                     }
                     if let Some(oauth_cfg) = oauth {
-                        if oauth_cfg.client_id.is_empty() {
-                            errors.push(ValidationError {
-                                path: format!("{mcp_prefix}.oauth.client_id"),
-                                message: format!(
-                                    "MCP '{}' oauth.client_id must not be empty",
-                                    mcp.name
-                                ),
-                            });
-                        }
-                        if oauth_cfg.client_secret.is_empty() {
-                            errors.push(ValidationError {
-                                path: format!("{mcp_prefix}.oauth.client_secret"),
-                                message: format!(
-                                    "MCP '{}' oauth.client_secret must not be empty",
-                                    mcp.name
-                                ),
-                            });
-                        }
-                        if oauth_cfg.token_endpoint.is_empty() {
-                            errors.push(ValidationError {
-                                path: format!("{mcp_prefix}.oauth.token_endpoint"),
-                                message: format!(
-                                    "MCP '{}' oauth.token_endpoint must not be empty",
-                                    mcp.name
-                                ),
-                            });
+                        let required = [
+                            ("client_id", &oauth_cfg.client_id),
+                            ("client_secret", &oauth_cfg.client_secret),
+                            ("token_endpoint", &oauth_cfg.token_endpoint),
+                        ];
+                        for (field, value) in &required {
+                            if value.is_empty() {
+                                errors.push(ValidationError {
+                                    path: format!("{mcp_prefix}.oauth.{field}"),
+                                    message: format!(
+                                        "MCP '{}' oauth.{field} must not be empty",
+                                        mcp.name
+                                    ),
+                                });
+                            }
                         }
                     }
                 }

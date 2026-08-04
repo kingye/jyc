@@ -31,10 +31,13 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// discovered tool as an `McpToolWrapper`. Failed connections are logged
 /// and skipped (graceful degradation).
 pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
+    // One shared HTTP client for OAuth token fetches across all MCPs;
+    // gives us connection pooling without a per-call builder.
+    let http = reqwest::Client::new();
     let mut tools: Vec<Box<dyn Tool>> = Vec::new();
 
     for cfg in cfgs {
-        match connect_and_list_tools(cfg).await {
+        match connect_and_list_tools(cfg, &http).await {
             Ok(mut discovered) => {
                 tracing::info!(
                     mcp_name = %cfg.name,
@@ -57,7 +60,10 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
 }
 
 /// Connect to an MCP server and list its tools.
-async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Tool>>> {
+async fn connect_and_list_tools(
+    cfg: &McpServerConfig,
+    http: &reqwest::Client,
+) -> Result<Vec<Box<dyn Tool>>> {
     let service: RunningService<RoleClient, ()> = match &cfg.kind {
         jyc_types::McpServerKind::Local {
             command,
@@ -95,17 +101,9 @@ async fn connect_and_list_tools(cfg: &McpServerConfig) -> Result<Vec<Box<dyn Too
 
             let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
 
-            // Resolve the bearer token: oauth client_credentials takes
-            // precedence over a static auth_header. Validation rejects both
-            // being set on the same block, so only one is populated here.
-            let bearer: Option<String> = match oauth {
-                Some(oauth_cfg) => {
-                    let http = reqwest::Client::builder()
-                        .build()
-                        .context("failed to build reqwest client for OAuth token fetch")?;
-                    let token = fetch_oauth_token(&cfg.name, oauth_cfg, &http).await?;
-                    Some(token)
-                }
+            // Validation rejects both being set, so only one branch is taken.
+            let bearer = match oauth {
+                Some(oauth_cfg) => Some(fetch_oauth_token(&cfg.name, oauth_cfg, http).await?),
                 None => auth_header.clone(),
             };
             if let Some(token) = bearer {
@@ -396,12 +394,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_oauth_token_sends_client_credentials_and_parses_access_token() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_string, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
+            .and(body_string(
+                "grant_type=client_credentials&client_id=id&client_secret=secret",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"access_token":"abc123","token_type":"Bearer","expires_in":3600}"#,
             ))
@@ -424,12 +425,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_oauth_token_includes_scopes_in_form_body() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_string, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
+            .and(body_string(
+                "grant_type=client_credentials&client_id=id&client_secret=secret&scope=read+write",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"access_token":"xyz"}"#))
             .expect(1)
             .mount(&server)
@@ -469,5 +473,71 @@ mod tests {
             .await
             .expect_err("must fail on 401");
         assert!(err.to_string().contains("401"));
+    }
+
+    #[tokio::test]
+    async fn fetch_oauth_token_returns_error_on_non_json_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>oops</html>"))
+            .mount(&server)
+            .await;
+
+        let cfg = OAuthClientCredentialsConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            token_endpoint: format!("{}/oauth/token", server.uri()),
+            scopes: vec![],
+        };
+        let http = reqwest::Client::new();
+        let err = fetch_oauth_token("test-mcp", &cfg, &http)
+            .await
+            .expect_err("must fail on non-JSON body");
+        assert!(err.to_string().contains("not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn fetch_oauth_token_returns_error_when_access_token_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token_type":"Bearer"}"#))
+            .mount(&server)
+            .await;
+
+        let cfg = OAuthClientCredentialsConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            token_endpoint: format!("{}/oauth/token", server.uri()),
+            scopes: vec![],
+        };
+        let http = reqwest::Client::new();
+        let err = fetch_oauth_token("test-mcp", &cfg, &http)
+            .await
+            .expect_err("must fail when access_token field missing");
+        assert!(err.to_string().contains("access_token"));
+    }
+
+    #[tokio::test]
+    async fn fetch_oauth_token_returns_error_on_connection_refused() {
+        let cfg = OAuthClientCredentialsConfig {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            // Reserved port that should always refuse connections immediately.
+            token_endpoint: "http://127.0.0.1:1/oauth/token".to_string(),
+            scopes: vec![],
+        };
+        let http = reqwest::Client::new();
+        let err = fetch_oauth_token("test-mcp", &cfg, &http)
+            .await
+            .expect_err("must fail when endpoint is unreachable");
+        assert!(err.to_string().contains("OAuth token request"));
     }
 }

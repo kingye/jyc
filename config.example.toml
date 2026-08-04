@@ -496,10 +496,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # "X-API-Key" = "your-api-key"
 # # "X-Organization" = "my-org"
 # # --- OAuth2 client_credentials (machine-to-machine) ---
-# # When `oauth` is set, the agent POSTs `grant_type=client_credentials` to
-# # `token_endpoint` at startup and uses the returned `access_token` as the
-# # Bearer header. Mutually exclusive with `auth_header`. Token is fetched
-# # once per MCP connect — restart on expiry (~1h) to pick up a new token.
+# # See CHANGELOG.md for full semantics. Mutually exclusive with `auth_header`.
 # # [mcps.oauth]
 # # client_id = "your-client-id"
 # # client_secret = "your-client-secret"

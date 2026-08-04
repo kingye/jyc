@@ -16,6 +16,11 @@ All notable changes to JYC will be documented in this file.
   the same block). Token is fetched once per connect — restart on
   expiry to pick up a rotated token.
 
+  Multi-level inheritance note: `oauth` participates in the standard
+  L1/L2/L3 MCP overlay merge on `name`. If a deeper layer redefines
+  the same MCP name without re-listing the `oauth` block, the parent's
+  OAuth config is replaced (same behavior as `auth_header`).
+
 ### Changed
 
 - **Provider `api_key` field.** LLM providers now accept `api_key =

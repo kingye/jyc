@@ -346,7 +346,7 @@ impl Default for MonitorConfig {
 /// model (e.g., DeepSeek-OCR) to analyze images and return text descriptions.
 ///
 /// The `provider` field references a named entry in `[agent.providers.xxx]`
-/// to reuse its `base_url` and `api_key_env`.
+/// to reuse its `base_url` and `api_key` (or `api_key_env` as legacy).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionConfig {
     /// Whether vision fallback is enabled (default: false)
@@ -515,7 +515,20 @@ pub struct ProviderDef {
     pub provider_type: String,
     /// API base URL
     pub base_url: Option<String>,
-    /// Environment variable name containing the API key
+    /// API key, expressed as a `${ENV_VAR}` reference (e.g.
+    /// `api_key = "${ANTHROPIC_API_KEY}"`). Consistent with every other
+    /// secret field in the config. Resolved at config-load via the same
+    /// `${VAR}` expansion that handles `token`, `password`, etc.
+    ///
+    /// When both `api_key` and `api_key_env` are set, `api_key_env` wins
+    /// (legacy precedence) and a warning is logged at startup.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Environment variable name containing the API key (legacy).
+    /// The value is the *name* of an env var, not the key itself.
+    /// Resolved lazily inside `create_provider` via `std::env::var`, so
+    /// the key can be rotated in a long-running process without restart.
+    #[serde(default)]
     pub api_key_env: Option<String>,
     /// Default context window size in tokens (used if model-specific not set)
     pub context_window: Option<u64>,
@@ -536,6 +549,27 @@ pub struct ProviderDef {
     /// Per-model context window overrides
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelDef>,
+}
+
+impl ProviderDef {
+    /// Resolve the API key for this provider.
+    ///
+    /// Order of preference:
+    ///   1. `api_key_env` — legacy. The value is an env-var *name*; we read
+    ///      the env on every call so keys can be rotated in a long-running
+    ///      process without restart.
+    ///   2. `api_key` — preferred. The TOML loader has already expanded
+    ///      `${VAR}` references, so by the time we get here this is either
+    ///      the resolved key value or `""` (env var was unset).
+    ///
+    /// Returns `None` when neither field is set, or when the referenced
+    /// env var is unset / expands to an empty string.
+    pub fn resolve_api_key(&self) -> Option<String> {
+        if let Some(env_var) = &self.api_key_env {
+            return std::env::var(env_var).ok().filter(|s| !s.is_empty());
+        }
+        self.api_key.clone().filter(|s| !s.is_empty())
+    }
 }
 
 /// Per-model configuration within a provider.
@@ -736,6 +770,49 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use std::path::Path;
 
+/// Parse raw TOML content into a `toml::Value` tree. No `${VAR}` expansion,
+/// no deserialization. Used by [`parse_and_deserialize`] and the L2 layer
+/// merge in [`load_config_layered`].
+///
+/// `ctx` is included in the error message so failures point at the file
+/// the content came from.
+fn parse_toml_value(content: &str, ctx: &str) -> Result<toml::Value> {
+    toml::from_str(content).with_context(|| format!("failed to parse TOML: {ctx}"))
+}
+
+/// Read a TOML file into a string and parse it to `toml::Value`. Used by
+/// [`load_config`] (single file) and [`load_config_layered`] (twice — once
+/// for the workdir overlay, once for the global base). No `${VAR}` expansion
+/// at this step; that happens after merging in L2.
+fn read_and_parse(path: &Path) -> Result<toml::Value> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    parse_toml_value(&content, &path.display().to_string())
+}
+
+/// Parse + expand `${VAR}` + deserialize to a typed target. The canonical
+/// "load a TOML config" pipeline used by the L1 and L3 loaders; L2 uses
+/// [`read_and_parse`] + [`parse_and_deserialize_from_value`] for its
+/// two-file deep-merge path.
+fn parse_and_deserialize<T: serde::de::DeserializeOwned>(content: &str, ctx: &str) -> Result<T> {
+    let value = parse_toml_value(content, ctx)?;
+    parse_and_deserialize_from_value(value, ctx)
+}
+
+/// Run `${VAR}` expansion on a parsed TOML tree, then deserialize to a
+/// typed target. The tail half of [`parse_and_deserialize`] — split out
+/// so `load_config_layered` can call it after deep-merging L1 (base) and
+/// L2 (overlay).
+fn parse_and_deserialize_from_value<T: serde::de::DeserializeOwned>(
+    mut value: toml::Value,
+    ctx: &str,
+) -> Result<T> {
+    expand_env_vars(&mut value);
+    value
+        .try_into()
+        .with_context(|| format!("failed to deserialize config: {ctx}"))
+}
+
 /// Load configuration from a TOML file.
 ///
 /// Reads the file, expands `${VAR}` environment variable references,
@@ -743,8 +820,7 @@ use std::path::Path;
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
-
-    load_config_from_str(&content)
+    parse_and_deserialize(&content, &path.display().to_string())
 }
 
 /// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
@@ -795,8 +871,13 @@ pub struct ThreadAgentConfig {
 /// user than the config owner), or when it fails to parse. All non-`Ok`
 /// outcomes are logged at `warn` so the failure mode is visible in
 /// production logs; a broken thread config must not crash the agent.
+///
+/// Structurally mirrors [`load_config_from_str`] but returns
+/// `Option<ThreadConfig>` and swallows errors. `${VAR}` expansion runs
+/// on every string field (via [`parse_and_deserialize`]).
 pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
     let path = thread_path.join(".jyc").join("config.toml");
+    let path_label = path.display().to_string();
     if !path.exists() {
         return None;
     }
@@ -804,17 +885,22 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
-                path = %path.display(),
+                path = %path_label,
                 error = %e,
                 "Failed to read thread config; thread-local MCP overlay will be skipped"
             );
             return None;
         }
     };
-    match toml::from_str(&content) {
+    // Same parse + expand + deserialize pipeline as
+    // load_config_from_str / load_config_layered (all four public
+    // loaders now share [`parse_and_deserialize`] for the parse+expand
+    // step). Errors are swallowed (warn + None) per the docstring
+    // above: a broken thread config must not crash the agent.
+    match parse_and_deserialize::<ThreadConfig>(&content, &path_label) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "Ignoring invalid thread config");
+            tracing::warn!(path = %path_label, error = %e, "Ignoring invalid thread config");
             None
         }
     }
@@ -824,15 +910,7 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
 ///
 /// Expands `${VAR}` environment variable references, then deserializes.
 pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
-    // First parse as raw TOML Value so we can expand env vars
-    let mut value: toml::Value = toml::from_str(content).context("failed to parse TOML")?;
-
-    expand_env_vars(&mut value);
-
-    // Now deserialize the expanded TOML into our config struct
-    let config: AppConfig = value.try_into().context("failed to deserialize config")?;
-
-    Ok(config)
+    parse_and_deserialize(content, "<inline>")
 }
 
 /// Apply the thread-level (L3) MCP overlay onto a base list.
@@ -895,22 +973,19 @@ pub fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value {
 /// A missing global config file is silently ignored (layering is optional);
 /// a missing `path` config file is an error.
 pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    let mut value: toml::Value = toml::from_str(&content)
-        .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
+    // Read + parse the workdir file. L2 is the overlay; L1 (if any) is
+    // the base, deep-merged underneath.
+    let mut value = read_and_parse(path)?;
 
     if let Some(global_path) = global.filter(|g| *g != path && g.exists()) {
-        let global_content = std::fs::read_to_string(global_path)
-            .with_context(|| format!("failed to read config file: {}", global_path.display()))?;
-        let global_value: toml::Value = toml::from_str(&global_content)
-            .with_context(|| format!("failed to parse TOML: {}", global_path.display()))?;
+        let global_value = read_and_parse(global_path)?;
         value = merge_toml(global_value, value);
     }
 
-    expand_env_vars(&mut value);
-    let config: AppConfig = value.try_into().context("failed to deserialize config")?;
-    Ok(config)
+    // Expansion happens after the merge so `${VAR}` resolves identically
+    // regardless of which layer defined the key. Same expand+deserialize
+    // tail as L1/L3 (see [`parse_and_deserialize_from_value`]).
+    parse_and_deserialize_from_value(value, &path.display().to_string())
 }
 
 /// Recursively expand `${VAR}` patterns in TOML string values
@@ -945,6 +1020,24 @@ fn expand_env_vars(value: &mut toml::Value) {
 #[cfg(test)]
 mod config_loader_tests {
     use super::*;
+
+    /// Test-only builder for `ProviderDef`. Every field except the two
+    /// API-key fields is irrelevant to the `resolve_api_key` tests; this
+    /// helper shrinks the four test fixtures to one line each.
+    fn provider_with_keys(api_key: Option<&str>, api_key_env: Option<&str>) -> ProviderDef {
+        ProviderDef {
+            provider_type: "anthropic".to_string(),
+            base_url: None,
+            api_key: api_key.map(String::from),
+            api_key_env: api_key_env.map(String::from),
+            context_window: None,
+            supports_images: None,
+            params: None,
+            user_agent: None,
+            pricing: None,
+            models: std::collections::HashMap::new(),
+        }
+    }
 
     #[test]
     fn test_expand_env_vars() {
@@ -985,6 +1078,43 @@ mod config_loader_tests {
             std::env::remove_var("JYC_TEST_HOST");
             std::env::remove_var("JYC_TEST_PORT");
         }
+    }
+
+    /// `resolve_api_key` returns the env-var value when `api_key_env` is
+    /// set and the env var exists. Late binding preserved.
+    #[test]
+    fn resolve_api_key_uses_api_key_env_first() {
+        unsafe {
+            std::env::set_var("JYC_RESOLVE_KEY_TEST", "env-key-value");
+        }
+        let p = provider_with_keys(Some("literal-not-used"), Some("JYC_RESOLVE_KEY_TEST"));
+        assert_eq!(p.resolve_api_key().as_deref(), Some("env-key-value"));
+        unsafe {
+            std::env::remove_var("JYC_RESOLVE_KEY_TEST");
+        }
+    }
+
+    /// When `api_key_env` is unset and `api_key` carries an expanded
+    /// `${VAR}` value, return that value.
+    #[test]
+    fn resolve_api_key_falls_back_to_api_key_field() {
+        let p = provider_with_keys(Some("expanded-key-value"), None);
+        assert_eq!(p.resolve_api_key().as_deref(), Some("expanded-key-value"));
+    }
+
+    /// Empty `api_key` (i.e. `${UNSET}` after expansion) and no
+    /// `api_key_env` → `None`.
+    #[test]
+    fn resolve_api_key_returns_none_when_empty_and_no_env() {
+        let p = provider_with_keys(Some(""), None);
+        assert_eq!(p.resolve_api_key(), None);
+    }
+
+    /// Neither field set → `None`.
+    #[test]
+    fn resolve_api_key_returns_none_when_neither_set() {
+        let p = provider_with_keys(None, None);
+        assert_eq!(p.resolve_api_key(), None);
     }
 
     #[test]
@@ -1048,6 +1178,65 @@ mode = "agent"
         let config = load_config_from_str(toml).unwrap();
         assert_eq!(config.general.max_concurrent_threads, 3);
         assert_eq!(config.general.max_queue_size_per_thread, 10);
+    }
+
+    /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML
+    /// loader. `${VAR}` expands at load time; the resolved value lands
+    /// in the `api_key` field.
+    #[test]
+    fn test_provider_api_key_field_parses() {
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "agent"
+
+[agent.providers.anthropic]
+type = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+api_key = "${JYC_LOAD_TEST_API_KEY}"
+"#;
+
+        // SAFETY: see existing test_expand_env_vars above. This test
+        // runs alongside other unit tests; AGENTS.md prefers no env
+        // mutation, but this is a load-time check of ${VAR} expansion
+        // for the new field — the only way to verify it end-to-end
+        // without restructuring the loader to take env as a parameter.
+        unsafe {
+            std::env::set_var("JYC_LOAD_TEST_API_KEY", "loaded-key-123");
+        }
+        let config = load_config_from_str(toml).unwrap();
+        let provider = config
+            .agent
+            .providers
+            .get("anthropic")
+            .expect("anthropic provider must parse");
+        assert_eq!(
+            provider.api_key.as_deref(),
+            Some("loaded-key-123"),
+            "${{VAR}} must expand into api_key"
+        );
+        // legacy field stays None when not set
+        assert!(provider.api_key_env.is_none());
+        unsafe {
+            std::env::remove_var("JYC_LOAD_TEST_API_KEY");
+        }
     }
 
     #[test]
@@ -1245,6 +1434,117 @@ type = "feishu"
         assert!(config.channels.contains_key("local_chan"));
     }
 
+    /// L2 `${VAR}` expansion runs *after* the global/workdir deep-merge.
+    /// Verifies (a) `${VAR}` from the global is expanded when only the
+    /// global defines it, and (b) the workdir's literal overrides the
+    /// global's `${VAR}` reference (overlay wins on scalar keys).
+    #[test]
+    fn test_load_config_layered_expands_env_vars_after_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_path = tmp.path().join("global.toml");
+        let workdir_path = tmp.path().join("config.toml");
+
+        // Global uses a `${VAR}` reference; expansion happens after the
+        // merge, so this is resolved against the env var at load time.
+        std::fs::write(
+            &global_path,
+            r#"
+[agent]
+mode = "static"
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "${JYC_LAYERED_HOST}"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+
+        // Workdir overrides `host` with a literal — should win over the
+        // global's `${VAR}` reference (scalar replacement in `merge_toml`).
+        std::fs::write(
+            &workdir_path,
+            r#"
+[channels.work.inbound]
+host = "literal-host.example.com"
+"#,
+        )
+        .unwrap();
+
+        // SAFETY: existing test pattern; see test_expand_env_vars above.
+        unsafe {
+            std::env::set_var("JYC_LAYERED_HOST", "expanded-from-env.example.com");
+        }
+        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        let work = &config.channels["work"];
+        let inbound = work.inbound.as_ref().expect("inbound must parse");
+        // Workdir's literal wins over the global's `${VAR}` reference.
+        assert_eq!(inbound.host, "literal-host.example.com");
+
+        // SAFETY: cleanup.
+        unsafe {
+            std::env::remove_var("JYC_LAYERED_HOST");
+        }
+    }
+
+    /// Companion to the above: when the workdir *also* uses `${VAR}`
+    /// (and the global is absent), expansion still works. This is the
+    /// simpler path through L2.
+    #[test]
+    fn test_load_config_layered_expands_env_vars_in_workdir_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workdir_path = tmp.path().join("config.toml");
+        // No global path — workdir alone.
+
+        std::fs::write(
+            &workdir_path,
+            r#"
+[agent]
+mode = "static"
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "${JYC_LAYERED_WORKDIR_ONLY_HOST}"
+port = 993
+username = "u"
+password = "p"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "p"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var(
+                "JYC_LAYERED_WORKDIR_ONLY_HOST",
+                "workdir-only-expanded.example.com",
+            );
+        }
+        let config = load_config_layered(None, &workdir_path).unwrap();
+        let work = &config.channels["work"];
+        let inbound = work.inbound.as_ref().expect("inbound must parse");
+        assert_eq!(inbound.host, "workdir-only-expanded.example.com");
+        unsafe {
+            std::env::remove_var("JYC_LAYERED_WORKDIR_ONLY_HOST");
+        }
+    }
+
     #[test]
     fn test_load_config_layered_missing_global_ignored() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1354,6 +1654,121 @@ url = "https://example.com/mcp"
         assert_eq!(mcps[0].name, "totally-different");
     }
 
+    /// L3 bug fix regression: `${VAR}` in `[agent].model` must expand at
+    /// thread-config load. Before the shared `parse_and_deserialize`
+    /// helper, thread loader bypassed `expand_env_vars` and the literal
+    /// `${VAR}` string landed in the `ThreadConfig`.
+    #[test]
+    fn test_load_thread_config_expands_env_vars_in_agent_model() {
+        // SAFETY: AGENTS.md prefers no env mutation, but verifying the
+        // load-time expansion end-to-end requires it. Test uses a unique
+        // env-var name and cleans up; see existing test_expand_env_vars.
+        unsafe {
+            std::env::set_var("JYC_LOAD_THREAD_MODEL", "anthropic/claude-opus-4-7");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "${JYC_LOAD_THREAD_MODEL}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(
+            agent.model.as_deref(),
+            Some("anthropic/claude-opus-4-7"),
+            "${{VAR}} in [agent].model must expand at thread-config load"
+        );
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_MODEL");
+        }
+    }
+
+    /// L3 `${VAR}` expansion in `[[mcps]].command` (a `Vec<String>`).
+    /// The recursive walker descends into arrays too, so each element
+    /// gets expanded.
+    #[test]
+    fn test_load_thread_config_expands_env_vars_in_mcp_command() {
+        unsafe {
+            std::env::set_var("JYC_LOAD_THREAD_MCP_BIN", "/opt/jyc/mcp-server");
+            std::env::set_var("JYC_LOAD_THREAD_MCP_TOKEN", "secret-token");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[[mcps]]
+name = "local-tools"
+type = "local"
+command = ["${JYC_LOAD_THREAD_MCP_BIN}", "--flag"]
+
+[mcps.environment]
+TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let mcps = cfg.mcps.expect("mcps field should be present");
+        assert_eq!(mcps.len(), 1);
+        match &mcps[0].kind {
+            McpServerKind::Local {
+                command,
+                environment,
+            } => {
+                assert_eq!(command[0], "/opt/jyc/mcp-server");
+                assert_eq!(command[1], "--flag");
+                assert_eq!(
+                    environment.get("TOKEN").map(String::as_str),
+                    Some("secret-token"),
+                    "${{VAR}} must expand inside [[mcps]].environment"
+                );
+            }
+            other => panic!("expected Local MCP, got {:?}", other),
+        }
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_MCP_BIN");
+            std::env::remove_var("JYC_LOAD_THREAD_MCP_TOKEN");
+        }
+    }
+
+    /// Missing env var at thread level → empty string, no panic. Matches
+    /// the global loader's `unwrap_or_default()` behavior.
+    #[test]
+    fn test_load_thread_config_missing_env_var_yields_empty() {
+        // SAFETY: ensure the env var is unset before the test runs.
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_DEFINITELY_UNSET");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(
+            agent.model.as_deref(),
+            Some(""),
+            "missing env var must expand to empty string"
+        );
+    }
+
     #[test]
     fn test_load_config_layered_same_path_not_double_loaded() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1445,5 +1860,56 @@ mode = "static"
         let out = apply_thread_mcp_overlay(&base, Some(&thread));
         let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["c"]);
+    }
+
+    /// Helper-level coverage: `parse_and_deserialize` runs the full
+    /// parse + expand + deserialize pipeline used by all three loaders.
+    #[test]
+    fn parse_and_deserialize_expands_env_vars() {
+        unsafe {
+            std::env::set_var("JYC_PARSE_AND_DESERIALIZE_VAR", "value-from-env");
+        }
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "u"
+password = "${JYC_PARSE_AND_DESERIALIZE_VAR}"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "literal-pw"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let cfg: AppConfig = parse_and_deserialize(toml, "<test>").unwrap();
+        let work = cfg.channels.get("work").expect("work channel must parse");
+        assert_eq!(work.inbound.as_ref().unwrap().password, "value-from-env");
+        assert_eq!(work.outbound.as_ref().unwrap().password, "literal-pw");
+        unsafe {
+            std::env::remove_var("JYC_PARSE_AND_DESERIALIZE_VAR");
+        }
+    }
+
+    /// Helper-level coverage: `parse_toml_value` errors out on invalid
+    /// TOML with a context message.
+    #[test]
+    fn parse_toml_value_handles_invalid_toml() {
+        let result = parse_toml_value("not [valid", "<bad>");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("failed to parse TOML") && msg.contains("<bad>"),
+            "error must mention the failure and ctx label; got: {msg}"
+        );
     }
 }

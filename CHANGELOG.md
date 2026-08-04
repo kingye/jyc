@@ -4,6 +4,34 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Provider `api_key` field.** LLM providers now accept `api_key =
+  "${ENV_VAR}"` for credentials, matching the `${VAR}` syntax used for every
+  other secret field in the config (`token`, `password`, `app_secret`,
+  `corp_secret`, `bot_secret`, `encoding_aes_key`):
+  ```toml
+  [agent.providers.anthropic]
+  type = "anthropic"
+  base_url = "https://api.anthropic.com/v1"
+  api_key = "${ANTHROPIC_API_KEY}"   # preferred
+  ```
+  The legacy `api_key_env = "ENV_VAR"` field is retained for backward
+  compatibility. When both fields are set, `api_key_env` wins (legacy
+  precedence) and a warning is logged at startup so the user can clean up.
+
+### Fixed
+
+- **Thread-level `${VAR}` expansion.** `<thread>/.jyc/config.toml` now
+  expands `${ENV_VAR}` references in `[agent]` model overrides and
+  `[[mcps]]` fields, matching the behavior of L1 (global) and L2 (workdir)
+  configs. Previously, the thread-level loader bypassed `expand_env_vars`
+  and stored `${VAR}` as a literal string in the deserialized
+  `ThreadConfig`, causing confusing runtime errors when env-driven model
+  or MCP overrides failed to resolve. The shared `parse_and_deserialize`
+  helper now backs all three config loaders (L1, L2, L3), eliminating
+  duplication and closing the thread-level gap.
+
 ### Added
 
 - **Live processing-duration ticker.** While the agent loop is running, the

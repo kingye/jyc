@@ -421,7 +421,7 @@ inject_inbound_images = true
 [agent.providers.deepseek]
 provider_type = "openai_compat"
 base_url = "https://api.deepseek.com"
-api_key_env = "DEEPSEEK_API_KEY"
+api_key = "${DEEPSEEK_API_KEY}"
 supports_images = true
 
 [agent.providers.deepseek.models.deepseek-v4-flash]

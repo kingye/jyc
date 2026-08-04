@@ -319,8 +319,9 @@ Key sections:
 - **`[channels.<name>.github]`** -- GitHub settings (owner, repo, token, poll_interval)
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
-- **`[agent.providers.<name>]`** -- LLM provider (type, base_url, api_key_env,
-  `pricing`); `[agent.providers.<name>.models.<id>]` overrides per model
+- **`[agent.providers.<name>]`** -- LLM provider (type, base_url, `api_key =
+  "${ENV_VAR}"` (preferred) or `api_key_env = "ENV_VAR"` (legacy), `pricing`);
+  `[agent.providers.<name>.models.<id>]` overrides per model
 - **`[inspect]`** -- Inspect server settings (enabled, bind address)
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings

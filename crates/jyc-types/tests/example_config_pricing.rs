@@ -1,9 +1,13 @@
 //! Guards the `pricing` example in `config.example.toml`.
 //!
-//! The TOML below is copied from that file's `[agent.providers.anthropic]`
-//! block. If someone edits the example into something that no longer
-//! parses or resolves, this fails — documentation that silently stops
-//! working is worse than none.
+//! The TOML below mirrors that file's `[agent.providers.anthropic]` block
+//! (comment markers stripped; field shape preserved). If someone edits the
+//! example into something that no longer parses or resolves, this fails —
+//! documentation that silently stops working is worse than none.
+//!
+//! Uses the legacy `api_key_env` form on purpose: this test exercises the
+//! pricing resolution path and is indifferent to which credential field
+//! the provider carries.
 //!
 //! Inlined rather than read from disk so the test has no filesystem
 //! dependency (see AGENTS.md test-isolation rules).

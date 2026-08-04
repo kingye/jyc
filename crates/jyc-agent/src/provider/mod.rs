@@ -280,12 +280,21 @@ pub fn create_provider(
         )
     })?;
 
-    // Read API key from environment
-    let api_key = if let Some(env_var) = &config.api_key_env {
-        std::env::var(env_var).ok()
-    } else {
-        None
-    };
+    // Read API key from environment.
+    // Order: api_key_env (legacy, late-bound) → api_key (already-expanded
+    // by the TOML loader from ${VAR} syntax). Both fields are accepted
+    // for backward compatibility; see ProviderDef::resolve_api_key.
+    let api_key = config.resolve_api_key();
+
+    // Warn if both fields are set — the user probably didn't mean to.
+    if config.api_key.is_some() && config.api_key_env.is_some() {
+        tracing::warn!(
+            provider = %provider_name,
+            "Both `api_key` and `api_key_env` are set on this provider; \
+             `api_key_env` wins (legacy precedence). Remove `api_key_env` \
+             to silence this warning."
+        );
+    }
 
     // Resolve the wire model id: per-model `model_id` override, else the
     // models-map key. Config lookups (params, supports_images, ...) below
@@ -943,6 +952,7 @@ mod model_id_tests {
             ProviderDef {
                 provider_type: "openai-compatible".to_string(),
                 base_url: Some("https://api.moonshot.cn/v1".to_string()),
+                api_key: None,
                 api_key_env: None,
                 context_window: None,
                 supports_images: None,

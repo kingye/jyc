@@ -1,5 +1,6 @@
 # JYC Configuration
-# Fill in your credentials below. Use ${ENV_VAR} syntax for secrets if preferred.
+# Fill in your credentials below. Use ${ENV_VAR} syntax for secrets
+# (consistent across every secret field, including provider `api_key`).
 #
 # Locations & layering (see README "Configuration & Data Layout"):
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
@@ -270,7 +271,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [agent.providers.deepseek]
 # type = "openai-compatible"
 # base_url = "https://api.deepseek.com"
-# api_key_env = "DEEPSEEK_API_KEY"
+# api_key = "${DEEPSEEK_API_KEY}"            # preferred (consistent with other secrets)
+# # api_key_env = "DEEPSEEK_API_KEY"         # legacy; equivalent to the line above
 # context_window = 128000
 # # Optional: replace the default User-Agent header for this provider's requests.
 # # Useful for endpoints (e.g. Kimi coding) that gate access by client identity.
@@ -294,7 +296,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [agent.providers.anthropic]
 # type = "anthropic"
 # base_url = "https://api.anthropic.com/v1"
-# api_key_env = "ANTHROPIC_API_KEY"
+# api_key = "${ANTHROPIC_API_KEY}"           # preferred
+# # api_key_env = "ANTHROPIC_API_KEY"        # legacy
 # # Provider-level billing rates, applied to every model under this
 # # provider unless the model sets its own. See "Cost tracking" below.
 # pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
@@ -327,7 +330,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # [agent.providers.my_cn_provider]
 # type = "openai-compatible"
 # base_url = "https://api.example.cn"
-# api_key_env = "CN_API_KEY"
+# api_key = "${CN_API_KEY}"                  # preferred
+# # api_key_env = "CN_API_KEY"               # legacy
 # # `currency = "CNY"` is the default and may be omitted; shown here for clarity.
 # pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
 #
@@ -344,7 +348,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # DeepSeek-OCR) to analyze images and return text descriptions.
 #
 # The `provider` field references a named entry in `[agent.providers]` above
-# to reuse its `base_url` and `api_key_env`, avoiding duplicate credentials.
+# to reuse its `base_url` and credentials (`api_key` or `api_key_env`),
+# avoiding duplicate credentials.
 #
 # [agent.vision]
 # enabled = true

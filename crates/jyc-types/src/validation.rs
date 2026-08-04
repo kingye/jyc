@@ -1005,8 +1005,10 @@ mode = "agent"
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
         assert!(
-            errors.iter().any(|e| e.path.contains("mcps[0].auth_header")
-                && e.message.contains("cannot set both")),
+            errors
+                .iter()
+                .any(|e| e.path.contains("mcps[0].auth_header")
+                    && e.message.contains("cannot set both")),
             "expected auth_header+oauth conflict error, got: {:?}",
             errors
         );
@@ -1049,7 +1051,9 @@ mode = "agent"
         let config = load_config_from_str(toml).unwrap();
         let errors = validate_config(&config);
         assert!(
-            errors.iter().any(|e| e.path.contains("mcps[0].oauth.client_id")),
+            errors
+                .iter()
+                .any(|e| e.path.contains("mcps[0].oauth.client_id")),
             "expected oauth.client_id error, got: {:?}",
             errors
         );

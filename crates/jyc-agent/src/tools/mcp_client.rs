@@ -228,10 +228,12 @@ async fn fetch_oauth_token(
         })?;
 
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .with_context(|| format!("failed to read OAuth token response body for MCP '{}'", mcp_name))?;
+    let body = response.text().await.with_context(|| {
+        format!(
+            "failed to read OAuth token response body for MCP '{}'",
+            mcp_name
+        )
+    })?;
 
     if !status.is_success() {
         anyhow::bail!(
@@ -243,8 +245,12 @@ async fn fetch_oauth_token(
         );
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(&body)
-        .with_context(|| format!("OAuth token response is not valid JSON for MCP '{}'", mcp_name))?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "OAuth token response is not valid JSON for MCP '{}'",
+            mcp_name
+        )
+    })?;
 
     parsed
         .get("access_token")
@@ -458,7 +464,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
-            .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"invalid_client"}"#))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string(r#"{"error":"invalid_client"}"#),
+            )
             .mount(&server)
             .await;
 

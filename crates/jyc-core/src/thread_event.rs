@@ -55,6 +55,22 @@ pub enum ThreadEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Loop tick event.
+    ///
+    /// Sent periodically (default: every 250 ms) by the agent loop while
+    /// it is running, so the dashboard can show a live elapsed-duration
+    /// indicator that ticks even during silent LLM/tool work. Marked as
+    /// `is_internal` by the inspect server so it doesn't pollute the
+    /// activity pane or activity.jsonl.
+    LoopTick {
+        /// Name of the thread
+        thread_name: String,
+        /// Wall-clock milliseconds since the current agent loop started.
+        elapsed_ms: u64,
+        /// When the tick was generated
+        timestamp: DateTime<Utc>,
+    },
+
     /// Tool started event.
     ///
     /// Sent when the agent starts executing a tool.
@@ -176,6 +192,7 @@ impl ThreadEvent {
             ThreadEvent::ProcessingStarted { thread_name, .. } => thread_name,
             ThreadEvent::ProcessingProgress { thread_name, .. } => thread_name,
             ThreadEvent::ProcessingCompleted { thread_name, .. } => thread_name,
+            ThreadEvent::LoopTick { thread_name, .. } => thread_name,
             ThreadEvent::ToolStarted { thread_name, .. } => thread_name,
             ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
             ThreadEvent::LLMRequestStarted { thread_name, .. } => thread_name,
@@ -193,6 +210,7 @@ impl ThreadEvent {
             ThreadEvent::ProcessingStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ProcessingProgress { timestamp, .. } => *timestamp,
             ThreadEvent::ProcessingCompleted { timestamp, .. } => *timestamp,
+            ThreadEvent::LoopTick { timestamp, .. } => *timestamp,
             ThreadEvent::ToolStarted { timestamp, .. } => *timestamp,
             ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
             ThreadEvent::LLMRequestStarted { timestamp, .. } => *timestamp,
@@ -248,6 +266,18 @@ mod tests {
             message_id: "m1".to_string(),
             success: true,
             duration_secs: 5,
+            timestamp: ts,
+        };
+        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.timestamp(), ts);
+    }
+
+    #[test]
+    fn loop_tick_event() {
+        let ts = dummy_time();
+        let ev = ThreadEvent::LoopTick {
+            thread_name: "t1".to_string(),
+            elapsed_ms: 12_400,
             timestamp: ts,
         };
         assert_eq!(ev.thread_name(), "t1");

@@ -749,13 +749,27 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 
 /// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
 ///
-/// Restricted subset of the app config: only `[agent]` model overrides are
-/// supported. Precedence: `.jyc/<mode>-model-override` file > `.jyc/config.toml`
-/// > pattern > channel > global config.
+/// Restricted subset of the app config: `[agent]` model overrides and `[mcps]`
+/// (additive by default, opt-in full replace). Precedence: file overrides >
+/// `.jyc/config.toml` > pattern > channel > global config.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ThreadConfig {
     /// Agent overrides for this thread.
     pub agent: Option<ThreadAgentConfig>,
+
+    /// MCPs added for this thread.
+    ///
+    /// Default merge = additive: thread MCPs union with pattern/channel/global
+    /// MCPs, and a thread MCP with the same `name` as an inherited one wins.
+    /// Set `mcps_replace = true` to fully replace the inherited set (mirror of
+    /// how `ChannelPattern.mcps` overrides channel-level MCPs).
+    #[serde(default)]
+    pub mcps: Option<Vec<McpServerConfig>>,
+
+    /// When `true`, ignore the matched pattern/channel/global MCPs entirely
+    /// and use only `mcps`. Default `false` (additive).
+    #[serde(default)]
+    pub mcps_replace: bool,
 }
 
 /// Agent model overrides for a single thread.
@@ -1240,6 +1254,58 @@ small_model = "provider/small-model"
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
         assert!(load_thread_config(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_load_thread_config_mcps_parsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[[mcps]]
+name = "local-only"
+type = "local"
+command = ["./local-mcp"]
+
+[agent]
+model = "anthropic/claude-opus-4-7"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let mcps = cfg.mcps.expect("mcps field should be present");
+        assert_eq!(mcps.len(), 1);
+        assert_eq!(mcps[0].name, "local-only");
+        assert!(matches!(mcps[0].kind, McpServerKind::Local { .. }));
+        // mcps_replace defaults to false (additive).
+        assert!(!cfg.mcps_replace);
+    }
+
+    #[test]
+    fn test_load_thread_config_mcps_replace_flag_explicit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+mcps_replace = true
+
+[[mcps]]
+name = "totally-different"
+type = "remote"
+url = "https://example.com/mcp"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        assert!(cfg.mcps_replace);
+        let mcps = cfg.mcps.unwrap();
+        assert_eq!(mcps[0].name, "totally-different");
     }
 
     #[test]

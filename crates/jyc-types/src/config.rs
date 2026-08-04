@@ -1554,6 +1554,124 @@ url = "https://example.com/mcp"
         assert_eq!(mcps[0].name, "totally-different");
     }
 
+    /// L3 bug fix regression: `${VAR}` in `[agent].model` must expand at
+    /// thread-config load. Before the shared `parse_and_deserialize`
+    /// helper, thread loader bypassed `expand_env_vars` and the literal
+    /// `${VAR}` string landed in the `ThreadConfig`.
+    #[test]
+    fn test_load_thread_config_expands_env_vars_in_agent_model() {
+        // SAFETY: AGENTS.md prefers no env mutation, but verifying the
+        // load-time expansion end-to-end requires it. Test uses a unique
+        // env-var name and cleans up; see existing test_expand_env_vars.
+        unsafe {
+            std::env::set_var(
+                "JYC_LOAD_THREAD_MODEL",
+                "anthropic/claude-opus-4-7",
+            );
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "${JYC_LOAD_THREAD_MODEL}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(
+            agent.model.as_deref(),
+            Some("anthropic/claude-opus-4-7"),
+            "${{VAR}} in [agent].model must expand at thread-config load"
+        );
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_MODEL");
+        }
+    }
+
+    /// L3 `${VAR}` expansion in `[[mcps]].command` (a `Vec<String>`).
+    /// The recursive walker descends into arrays too, so each element
+    /// gets expanded.
+    #[test]
+    fn test_load_thread_config_expands_env_vars_in_mcp_command() {
+        unsafe {
+            std::env::set_var("JYC_LOAD_THREAD_MCP_BIN", "/opt/jyc/mcp-server");
+            std::env::set_var("JYC_LOAD_THREAD_MCP_TOKEN", "secret-token");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[[mcps]]
+name = "local-tools"
+type = "local"
+command = ["${JYC_LOAD_THREAD_MCP_BIN}", "--flag"]
+
+[mcps.environment]
+TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let mcps = cfg.mcps.expect("mcps field should be present");
+        assert_eq!(mcps.len(), 1);
+        match &mcps[0].kind {
+            McpServerKind::Local {
+                command,
+                environment,
+            } => {
+                assert_eq!(command[0], "/opt/jyc/mcp-server");
+                assert_eq!(command[1], "--flag");
+                assert_eq!(
+                    environment.get("TOKEN").map(String::as_str),
+                    Some("secret-token"),
+                    "${{VAR}} must expand inside [[mcps]].environment"
+                );
+            }
+            other => panic!("expected Local MCP, got {:?}", other),
+        }
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_MCP_BIN");
+            std::env::remove_var("JYC_LOAD_THREAD_MCP_TOKEN");
+        }
+    }
+
+    /// Missing env var at thread level → empty string, no panic. Matches
+    /// the global loader's `unwrap_or_default()` behavior.
+    #[test]
+    fn test_load_thread_config_missing_env_var_yields_empty() {
+        // SAFETY: ensure the env var is unset before the test runs.
+        unsafe {
+            std::env::remove_var("JYC_LOAD_THREAD_DEFINITELY_UNSET");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&jyc_dir).unwrap();
+        std::fs::write(
+            jyc_dir.join("config.toml"),
+            r#"
+[agent]
+model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_thread_config(tmp.path()).unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(
+            agent.model.as_deref(),
+            Some(""),
+            "missing env var must expand to empty string"
+        );
+    }
+
     #[test]
     fn test_load_config_layered_same_path_not_double_loaded() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1645,5 +1763,56 @@ mode = "static"
         let out = apply_thread_mcp_overlay(&base, Some(&thread));
         let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["c"]);
+    }
+
+    /// Helper-level coverage: `parse_and_deserialize` runs the full
+    /// parse + expand + deserialize pipeline used by all three loaders.
+    #[test]
+    fn parse_and_deserialize_expands_env_vars() {
+        unsafe {
+            std::env::set_var("JYC_PARSE_AND_DESERIALIZE_VAR", "value-from-env");
+        }
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+port = 993
+username = "u"
+password = "${JYC_PARSE_AND_DESERIALIZE_VAR}"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+port = 465
+username = "u"
+password = "literal-pw"
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let cfg: AppConfig = parse_and_deserialize(toml, "<test>").unwrap();
+        let work = cfg.channels.get("work").expect("work channel must parse");
+        assert_eq!(work.inbound.as_ref().unwrap().password, "value-from-env");
+        assert_eq!(work.outbound.as_ref().unwrap().password, "literal-pw");
+        unsafe {
+            std::env::remove_var("JYC_PARSE_AND_DESERIALIZE_VAR");
+        }
+    }
+
+    /// Helper-level coverage: `parse_toml_value` errors out on invalid
+    /// TOML with a context message.
+    #[test]
+    fn parse_toml_value_handles_invalid_toml() {
+        let result = parse_toml_value("not [valid", "<bad>");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("failed to parse TOML") && msg.contains("<bad>"),
+            "error must mention the failure and ctx label; got: {msg}"
+        );
     }
 }

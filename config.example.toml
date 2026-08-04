@@ -976,7 +976,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # type = "remote"
 #   # url = "https://example.com/mcp"
 #
-# Note: parse errors in this file are logged and ignored at runtime (a
-# broken thread config must not crash the agent). Validate by running
-# `jyc serve` and watching the logs — successful load prints no warning.
+# Note: parse errors in this file are logged at runtime and ignored
+# (a broken thread config must not crash the agent). After starting
+# `jyc serve`, check logs for `Ignoring invalid thread config`
+# warnings to confirm parsing succeeded. Semantic issues (e.g. bad
+# MCP command path) still surface at MCP-load time as normal errors.
 

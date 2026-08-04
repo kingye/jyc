@@ -185,7 +185,11 @@ All notable changes to JYC will be documented in this file.
   channel-level MCPs). Useful for one-off MCPs (local-only servers,
   per-thread remote endpoints) without polluting the global config.
   Implementation: `jyc_types::apply_thread_mcp_overlay` (pure helper,
-  unit-tested) wired into `JycAgentService::build_tool_registry`.
+  unit-tested) wired into `JycAgentService::build_tool_registry`. The
+  `mcps_replace` field is a `bool` rather than an extensible enum to
+  keep the schema minimal; if a second merge mode (e.g. prepend) is
+  added later, the field will need to be renamed rather than gain a
+  new variant.
 
 ### Fixed
 

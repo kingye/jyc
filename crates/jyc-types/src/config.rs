@@ -749,9 +749,12 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 
 /// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
 ///
-/// Restricted subset of the app config: `[agent]` model overrides and `[mcps]`
-/// (additive by default, opt-in full replace). Precedence: file overrides >
-/// `.jyc/config.toml` > pattern > channel > global config.
+/// Restricted subset of the app config:
+/// - `[agent]`: model overrides. Precedence: `.jyc/<mode>-model-override` >
+///   `.jyc/config.toml` > pattern > channel > global.
+/// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
+///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
+///   global. No `<mode>-model-override` higher layer exists for MCPs.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ThreadConfig {
     /// Agent overrides for this thread.

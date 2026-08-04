@@ -13,7 +13,7 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
+use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem, ThreadConfig};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
@@ -915,7 +915,7 @@ impl JycAgentService {
     /// compatible fallback).
     async fn build_tool_registry(
         &self,
-        thread_path: &Path,
+        thread_cfg: Option<&ThreadConfig>,
         supports_images: bool,
         matched_pattern_name: Option<&str>,
     ) -> ToolRegistry {
@@ -966,11 +966,12 @@ impl JycAgentService {
             .or(self.channel_mcp_configs.as_deref())
             .unwrap_or(self.mcp_configs.as_slice());
 
-        // Layer thread (L3) MCPs from <thread_path>/.jyc/config.toml on top:
-        // additive by default, opt-in full replace via `mcps_replace = true`.
-        let thread_cfg = jyc_types::load_thread_config(thread_path);
+        // Layer thread (L3) MCPs from the pre-loaded <thread_path>/.jyc/config.toml
+        // on top: additive by default, opt-in full replace via `mcps_replace = true`.
+        // (Caller in `process` loads thread_cfg once per message and shares it
+        //  with the [agent] model-resolution block, avoiding a duplicate disk read.)
         let effective_mcps: Vec<McpServerConfig> =
-            jyc_types::apply_thread_mcp_overlay(base_mcps, thread_cfg.as_ref());
+            jyc_types::apply_thread_mcp_overlay(base_mcps, thread_cfg);
 
         // Filter out disabled MCP servers before loading
         let filtered_mcp_configs: Vec<McpServerConfig> = effective_mcps
@@ -1192,6 +1193,11 @@ impl AgentService for JycAgentService {
         //    config reload (TUI `reload config`) takes effect immediately.
         let agent_cfg = self.agent_config();
 
+        // 0b. Load thread-level (L3) `<thread>/.jyc/config.toml` once and
+        //     share the result with both the [agent] model-resolution block
+        //     below and `build_tool_registry` — avoids a duplicate disk read.
+        let thread_cfg = jyc_types::load_thread_config(thread_path);
+
         // 1. Read mode override for this thread (used to select mode-specific model)
         let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
 
@@ -1240,7 +1246,9 @@ impl AgentService for JycAgentService {
         let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
         // Thread-level (L3) .jyc/config.toml — [agent] model overrides.
         // Priority: file overrides > thread config > pattern > config.
-        let thread_agent_cfg = jyc_types::load_thread_config(thread_path).and_then(|c| c.agent);
+        // `thread_cfg` was loaded once at the top of `process` and shared with
+        // `build_tool_registry` (avoids a duplicate disk read per message).
+        let thread_agent_cfg = thread_cfg.as_ref().and_then(|c| c.agent.as_ref());
         let thread_cfg_override = thread_agent_cfg
             .as_ref()
             .and_then(|a| match mode_override.as_deref() {
@@ -1359,7 +1367,7 @@ impl AgentService for JycAgentService {
         // 5. Build tool registry
         let tools = self
             .build_tool_registry(
-                thread_path,
+                thread_cfg.as_ref(),
                 provider.supports_images(),
                 message.matched_pattern.as_deref(),
             )
@@ -2062,9 +2070,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2089,9 +2095,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2111,9 +2115,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -2140,9 +2142,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, Some(vec!["other".to_string()]));
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         // Registry should still contain built-in tools
         assert!(registry.has_tool("bash"));
@@ -2153,9 +2153,7 @@ mod tests {
     async fn channel_disabled_tools_works_without_pattern_match() {
         // channel-level disabled_tools should apply even when no pattern is matched
         let svc = service_with_exclusion(vec![], Some(vec!["bash".to_string()]), None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, None)
-            .await;
+        let registry = svc.build_tool_registry(None, false, None).await;
 
         assert!(
             !registry.has_tool("bash"),
@@ -2173,9 +2171,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec![]), Some(vec![]));
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         assert!(registry.has_tool("bash"), "bash should still be available");
         assert!(registry.has_tool("jyc_reply_message"));
@@ -2191,9 +2187,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         assert!(!registry.has_tool("bash"));
         assert!(registry.has_tool("read"));
@@ -2217,9 +2211,7 @@ mod tests {
             enabled_tools: None,
         }]);
         let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         // Registry should contain built-in tools (no panic from MCP loading)
         assert!(registry.has_tool("bash"));
@@ -2237,9 +2229,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         // bash is a built-in tool with no source(), so "some_server/bash" won't match it
         assert!(
@@ -2263,9 +2253,7 @@ mod tests {
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         assert!(
             !registry.has_tool("bash"),
@@ -2295,9 +2283,7 @@ mod tests {
             enabled_tools: Some(vec!["allowed_tool".to_string()]),
         }]);
         let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
-        let registry = svc
-            .build_tool_registry(Path::new("/tmp"), false, Some("test"))
-            .await;
+        let registry = svc.build_tool_registry(None, false, Some("test")).await;
 
         // Built-in tools should still be present
         assert!(registry.has_tool("bash"), "bash should still be available");
@@ -2315,10 +2301,12 @@ mod tests {
         std::fs::write(
             jyc_dir.join("config.toml"),
             r#"
+mcps_replace = true
+
 [[mcps]]
-name = "thread-local"
+name = "thread-only-mcp"
 type = "local"
-command = ["echo", "hello"]
+command = ["./thread-mcp"]
 "#,
         )
         .unwrap();
@@ -2328,39 +2316,15 @@ command = ["echo", "hello"]
             ..ChannelPattern::default()
         }];
         let svc = service_with_exclusion(patterns, None, None);
+        let thread_cfg = jyc_types::load_thread_config(tmp.path());
         let registry = svc
-            .build_tool_registry(tmp.path(), false, Some("test"))
+            .build_tool_registry(thread_cfg.as_ref(), false, Some("test"))
             .await;
 
+        // Built-in tools still present — confirms the thread config didn't
+        // accidentally break the rest of the registry.
         assert!(registry.has_tool("bash"));
         assert!(registry.has_tool("read"));
-    }
-
-    /// Verifies that `mcps_replace = true` with empty `[[mcps]]` doesn't
-    /// panic — the thread effectively disables all MCPs from the base layer.
-    #[tokio::test]
-    async fn thread_config_mcps_replace_empty_does_not_panic() {
-        let tmp = tempfile::tempdir().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(
-            jyc_dir.join("config.toml"),
-            r#"
-mcps_replace = true
-"#,
-        )
-        .unwrap();
-
-        let patterns = vec![ChannelPattern {
-            name: "test".to_string(),
-            ..ChannelPattern::default()
-        }];
-        let svc = service_with_exclusion(patterns, None, None);
-        let registry = svc
-            .build_tool_registry(tmp.path(), false, Some("test"))
-            .await;
-
-        assert!(registry.has_tool("bash"));
     }
 
     // ── Skill filtering tests ──────────────────────────────────────────

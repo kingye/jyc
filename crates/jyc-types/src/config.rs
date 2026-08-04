@@ -819,6 +819,36 @@ pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
     Ok(config)
 }
 
+/// Apply the thread-level (L3) MCP overlay onto a base list.
+///
+/// - When `thread_cfg` is `None` or its `mcps` is `None`, returns `base` unchanged.
+/// - When `thread_cfg.mcps_replace` is `true`, returns the thread's MCPs only.
+/// - Otherwise (additive default): union of `base` + thread MCPs; on name
+///   conflict, the thread version wins (last-writer-wins).
+pub fn apply_thread_mcp_overlay(
+    base: &[McpServerConfig],
+    thread_cfg: Option<&ThreadConfig>,
+) -> Vec<McpServerConfig> {
+    let Some(t) = thread_cfg else {
+        return base.to_vec();
+    };
+    let Some(thread_mcps) = t.mcps.as_ref() else {
+        return base.to_vec();
+    };
+    if t.mcps_replace {
+        return thread_mcps.clone();
+    }
+    let mut out: Vec<McpServerConfig> = base.to_vec();
+    for tm in thread_mcps {
+        if let Some(slot) = out.iter_mut().find(|c| c.name == tm.name) {
+            *slot = tm.clone();
+        } else {
+            out.push(tm.clone());
+        }
+    }
+    out
+}
+
 /// Deep-merge two TOML values: tables merge recursively; all other values
 /// (strings, arrays, scalars) are replaced by the overlay.
 ///
@@ -1323,5 +1353,81 @@ mode = "static"
 
         let config = load_config_layered(Some(&path), &path).unwrap();
         assert_eq!(config.agent.mode, "static");
+    }
+
+    // ---- apply_thread_mcp_overlay ----
+
+    fn local_mcp(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            kind: McpServerKind::Local {
+                command: vec!["./x".to_string()],
+                environment: Default::default(),
+            },
+            enabled_tools: None,
+        }
+    }
+
+    fn remote_mcp(name: &str, url: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            kind: McpServerKind::Remote {
+                url: url.to_string(),
+                enabled: true,
+                auth_header: None,
+                custom_headers: Default::default(),
+            },
+            enabled_tools: None,
+        }
+    }
+
+    #[test]
+    fn test_apply_thread_mcp_overlay_none_is_noop() {
+        let base = vec![local_mcp("a")];
+        let out = apply_thread_mcp_overlay(&base, None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "a");
+    }
+
+    #[test]
+    fn test_apply_thread_mcp_overlay_additive_unions() {
+        let base = vec![local_mcp("a")];
+        let thread = ThreadConfig {
+            mcps: Some(vec![remote_mcp("b", "https://b")]),
+            mcps_replace: false,
+            ..Default::default()
+        };
+        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_apply_thread_mcp_overlay_thread_wins_on_conflict() {
+        let base = vec![remote_mcp("a", "https://inherited")];
+        let thread = ThreadConfig {
+            mcps: Some(vec![remote_mcp("a", "https://thread")]),
+            mcps_replace: false,
+            ..Default::default()
+        };
+        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        assert_eq!(out.len(), 1);
+        match &out[0].kind {
+            McpServerKind::Remote { url, .. } => assert_eq!(url, "https://thread"),
+            _ => panic!("expected remote"),
+        }
+    }
+
+    #[test]
+    fn test_apply_thread_mcp_overlay_replace_drops_base() {
+        let base = vec![local_mcp("a"), local_mcp("b")];
+        let thread = ThreadConfig {
+            mcps: Some(vec![remote_mcp("c", "https://c")]),
+            mcps_replace: true,
+            ..Default::default()
+        };
+        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["c"]);
     }
 }

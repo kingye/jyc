@@ -915,7 +915,7 @@ impl JycAgentService {
     /// compatible fallback).
     async fn build_tool_registry(
         &self,
-        _thread_path: &Path,
+        thread_path: &Path,
         supports_images: bool,
         matched_pattern_name: Option<&str>,
     ) -> ToolRegistry {
@@ -960,17 +960,22 @@ impl JycAgentService {
         };
 
         // Resolve MCP configs: pattern → channel → global
-        let mcp_configs: &[McpServerConfig] = matched_pattern
+        let base_mcps: &[McpServerConfig] = matched_pattern
             .and_then(|p| p.mcps.as_ref())
             .map(|mcps| mcps.as_slice())
             .or(self.channel_mcp_configs.as_deref())
             .unwrap_or(self.mcp_configs.as_slice());
 
+        // Layer thread (L3) MCPs from <thread_path>/.jyc/config.toml on top:
+        // additive by default, opt-in full replace via `mcps_replace = true`.
+        let thread_cfg = jyc_types::load_thread_config(thread_path);
+        let effective_mcps: Vec<McpServerConfig> =
+            jyc_types::apply_thread_mcp_overlay(base_mcps, thread_cfg.as_ref());
+
         // Filter out disabled MCP servers before loading
-        let filtered_mcp_configs: Vec<McpServerConfig> = mcp_configs
-            .iter()
+        let filtered_mcp_configs: Vec<McpServerConfig> = effective_mcps
+            .into_iter()
             .filter(|c| !disabled_mcp_servers.contains(&c.name.as_str()))
-            .cloned()
             .collect();
 
         if !disabled_mcp_servers.is_empty() {

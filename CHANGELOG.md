@@ -176,6 +176,17 @@ All notable changes to JYC will be documented in this file.
   already tight and this is a session-level analytic). Zeros on
   auto-reset alongside the other `total_*` counters.
 
+- **Per-thread MCP overrides.** `<thread>/.jyc/config.toml` now accepts
+  an optional `[[mcps]]` block in addition to the existing `[agent]`
+  model overrides. Default merge is **additive** — thread MCPs are
+  unioned with the pattern → channel → global MCPs and a thread MCP with
+  the same `name` wins. Set `mcps_replace = true` to fully replace the
+  inherited set (mirrors how `ChannelPattern.mcps` already overrides
+  channel-level MCPs). Useful for one-off MCPs (local-only servers,
+  per-thread remote endpoints) without polluting the global config.
+  Implementation: `jyc_types::apply_thread_mcp_overlay` (pure helper,
+  unit-tested) wired into `JycAgentService::build_tool_registry`.
+
 ### Fixed
 
 - **Anthropic cost undercounting with prompt caching.** Anthropic's

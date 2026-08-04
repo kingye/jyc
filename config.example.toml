@@ -495,6 +495,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # [mcps.custom_headers]
 # # "X-API-Key" = "your-api-key"
 # # "X-Organization" = "my-org"
+# # --- OAuth2 client_credentials (machine-to-machine) ---
+# # See CHANGELOG.md for full semantics. Mutually exclusive with `auth_header`.
+# # [mcps.oauth]
+# # client_id = "your-client-id"
+# # client_secret = "your-client-secret"
+# # token_endpoint = "https://idp.example.com/oauth/token"
+# # scopes = ["read", "write"]   # optional, space-joined into `scope` form field
 #
 # # --- Per-Pattern MCP Configuration ---
 # # You can also configure MCP servers per pattern, overriding the global `[[mcps]]`

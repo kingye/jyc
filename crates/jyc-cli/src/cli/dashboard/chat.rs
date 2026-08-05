@@ -1266,10 +1266,7 @@ fn build_chat_header_line(
         // [channel, pattern, branch], adding the separator only when there is
         // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
-        for seg in [ctx.channel, ctx.pattern, ctx.branch]
-            .into_iter()
-            .flatten()
-        {
+        for seg in [ctx.channel, ctx.pattern, ctx.branch].into_iter().flatten() {
             // +3 accounts for the "╭─ " prefix.
             let used = 3 + compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.
@@ -2697,10 +2694,7 @@ impl ChatState {
     /// - the selected thread path changed (selection switch), or
     /// - it's been more than `BRANCH_RECHECK_SECS` since the last check
     ///   (so a `git checkout` eventually shows up).
-    pub(super) fn refresh_selected_branch(
-        &mut self,
-        selected_path: Option<&std::path::Path>,
-    ) {
+    pub(super) fn refresh_selected_branch(&mut self, selected_path: Option<&std::path::Path>) {
         const BRANCH_RECHECK_SECS: u64 = 30;
         let path_changed = self.selected_thread_path.as_deref() != selected_path;
         let stale = self
@@ -4346,7 +4340,10 @@ mod tests {
         let line =
             build_chat_header_line(120, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
-        assert!(text.contains("· jyc "), "pattern should still render, got: {text:?}");
+        assert!(
+            text.contains("· jyc "),
+            "pattern should still render, got: {text:?}"
+        );
         assert!(
             !text.contains("· · "),
             "no double-separator when branch absent, got: {text:?}"
@@ -4402,10 +4399,7 @@ mod tests {
         let git = dir.path().join(".git");
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(
-            branch_for_thread_path(dir.path()).as_deref(),
-            Some("main")
-        );
+        assert_eq!(branch_for_thread_path(dir.path()).as_deref(), Some("main"));
     }
 
     #[test]

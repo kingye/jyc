@@ -6,6 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Show the selected thread's git branch in the TUI.** The dashboard
+  thread info pane, chat thread info pane, and chat input header line
+  (`╭─ build · local_dev · pattern`) now include the current branch of
+  the thread's working directory when it is a git repo. Resolved by
+  reading `<thread_path>/.git/HEAD` (or `<thread_path>/repo/.git/HEAD`
+  for the shared-repo layout) directly — no `git` CLI call. Re-resolved
+  on selection change or every 30s so `git checkout` is reflected.
+  Threads whose `thread_path` is not a git repo (most chat-channel
+  threads) simply omit the branch segment. (#512)
+
 - **Anthropic cache-creation (write) pricing.** Anthropic splits
   prompt-cache tokens into two buckets that bill at different rates:
   `cache_read_input_tokens` (cheap reads) and

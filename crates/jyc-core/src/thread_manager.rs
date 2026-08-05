@@ -1125,6 +1125,7 @@ impl ThreadManager {
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
+                branch: branch_for_thread_path(&thread_path),
                 cost,
             });
         }
@@ -2206,6 +2207,39 @@ async fn initialize_thread_from_template(
     tracing::info!(template = %template_name, "Thread initialized from template");
 
     Ok(())
+}
+
+/// Read the current branch name from `.git/HEAD` under `path`.
+///
+/// Looks first at `<path>/.git/HEAD`, then falls back to
+/// `<path>/repo/.git/HEAD` (the shared-repo symlink layout used when
+/// a pattern sets `repo_group`). Returns:
+/// - `Some(branch)` for a symbolic ref `ref: refs/heads/<branch>`
+/// - `Some("(detached)")` for a raw SHA in `.git/HEAD`
+/// - `None` when neither file is readable (not a git repo, perms, etc.)
+///
+/// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
+/// `std::fs::read_to_string` follows the `repo/` symlink for us.
+pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
+    let head_path = if path.join(".git").join("HEAD").is_file() {
+        path.join(".git").join("HEAD")
+    } else if path.join("repo").join(".git").join("HEAD").is_file() {
+        path.join("repo").join(".git").join("HEAD")
+    } else {
+        return None;
+    };
+    let raw = std::fs::read_to_string(&head_path).ok()?;
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("ref: refs/heads/") {
+        if rest.is_empty() || rest.contains('\n') || rest.contains(' ') {
+            return None;
+        }
+        Some(rest.to_string())
+    } else if trimmed.len() == 40 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some("(detached)".to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -3455,5 +3489,120 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
         );
         assert!((cost.today - 3.0).abs() < 1e-9);
         tm.shutdown().await;
+    }
+
+    /// Regression for #512: `ThreadManager::list_threads` must populate
+    /// `ThreadInfo::branch` by reading `.git/HEAD` under each thread's
+    /// path. Without this test, a future refactor that drops the call to
+    /// `branch_for_thread_path` at the `threads.push(...)` site would
+    /// silently leave `branch == None` on every payload.
+    #[tokio::test]
+    async fn list_threads_populates_branch_from_dot_git_head() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        // Thread "main-test" with a symbolic-ref HEAD pointing at main.
+        let t1 = workspace.join("main-test");
+        std::fs::create_dir_all(t1.join(".jyc")).unwrap();
+        std::fs::create_dir_all(t1.join(".git")).unwrap();
+        std::fs::write(t1.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        // Thread "detached-test" with a raw 40-char SHA — should appear
+        // as "(detached)" rather than as `None`.
+        let t2 = workspace.join("detached-test");
+        std::fs::create_dir_all(t2.join(".jyc")).unwrap();
+        std::fs::create_dir_all(t2.join(".git")).unwrap();
+        std::fs::write(
+            t2.join(".git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        .unwrap();
+
+        // Thread "no-git" — `.jyc` exists but no `.git/HEAD`. Branch
+        // should be `None` (renderer skips the row).
+        let t3 = workspace.join("no-git");
+        std::fs::create_dir_all(t3.join(".jyc")).unwrap();
+
+        let tm = make_test_tm(&workspace);
+        let threads = tm.list_threads().await;
+
+        let by_name = |n: &str| {
+            threads
+                .iter()
+                .find(|t| t.name == n)
+                .unwrap_or_else(|| panic!("thread {n} missing from list_threads"))
+        };
+
+        assert_eq!(
+            by_name("main-test").branch.as_deref(),
+            Some("main"),
+            "symbolic-ref branch must be resolved"
+        );
+        assert_eq!(
+            by_name("detached-test").branch.as_deref(),
+            Some("(detached)"),
+            "raw SHA must surface as (detached)"
+        );
+        assert!(
+            by_name("no-git").branch.is_none(),
+            "non-git thread must have branch=None"
+        );
+
+        tm.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod branch_resolution_tests {
+    use super::branch_for_thread_path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn reads_symbolic_ref() {
+        let dir = tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(branch_for_thread_path(dir.path()).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn reads_detached_head() {
+        let dir = tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567").unwrap();
+        assert_eq!(
+            branch_for_thread_path(dir.path()).as_deref(),
+            Some("(detached)")
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_git() {
+        let dir = tempdir().unwrap();
+        assert!(branch_for_thread_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn follows_repo_subdir_layout() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let git = repo.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
+        assert_eq!(
+            branch_for_thread_path(dir.path()).as_deref(),
+            Some("feature-x")
+        );
+    }
+
+    #[test]
+    fn returns_none_on_garbage_head() {
+        let dir = tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
+        assert!(branch_for_thread_path(dir.path()).is_none());
     }
 }

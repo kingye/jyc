@@ -1234,7 +1234,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Thread info
+            Constraint::Length(9), // Thread info (Branch row conditionally added)
             Constraint::Min(4),    // Activity log
         ])
         .split(area);
@@ -1245,6 +1245,17 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::LEFT);
 
     let mut info_lines = vec![];
+
+    // Branch (resolved from .git/HEAD by the poll loop). Render only when
+    // the selected thread has a resolvable branch — most chat-channel
+    // threads (feishu/wecom) have a thread_path that isn't a git repo,
+    // so an absent row keeps noise down for them.
+    if let Some(branch) = app.chat.selected_branch.as_deref() {
+        info_lines.push(Line::from(vec![
+            Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(branch),
+        ]));
+    }
 
     info_lines.push(Line::from(vec![
         Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),

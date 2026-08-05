@@ -785,14 +785,16 @@ impl ActivityTracker {
                                                                             .or_default();
                                                                         seed_next_id_from_disk(state, thread_path.as_deref());
                                                                         if !is_internal {
+                                                                            // Assign monotonic per-thread id BEFORE persisting to
+                                                                            // disk and pushing to the in-memory buffer, so the log
+                                                                            // carries the same ids the dashboard uses for dedup.
+                                                                            entry.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             if let Some(ref path) = thread_path
                                                                                 && let Err(e) = ActivityLogStore::append(path, &entry)
                                                                             {
                                                                                 tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                             }
-                                                                            // Assign monotonic per-thread id BEFORE pushing.
-                                                                            entry.id = state.next_id;
-                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();

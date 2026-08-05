@@ -34,7 +34,7 @@ pub async fn watch_pending_deliveries(
     outbound: &dyn OutboundAdapter,
     cancel: CancellationToken,
     event_bus: Option<ThreadEventBusRef>,
-    thread_name: Option<String>,
+    thread_name: &str,
 ) {
     let jyc_dir = thread_path.join(".jyc");
     let signal_path = jyc_dir.join("reply-sent.flag");
@@ -73,16 +73,16 @@ pub async fn watch_pending_deliveries(
             // Fan out a ReplySent event so the dashboard can display the
             // reply live. The main post-SSE delivery path does this too;
             // when the watcher wins the race we must still emit it.
-            if let (Some(bus), Some(name)) = (&event_bus, &thread_name) {
+            if let Some(bus) = &event_bus {
                 let event = ThreadEvent::ReplySent {
-                    thread_name: name.clone(),
+                    thread_name: thread_name.to_string(),
                     text: reply_text.clone(),
                     timestamp: Utc::now(),
                 };
                 if let Err(e) = bus.publish(event).await {
                     tracing::warn!(
                         error = %e,
-                        thread = %name,
+                        thread = %thread_name,
                         "Failed to publish ReplySent event from pending delivery watcher"
                     );
                 }
@@ -220,7 +220,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 None,
-                None,
+                "test",
             )
             .await;
         });
@@ -266,7 +266,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 None,
-                None,
+                "test",
             )
             .await;
         });
@@ -307,7 +307,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 None,
-                None,
+                "test",
             )
             .await;
         });
@@ -341,7 +341,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 None,
-                None,
+                "test",
             )
             .await;
         });
@@ -383,7 +383,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 Some(bus_for_watcher),
-                Some("test-thread".to_string()),
+                "test-thread",
             )
             .await;
         });

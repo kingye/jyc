@@ -1766,7 +1766,7 @@ async fn process_message(
             &*delivery_outbound,
             delivery_cancel_child,
             event_bus,
-            Some(delivery_thread_name),
+            &delivery_thread_name,
         )
         .await;
     });

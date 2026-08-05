@@ -1253,10 +1253,7 @@ fn build_chat_header_line(
             return Line::from(vec![
                 Span::styled("╭─", line_style),
                 Span::styled(format!(" {left}"), header_style),
-                Span::styled(
-                    "─".repeat(width.saturating_sub(left_w + 1)),
-                    line_style,
-                ),
+                Span::styled("─".repeat(width.saturating_sub(left_w + 1)), line_style),
             ]);
         }
         // Left itself doesn't fit; best-effort segments over

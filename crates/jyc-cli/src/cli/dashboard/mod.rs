@@ -494,6 +494,26 @@ pub async fn run(
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
 
+                            // Refresh the cached branch for the selected
+                            // thread (cheap sync .git/HEAD read on the poll
+                            // thread; re-resolves on selection change or
+                            // every 30s so `git checkout` is reflected).
+                            let selected_thread_path = app
+                                .state
+                                .as_ref()
+                                .and_then(|s| {
+                                    let idx = if app.chat.visible {
+                                        // Chat is open — use the bound thread.
+                                        let name = app.chat.thread.as_deref()?;
+                                        s.threads.iter().position(|t| t.name == name)
+                                    } else {
+                                        app.table_state.selected()
+                                    };
+                                    idx.and_then(|i| s.threads.get(i))
+                                        .and_then(|t| t.thread_path.as_deref())
+                                });
+                            app.chat.refresh_selected_branch(selected_thread_path);
+
                             // Hydrate the live buffers when the table-selected
                             // thread changes (so the overview's activity pane
                             // shows recent entries without requiring the user

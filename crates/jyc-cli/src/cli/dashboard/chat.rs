@@ -53,6 +53,17 @@ pub(super) struct ChatState {
     pub(super) pattern_selected: usize,
     pub(super) thread: Option<String>,
     pub(super) channel: Option<String>,
+    /// Path of the currently-selected thread — the one whose branch
+    /// `selected_branch` was resolved against. Tracked so the poll loop
+    /// can detect selection changes and invalidate the branch cache.
+    pub(super) selected_thread_path: Option<std::path::PathBuf>,
+    /// Last-resolved git branch for the selected thread's working dir.
+    /// `None` when the path isn't a git repo or the lookup failed.
+    /// Read by renderers; written only by `refresh_selected_branch`.
+    pub(super) selected_branch: Option<String>,
+    /// When `selected_branch` was last resolved. Re-resolved on a slow
+    /// cadence so a `git checkout` is reflected within ~30s.
+    pub(super) branch_checked_at: Option<std::time::Instant>,
     pub(super) messages: Vec<ChatMessage>,
     /// Vim-style editor state for the chat input (edtui).
     pub(super) editor: EditorState,
@@ -1948,6 +1959,9 @@ impl ChatState {
             pattern_selected: 0,
             thread: None,
             channel: None,
+            selected_thread_path: None,
+            selected_branch: None,
+            branch_checked_at: None,
             messages: vec![],
             editor: empty_chat_editor(),
             handler: EditorEventHandler::default(),
@@ -2656,6 +2670,34 @@ impl ChatState {
             .get(&(channel.to_string(), thread.to_string()))
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
+    }
+
+    /// Refresh the cached git branch for the currently-selected thread.
+    ///
+    /// Called from the dashboard poll loop on each poll. Sync `.git/HEAD`
+    /// read is ~20µs so blocking the poll thread is fine. Re-resolves when:
+    /// - the selected thread path changed (selection switch), or
+    /// - it's been more than `BRANCH_RECHECK_SECS` since the last check
+    ///   (so a `git checkout` eventually shows up).
+    pub(super) fn refresh_selected_branch(
+        &mut self,
+        selected_path: Option<&std::path::Path>,
+    ) {
+        const BRANCH_RECHECK_SECS: u64 = 30;
+        let path_changed = self.selected_thread_path.as_deref() != selected_path;
+        let stale = self
+            .branch_checked_at
+            .map(|t| t.elapsed().as_secs() >= BRANCH_RECHECK_SECS)
+            .unwrap_or(true);
+        if path_changed {
+            self.selected_branch = None;
+            self.branch_checked_at = None;
+        }
+        if path_changed || stale {
+            self.selected_branch = selected_path.and_then(branch_for_thread_path);
+            self.branch_checked_at = Some(std::time::Instant::now());
+        }
+        self.selected_thread_path = selected_path.map(|p| p.to_path_buf());
     }
 }
 

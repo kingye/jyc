@@ -43,6 +43,14 @@ pub struct SessionState {
     /// field mapping.
     #[serde(default)]
     pub total_cache_hit_tokens: u64,
+    /// Accumulated prompt-cache-**creation** (write) tokens across
+    /// all LLM calls in this session. Anthropic is the only provider
+    /// that reports writes separately from reads; for every other
+    /// vendor this is `0`. Reset to `0` on session reset, mirroring
+    /// `total_cache_hit_tokens`. `serde(default)` so session files
+    /// written before the field existed deserialize as `0`.
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
@@ -308,9 +316,10 @@ pub async fn ensure_session_file(
 ///
 /// `input_tokens` is the tokens reported by the last API call — stored
 /// directly (not accumulated) since each call already includes the full
-/// context. `total_input_tokens`, `output_tokens`, and
-/// `total_cache_hit_tokens` are running totals accumulated by the caller
-/// (`agent_loop`), passed in as the current sum.
+/// context. `total_input_tokens`, `output_tokens`,
+/// `total_cache_hit_tokens`, and `total_cache_creation_tokens` are
+/// running totals accumulated by the caller (`agent_loop`), passed in
+/// as the current sum.
 ///
 /// `call_cost` is the cost of the single call that just completed and is
 /// **added** to `session_cost` (unlike every other field, which is
@@ -322,6 +331,7 @@ pub async fn persist_tokens(
     total_input_tokens: u64,
     output_tokens: u64,
     total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
@@ -332,6 +342,7 @@ pub async fn persist_tokens(
         total_input_tokens,
         output_tokens,
         total_cache_hit_tokens,
+        total_cache_creation_tokens,
         context_window,
         auto_reset_threshold,
         call_cost,
@@ -349,6 +360,7 @@ async fn persist_tokens_returning_state(
     total_input_tokens: u64,
     output_tokens: u64,
     total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
@@ -360,6 +372,7 @@ async fn persist_tokens_returning_state(
     state.total_input_tokens = total_input_tokens;
     state.total_output_tokens = output_tokens;
     state.total_cache_hit_tokens = total_cache_hit_tokens;
+    state.total_cache_creation_tokens = total_cache_creation_tokens;
     // The one accumulating field: each call's cost adds to the session
     // total rather than replacing it.
     state.session_cost += call_cost;
@@ -431,6 +444,7 @@ pub async fn update_tokens(
     total_input_tokens: u64,
     output_tokens: u64,
     total_cache_hit_tokens: u64,
+    total_cache_creation_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
     auto_reset_threshold: f64,
@@ -446,6 +460,7 @@ pub async fn update_tokens(
         total_input_tokens,
         output_tokens,
         total_cache_hit_tokens,
+        total_cache_creation_tokens,
         context_window,
         auto_reset_threshold,
         // Cost already banked per-call by the agent loop.
@@ -479,6 +494,7 @@ pub async fn update_tokens(
         // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
         persist_tokens(
             thread_path,
+            0,
             0,
             0,
             0,
@@ -670,13 +686,18 @@ async fn summarize_context(
     // must survive -- this was real spend, and the durable per-day total has
     // to include it.
     if let Some(b) = billing {
-        let (input_tokens, output_tokens, cache_hit_tokens) = usage;
-        if input_tokens > 0 || output_tokens > 0 || cache_hit_tokens > 0 {
-            let cost = jyc_types::pricing::compute_cost(
+        let (input_tokens, output_tokens, cache_hit_tokens, cache_creation_tokens) = usage;
+        if input_tokens > 0
+            || output_tokens > 0
+            || cache_hit_tokens > 0
+            || cache_creation_tokens > 0
+        {
+            let cost = jyc_types::pricing::compute_cost_split(
                 &b.pricing,
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
+                cache_creation_tokens,
             );
             let entry = jyc_core::billing_log_store::BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -684,6 +705,7 @@ async fn summarize_context(
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
+                cache_creation_tokens,
                 cost,
                 currency: b.pricing.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
@@ -729,7 +751,7 @@ async fn summarize_context(
 async fn generate_context_summary(
     provider: &dyn crate::provider::Provider,
     joined_history: &str,
-) -> anyhow::Result<(String, (u64, u64, u64))> {
+) -> anyhow::Result<(String, (u64, u64, u64, u64))> {
     let system_prompt = "You are summarizing a conversation between a user and an AI agent. \
         Based on the transcript below, produce a faithful, concise summary in the language used \
         in the transcript. Cover:\n\
@@ -750,7 +772,7 @@ async fn generate_context_summary(
     // Capture usage so the caller can bill this call. Summarizing the whole
     // transcript is expensive, and dropping the `Usage` event here is what
     // previously made compression spend invisible in the ledger.
-    let mut usage = (0u64, 0u64, 0u64);
+    let mut usage = (0u64, 0u64, 0u64, 0u64);
     use futures::StreamExt;
     let mut stream = std::pin::pin!(stream);
     while let Some(event) = stream.next().await {
@@ -760,7 +782,15 @@ async fn generate_context_summary(
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
-            }) => usage = (input_tokens, output_tokens, cache_hit_tokens),
+                cache_creation_tokens,
+            }) => {
+                usage = (
+                    input_tokens,
+                    output_tokens,
+                    cache_hit_tokens,
+                    cache_creation_tokens,
+                )
+            }
             Ok(crate::types::StreamEvent::Done) => break,
             Ok(crate::types::StreamEvent::Error(msg)) => {
                 anyhow::bail!("LLM error during summary: {msg}");

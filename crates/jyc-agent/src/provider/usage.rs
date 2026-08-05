@@ -6,6 +6,15 @@
 //! "unknown" and "explicitly zero" identically — both mean the
 //! provider didn't surface cache hits for this call.
 //!
+//! Anthropic is the **only** vendor that distinguishes cache reads
+//! from cache writes: cache hits served from an existing entry vs.
+//! tokens that *wrote* a new cache entry. Writes bill at ~1.25× the
+//! input rate on Anthropic; reads are cheap. Use
+//! [`extract_anthropic_cache_split`] to recover both buckets for
+//! cost computation, and [`extract_cache_hit_tokens`] for the
+//! single-bucket sum used in session accounting (e.g. context-window
+//! display, dashboard cache-hit chip).
+//!
 //! ## Vendor coverage
 //!
 //! | Vendor        | Field(s)                                       | Location                          |
@@ -15,7 +24,8 @@
 //! | OpenAI        | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | 火山引擎      | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | MiniMax       | `cached_tokens`                                | `usage.prompt_tokens_details`     |
-//! | Anthropic     | `cache_read_input_tokens + cache_creation_input_tokens` | `usage` root             |
+//! | Anthropic     | `cache_read_input_tokens` (read)               | `usage` root                      |
+//! |               | `cache_creation_input_tokens` (write)          | `usage` root                      |
 //!
 //! ## Search order (first non-zero match wins)
 //!
@@ -90,23 +100,35 @@ pub fn extract_cache_hit_tokens(usage: &Value) -> u64 {
 /// here does the opposite — OpenAI's `prompt_tokens` already contains
 /// `cached_tokens`.
 ///
-/// [`jyc_types::pricing::compute_cost`] expects the OpenAI shape (it derives
-/// uncached input as `input - cache_hit`), so the Anthropic numbers have to be
-/// summed back into a total before they reach it. Without this, a cache-heavy
-/// call reports less input than cache hits, `saturating_sub` clamps the
-/// uncached remainder to zero, and the genuinely-uncached tokens are billed
-/// at nothing.
-///
-/// ponytail: cache *writes* (`cache_creation_input_tokens`) bill at 1.25x the
-/// input rate but are folded into the single `cache_hit_per_million` bucket
-/// here, so a write is under-costed relative to a read. Split them into their
-/// own rate if write-heavy workloads make the gap matter.
+/// [`jyc_types::pricing::compute_cost_split`] expects the OpenAI shape (it
+/// derives uncached input as `input - cache_read - cache_creation`), so
+/// the Anthropic numbers have to be summed back into a total before they
+/// reach it. Without this, a cache-heavy call reports less input than
+/// cache hits, `saturating_sub` clamps the uncached remainder to zero,
+/// and the genuinely-uncached tokens are billed at nothing.
 pub fn anthropic_total_input_tokens(usage: &Value) -> u64 {
     let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
 
     field("input_tokens")
         .saturating_add(field("cache_read_input_tokens"))
         .saturating_add(field("cache_creation_input_tokens"))
+}
+
+/// Anthropic-specific: extract the read and write cache buckets
+/// separately. Returns `(cache_read_tokens, cache_creation_tokens)`.
+///
+/// Both buckets default to `0` when the corresponding field is absent
+/// or non-numeric. Every non-Anthropic provider has no second bucket
+/// and is expected to use the `extract_cache_hit_tokens` (single
+/// bucket) path; this helper exists specifically so Anthropic's two
+/// fields can be billed at different rates by
+/// [`jyc_types::pricing::compute_cost_split`].
+pub fn extract_anthropic_cache_split(usage: &Value) -> (u64, u64) {
+    let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+    (
+        field("cache_read_input_tokens"),
+        field("cache_creation_input_tokens"),
+    )
 }
 
 #[cfg(test)]
@@ -297,6 +319,7 @@ mod tests {
             input_per_million: 15.0,
             output_per_million: 75.0,
             cache_hit_per_million: 1.5,
+            cache_creation_per_million: None,
             currency: None,
         };
         let usage = json!({
@@ -331,5 +354,56 @@ mod tests {
             "expected a $0.042 undercount, got {}",
             fixed - raw
         );
+    }
+
+    /// Anthropic reports both buckets separately. The split helper
+    /// returns both so `compute_cost_split` can bill each at its own
+    /// rate.
+    #[test]
+    fn anthropic_cache_split_returns_both_buckets() {
+        let usage = json!({
+            "cache_read_input_tokens": 700,
+            "cache_creation_input_tokens": 100,
+        });
+        assert_eq!(extract_anthropic_cache_split(&usage), (700, 100));
+    }
+
+    /// Cache reads without any writes (steady-state after the first
+    /// call) — creation bucket is zero.
+    #[test]
+    fn anthropic_cache_split_read_only() {
+        let usage = json!({
+            "cache_read_input_tokens": 500,
+        });
+        assert_eq!(extract_anthropic_cache_split(&usage), (500, 0));
+    }
+
+    /// A first call writes the cache instead of reading it — read
+    /// bucket is zero.
+    #[test]
+    fn anthropic_cache_split_write_only() {
+        let usage = json!({
+            "cache_creation_input_tokens": 300,
+        });
+        assert_eq!(extract_anthropic_cache_split(&usage), (0, 300));
+    }
+
+    /// Empty / non-Anthropic usage returns `(0, 0)` — the helper is
+    /// safe to call on every provider's usage JSON regardless of
+    /// shape.
+    #[test]
+    fn anthropic_cache_split_empty_usage() {
+        assert_eq!(extract_anthropic_cache_split(&json!({})), (0, 0));
+    }
+
+    /// Non-numeric fields are skipped, not panicked on — same
+    /// robustness guarantee as `extract_cache_hit_tokens`.
+    #[test]
+    fn anthropic_cache_split_skips_non_numeric() {
+        let usage = json!({
+            "cache_read_input_tokens": "n/a",
+            "cache_creation_input_tokens": null,
+        });
+        assert_eq!(extract_anthropic_cache_split(&usage), (0, 0));
     }
 }

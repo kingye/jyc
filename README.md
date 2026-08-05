@@ -342,18 +342,23 @@ type = "anthropic"
 # Rates are per 1,000,000 tokens. `currency` is a display label only --
 # jyc never converts between currencies. Default: "CNY", so a provider
 # billing in USD must say so explicitly.
-pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
+# Anthropic splits cache tokens into read and write buckets that
+# bill at different rates; set `cache_creation_per_million` to bill
+# cache writes at their premium rate (~1.25× input for Opus / Sonnet 4.x).
+pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, cache_creation_per_million = 3.75, currency = "USD" }
 
 [agent.providers.anthropic.models."claude-opus-4-7"]
-pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, currency = "USD" }
+pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, cache_creation_per_million = 18.75, currency = "USD" }
 ```
 
 Cost per call is:
 
 ```
-  (input_tokens - cache_hit_tokens) * input_per_million     / 1e6
-+ output_tokens                     * output_per_million    / 1e6
-+ cache_hit_tokens                  * cache_hit_per_million / 1e6
+  (input - cache_read - cache_creation) * input_per_million         / 1e6
++ output_tokens                         * output_per_million        / 1e6
++ cache_read_tokens                     * cache_hit_per_million     / 1e6
++ cache_creation_tokens                 * cache_creation_per_million / 1e6
+                                        (defaults to cache_hit_per_million)
 ```
 
 A CNY-priced provider can omit `currency` entirely, since `"CNY"` is the
@@ -368,6 +373,13 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
 Prompt-cache hits are billed at their own (usually much cheaper) rate rather
 than the full input rate. `cache_hit_per_million` defaults to `0.0`; set it
 equal to `input_per_million` for providers that bill cache hits normally.
+
+`cache_creation_per_million` is **optional** and defaults to
+`cache_hit_per_million` (i.e. cache writes bill at the same rate as cache
+reads). Anthropic is the only provider that distinguishes cache writes
+from reads — its `cache_creation_input_tokens` bills at ~1.25× the input
+rate. Set this field only for Anthropic providers; non-Anthropic providers
+that surface a single cache bucket ignore it.
 
 The dashboard and chat **Thread Info** panes then show
 `Cost: ¥0.0521 session · ¥1.3057 today`:

@@ -141,11 +141,21 @@ pub enum StreamEvent {
     Usage {
         input_tokens: u64,
         output_tokens: u64,
-        /// Prompt-cache hits reported by the provider for this call.
-        /// `0` when the provider doesn't surface it (or it's absent
-        /// from the `usage` JSON). See `provider::usage` for the
-        /// per-vendor field mapping.
+        /// Prompt-cache **read** tokens reported by the provider for
+        /// this call. For Anthropic, this is `cache_read_input_tokens`;
+        /// for every other vendor it's the single `cached_tokens` /
+        /// `prompt_cache_hit_tokens` field. `0` when the provider
+        /// doesn't surface cache hits (or they're absent from the
+        /// `usage` JSON). See `provider::usage` for the per-vendor
+        /// field mapping.
         cache_hit_tokens: u64,
+        /// Prompt-cache **creation** (write) tokens. Anthropic is the
+        /// only vendor that reports writes separately from reads; for
+        /// every other provider this is `0`. Billed at the dedicated
+        /// `cache_creation_per_million` rate when configured, otherwise
+        /// folded into `cache_hit_per_million` (parity with the
+        /// pre-split model).
+        cache_creation_tokens: u64,
     },
     /// Stream is complete.
     Done,
@@ -189,6 +199,12 @@ pub struct AgentLoopResult {
     /// round surfaced cache hits. Mirrors `total_input_tokens` in
     /// `SessionState` for per-round accumulation.
     pub total_cache_hit_tokens: u64,
+    /// Accumulated prompt-cache-**creation** (write) tokens across
+    /// all LLM calls in this round. Anthropic is the only provider
+    /// that reports writes separately from reads; for every other
+    /// vendor this is `0`. Billed at `cache_creation_per_million`
+    /// when configured, otherwise folded into the read rate.
+    pub total_cache_creation_tokens: u64,
     /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
     /// Raw provider-formatted context (for persistence in agent-context.json).
@@ -365,6 +381,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_hit_tokens: 0,
+                cache_creation_tokens: 0,
             },
             StreamEvent::Done,
             StreamEvent::Error("oops".to_string()),

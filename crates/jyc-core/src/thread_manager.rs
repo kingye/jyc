@@ -964,6 +964,7 @@ impl ThreadManager {
                 output_tokens,
                 total_input_tokens,
                 total_cache_hit_tokens,
+                total_cache_creation_tokens,
             ) = read_token_state(&thread_path).await;
 
             // Read mode first — needed to resolve mode-specific model overrides.
@@ -1117,6 +1118,7 @@ impl ThreadManager {
                 output_tokens,
                 total_input_tokens,
                 total_cache_hit_tokens,
+                total_cache_creation_tokens,
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
@@ -3409,6 +3411,7 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
                     input_tokens: 100,
                     output_tokens: 10,
                     cache_hit_tokens: 0,
+                    cache_creation_tokens: 0,
                     cost,
                     currency: currency.to_string(),
                     kind: crate::billing_log_store::KIND_CALL.to_string(),

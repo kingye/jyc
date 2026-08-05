@@ -6,6 +6,38 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Anthropic cache-creation (write) pricing.** Anthropic splits
+  prompt-cache tokens into two buckets that bill at different rates:
+  `cache_read_input_tokens` (cheap reads) and
+  `cache_creation_input_tokens` (writes at ~1.25× the input rate).
+  Previously jyc collapsed both into a single `cache_hit_tokens` field
+  and billed them at `cache_hit_per_million`, undercharging cache
+  writes for any Anthropic user. Now:
+
+  - New optional field `cache_creation_per_million` on `ModelPricing`
+    (provider- and model-level). Omitting it preserves the legacy
+    single-rate model — existing configs and ledgers are unchanged.
+  - `compute_cost_split(input, output, cache_read, cache_creation)`
+    is the new canonical cost function; `compute_cost(...)` is now a
+    thin wrapper that forwards `0` for the creation bucket.
+  - `BillingEntry` gains `cache_creation_tokens: u64`
+    (`#[serde(default)]` so existing ledger files still load).
+  - `SessionState` gains `total_cache_creation_tokens: u64`
+    (`#[serde(default)]`).
+  - `ThreadSummary` / `ThreadInfo` / the inspect protocol gain
+    `total_cache_creation_tokens: Option<u64>`, surfaced in the chat
+    info pane and dashboard thread info area as a new
+    "Cache create: N" row that only renders for Anthropic sessions.
+  - Per-provider wiring: the Anthropic provider emits
+    `cache_read_tokens` and `cache_creation_tokens` separately from
+    its SSE `usage` payload; every other provider (OpenAI / DeepSeek /
+    Kimi / 火山引擎 / MiniMax) keeps filling `cache_creation_tokens = 0`.
+
+  Backwards-compat: old configs, old `agent-session.json` files, and
+  old `bill-YYYY-MM-DD.jsonl` ledger entries all load unchanged via
+  `#[serde(default)]`. Anthropic users who don't set the new field
+  see no behavior change.
+
 - **OAuth2 client_credentials for remote MCP.** Remote MCP servers in
   `[[mcps]]` (global, workdir, or thread overlay) now accept an optional
   `oauth = { client_id, client_secret, token_endpoint, scopes? }` block.

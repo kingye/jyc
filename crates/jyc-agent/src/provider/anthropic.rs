@@ -9,7 +9,7 @@ use futures::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
 
-use crate::provider::usage::{anthropic_total_input_tokens, extract_cache_hit_tokens};
+use crate::provider::usage::{anthropic_total_input_tokens, extract_anthropic_cache_split};
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -523,11 +523,18 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 if input > 0 || output > 0 {
-                    let cache_hit = extract_cache_hit_tokens(usage);
+                    // Anthropic reports reads and writes as separate
+                    // buckets; surface both so the cost formula can
+                    // bill each at its configured rate. `cache_hit_tokens`
+                    // carries the read bucket only — non-Anthropic
+                    // providers and the existing single-rate cost path
+                    // see no change in its meaning.
+                    let (cache_read, cache_creation) = extract_anthropic_cache_split(usage);
                     return Some(vec![StreamEvent::Usage {
                         input_tokens: input,
                         output_tokens: output,
-                        cache_hit_tokens: cache_hit,
+                        cache_hit_tokens: cache_read,
+                        cache_creation_tokens: cache_creation,
                     }]);
                 }
             }
@@ -542,11 +549,12 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 if input > 0 {
-                    let cache_hit = extract_cache_hit_tokens(usage);
+                    let (cache_read, cache_creation) = extract_anthropic_cache_split(usage);
                     return Some(vec![StreamEvent::Usage {
                         input_tokens: input,
                         output_tokens: output,
-                        cache_hit_tokens: cache_hit,
+                        cache_hit_tokens: cache_read,
+                        cache_creation_tokens: cache_creation,
                     }]);
                 }
             }

@@ -26,6 +26,14 @@ All notable changes to JYC will be documented in this file.
   `branch` is `#[serde(default)]` so absent values become `None` and
   the segment is simply omitted. (#512)
 
+### Fixed
+
+- **Chat input header regains model and context-window percentage.**
+  Removing the `jyc ai v{}` chip in #512 also dropped the model name
+  and pct% that lived alongside it. Both are restored as a right-side
+  `[ {model} · {pct}% ]` chip on the input header line. The version
+  remains in the status bar (per the original decision).
+
 - **Anthropic cache-creation (write) pricing.** Anthropic splits
   prompt-cache tokens into two buckets that bill at different rates:
   `cache_read_input_tokens` (cheap reads) and

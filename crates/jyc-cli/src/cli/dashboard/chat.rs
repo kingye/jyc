@@ -4184,7 +4184,7 @@ mod tests {
     }
 
     #[test]
-    fn header_line_includes_mode_channel_pattern_and_chip() {
+    fn header_line_includes_mode_channel_pattern() {
         let ctx = ctx_with_full_data();
         let line =
             build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
@@ -4194,10 +4194,11 @@ mod tests {
             text.contains("╭─ plan · local_dev · jyc"),
             "missing left segment in: {text:?}"
         );
-        // Right chip includes version + model + percent.
+        // No right-side chip — version + model + tokens live in the
+        // status bar / thread info pane now.
         assert!(
-            text.contains("[ jyc ai v0.3.12 · claude-opus-4-6 · 10% ]"),
-            "missing chip in: {text:?}"
+            !text.contains('[') && !text.contains("jyc ai v"),
+            "chat input header should not render a version chip, got: {text:?}"
         );
         // The line should fill the requested width via dash padding.
         assert_eq!(text.width(), 80);
@@ -4218,7 +4219,7 @@ mod tests {
     }
 
     #[test]
-    fn header_line_shows_question_marks_when_no_state() {
+    fn header_line_with_no_state_is_just_mode_and_padding() {
         let ctx = ChatHeaderCtx {
             mode: "build",
             channel: None,
@@ -4227,30 +4228,18 @@ mod tests {
         };
         let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
-        // Defaults: mode=build, channel/pattern = None, version = ?, model = ?, pct = –%.
+        // Defaults: mode = "build", channel/pattern/branch all absent.
         assert!(
             text.starts_with("╭─ build"),
             "missing default mode in: {text:?}"
         );
+        // No fallback placeholders either — there is no chip anymore.
         assert!(
-            text.contains("[ jyc ai v? · ? · –% ]"),
-            "missing fallback chip in: {text:?}"
+            !text.contains('[') && !text.contains('?'),
+            "no question-mark placeholders expected: {text:?}"
         );
-    }
-
-    #[test]
-    fn header_line_drops_chip_when_narrow() {
-        let ctx = ctx_with_full_data();
-        // Width just enough for the left segment but not the chip.
-        let left = "╭─ plan · local_dev · jyc";
-        let line = build_chat_header_line(
-            left.chars().count() + 1,
-            &ctx,
-            test_header_style(),
-            LINE_DRAWING,
-        );
-        let text = line_text(&line);
-        assert_eq!(text, left, "should drop chip and keep left segment");
+        // Padding still fills the row.
+        assert_eq!(text.width(), 80);
     }
 
     #[test]
@@ -4262,8 +4251,8 @@ mod tests {
         let line =
             build_chat_header_line(20, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
-        // Channel must be truncated to fit; chip dropped.
-        assert!(!text.contains("["), "chip should be dropped, got: {text:?}");
+        // Channel must be truncated to fit; no chip ever rendered.
+        assert!(!text.contains('['), "should not contain a chip, got: {text:?}");
         assert!(text.starts_with("╭─ plan"));
         assert!(text.width() <= 20);
         // Never leave a dangling separator at the end.

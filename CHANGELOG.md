@@ -85,6 +85,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Pending-delivery watcher now fans out dashboard events.** When the
+  background watcher (used by MCP reply/question tools during the SSE
+  stream) won the race against the post-SSE delivery path, it delivered the
+  reply to the channel but never published a `ReplySent` event. The dashboard
+  chat pane therefore showed "processing completed" in the activity pane while
+  the actual reply only appeared after re-entering the chat (when it was read
+  from chat history). The watcher now publishes `ReplySent` so live chat
+  messages are visible immediately. (#508)
+
 - **Thread-level `${VAR}` expansion.** `<thread>/.jyc/config.toml` now
   expands `${ENV_VAR}` references in `[agent]` model overrides and
   `[[mcps]]` fields, matching the behavior of L1 (global) and L2 (workdir)

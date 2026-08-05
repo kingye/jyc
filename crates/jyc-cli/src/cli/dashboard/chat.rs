@@ -2667,6 +2667,39 @@ static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
     std::collections::VecDeque<jyc_types::ChatMessageEntry>,
 > = std::sync::LazyLock::new(std::collections::VecDeque::new);
 
+/// Read the current branch name from `.git/HEAD` under `path`.
+///
+/// Looks first at `<path>/.git/HEAD`, then falls back to
+/// `<path>/repo/.git/HEAD` (the shared-repo symlink layout used when
+/// a pattern sets `repo_group`). Returns:
+/// - `Some(branch)` for a symbolic ref `ref: refs/heads/<branch>`
+/// - `Some("(detached)")` for a raw SHA in `.git/HEAD`
+/// - `None` when neither file is readable (not a git repo, perms, etc.)
+///
+/// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
+/// `std::fs::read_to_string` follows the `repo/` symlink for us.
+fn branch_for_thread_path(path: &std::path::Path) -> Option<String> {
+    let head_path = if path.join(".git").join("HEAD").is_file() {
+        path.join(".git").join("HEAD")
+    } else if path.join("repo").join(".git").join("HEAD").is_file() {
+        path.join("repo").join(".git").join("HEAD")
+    } else {
+        return None;
+    };
+    let raw = std::fs::read_to_string(&head_path).ok()?;
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("ref: refs/heads/") {
+        if rest.is_empty() || rest.contains('\n') || rest.contains(' ') {
+            return None;
+        }
+        Some(rest.to_string())
+    } else if trimmed.len() == 40 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some("(detached)".to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4269,5 +4302,61 @@ mod tests {
         // Wide char that doesn't fit the remaining column is dropped.
         let out = truncate_to_width("你好", 3);
         assert_eq!(out, "你…");
+    }
+
+    #[test]
+    fn branch_reads_symbolic_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(
+            branch_for_thread_path(dir.path()).as_deref(),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn branch_reads_detached_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        // 40 hex chars with no newline — git's detached HEAD shape.
+        std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567").unwrap();
+        assert_eq!(
+            branch_for_thread_path(dir.path()).as_deref(),
+            Some("(detached)")
+        );
+    }
+
+    #[test]
+    fn branch_returns_none_when_no_git() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(branch_for_thread_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn branch_follows_repo_subdir_layout() {
+        // Mirrors the shared-repo layout used by patterns with
+        // `repo_group = "..."`: the actual git repo lives under
+        // `<thread_path>/repo/.git/`, not `<thread_path>/.git/`.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let git = repo.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
+        assert_eq!(
+            branch_for_thread_path(dir.path()).as_deref(),
+            Some("feature-x")
+        );
+    }
+
+    #[test]
+    fn branch_returns_none_on_garbage_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
+        assert!(branch_for_thread_path(dir.path()).is_none());
     }
 }

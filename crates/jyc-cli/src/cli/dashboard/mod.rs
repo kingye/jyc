@@ -1316,6 +1316,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cache_hit_span(&mut status_line, selected);
     }
+    if selected.total_cache_creation_tokens.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_cache_creation_span(&mut status_line, selected);
+    }
     if selected.cost.is_some() {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cost_span(&mut status_line, selected);
@@ -1735,6 +1739,7 @@ mod tests {
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,

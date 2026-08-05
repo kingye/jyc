@@ -300,12 +300,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # api_key_env = "ANTHROPIC_API_KEY"        # legacy
 # # Provider-level billing rates, applied to every model under this
 # # provider unless the model sets its own. See "Cost tracking" below.
-# pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, currency = "USD" }
+# # Anthropic splits cache tokens into read (`cache_read_input_tokens`)
+# # and write (`cache_creation_input_tokens`) buckets that bill at
+# # different rates. Set `cache_creation_per_million` to bill writes at
+# # their premium rate (~1.25× input for Opus / Sonnet 4.x); omit it
+# # to fall back to `cache_hit_per_million` for both buckets.
+# pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, cache_creation_per_million = 3.75, currency = "USD" }
 #
 # [agent.providers.anthropic.models."claude-opus-4-7"]
 # supports_images = true
 # # Model-level rates override the provider default above.
-# pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, currency = "USD" }
+# pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, cache_creation_per_million = 18.75, currency = "USD" }
 
 # --- Cost tracking ---
 #
@@ -319,13 +324,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # (default "CNY"). jyc never converts between currencies, so a provider
 # billing in USD must set `currency = "USD"` explicitly. Cost per call:
 #
-#   (input_tokens - cache_hit_tokens) * input_per_million  / 1e6
-# + output_tokens                     * output_per_million / 1e6
-# + cache_hit_tokens                  * cache_hit_per_million / 1e6
+#   (input - cache_read - cache_creation) * input_per_million         / 1e6
+# + output_tokens                         * output_per_million        / 1e6
+# + cache_read_tokens                     * cache_hit_per_million     / 1e6
+# + cache_creation_tokens                 * cache_creation_per_million / 1e6
+#                                         (defaults to cache_hit_per_million)
 #
 # `cache_hit_per_million` defaults to 0.0; set it equal to
 # `input_per_million` for providers that bill cache hits at the full
-# input rate. A CNY-priced provider, for example:
+# input rate. `cache_creation_per_million` is optional (defaults to
+# `cache_hit_per_million`) — Anthropic is the only provider that
+# distinguishes cache writes from reads. A CNY-priced provider, for example:
 #
 # [agent.providers.my_cn_provider]
 # type = "openai-compatible"

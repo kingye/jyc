@@ -6,6 +6,52 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Anthropic cache-creation (write) pricing.** Anthropic splits
+  prompt-cache tokens into two buckets that bill at different rates:
+  `cache_read_input_tokens` (cheap reads) and
+  `cache_creation_input_tokens` (writes at ~1.25× the input rate).
+  Previously jyc collapsed both into a single `cache_hit_tokens` field
+  and billed them at `cache_hit_per_million`, undercharging cache
+  writes for any Anthropic user. Now:
+
+  - New optional field `cache_creation_per_million` on `ModelPricing`
+    (provider- and model-level). Omitting it preserves the legacy
+    single-rate billing — `compute_cost_split` falls back to
+    `cache_hit_per_million` for writes when the field is absent.
+  - `compute_cost_split(input, output, cache_read, cache_creation)`
+    is the new canonical cost function. Reads bill at
+    `cache_hit_per_million`, writes bill at
+    `cache_creation_per_million` (or the read rate as fallback).
+    `compute_cost(...)` is now a thin wrapper that forwards `0` for
+    the creation bucket.
+  - `BillingEntry` gains `cache_creation_tokens: u64`
+    (`#[serde(default)]` so existing ledger files still load).
+  - `SessionState.total_cache_hit_tokens` semantics changed **for
+    Anthropic only**: it now reports cache-**read** tokens only
+    (writes accumulate in the new `total_cache_creation_tokens`).
+    For every other provider it's still the single reported cache
+    bucket. The dashboard "Cache hits" row therefore shows reads
+    only on Anthropic sessions and the new "Cache create" row shows
+    writes; non-Anthropic sessions show a single "Cache hits" row
+    as before.
+  - `ThreadSummary` / `ThreadInfo` / the inspect protocol gain
+    `total_cache_creation_tokens: Option<u64>`, surfaced in the chat
+    info pane and dashboard thread info area as a new
+    "Cache create: N" row that only renders when the running total
+    is non-zero (= only for Anthropic).
+  - Per-provider wiring: the Anthropic provider emits
+    `cache_read_tokens` and `cache_creation_tokens` separately from
+    its SSE `usage` payload; every other provider (OpenAI / DeepSeek /
+    Kimi / 火山引擎 / MiniMax) keeps filling `cache_creation_tokens = 0`.
+
+  Backwards-compat: old configs, old `agent-session.json` files, and
+  old `bill-YYYY-MM-DD.jsonl` ledger entries all load unchanged via
+  `#[serde(default)]`. Cost math is unchanged for Anthropic users who
+  don't set `cache_creation_per_million` (writes fall back to
+  `cache_hit_per_million`); only the dashboard `Cache hits` count
+  changes for Anthropic sessions — by design, so writes no longer
+  inflate the read-bucket display.
+
 - **OAuth2 client_credentials for remote MCP.** Remote MCP servers in
   `[[mcps]]` (global, workdir, or thread overlay) now accept an optional
   `oauth = { client_id, client_secret, token_endpoint, scopes? }` block.

@@ -85,6 +85,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **WeCom progress updater no longer leaks on agent errors.** The agent
+  wait loop returned early via `?` when the agent call failed (API error,
+  429 retry exhaustion, `/cancel`), skipping the cleanup that stops the
+  background progress updater. The leaked task kept sending stream updates
+  every 3s for a long-expired req_id forever (until process restart),
+  producing a constant `reply ack error errcode=846604` WARN storm even
+  with no active session — one more leaked task per failed run. Errors are
+  now propagated only after both background tasks are stopped, and messages
+  buffered during a failed call are re-enqueued instead of dropped. (#509)
+
 - **Pending-delivery watcher now fans out dashboard events.** When the
   background watcher (used by MCP reply/question tools during the SSE
   stream) won the race against the post-SSE delivery path, it delivered the

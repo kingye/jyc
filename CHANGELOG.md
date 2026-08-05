@@ -89,6 +89,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Chat pane for non-WebSocket threads no longer drops typed messages.**
+  Opening a github/email/etc. thread in the dashboard chat pane used the
+  legacy detail mode, which never opened a WebSocket connection — typed
+  input (including `/reset` and other slash commands) was echoed locally
+  and silently dropped, never reaching the server. All threads now open
+  over the unified `/ws/<channel>/<thread>` endpoint, and the dead
+  detail-mode code is removed.
+
 - **WeCom progress updater no longer leaks on agent errors.** The agent
   wait loop returned early via `?` when the agent call failed (API error,
   429 retry exhaustion, `/cancel`), skipping the cleanup that stops the

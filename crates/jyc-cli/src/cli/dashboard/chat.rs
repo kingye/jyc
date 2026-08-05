@@ -4148,8 +4148,7 @@ mod tests {
     fn header_line_box_drawing_uses_passed_line_style() {
         let ctx = ctx_with_full_data();
         // Inactive: line-drawing chars use #393552.
-        let inactive =
-            build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+        let inactive = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         assert_eq!(inactive.spans[0].content.as_ref(), "╭─");
         assert_eq!(
             inactive.spans[0].style.fg,
@@ -4168,8 +4167,7 @@ mod tests {
     #[test]
     fn header_line_box_drawing_uses_line_color() {
         let ctx = ctx_with_full_data();
-        let line =
-            build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let line_fg = Color::Rgb(0x39, 0x35, 0x52);
         // First span is the "╭─" prefix in the line-drawing color.
         assert_eq!(line.spans[0].content.as_ref(), "╭─");
@@ -4186,8 +4184,7 @@ mod tests {
     #[test]
     fn header_line_includes_mode_channel_pattern() {
         let ctx = ctx_with_full_data();
-        let line =
-            build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         // Left segment includes mode + channel + pattern.
         assert!(
@@ -4208,8 +4205,7 @@ mod tests {
     fn header_line_omits_pattern_when_missing() {
         let mut ctx = ctx_with_full_data();
         ctx.pattern = None;
-        let line =
-            build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             text.starts_with("╭─ plan · local_dev"),
@@ -4248,11 +4244,13 @@ mod tests {
         ctx.channel = Some("a-very-long-channel-name");
         ctx.pattern = Some("a-very-long-pattern-name");
         // Width so tight that even truncating channel to 3 chars barely fits.
-        let line =
-            build_chat_header_line(20, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(20, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         // Channel must be truncated to fit; no chip ever rendered.
-        assert!(!text.contains('['), "should not contain a chip, got: {text:?}");
+        assert!(
+            !text.contains('['),
+            "should not contain a chip, got: {text:?}"
+        );
         assert!(text.starts_with("╭─ plan"));
         assert!(text.width() <= 20);
         // Never leave a dangling separator at the end.
@@ -4266,8 +4264,7 @@ mod tests {
     fn header_line_appends_branch_when_present() {
         let mut ctx = ctx_with_full_data();
         ctx.branch = Some("feat/issue-512-show-branch");
-        let line =
-            build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             text.contains("· jyc · feat/issue-512-show-branch"),
@@ -4281,8 +4278,7 @@ mod tests {
         // but with branch=None — the left segment must end at "· jyc"
         // without a dangling separator.
         let ctx = ctx_with_full_data();
-        let line =
-            build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
+        let line = build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
         assert!(
             text.contains("· jyc "),

@@ -16,6 +16,16 @@ All notable changes to JYC will be documented in this file.
   Threads whose `thread_path` is not a git repo (most chat-channel
   threads) simply omit the branch segment. (#512)
 
+### Changed
+
+- **Chat input header no longer carries the version chip.** The
+  right-aligned `[ jyc ai v{ver} · {model} · {pct}% ]` chip is removed
+  from the `╭─ …` row — version, model, and tokens were duplicated
+  with the status bar / thread info pane. The version string now lives
+  only in the status bar (used by both the dashboard and the chat
+  screen via the same `render_status_bar` function), prefixed with
+  `jyc ai` to match the old chip's wording.
+
 - **Anthropic cache-creation (write) pricing.** Anthropic splits
   prompt-cache tokens into two buckets that bill at different rates:
   `cache_read_input_tokens` (cheap reads) and

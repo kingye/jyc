@@ -1753,13 +1753,20 @@ async fn process_message(
     let delivery_message_dir = store_result.message_dir.clone();
     let delivery_message = message.clone();
     let delivery_outbound = outbound.clone();
+    let delivery_thread_manager = thread_manager.clone();
+    let delivery_thread_name = thread_name.to_string();
     let delivery_handle = tokio::spawn(async move {
+        let event_bus = delivery_thread_manager
+            .get_event_bus(&delivery_thread_name)
+            .await;
         watch_pending_deliveries(
             &delivery_thread_path,
             &delivery_message_dir,
             &delivery_message,
             &*delivery_outbound,
             delivery_cancel_child,
+            event_bus,
+            Some(delivery_thread_name),
         )
         .await;
     });

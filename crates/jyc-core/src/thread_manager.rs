@@ -3495,7 +3495,6 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
     }
 }
 
-
 #[cfg(test)]
 mod branch_resolution_tests {
     use super::branch_for_thread_path;
@@ -3515,11 +3514,7 @@ mod branch_resolution_tests {
         let dir = tempdir().unwrap();
         let git = dir.path().join(".git");
         std::fs::create_dir_all(&git).unwrap();
-        std::fs::write(
-            git.join("HEAD"),
-            "0123456789abcdef0123456789abcdef01234567",
-        )
-        .unwrap();
+        std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567").unwrap();
         assert_eq!(
             branch_for_thread_path(dir.path()).as_deref(),
             Some("(detached)")

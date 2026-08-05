@@ -1125,6 +1125,7 @@ impl ThreadManager {
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
+                branch: branch_for_thread_path(&thread_path),
                 cost,
             });
         }

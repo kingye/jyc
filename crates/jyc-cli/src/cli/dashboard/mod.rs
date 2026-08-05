@@ -1752,6 +1752,7 @@ mod tests {
                     status: ThreadStatus::Idle,
                     model: None,
                     mode: None,
+                    branch: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,

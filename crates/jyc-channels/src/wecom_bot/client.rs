@@ -538,7 +538,11 @@ impl WecomBotWsClient {
             };
 
             if errcode == 0 {
-                tracing::info!(req_id = %req_id, errmsg = %errmsg, "WeCom Bot operation succeeded");
+                if req_id.starts_with("ping_") {
+                    tracing::debug!(req_id = %req_id, errmsg = %errmsg, "WeCom Bot operation succeeded");
+                } else {
+                    tracing::info!(req_id = %req_id, errmsg = %errmsg, "WeCom Bot operation succeeded");
+                }
                 return Ok(());
             }
 

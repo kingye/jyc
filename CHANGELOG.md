@@ -85,6 +85,29 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Pending-delivery watcher now fans out dashboard events.** When the
+  background watcher (used by MCP reply/question tools during the SSE
+  stream) won the race against the post-SSE delivery path, it delivered the
+  reply to the channel but never published a `ReplySent` event. The dashboard
+  chat pane therefore showed "processing completed" in the activity pane while
+  the actual reply only appeared after re-entering the chat (when it was read
+  from chat history). The watcher now publishes `ReplySent` so live chat
+  messages are visible immediately. (#508)
+
+- **Monotonic activity ids across monitor restarts.** `ActivityEntry`
+  ids were assigned **after** appending to `activity.jsonl`, so the persisted
+  log always contained id 0 and the dashboard's `last_seen_id` dedup was
+  effectively disabled. Worse, after a monitor restart `next_id` began again at
+  0/1, so any dashboard client that had not re-hydrated dropped all live events
+  as "duplicates". Ids are now assigned **before** disk persistence and the
+  ActivityTracker seeds `next_id` from the persisted log on first use, keeping
+  live events visible after a restart. (#508)
+
+- **Silent broadcast lag in WebSocket handlers is now logged.** When a
+  dashboard client could not keep up with the broadcast bus, per-channel
+  and inspect-broadcast events were dropped silently (debug-only). Both
+  paths now log a warning so dropped live messages can be diagnosed. (#508)
+
 - **Thread-level `${VAR}` expansion.** `<thread>/.jyc/config.toml` now
   expands `${ENV_VAR}` references in `[agent]` model overrides and
   `[[mcps]]` fields, matching the behavior of L1 (global) and L2 (workdir)

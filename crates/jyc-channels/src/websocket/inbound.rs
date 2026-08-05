@@ -375,8 +375,8 @@ async fn handle_connection_impl(
                         tracing::info!(addr = %addr, "Broadcast channel closed");
                         break;
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Client is slow, just continue
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(addr = %addr, dropped = %n, "Per-channel broadcast lagged; messages may have been lost");
                     }
                 }
             }
@@ -404,7 +404,7 @@ async fn handle_connection_impl(
                         // The inspect broadcast was closed — not a fatal error.
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!(addr = %addr, dropped = %n, "Inspect broadcast lagged");
+                        tracing::warn!(addr = %addr, dropped = %n, "Inspect broadcast lagged; events may have been lost");
                     }
                 }
             }

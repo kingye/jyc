@@ -4,14 +4,14 @@
 //! Channel-agnostic: uses the OutboundAdapter trait for delivery.
 //! Watches for `reply-sent.flag` + `reply.md` files and delivers immediately.
 
+use chrono::Utc;
 use std::path::Path;
 use std::time::Duration;
-use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::{InboundMessage, OutboundAdapter};
 use crate::thread_event::ThreadEvent;
 use crate::thread_event_bus::ThreadEventBusRef;
+use jyc_types::{InboundMessage, OutboundAdapter};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -99,14 +99,14 @@ pub async fn watch_pending_deliveries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thread_event::ThreadEvent;
+    use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
     use async_trait::async_trait;
     use jyc_types::{
         InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult,
     };
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
-    use crate::thread_event::ThreadEvent;
-    use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
 
     /// Mock outbound adapter that records delivered messages.
     struct MockOutbound {
@@ -213,8 +213,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone, None, None)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                None,
+            )
+            .await;
         });
 
         // Wait for watcher to pick up the files
@@ -251,8 +259,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone, None, None)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                None,
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -284,8 +300,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone, None, None)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                None,
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;

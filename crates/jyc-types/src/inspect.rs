@@ -93,6 +93,16 @@ pub struct ThreadSummary {
     /// in the chat info pane and the dashboard thread info area.
     #[serde(default)]
     pub total_cache_hit_tokens: Option<u64>,
+    /// Accumulated prompt-cache-**creation** (write) tokens across
+    /// all LLM calls in this session. Anthropic is the only provider
+    /// that reports writes separately from reads; for every other
+    /// vendor this is `None`. Shown alongside `total_cache_hit_tokens`
+    /// in the chat info pane and dashboard thread info area when the
+    /// running total is non-zero — i.e., only for Anthropic.
+    /// `serde(default)` so old session files (which never wrote the
+    /// field) deserialize as `None`.
+    #[serde(default)]
+    pub total_cache_creation_tokens: Option<u64>,
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
@@ -177,6 +187,12 @@ pub struct ThreadInfo {
     /// the full description.
     #[serde(default)]
     pub total_cache_hit_tokens: Option<u64>,
+    /// Accumulated prompt-cache-**creation** (write) tokens across
+    /// all LLM calls in this session. See
+    /// `ThreadSummary::total_cache_creation_tokens` for the full
+    /// description.
+    #[serde(default)]
+    pub total_cache_creation_tokens: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -360,6 +376,7 @@ mod tests {
                 output_tokens: Some(12345),
                 total_input_tokens: Some(45000),
                 total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
@@ -533,6 +550,7 @@ mod tests {
             output_tokens: Some(2000),
             total_input_tokens: Some(10000),
             total_cache_hit_tokens: Some(8000),
+            total_cache_creation_tokens: None,
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec!["dev-workflow".to_string()],
             thread_path: None,

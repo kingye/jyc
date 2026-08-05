@@ -170,6 +170,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // Mirrors `total_input_tokens`; zeroed by callers on session reset
     // and surfaced to the dashboard as `total_cache_hit_tokens`.
     let mut total_cache_hit_tokens: u64 = 0;
+    // Sum of every LLM call's prompt-cache-**creation** (write)
+    // tokens in this round. Anthropic is the only provider that
+    // reports writes separately; for every other vendor this stays
+    // at `0`. Surfaced to the dashboard as
+    // `total_cache_creation_tokens`.
+    let mut total_cache_creation_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
     let mut reply_text_from_tool: Option<String> = None;
     let start_time = Instant::now();
@@ -283,6 +289,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 summary_usage.input_tokens,
                 summary_usage.output_tokens,
                 summary_usage.cache_hit_tokens,
+                summary_usage.cache_creation_tokens,
             );
             if summary_cost > 0.0 {
                 crate::session::add_session_cost(thread_path, summary_cost).await;
@@ -429,6 +436,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
         total_cache_hit_tokens += response.cache_hit_tokens;
+        total_cache_creation_tokens += response.cache_creation_tokens;
 
         // Bill this call from its own usage payload, before anything can
         // reset or overwrite the round's counters. Doing it per call (rather
@@ -443,6 +451,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             response.input_tokens,
             response.output_tokens,
             response.cache_hit_tokens,
+            response.cache_creation_tokens,
         );
 
         // Mid-loop token check: if the current context size (last call's
@@ -503,6 +512,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_input_tokens,
             total_output_tokens,
             total_cache_hit_tokens,
+            total_cache_creation_tokens,
             context_window,
             auto_reset_threshold,
             call_cost,
@@ -597,6 +607,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 total_input_tokens,
                 output_tokens: total_output_tokens,
                 total_cache_hit_tokens,
+                total_cache_creation_tokens,
                 history,
                 raw_context,
             });
@@ -836,6 +847,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 total_input_tokens,
                 output_tokens: total_output_tokens,
                 total_cache_hit_tokens,
+                total_cache_creation_tokens,
                 history,
                 raw_context,
             });
@@ -889,6 +901,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_input_tokens,
         output_tokens: total_output_tokens,
         total_cache_hit_tokens,
+        total_cache_creation_tokens,
         history,
         raw_context,
     })
@@ -900,7 +913,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 struct CallUsage {
     input_tokens: u64,
     output_tokens: u64,
+    /// Per-call cache **read** tokens (= what Anthropic reports in
+    /// `cache_read_input_tokens`, or the single `cached_tokens` field
+    /// for every other provider).
     cache_hit_tokens: u64,
+    /// Per-call cache **creation** (write) tokens. Anthropic is the
+    /// only provider that reports this separately; `0` for everyone
+    /// else. Billed at `cache_creation_per_million` when configured,
+    /// otherwise folded into the read rate.
+    cache_creation_tokens: u64,
 }
 
 /// Compute and record the cost of one LLM call, returning the amount so
@@ -923,19 +944,31 @@ fn bill_call(
     input_tokens: u64,
     output_tokens: u64,
     cache_hit_tokens: u64,
+    cache_creation_tokens: u64,
 ) -> f64 {
     let Some(p) = pricing else { return 0.0 };
-    if input_tokens == 0 && output_tokens == 0 && cache_hit_tokens == 0 {
+    if input_tokens == 0
+        && output_tokens == 0
+        && cache_hit_tokens == 0
+        && cache_creation_tokens == 0
+    {
         return 0.0;
     }
 
-    let cost = jyc_types::pricing::compute_cost(p, input_tokens, output_tokens, cache_hit_tokens);
+    let cost = jyc_types::pricing::compute_cost_split(
+        p,
+        input_tokens,
+        output_tokens,
+        cache_hit_tokens,
+        cache_creation_tokens,
+    );
     let entry = jyc_core::billing_log_store::BillingEntry {
         ts: Utc::now().to_rfc3339(),
         model: model_label.to_string(),
         input_tokens,
         output_tokens,
         cache_hit_tokens,
+        cache_creation_tokens,
         cost,
         currency: p.currency_label().to_string(),
         kind: kind.to_string(),
@@ -1010,6 +1043,7 @@ async fn generate_summary_from_joined_history(
         input_tokens: response.input_tokens,
         output_tokens: response.output_tokens,
         cache_hit_tokens: response.cache_hit_tokens,
+        cache_creation_tokens: response.cache_creation_tokens,
     };
     Ok((response.text, usage))
 }
@@ -1217,9 +1251,15 @@ struct CollectedResponse {
     tool_calls: Vec<ToolCall>,
     input_tokens: u64,
     output_tokens: u64,
-    /// Per-call prompt-cache-hit tokens. `0` when the provider didn't
-    /// surface cache hits for this call.
+    /// Per-call prompt-cache **read** tokens. For Anthropic, this is
+    /// `cache_read_input_tokens`; for every other vendor, the single
+    /// `cached_tokens` / `prompt_cache_hit_tokens` field. `0` when
+    /// the provider didn't surface cache hits for this call.
     cache_hit_tokens: u64,
+    /// Per-call prompt-cache **creation** (write) tokens. Anthropic
+    /// is the only vendor that reports writes separately from
+    /// reads; for every other provider this is `0`.
+    cache_creation_tokens: u64,
 }
 
 impl CollectedResponse {
@@ -1542,10 +1582,12 @@ async fn collect_response(
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
+                cache_creation_tokens,
             } => {
                 response.input_tokens = input_tokens;
                 response.output_tokens += output_tokens;
                 response.cache_hit_tokens = cache_hit_tokens;
+                response.cache_creation_tokens = cache_creation_tokens;
             }
             StreamEvent::Done => break,
             StreamEvent::Error(msg) => {

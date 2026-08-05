@@ -2,8 +2,8 @@
 //! WebSocket thread chat and non-WebSocket detail mode.
 
 use super::token_render::{
-    input_token_pct, push_cache_hit_span, push_cost_span, push_output_span, push_tokens_span,
-    push_total_input_span,
+    input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cost_span,
+    push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 
@@ -1094,6 +1094,15 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
         push_cache_hit_span(&mut cache_hit_spans, t);
         if !cache_hit_spans.is_empty() {
             out.push(Line::from(cache_hit_spans));
+        }
+        // Cache create row — Anthropic-only cache **write** tokens
+        // billed at the (typically 1.25× input) creation rate.
+        // Rendered only when the running total is non-zero, so
+        // non-Anthropic sessions see no extra row.
+        let mut cache_creation_spans = Vec::with_capacity(2);
+        push_cache_creation_span(&mut cache_creation_spans, t);
+        if !cache_creation_spans.is_empty() {
+            out.push(Line::from(cache_creation_spans));
         }
         // Cost row — session-scoped spend plus today's durable total.
         // Omitted entirely when the model has no configured pricing.
@@ -3741,6 +3750,7 @@ mod tests {
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3781,6 +3791,7 @@ mod tests {
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3820,6 +3831,7 @@ mod tests {
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -3903,6 +3915,7 @@ mod tests {
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -3920,6 +3933,7 @@ mod tests {
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -4034,6 +4048,7 @@ mod tests {
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,
@@ -4137,6 +4152,7 @@ mod tests {
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
                 max_tokens: None,
                 output_tokens: None,
                 last_active_at: None,

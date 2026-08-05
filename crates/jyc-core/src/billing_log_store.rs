@@ -50,6 +50,17 @@ pub struct BillingEntry {
     pub output_tokens: u64,
     /// Portion of `input_tokens` served from the prompt cache.
     pub cache_hit_tokens: u64,
+    /// Portion of `input_tokens` that **wrote** the prompt cache
+    /// (Anthropic only — `cache_creation_input_tokens`). For every
+    /// other provider this is `0`. `serde(default)` so old ledger
+    /// files (which never wrote the field) deserialize as `0`.
+    ///
+    /// When set, this is billed at the configured
+    /// `cache_creation_per_million` rate; otherwise it falls back to
+    /// `cache_hit_per_million`. Storing it per-call means the cost
+    /// can be replayed if the user later edits their pricing config.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
     /// Computed cost of this single call, in `currency`.
     pub cost: f64,
     /// Currency of `cost`, e.g. `"CNY"`.
@@ -161,6 +172,7 @@ mod tests {
             input_tokens: 1000,
             output_tokens: 100,
             cache_hit_tokens: 500,
+            cache_creation_tokens: 0,
             cost,
             currency: currency.to_string(),
             kind: KIND_CALL.to_string(),

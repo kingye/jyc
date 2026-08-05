@@ -377,6 +377,7 @@ mod session {
             1000,
             200,
             0,
+            0,
             Some(100000),
             &StubProvider,
             0.95,
@@ -414,6 +415,7 @@ mod session {
             1000,
             100,
             0,
+            0,
             Some(100000),
             &StubProvider,
             0.95,
@@ -429,6 +431,7 @@ mod session {
             2000,
             2000,
             250,
+            0,
             0,
             Some(100000),
             &StubProvider,
@@ -502,6 +505,7 @@ mod session {
             6000, // still over 1000 → auto-reset fires
             6000,
             50,
+            0,
             0,
             Some(1000),
             &StubProvider,
@@ -653,6 +657,7 @@ mod session {
             100_000,
             200,
             0,
+            0,
             Some(10_000),
             0.95,
             0.0,
@@ -687,9 +692,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -713,9 +718,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -752,6 +757,7 @@ mod session {
                 total_input_tokens,
                 total_output_tokens,
                 0, // no cache hits exercised in this loop-pattern test
+                0, // no cache writes exercised in this loop-pattern test
                 None,
                 0.95,
                 0.0, // cost not exercised here — see session_cost tests
@@ -779,9 +785,9 @@ mod session {
     async fn session_cost_accumulates_across_calls() {
         let tmp = tempfile::tempdir().unwrap();
 
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.25).await;
-        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.10).await;
-        session::persist_tokens(tmp.path(), 2000, 4500, 300, 0, None, 0.95, 0.05).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, None, 0.95, 0.25).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, 0, None, 0.95, 0.10).await;
+        session::persist_tokens(tmp.path(), 2000, 4500, 300, 0, 0, None, 0.95, 0.05).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -799,8 +805,8 @@ mod session {
     async fn zero_call_cost_preserves_existing_session_cost() {
         let tmp = tempfile::tempdir().unwrap();
 
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, None, 0.95, 0.75).await;
-        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, None, 0.95, 0.75).await;
+        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -829,7 +835,7 @@ mod session {
         .unwrap();
 
         // Adding cost to a legacy file starts from 0.0.
-        session::persist_tokens(tmp.path(), 600, 1100, 90, 0, None, 0.95, 0.30).await;
+        session::persist_tokens(tmp.path(), 600, 1100, 90, 0, 0, None, 0.95, 0.30).await;
 
         let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
             .await
@@ -1893,6 +1899,7 @@ mod billing_integration {
             input_per_million: 15.0,
             output_per_million: 75.0,
             cache_hit_per_million: 1.5,
+            cache_creation_per_million: None,
             currency: Some("USD".to_string()),
         }
     }
@@ -1914,6 +1921,7 @@ mod billing_integration {
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
+                cache_creation_tokens: 0,
                 cost,
                 currency: p.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_CALL.to_string(),
@@ -1926,6 +1934,7 @@ mod billing_integration {
             input,
             output,
             cache_hit,
+            0,
             Some(200_000),
             0.95,
             cost,
@@ -1990,7 +1999,7 @@ mod billing_integration {
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
-        jyc_agent::session::persist_tokens(path, 0, 0, 0, 0, Some(200_000), 0.95, 0.0).await;
+        jyc_agent::session::persist_tokens(path, 0, 0, 0, 0, 0, Some(200_000), 0.95, 0.0).await;
 
         let after: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
@@ -2036,6 +2045,7 @@ mod billing_integration {
                 input_tokens: 40_000,
                 output_tokens: 300,
                 cache_hit_tokens: 0,
+                cache_creation_tokens: 0,
                 cost: summary_cost,
                 currency: p.currency_label().to_string(),
                 kind: KIND_SUMMARY.to_string(),

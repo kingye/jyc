@@ -478,20 +478,22 @@ impl Default for AgentConfig {
 
 /// Billing rates for a model, expressed per one million tokens.
 ///
-/// The three rates map to the three token classes a provider bills
-/// separately. Cost for a single LLM call is computed by
-/// [`crate::pricing::compute_cost`] as:
+/// The rates map to the token classes a provider bills separately.
+/// Cost for a single LLM call is computed by
+/// [`crate::pricing::compute_cost_split`] as:
 ///
 /// ```text
-/// (input_tokens - cache_hit_tokens) * input_per_million     / 1_000_000
-/// + output_tokens                   * output_per_million    / 1_000_000
-/// + cache_hit_tokens                * cache_hit_per_million / 1_000_000
+/// (input - cache_read - cache_creation) * input_per_million       / 1_000_000
+/// + output_tokens                       * output_per_million      / 1_000_000
+/// + cache_read_tokens                   * cache_hit_per_million   / 1_000_000
+/// + cache_creation_tokens               * cache_creation_per_million / 1_000_000
+///                                       (defaults to cache_hit_per_million)
 /// ```
 ///
 /// `input_tokens` is the provider-reported prompt size, which *includes*
-/// tokens served from the prompt cache. Subtracting `cache_hit_tokens`
-/// leaves the portion billed at the full input rate, while the cached
-/// portion is billed at the (usually much cheaper) cache-hit rate.
+/// tokens served from the prompt cache. Subtracting the two cache buckets
+/// leaves the portion billed at the full input rate; the cached portions
+/// are billed at their respective cache rates.
 ///
 /// Configurable at provider level (applies to all its models) and at
 /// model level (overrides the provider default). Rates are plain numbers
@@ -502,11 +504,20 @@ pub struct ModelPricing {
     pub input_per_million: f64,
     /// Price per 1M output tokens (e.g. `15.0` for $15/M).
     pub output_per_million: f64,
-    /// Price per 1M prompt-cache-hit tokens (e.g. `0.3` for $0.30/M).
-    /// Set equal to `input_per_million` for providers that bill cache
-    /// hits at the normal input rate.
+    /// Price per 1M prompt-cache-hit (read) tokens (e.g. `0.3` for
+    /// $0.30/M). Set equal to `input_per_million` for providers that
+    /// bill cache reads at the normal input rate.
     #[serde(default)]
     pub cache_hit_per_million: f64,
+    /// Price per 1M prompt-cache-**creation** (write) tokens for
+    /// providers that distinguish read and write cache buckets
+    /// (Anthropic — writes bill at ~1.25× the input rate).
+    ///
+    /// `None` (default) collapses writes into `cache_hit_per_million` —
+    /// existing single-rate configs are unchanged. Set this only when
+    /// pricing Anthropic cache writes at their premium rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_per_million: Option<f64>,
     /// Currency label used for display (e.g. `"CNY"`, `"USD"`).
     /// Defaults to [`DEFAULT_CURRENCY`] when omitted. Purely a label —
     /// jyc never converts between currencies, so a provider billing in

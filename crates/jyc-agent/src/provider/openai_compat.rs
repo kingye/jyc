@@ -790,6 +790,10 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
+                // OpenAI-compat providers (OpenAI / DeepSeek / Kimi /
+                // 火山引擎 / MiniMax) surface only a single cache
+                // bucket; no creation/write field exists for them.
+                cache_creation_tokens: 0,
             });
         }
     }

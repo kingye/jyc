@@ -83,6 +83,23 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
     }
 }
 
+/// Append the "Cache create: N" row to `spans`. Pushes nothing when
+/// `total_cache_creation_tokens` is missing. Anthropic is the only
+/// provider that reports writes separately from reads; for every other
+/// vendor this stays `None` and the row never renders. Sits next to
+/// [`push_cache_hit_span`] in the chat info pane and dashboard thread
+/// info area so users with cache-heavy Anthropic workflows can see
+/// the write volume that the cache-creation premium rate applies to.
+pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+    if let Some(cache_creation) = t.total_cache_creation_tokens {
+        spans.push(Span::styled(
+            "Cache create: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!("{cache_creation}")));
+    }
+}
+
 /// Format a cost amount for display.
 ///
 /// Renders `$` for USD and `¥` for CNY (the two currencies the feature
@@ -138,6 +155,7 @@ mod tests {
         output: Option<u64>,
         total_input: Option<u64>,
         cache_hit: Option<u64>,
+        cache_creation: Option<u64>,
     ) -> ThreadSummary {
         ThreadSummary {
             name: "t".into(),
@@ -151,6 +169,7 @@ mod tests {
             output_tokens: output,
             total_input_tokens: total_input,
             total_cache_hit_tokens: cache_hit,
+            total_cache_creation_tokens: cache_creation,
             last_active_at: None,
             skills: vec![],
             thread_path: None,
@@ -160,25 +179,25 @@ mod tests {
 
     #[test]
     fn input_token_pct_basic() {
-        let t = summary_with(Some(5000), Some(10000), None, None, None);
+        let t = summary_with(Some(5000), Some(10000), None, None, None, None);
         assert_eq!(input_token_pct(&t), Some(50));
     }
 
     #[test]
     fn input_token_pct_zero_max_returns_none() {
-        let t = summary_with(Some(100), Some(0), None, None, None);
+        let t = summary_with(Some(100), Some(0), None, None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn input_token_pct_missing_input_returns_none() {
-        let t = summary_with(None, Some(10000), None, None, None);
+        let t = summary_with(None, Some(10000), None, None, None, None);
         assert_eq!(input_token_pct(&t), None);
     }
 
     #[test]
     fn push_tokens_span_omits_when_max_missing() {
-        let t = summary_with(Some(100), None, None, None, None);
+        let t = summary_with(Some(100), None, None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -186,7 +205,7 @@ mod tests {
 
     #[test]
     fn push_tokens_span_writes_label_and_value() {
-        let t = summary_with(Some(4750), Some(10000), None, None, None);
+        let t = summary_with(Some(4750), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
         push_tokens_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -196,7 +215,7 @@ mod tests {
 
     #[test]
     fn push_output_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), None, None, None);
+        let t = summary_with(Some(100), Some(10000), None, None, None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -204,7 +223,7 @@ mod tests {
 
     #[test]
     fn push_output_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(420), None, None);
+        let t = summary_with(Some(100), Some(10000), Some(420), None, None, None);
         let mut spans = Vec::new();
         push_output_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -214,7 +233,7 @@ mod tests {
 
     #[test]
     fn push_total_input_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), None, None);
+        let t = summary_with(Some(100), Some(10000), Some(50), None, None, None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -222,7 +241,7 @@ mod tests {
 
     #[test]
     fn push_total_input_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None);
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None, None);
         let mut spans = Vec::new();
         push_total_input_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -232,7 +251,7 @@ mod tests {
 
     #[test]
     fn push_cache_hit_span_omits_when_missing() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None);
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), None, None);
         let mut spans = Vec::new();
         push_cache_hit_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -240,7 +259,7 @@ mod tests {
 
     #[test]
     fn push_cache_hit_span_writes_label_and_value() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cache_hit_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
@@ -251,7 +270,7 @@ mod tests {
     /// No cost data (unpriced model) → no row, rather than `$0.0000`.
     #[test]
     fn push_cost_span_omits_when_no_cost() {
-        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
         assert!(spans.is_empty());
@@ -260,7 +279,7 @@ mod tests {
     /// Both figures render, and USD uses the `$` symbol.
     #[test]
     fn push_cost_span_writes_session_and_today() {
-        let mut t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640));
+        let mut t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
         t.cost = Some(jyc_types::ThreadCost {
             session: 0.0521,
             today: 1.3057,
@@ -276,7 +295,7 @@ mod tests {
     /// CNY renders with `¥`, not a dollar sign.
     #[test]
     fn push_cost_span_uses_cny_symbol() {
-        let mut t = summary_with(None, None, None, None, None);
+        let mut t = summary_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::ThreadCost {
             session: 2.5,
             today: 10.0,
@@ -291,7 +310,7 @@ mod tests {
     /// symbol — including the "mixed" marker for multi-currency days.
     #[test]
     fn push_cost_span_suffixes_unknown_currency() {
-        let mut t = summary_with(None, None, None, None, None);
+        let mut t = summary_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::ThreadCost {
             session: 1.0,
             today: 2.0,
@@ -309,7 +328,7 @@ mod tests {
     /// decimal places.
     #[test]
     fn push_cost_span_keeps_sub_cent_precision() {
-        let mut t = summary_with(None, None, None, None, None);
+        let mut t = summary_with(None, None, None, None, None, None);
         t.cost = Some(jyc_types::ThreadCost {
             session: 0.0003,
             today: 0.0007,
@@ -318,5 +337,37 @@ mod tests {
         let mut spans = Vec::new();
         push_cost_span(&mut spans, &t);
         assert_eq!(spans[1].content, "$0.0003 session · $0.0007 today");
+    }
+
+    /// `push_cache_creation_span` emits nothing when the field is
+    /// absent — non-Anthropic providers (where `total_cache_creation_tokens`
+    /// is always `None`) see no row, so the dashboard stays clean.
+    #[test]
+    fn push_cache_creation_span_omits_when_missing() {
+        let t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
+        let mut spans = Vec::new();
+        push_cache_creation_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    /// Anthropic sessions render the cache-create row alongside the
+    /// existing cache-hit row. The label matches Anthropic's wire
+    /// field (`cache_creation_input_tokens`) so users can map what
+    /// they see back to the API.
+    #[test]
+    fn push_cache_creation_span_writes_label_and_value() {
+        let t = summary_with(
+            Some(100),
+            Some(10000),
+            Some(50),
+            Some(720),
+            Some(640),
+            Some(1280),
+        );
+        let mut spans = Vec::new();
+        push_cache_creation_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Cache create: ");
+        assert_eq!(spans[1].content, "1280");
     }
 }

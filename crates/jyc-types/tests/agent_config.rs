@@ -135,6 +135,56 @@ mod pricing {
         assert_eq!(p.cache_hit_per_million, 0.0);
     }
 
+    /// `cache_creation_per_million` is optional — non-Anthropic
+    /// providers (or Anthropic users who don't want a separate write
+    /// rate) omit it and `compute_cost_split` falls back to
+    /// `cache_hit_per_million`.
+    #[test]
+    fn cache_creation_rate_is_optional() {
+        let toml = r#"
+            [providers.anthropic]
+            type = "anthropic"
+            pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5 }
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        let p = cfg.providers["anthropic"].pricing.as_ref().unwrap();
+        assert!(p.cache_creation_per_million.is_none());
+    }
+
+    /// Anthropic pricing with a separate write rate parses both
+    /// fields. Setting `cache_creation_per_million` lets
+    /// `compute_cost_split` bill cache writes at their premium rate
+    /// (typically 1.25× input).
+    #[test]
+    fn cache_creation_rate_parses_when_set() {
+        let toml = r#"
+            [providers.anthropic]
+            type = "anthropic"
+            pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, cache_creation_per_million = 18.75, currency = "USD" }
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        let p = cfg.providers["anthropic"].pricing.as_ref().unwrap();
+        assert_eq!(p.cache_creation_per_million, Some(18.75));
+        assert_eq!(p.cache_hit_per_million, 1.5);
+    }
+
+    /// `cache_creation_per_million` round-trips through TOML and is
+    /// exposed on model-level pricing overrides.
+    #[test]
+    fn cache_creation_rate_works_at_model_level() {
+        let toml = r#"
+            [providers.anthropic]
+            type = "anthropic"
+
+            [providers.anthropic.models."claude-opus-4-7"]
+            pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, cache_creation_per_million = 18.75 }
+        "#;
+        let cfg: AgentConfig = toml::from_str(toml).unwrap();
+        let model = &cfg.providers["anthropic"].models["claude-opus-4-7"];
+        let p = model.pricing.as_ref().unwrap();
+        assert_eq!(p.cache_creation_per_million, Some(18.75));
+    }
+
     /// Model-level pricing coexists with provider-level; both are parsed
     /// and the resolution order is exercised in `pricing::lookup_pricing`.
     #[test]

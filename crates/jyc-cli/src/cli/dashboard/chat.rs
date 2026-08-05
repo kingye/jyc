@@ -377,43 +377,30 @@ fn explorer_move(app: &mut App, delta: i64) {
     app.chat.explorer_selected = cur.saturating_add(delta).clamp(0, len as i64 - 1) as usize;
 }
 
-/// Open the thread currently selected in the explorer pane: websocket
-/// threads switch the chat over; other threads open the legacy detail
-/// view (same as Enter in the overview).
+/// Open the thread currently selected in the explorer pane. All channel
+/// types use the unified `/ws/<channel>/<thread>` endpoint.
 fn explorer_open_selected(app: &mut App) {
     let info = app.state.as_ref().and_then(|s| {
-        s.threads.get(app.chat.explorer_selected).map(|t| {
-            let is_ws = s
-                .channels
-                .iter()
-                .find(|c| c.name == t.channel)
-                .is_some_and(|c| c.channel_type == "websocket");
-            (t.name.clone(), t.channel.clone(), is_ws)
-        })
+        s.threads
+            .get(app.chat.explorer_selected)
+            .map(|t| (t.name.clone(), t.channel.clone()))
     });
-    let Some((name, channel, is_ws)) = info else {
+    let Some((name, channel)) = info else {
         return;
     };
-    if is_ws {
-        match app.chat.open_addr.clone() {
-            Some(addr) => {
-                let token = app.chat.token.clone();
-                app.chat.open(&addr, Some(&channel), Some(&name), token);
-                // Hydration runs on the async poll loop (sync key handler
-                // can't await on InspectClient).
-                app.pending_hydrate = Some((channel, name));
-                // Focus on the new thread's input; hide the explorer so
-                // the user lands in the chat, not the pane they used to
-                // pick the thread.
-                app.chat.explorer_visible = false;
-            }
-            None => app.set_status("No server address available".to_string()),
+    match app.chat.open_addr.clone() {
+        Some(addr) => {
+            let token = app.chat.token.clone();
+            app.chat.open(&addr, Some(&channel), Some(&name), token);
+            // Hydration runs on the async poll loop (sync key handler
+            // can't await on InspectClient).
+            app.pending_hydrate = Some((channel, name));
+            // Focus on the new thread's input; hide the explorer so
+            // the user lands in the chat, not the pane they used to
+            // pick the thread.
+            app.chat.explorer_visible = false;
         }
-    } else {
-        app.chat
-            .open_thread_detail(&channel, &name, app.state.as_ref());
-        app.pending_hydrate = Some((channel, name));
-        app.chat.explorer_visible = false;
+        None => app.set_status("No server address available".to_string()),
     }
 }
 

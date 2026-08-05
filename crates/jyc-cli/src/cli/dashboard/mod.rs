@@ -897,31 +897,19 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
     }
 }
 
-/// Open the chat screen for the table-selected thread: websocket chat for
-/// websocket threads, detail mode otherwise. Used by the Enter key and the
-/// leader `open chat` (Space/c) action.
+/// Open the chat screen for the table-selected thread. All channel types
+/// use the unified `/ws/<channel>/<thread>` endpoint. Used by the Enter key
+/// and the leader `open chat` (Space/c) action.
 async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: &str) {
     let thread_info = app.state.as_ref().and_then(|s| {
         app.table_state
             .selected()
             .and_then(|i| s.threads.get(i))
-            .map(|t| {
-                let is_ws = s
-                    .channels
-                    .iter()
-                    .find(|c| c.name == t.channel)
-                    .is_some_and(|c| c.channel_type == "websocket");
-                (t.name.clone(), t.channel.clone(), is_ws)
-            })
+            .map(|t| (t.name.clone(), t.channel.clone()))
     });
-    if let Some((name, channel, is_ws)) = thread_info {
-        if is_ws {
-            app.chat
-                .open(addr, Some(&channel), Some(&name), app.token.clone());
-        } else {
-            app.chat
-                .open_thread_detail(&channel, &name, app.state.as_ref());
-        }
+    if let Some((name, channel)) = thread_info {
+        app.chat
+            .open(addr, Some(&channel), Some(&name), app.token.clone());
         // Chat WS takes over live events. Close the overview WS
         // so we don't have two connections to the same thread.
         close_overview_ws(app);

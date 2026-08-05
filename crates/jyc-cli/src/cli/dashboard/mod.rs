@@ -1451,7 +1451,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
     } else {
         Span::raw(format!(
-            "{} active / {} thr │ {} recv │ {} err │ up {} │ v{}",
+            "{} active / {} thr │ {} recv │ {} err │ up {} │ jyc ai v{}",
             stats.active_workers,
             stats.total_threads,
             stats.messages_received,

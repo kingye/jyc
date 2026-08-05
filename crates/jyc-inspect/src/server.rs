@@ -458,13 +458,12 @@ fn seed_next_id_from_disk(state: &mut ThreadActivityState, thread_path: Option<&
         state.next_id = mem_max + 1;
         return;
     }
-    if let Some(path) = thread_path {
-        if let Ok(last) = ActivityLogStore::load_recent(path, 1) {
-            if let Some(max_entry) = last.iter().max_by_key(|e| e.id) {
-                state.next_id = max_entry.id + 1;
-                return;
-            }
-        }
+    if let Some(path) = thread_path
+        && let Ok(last) = ActivityLogStore::load_recent(path, 1)
+        && let Some(max_entry) = last.iter().max_by_key(|e| e.id)
+    {
+        state.next_id = max_entry.id + 1;
+        return;
     }
     state.next_id = 1;
 }
@@ -1379,8 +1378,10 @@ mod next_id_tests {
 
     #[test]
     fn seed_next_id_noop_once_initialized() {
-        let mut state = ThreadActivityState::default();
-        state.next_id = 99;
+        let mut state = ThreadActivityState {
+            next_id: 99,
+            ..Default::default()
+        };
         seed_next_id_from_disk(&mut state, None);
         assert_eq!(state.next_id, 99);
     }

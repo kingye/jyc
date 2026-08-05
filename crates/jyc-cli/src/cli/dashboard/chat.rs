@@ -1,5 +1,5 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
-//! WebSocket thread chat and non-WebSocket detail mode.
+//! WebSocket thread chat (all channel types via `/ws/<channel>/<thread>`).
 
 use super::token_render::{
     input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cost_span,
@@ -44,7 +44,7 @@ pub(super) struct ChatMessage {
     pub(super) timestamp: Option<String>,
 }
 
-/// Chat pane state: WebSocket thread chat and non-WebSocket detail mode.
+/// Chat pane state: WebSocket thread chat for any channel type.
 pub(super) struct ChatState {
     // Chat pane state
     pub(super) visible: bool,
@@ -90,13 +90,6 @@ pub(super) struct ChatState {
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
     pub(super) ws_connected: bool,
-    /// Channel name for the thread being viewed (used by live buffers).
-    /// Set when chat is opened (Enter on a thread, or `c` to start fresh).
-    pub(super) detail_channel: Option<String>,
-    /// Thread path from ThreadInfo (for loading chat history from disk).
-    /// Legacy detail-mode field; still set for the chat pane but no longer
-    /// drives a different code path.
-    pub(super) detail_thread_path: Option<std::path::PathBuf>,
     /// Live activity buffer — populated by REST hydrate on selection and
     /// appended to by WS `{"type":"activity",...}` events. Keyed by
     /// `(channel, thread)`. The activity pane and chat progress read
@@ -1972,8 +1965,6 @@ impl ChatState {
             ws_tx: None,
             ws_rx,
             ws_connected: false,
-            detail_channel: None,
-            detail_thread_path: None,
             live_activity: std::collections::BTreeMap::new(),
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
@@ -2028,10 +2019,6 @@ impl ChatState {
         self.last_hydrated_key = None;
         // Stash addr so the explorer pane can switch threads later.
         self.open_addr = Some(addr.to_string());
-        // Clear any stale detail-mode state (the explorer can switch
-        // from a detail view back to a websocket chat).
-        self.detail_channel = None;
-        self.detail_thread_path = None;
 
         // No WS yet — the chat starts in PatternSelect (if no initial thread)
         // and opens a scoped WS only after the user picks a pattern
@@ -2105,66 +2092,11 @@ impl ChatState {
         self.phase = ChatPhase::PatternSelect;
         self.ws_connected = false;
         self.command_popup = None;
-        self.detail_channel = None;
-        self.detail_thread_path = None;
         self.last_hydrated_key = None;
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
         }
-    }
-
-    /// Open the chat pane for any thread, regardless of channel type.
-    ///
-    /// All channels are now reached via the unified `/ws/<channel>/<thread>`
-    /// endpoint, so this method just initializes the chat UI state.
-    /// The actual WS connection and message routing happen in the dashboard
-    /// poll loop (see `mod.rs::run`).
-    pub(super) fn open_thread_detail(
-        &mut self,
-        channel: &str,
-        thread_name: &str,
-        _state: Option<&jyc_types::InspectOverview>,
-    ) {
-        self.visible = true;
-        self.phase = ChatPhase::Chatting;
-        self.thread = Some(thread_name.to_string());
-        self.channel = Some(channel.to_string());
-        self.detail_channel = Some(channel.to_string());
-        self.detail_thread_path = None;
-        self.messages.clear();
-        self.editor = empty_chat_editor();
-        self.focus = ChatFocus::ChatPane;
-        self.scroll = 0;
-        self.activity_scroll = 0;
-        self.last_message_area = None;
-        self.activity_hscroll = 0;
-        self.pending_g = false;
-        self.activity_split = 0;
-        self.info_visible = false;
-        self.ws_connected = false;
-        self.input_history.clear();
-        self.history_pos = None;
-        // The mod.rs Enter handler triggers hydrate_live after this; clear
-        // the last-hydrated key so the poll loop doesn't re-hydrate over us.
-        self.last_hydrated_key = None;
-        // Drop any stale chat WS (e.g. when the explorer switches from a
-        // websocket chat to a detail view). Without this, ws_tx would
-        // still point at the *previous* thread and send_message_inner
-        // would deliver messages there.
-        if let Some(tx) = self.ws_tx.take() {
-            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
-        }
-    }
-
-    /// Legacy no-op kept for compatibility with the test suite.
-    #[allow(dead_code)]
-    pub(super) fn load_detail_history(&mut self, _state: Option<&jyc_types::InspectOverview>) {}
-
-    /// Legacy no-op kept for compatibility with the test suite.
-    #[allow(dead_code)]
-    pub(super) fn is_detail_mode(&self) -> bool {
-        self.detail_channel.is_some()
     }
 
     pub(super) fn select_pattern(&mut self, pattern: String) {
@@ -3373,38 +3305,18 @@ mod tests {
         app.chat.phase = ChatPhase::Chatting;
         app.chat.thread = Some("jyc".to_string());
         app.chat.focus = ChatFocus::ChatPane;
-        app.chat.detail_channel = None;
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         app.chat.ws_tx = Some(cmd_tx);
 
         assert!(app.chat.visible);
         assert_eq!(app.chat.phase, ChatPhase::Chatting);
         assert_eq!(app.chat.thread.as_deref(), Some("jyc"));
-        assert!(!app.chat.is_detail_mode());
 
         // close() is what Esc invokes — must return to overview
         app.chat.close();
         assert!(!app.chat.visible);
         assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
-        assert!(app.chat.detail_channel.is_none());
         assert!(app.chat.ws_tx.is_none());
-    }
-
-    #[test]
-    fn close_returns_to_overview_from_detail_mode() {
-        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx, None);
-
-        // Simulate opening a non-WS thread in detail mode
-        app.chat.open_thread_detail("github", "issue-197", None);
-        assert!(app.chat.visible);
-        assert_eq!(app.chat.phase, ChatPhase::Chatting);
-
-        // close() must return to overview and clear detail state
-        app.chat.close();
-        assert!(!app.chat.visible);
-        assert!(app.chat.detail_channel.is_none());
-        assert!(app.chat.detail_thread_path.is_none());
     }
 
     #[test]
@@ -3702,23 +3614,6 @@ mod tests {
         app.chat.toggle_zen_mode();
         assert!(app.chat.info_visible);
         assert!(!app.chat.explorer_visible);
-    }
-
-    #[test]
-    fn open_thread_detail_disconnects_stale_ws() {
-        // Regression: switching from a websocket chat to a detail view
-        // must drop ws_tx, otherwise send_message_inner would deliver
-        // messages to the *previous* thread.
-        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        let mut app = App::new(rx, None);
-        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        app.chat.ws_tx = Some(ws_tx);
-
-        app.chat.open_thread_detail("email", "thread-b", None);
-
-        assert!(app.chat.ws_tx.is_none());
-        let disconnect = ws_rx.try_recv().expect("disconnect frame sent");
-        assert!(disconnect.contains("disconnect"));
     }
 
     #[test]

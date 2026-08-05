@@ -124,7 +124,7 @@ struct App {
     /// (channel, thread) the overview WS is currently scoped to.
     overview_ws_target: Option<(String, String)>,
 
-    /// Chat pane state (WebSocket thread chat and non-WebSocket detail mode).
+    /// Chat pane state (WebSocket thread chat for any channel type).
     chat: ChatState,
 }
 
@@ -1435,7 +1435,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let bar = Paragraph::new(Line::from({
         let mut spans = vec![Span::raw(" ")];
-        if app.chat.visible && !app.chat.is_detail_mode() {
+        if app.chat.visible {
             if app.chat.ws_connected {
                 spans.push(Span::styled("●", Style::default().fg(Color::Green)));
             } else {

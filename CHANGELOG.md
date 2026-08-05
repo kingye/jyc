@@ -9,22 +9,22 @@ All notable changes to JYC will be documented in this file.
 - **Show the selected thread's git branch in the TUI.** The dashboard
   thread info pane, chat thread info pane, and chat input header line
   (`╭─ build · local_dev · pattern`) now include the current branch of
-  the thread's working directory when it is a git repo. Resolved by
-  reading `<thread_path>/.git/HEAD` (or `<thread_path>/repo/.git/HEAD`
-  for the shared-repo layout) directly — no `git` CLI call. Re-resolved
-  on selection change or every 30s so `git checkout` is reflected.
-  Threads whose `thread_path` is not a git repo (most chat-channel
-  threads) simply omit the branch segment. (#512)
+  the thread's working directory when it is a git repo. The branch is
+  resolved by the inspect server by reading `<thread_path>/.git/HEAD`
+  (or `<thread_path>/repo/.git/HEAD` for the shared-repo layout) and
+  included on `ThreadSummary.branch` and `ThreadInfo.branch`. Threads
+  whose `thread_path` is not a git repo (most chat-channel threads)
+  simply omit the branch segment. (#512)
 
 ### Changed
 
-- **Chat input header no longer carries the version chip.** The
-  right-aligned `[ jyc ai v{ver} · {model} · {pct}% ]` chip is removed
-  from the `╭─ …` row — version, model, and tokens were duplicated
-  with the status bar / thread info pane. The version string now lives
-  only in the status bar (used by both the dashboard and the chat
-  screen via the same `render_status_bar` function), prefixed with
-  `jyc ai` to match the old chip's wording.
+- **Branch resolution moved server-side.** The CLI no longer reads
+  `.git/HEAD` directly — the inspect server resolves it on every
+  `list_threads` call and ships it on the wire. This enables the
+  dashboard to connect to a remote inspect server and still display
+  the branch. Old clients/servers (pre-this-field) continue to work:
+  `branch` is `#[serde(default)]` so absent values become `None` and
+  the segment is simply omitted.
 
 - **Anthropic cache-creation (write) pricing.** Anthropic splits
   prompt-cache tokens into two buckets that bill at different rates:

@@ -1214,7 +1214,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Thread info
+            Constraint::Length(9), // Thread info (Branch row conditionally added)
             Constraint::Min(4),    // Activity log
         ])
         .split(area);
@@ -1225,6 +1225,17 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::LEFT);
 
     let mut info_lines = vec![];
+
+    // Branch is resolved server-side and shipped on ThreadSummary.branch.
+    // Render only when present — most chat-channel threads (feishu/wecom)
+    // have a thread_path that isn't a git repo, so an absent row keeps
+    // noise down for them.
+    if let Some(branch) = selected.branch.as_deref() {
+        info_lines.push(Line::from(vec![
+            Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(branch),
+        ]));
+    }
 
     info_lines.push(Line::from(vec![
         Span::styled("Channel: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -1423,7 +1434,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(msg.as_str(), Style::default().fg(Color::Yellow))
     } else {
         Span::raw(format!(
-            "{} active / {} thr │ {} recv │ {} err │ up {} │ v{}",
+            "{} active / {} thr │ {} recv │ {} err │ up {} │ jyc ai v{}",
             stats.active_workers,
             stats.total_threads,
             stats.messages_received,
@@ -1724,6 +1735,7 @@ mod tests {
                     status: ThreadStatus::Idle,
                     model: None,
                     mode: None,
+                    branch: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,

@@ -113,6 +113,14 @@ pub struct ThreadSummary {
     /// a pattern's `thread_path` override is active).
     #[serde(default)]
     pub thread_path: Option<std::path::PathBuf>,
+    /// Resolved git branch for the thread's working directory, when it is
+    /// a git repo. `None` when the path isn't a git repo, or the server
+    /// couldn't read `.git/HEAD` (perms, etc.). For the shared-repo layout
+    /// (`repo_group`), `.git/HEAD` is read under `<thread_path>/repo/`.
+    /// `"(detached)"` is returned when HEAD is a raw SHA (no symbolic ref).
+    /// `#[serde(default)]` so old payloads (pre-this-field) still load.
+    #[serde(default)]
+    pub branch: Option<String>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
@@ -213,6 +221,10 @@ pub struct ThreadInfo {
     /// a pattern's `thread_path` override is active).
     #[serde(default)]
     pub thread_path: Option<std::path::PathBuf>,
+    /// Resolved git branch for the thread's working directory. See
+    /// `ThreadSummary::branch` for the full semantics.
+    #[serde(default)]
+    pub branch: Option<String>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
@@ -383,6 +395,7 @@ mod tests {
                 recent_messages: vec![],
                 thinking_text: None,
                 thread_path: None,
+                branch: None,
                 cost: None,
             }],
             stats: GlobalStats {
@@ -554,6 +567,7 @@ mod tests {
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec!["dev-workflow".to_string()],
             thread_path: None,
+            branch: None,
             cost: None,
         };
         let json = serde_json::to_string(&summary).unwrap();

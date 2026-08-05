@@ -164,6 +164,7 @@ mod tests {
             status: jyc_types::ThreadStatus::Idle,
             model: None,
             mode: None,
+            branch: None,
             context_input_tokens: input,
             max_tokens: max,
             output_tokens: output,

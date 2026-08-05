@@ -2,8 +2,8 @@
 //! WebSocket thread chat (all channel types via `/ws/<channel>/<thread>`).
 
 use super::token_render::{
-    push_cache_creation_span, push_cache_hit_span, push_cost_span, push_output_span,
-    push_tokens_span, push_total_input_span,
+    input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cost_span,
+    push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 
@@ -1179,6 +1179,8 @@ struct ChatHeaderCtx<'a> {
     channel: Option<&'a str>,
     pattern: Option<&'a str>,
     branch: Option<&'a str>,
+    model: Option<&'a str>,
+    pct: Option<u32>,
 }
 
 fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
@@ -1189,12 +1191,17 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
         pattern: t.and_then(|t| t.pattern.as_deref()),
         // Server resolves branch per poll — read it straight off the summary.
         branch: t.and_then(|t| t.branch.as_deref()),
+        model: t.and_then(|t| t.model.as_deref()),
+        pct: t.and_then(input_token_pct),
     }
 }
 
 /// Build the chat header row: "╭─ {mode} · {channel} · {pattern}[ · {branch}]"
-/// left-aligned, ─ padding filling the rest of the chat-pane width. No
-/// bottom or right border. Falls back gracefully when any field is missing.
+/// left-aligned, ─ padding filling the rest of the chat-pane width, and
+/// a right-aligned "[ {model} · {pct}% ]" chip showing the current model
+/// and context-window usage. No bottom or right border. Falls back
+/// gracefully when any field is missing — the chip is dropped before
+/// the left segment starts truncating.
 fn build_chat_header_line(
     width: usize,
     ctx: &ChatHeaderCtx<'_>,
@@ -1224,11 +1231,34 @@ fn build_chat_header_line(
     // the line-drawing color (3 display columns).
     let left_w = 3 + left.width();
 
-    // Width budget: pad = width - left. If negative, truncate the left
-    // segment best-effort across [channel, pattern, branch], adding the
-    // separator only when there is room for at least one column of
-    // content after it.
-    if width < left_w {
+    // --- Right chip: "[ {model} · {pct}% ]" ---
+    // Omit the chip entirely when both fields are missing (e.g., before
+    // the first poll). When only one is set, render a partial chip
+    // showing the available side. Matches the info-pane convention of
+    // skipping rows for missing data.
+    let chip: Option<String> = match (ctx.model, ctx.pct) {
+        (Some(m), Some(p)) => Some(format!("[ {m} · {p}% ]")),
+        (Some(m), None) => Some(format!("[ {m} ]")),
+        (None, Some(p)) => Some(format!("[ {p}% ]")),
+        (None, None) => None,
+    };
+    let chip_w = chip.as_ref().map(|c| c.width()).unwrap_or(0);
+
+    // Width budget: pad = width - left - chip. If negative (or zero, so
+    // we can't fit a space separator), drop the chip first, then
+    // truncate the left segment.
+    if width < left_w + chip_w + 1 {
+        // Try without the chip.
+        if width >= left_w {
+            return Line::from(vec![
+                Span::styled("╭─", line_style),
+                Span::styled(format!(" {left}"), header_style),
+                Span::styled("─".repeat(width.saturating_sub(left_w + 1)), line_style),
+            ]);
+        }
+        // Left itself doesn't fit; best-effort segments over
+        // [channel, pattern, branch], adding the separator only when there is
+        // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
         for seg in [ctx.channel, ctx.pattern, ctx.branch].into_iter().flatten() {
             // +3 accounts for the "╭─ " prefix.
@@ -1247,18 +1277,35 @@ fn build_chat_header_line(
         ]);
     }
 
-    let pad = width - left_w;
-    let mut spans = Vec::with_capacity(4);
+    let pad = width - left_w - chip_w;
+    let mut spans = Vec::with_capacity(5);
     spans.push(Span::styled("╭─", line_style));
     spans.push(Span::styled(format!(" {left}"), header_style));
-    if pad > 0 {
-        spans.push(Span::styled(" ", header_style));
-        if pad > 2 {
+    // Separator between left segment and chip. Always emit at least
+    // a single space when the chip is rendered (so it never sits flush
+    // against the left); fill the gap with `─` runs when there's room.
+    match chip.as_deref() {
+        Some(_) if pad >= 2 => {
+            spans.push(Span::styled(" ", header_style));
             spans.push(Span::styled("─".repeat(pad - 2), line_style));
-        }
-        if pad > 1 {
             spans.push(Span::styled(" ", header_style));
         }
+        Some(_) if pad == 1 => {
+            spans.push(Span::styled(" ", header_style));
+        }
+        // pad == 0 with chip: no separator; line was packed exactly.
+        Some(c) => {
+            spans.push(Span::styled(c.to_string(), header_style));
+            return Line::from(spans);
+        }
+        None if pad > 0 => {
+            // No chip, but padding available — fill with dashes.
+            spans.push(Span::styled("─".repeat(pad), line_style));
+        }
+        None => {}
+    }
+    if let Some(c) = chip {
+        spans.push(Span::styled(c, header_style));
     }
     Line::from(spans)
 }
@@ -4062,6 +4109,8 @@ mod tests {
             channel: Some("local_dev"),
             pattern: Some("jyc"),
             branch: None,
+            model: Some("claude-opus-4-6"),
+            pct: Some(10),
         }
     }
 
@@ -4113,7 +4162,7 @@ mod tests {
     }
 
     #[test]
-    fn header_line_includes_mode_channel_pattern() {
+    fn header_line_includes_mode_channel_pattern_and_chip() {
         let ctx = ctx_with_full_data();
         let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
@@ -4122,11 +4171,15 @@ mod tests {
             text.contains("╭─ plan · local_dev · jyc"),
             "missing left segment in: {text:?}"
         );
-        // No right-side chip — version + model + tokens live in the
-        // status bar / thread info pane now.
+        // Right chip includes model + context-window percentage. The
+        // version lives in the status bar, not the chat header.
         assert!(
-            !text.contains('[') && !text.contains("jyc ai v"),
-            "chat input header should not render a version chip, got: {text:?}"
+            text.contains("[ claude-opus-4-6 · 10% ]"),
+            "missing model/pct chip in: {text:?}"
+        );
+        assert!(
+            !text.contains("jyc ai v"),
+            "version belongs in the status bar, not the chat header: {text:?}"
         );
         // The line should fill the requested width via dash padding.
         assert_eq!(text.width(), 80);
@@ -4152,6 +4205,8 @@ mod tests {
             channel: None,
             pattern: None,
             branch: None,
+            model: None,
+            pct: None,
         };
         let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
@@ -4222,6 +4277,46 @@ mod tests {
     }
 
     #[test]
+    fn header_line_renders_partial_chip_with_model_only() {
+        // pct missing (e.g., session hasn't recorded context yet) — the
+        // chip should still render with just the model name.
+        let mut ctx = ctx_with_full_data();
+        ctx.pct = None;
+        let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+        let text = line_text(&line);
+        assert!(
+            text.contains("[ claude-opus-4-6 ]"),
+            "partial chip with model only: {text:?}"
+        );
+        assert!(
+            !text.contains('%'),
+            "no pct placeholder when pct is None: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_drops_chip_when_narrow() {
+        // Width that fits the left segment but not the chip — chip
+        // should be dropped, left segment preserved (with dash padding).
+        let ctx = ctx_with_full_data();
+        // Left "╭─ plan · local_dev · jyc" = 26 display cols.
+        // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
+        // total = 49 cols + 2 padding spaces. Width 48 forces dropping
+        // the chip and falls back to dash padding only.
+        let line = build_chat_header_line(48, &ctx, test_header_style(), LINE_DRAWING);
+        let text = line_text(&line);
+        assert!(
+            !text.contains('['),
+            "chip should be dropped when narrow, got: {text:?}"
+        );
+        assert!(
+            text.contains("╭─ plan · local_dev · jyc"),
+            "left segment should still render: {text:?}"
+        );
+        assert!(text.width() <= 48);
+    }
+
+    #[test]
     fn header_line_never_emits_dangling_separator() {
         // Width fits "╭─ plan · " (10 cols) but no room for channel content.
         let ctx = ChatHeaderCtx {
@@ -4229,6 +4324,8 @@ mod tests {
             channel: Some("ch"),
             pattern: None,
             branch: None,
+            model: None,
+            pct: None,
         };
         let line = build_chat_header_line(10, &ctx, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);

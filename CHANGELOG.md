@@ -69,6 +69,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **WeCom Bot ping ack log level.** Heartbeat ping acks (every 30s) now log
+  at `debug` instead of `info`, keeping the info-level log free of heartbeat
+  noise. Subscribe and other operation success acks remain at `info`. (#510)
+
 - **Provider `api_key` field.** LLM providers now accept `api_key =
   "${ENV_VAR}"` for credentials, matching the `${VAR}` syntax used for every
   other secret field in the config (`token`, `password`, `app_secret`,

@@ -1797,7 +1797,11 @@ async fn process_message(
     let result = loop {
         tokio::select! {
             r = &mut agent_fut => {
-                break r?;
+                // Do NOT use `break r?` here — an early `?` return would
+                // skip the background-task cleanup below and leak the
+                // progress updater (see the `let result = result?;`
+                // after the cleanup section).
+                break r;
             }
             msg = pending_rx.recv() => match msg {
                 Some(qi) => {
@@ -1887,8 +1891,10 @@ async fn process_message(
                     }
                 }
                 None => {
-                    // Channel closed; just wait for agent to finish
-                    break agent_fut.await?;
+                    // Channel closed; just wait for agent to finish.
+                    // Same as above: no `?` here, errors are propagated
+                    // after the background-task cleanup.
+                    break agent_fut.await;
                 }
             },
         }
@@ -1913,6 +1919,14 @@ async fn process_message(
     if let Some(handle) = progress_handle {
         let _ = handle.await;
     }
+
+    // Propagate agent errors only AFTER the background tasks above are
+    // stopped. Returning early via `?` inside the select loop would leak
+    // the progress updater: it has no self-termination and would keep
+    // sending stream updates for a long-expired req_id forever (visible
+    // as a never-ending WeCom "reply ack error errcode=846604" WARN storm
+    // even when no task is running).
+    let result = result?;
 
     // ── 5.5. GUARD: skip reply if thread directory no longer exists ──
     // If the thread was closed while AI was processing, the directory gets

@@ -1059,10 +1059,10 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        // Branch — mirrors the dashboard info pane. Skipped when the
-        // selected thread's thread_path isn't a git repo (most chat-
-        // channel threads: feishu/wecom).
-        if let Some(branch) = app.chat.selected_branch.as_deref() {
+        // Branch is resolved server-side and shipped on ThreadSummary.branch.
+        // Skipped when the selected thread's thread_path isn't a git repo
+        // (most chat-channel threads: feishu/wecom).
+        if let Some(branch) = t.branch.as_deref() {
             out.push(Line::from(vec![
                 Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(branch),
@@ -1198,7 +1198,8 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
         channel: t.map(|t| t.channel.as_str()),
         pattern: t.and_then(|t| t.pattern.as_deref()),
-        branch: app.chat.selected_branch.as_deref(),
+        // Server resolves branch per poll — read it straight off the summary.
+        branch: t.and_then(|t| t.branch.as_deref()),
     }
 }
 

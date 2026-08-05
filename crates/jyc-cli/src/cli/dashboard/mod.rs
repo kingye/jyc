@@ -1243,11 +1243,11 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut info_lines = vec![];
 
-    // Branch (resolved from .git/HEAD by the poll loop). Render only when
-    // the selected thread has a resolvable branch — most chat-channel
-    // threads (feishu/wecom) have a thread_path that isn't a git repo,
-    // so an absent row keeps noise down for them.
-    if let Some(branch) = app.chat.selected_branch.as_deref() {
+    // Branch is resolved server-side and shipped on ThreadSummary.branch.
+    // Render only when present — most chat-channel threads (feishu/wecom)
+    // have a thread_path that isn't a git repo, so an absent row keeps
+    // noise down for them.
+    if let Some(branch) = selected.branch.as_deref() {
         info_lines.push(Line::from(vec![
             Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(branch),

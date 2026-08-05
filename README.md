@@ -381,6 +381,13 @@ from reads — its `cache_creation_input_tokens` bills at ~1.25× the input
 rate. Set this field only for Anthropic providers; non-Anthropic providers
 that surface a single cache bucket ignore it.
 
+For Anthropic sessions the chat info pane and dashboard thread info
+area show two cache rows: `Cache hits: N` (reads only) followed by
+`Cache create: N` (writes). Non-Anthropic providers show a single
+`Cache hits: N` row as before. The two rows map directly to
+`cache_read_tokens * cache_hit_per_million` and
+`cache_creation_tokens * cache_creation_per_million` in the cost formula.
+
 The dashboard and chat **Thread Info** panes then show
 `Cost: ¥0.0521 session · ¥1.3057 today`:
 

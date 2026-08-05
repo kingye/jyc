@@ -66,10 +66,11 @@ pub fn compute_cost_split(
 
 /// Compute the cost of a **single** LLM call.
 ///
-/// Convenience wrapper around [`compute_cost_split`] for providers that
-/// report only a single cache bucket (OpenAI, DeepSeek, Kimi, 火山引擎,
-/// MiniMax). `cache_hit_tokens` is treated as the **read** bucket; the
-/// write bucket is `0`.
+/// Convenience wrapper around [`compute_cost_split`] for callers that
+/// have a single cache bucket — non-Anthropic providers (OpenAI /
+/// DeepSeek / Kimi / 火山引擎 / MiniMax) and Anthropic users who have
+/// not set `cache_creation_per_million`. `cache_hit_tokens` is treated
+/// as the **read** bucket; the write bucket is `0`.
 ///
 /// See [`compute_cost_split`] for the full formula and the reasoning
 /// behind per-call computation.

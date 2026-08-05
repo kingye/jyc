@@ -524,11 +524,13 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                     .unwrap_or(0);
                 if input > 0 || output > 0 {
                     // Anthropic reports reads and writes as separate
-                    // buckets; surface both so the cost formula can
+                    // buckets; surface both so `compute_cost_split` can
                     // bill each at its configured rate. `cache_hit_tokens`
-                    // carries the read bucket only — non-Anthropic
-                    // providers and the existing single-rate cost path
-                    // see no change in its meaning.
+                    // carries the cache-**read** bucket only — writes
+                    // accumulate separately in `cache_creation_tokens`.
+                    // Non-Anthropic providers fill this with their single
+                    // bucket via `extract_cache_hit_tokens` and
+                    // `cache_creation_tokens = 0`.
                     let (cache_read, cache_creation) = extract_anthropic_cache_split(usage);
                     return Some(vec![StreamEvent::Usage {
                         input_tokens: input,

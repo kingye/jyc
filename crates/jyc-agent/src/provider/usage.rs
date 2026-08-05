@@ -11,9 +11,12 @@
 //! tokens that *wrote* a new cache entry. Writes bill at ~1.25× the
 //! input rate on Anthropic; reads are cheap. Use
 //! [`extract_anthropic_cache_split`] to recover both buckets for
-//! cost computation, and [`extract_cache_hit_tokens`] for the
-//! single-bucket sum used in session accounting (e.g. context-window
-//! display, dashboard cache-hit chip).
+//! cost computation. [`extract_cache_hit_tokens`] returns the
+//! per-vendor total across all reported cache buckets — it
+//! tries each known shape in order and returns the first match
+//! (Anthropic: read + creation; every other provider: the single
+//! bucket). It's still useful for the single-rate cost path and
+//! for legacy code paths that don't split reads from writes.
 //!
 //! ## Vendor coverage
 //!

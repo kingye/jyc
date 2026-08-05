@@ -193,11 +193,16 @@ pub struct AgentLoopResult {
     /// through `update_tokens` / `persist_tokens`.
     pub total_input_tokens: u64,
     /// Accumulated prompt-cache-hit tokens across all LLM calls in
-    /// this round. Each call's `cache_hit_tokens` (= tokens served
-    /// from the provider's prompt cache rather than re-billed as
-    /// fresh input) is summed via `+=`. `0` when no provider in the
-    /// round surfaced cache hits. Mirrors `total_input_tokens` in
-    /// `SessionState` for per-round accumulation.
+    /// this round. Each call's `cache_hit_tokens` is summed via `+=`.
+    /// `0` when no provider in the round surfaced cache hits. Mirrors
+    /// `total_input_tokens` in `SessionState` for per-round
+    /// accumulation.
+    ///
+    /// **For Anthropic**, `cache_hit_tokens` carries the cache-**read**
+    /// bucket only; cache writes accumulate in
+    /// [`total_cache_creation_tokens`](#field.total_cache_creation_tokens).
+    /// For every other provider (OpenAI / DeepSeek / Kimi / 火山引擎 /
+    /// MiniMax) this is the single reported cache bucket.
     pub total_cache_hit_tokens: u64,
     /// Accumulated prompt-cache-**creation** (write) tokens across
     /// all LLM calls in this round. Anthropic is the only provider

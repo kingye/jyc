@@ -39,8 +39,14 @@ pub struct SessionState {
     /// session. Each call's `cache_hit_tokens` is added via `+=` from the
     /// agent loop. `0` when the provider didn't surface cache hits for
     /// any call in this session. Reset to 0 on session reset, mirroring
-    /// `total_input_tokens`. See `provider::usage` for the per-vendor
-    /// field mapping.
+    /// `total_input_tokens`.
+    ///
+    /// **For Anthropic**, `cache_hit_tokens` carries the cache-**read**
+    /// bucket only; cache writes accumulate in
+    /// [`total_cache_creation_tokens`](#field.total_cache_creation_tokens).
+    /// For every other provider (OpenAI / DeepSeek / Kimi / 火山引擎 /
+    /// MiniMax) this is the single reported cache bucket. See
+    /// `provider::usage` for the per-vendor field mapping.
     #[serde(default)]
     pub total_cache_hit_tokens: u64,
     /// Accumulated prompt-cache-**creation** (write) tokens across

@@ -1192,6 +1192,7 @@ struct ChatHeaderCtx<'a> {
     pct: Option<u32>,
     channel: Option<&'a str>,
     pattern: Option<&'a str>,
+    branch: Option<&'a str>,
 }
 
 fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
@@ -1202,6 +1203,7 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
         pct: t.and_then(input_token_pct),
         channel: t.map(|t| t.channel.as_str()),
         pattern: t.and_then(|t| t.pattern.as_deref()),
+        branch: app.chat.selected_branch.as_deref(),
     }
 }
 
@@ -1221,7 +1223,7 @@ fn build_chat_header_line(
     // we omit the segment entirely instead of rendering "-". The
     // header is width-constrained, so omitting the segment looks
     // cleaner than `╭─ plan · local_dev · -`.
-    let mut left = String::with_capacity(32);
+    let mut left = String::with_capacity(48);
     left.push_str(ctx.mode);
     if let Some(ch) = ctx.channel {
         left.push_str(" · ");
@@ -1230,6 +1232,10 @@ fn build_chat_header_line(
     if let Some(pat) = ctx.pattern {
         left.push_str(" · ");
         left.push_str(pat);
+    }
+    if let Some(branch) = ctx.branch {
+        left.push_str(" · ");
+        left.push_str(branch);
     }
     // The "╭─ " prefix is accounted for separately so it can be styled in
     // the line-drawing color (3 display columns).
@@ -1257,10 +1263,13 @@ fn build_chat_header_line(
             ]);
         }
         // Left itself doesn't fit; best-effort segments over
-        // [channel, pattern], adding the separator only when there is
+        // [channel, pattern, branch], adding the separator only when there is
         // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
-        for seg in [ctx.channel, ctx.pattern].into_iter().flatten() {
+        for seg in [ctx.channel, ctx.pattern, ctx.branch]
+            .into_iter()
+            .flatten()
+        {
             // +3 accounts for the "╭─ " prefix.
             let used = 3 + compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.
@@ -4155,6 +4164,7 @@ mod tests {
             pct: Some(10),
             channel: Some("local_dev"),
             pattern: Some("jyc"),
+            branch: None,
         }
     }
 
@@ -4263,6 +4273,7 @@ mod tests {
             pct: None,
             channel: None,
             pattern: None,
+            branch: None,
         };
         let line = build_chat_header_line(80, &ctx, None, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);
@@ -4314,6 +4325,35 @@ mod tests {
     }
 
     #[test]
+    fn header_line_appends_branch_when_present() {
+        let mut ctx = ctx_with_full_data();
+        ctx.branch = Some("feat/issue-512-show-branch");
+        let line =
+            build_chat_header_line(120, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
+        let text = line_text(&line);
+        assert!(
+            text.contains("· jyc · feat/issue-512-show-branch"),
+            "branch segment should be appended after pattern, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_omits_branch_segment_when_none() {
+        // Same ctx as `header_line_includes_mode_channel_pattern_and_chip`
+        // but with branch=None — the left segment must end at "· jyc"
+        // without a dangling separator.
+        let ctx = ctx_with_full_data();
+        let line =
+            build_chat_header_line(120, &ctx, Some("0.3.12"), test_header_style(), LINE_DRAWING);
+        let text = line_text(&line);
+        assert!(text.contains("· jyc "), "pattern should still render, got: {text:?}");
+        assert!(
+            !text.contains("· · "),
+            "no double-separator when branch absent, got: {text:?}"
+        );
+    }
+
+    #[test]
     fn header_line_never_emits_dangling_separator() {
         // Width fits "╭─ plan · " (10 cols) but no room for channel content.
         let ctx = ChatHeaderCtx {
@@ -4322,6 +4362,7 @@ mod tests {
             pct: None,
             channel: Some("ch"),
             pattern: None,
+            branch: None,
         };
         let line = build_chat_header_line(10, &ctx, None, test_header_style(), LINE_DRAWING);
         let text = line_text(&line);

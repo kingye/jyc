@@ -1059,6 +1059,15 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
+        // Branch — mirrors the dashboard info pane. Skipped when the
+        // selected thread's thread_path isn't a git repo (most chat-
+        // channel threads: feishu/wecom).
+        if let Some(branch) = app.chat.selected_branch.as_deref() {
+            out.push(Line::from(vec![
+                Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(branch),
+            ]));
+        }
         // Tokens row — push tokens span into a fresh Vec, wrap in a Line.
         let mut token_spans = Vec::with_capacity(2);
         push_tokens_span(&mut token_spans, t);

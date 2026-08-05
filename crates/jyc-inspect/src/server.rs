@@ -8,7 +8,7 @@ use axum::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -445,6 +445,29 @@ pub fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> 
     entries
 }
 
+/// Seed `state.next_id` from the persisted activity log so ids stay monotonic
+/// across monitor restarts. If the in-memory buffer already has historical
+/// entries loaded from disk, use their max id; otherwise read the last entry
+/// from `.jyc/activity.jsonl`. Falls back to 1 when no history exists.
+fn seed_next_id_from_disk(state: &mut ThreadActivityState, thread_path: Option<&Path>) {
+    if state.next_id != 0 {
+        return;
+    }
+    let mem_max = state.entries.iter().map(|e| e.id).max().unwrap_or(0);
+    if mem_max > 0 {
+        state.next_id = mem_max + 1;
+        return;
+    }
+    if let Some(path) = thread_path
+        && let Ok(last) = ActivityLogStore::load_recent(path, 1)
+        && let Some(max_entry) = last.iter().max_by_key(|e| e.id)
+    {
+        state.next_id = max_entry.id + 1;
+        return;
+    }
+    state.next_id = 1;
+}
+
 /// Whether an `ActivityEntry` should be shown in user-facing surfaces
 /// (overview activity pane, chat activity pane, chat progress, REST API).
 ///
@@ -760,15 +783,18 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
+                                                                        seed_next_id_from_disk(state, thread_path.as_deref());
                                                                         if !is_internal {
+                                                                            // Assign monotonic per-thread id BEFORE persisting to
+                                                                            // disk and pushing to the in-memory buffer, so the log
+                                                                            // carries the same ids the dashboard uses for dedup.
+                                                                            entry.id = state.next_id;
+                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             if let Some(ref path) = thread_path
                                                                                 && let Err(e) = ActivityLogStore::append(path, &entry)
                                                                             {
                                                                                 tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
                                                                             }
-                                                                            // Assign monotonic per-thread id BEFORE pushing.
-                                                                            entry.id = state.next_id;
-                                                                            state.next_id = state.next_id.wrapping_add(1);
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
                                                                                 state.entries.pop_front();
@@ -1299,5 +1325,66 @@ mod no_reply_rendering_tests {
         let entry = event_to_activity(&retry);
         assert_eq!(entry.severity, Severity::Warning);
         assert!(entry.text.starts_with("RETRY"), "got {:?}", entry.text);
+    }
+}
+
+#[cfg(test)]
+mod next_id_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn seed_next_id_from_empty_state_starts_at_one() {
+        let mut state = ThreadActivityState::default();
+        seed_next_id_from_disk(&mut state, None);
+        assert_eq!(state.next_id, 1);
+    }
+
+    #[test]
+    fn seed_next_id_uses_in_memory_max_id() {
+        let mut state = ThreadActivityState::default();
+        state.entries.push_back(ActivityEntry {
+            id: 42,
+            text: "old".to_string(),
+            timestamp: None,
+            severity: Severity::Info,
+            is_internal: false,
+        });
+        seed_next_id_from_disk(&mut state, None);
+        assert_eq!(state.next_id, 43);
+    }
+
+    #[test]
+    fn seed_next_id_falls_back_to_disk_when_memory_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let jyc_dir = thread_path.join(".jyc");
+        fs::create_dir_all(&jyc_dir).unwrap();
+        let entry = ActivityEntry {
+            id: 7,
+            text: "disk".to_string(),
+            timestamp: None,
+            severity: Severity::Info,
+            is_internal: false,
+        };
+        fs::write(
+            jyc_dir.join("activity.jsonl"),
+            serde_json::to_string(&entry).unwrap(),
+        )
+        .unwrap();
+        let mut state = ThreadActivityState::default();
+        seed_next_id_from_disk(&mut state, Some(&thread_path));
+        assert_eq!(state.next_id, 8);
+    }
+
+    #[test]
+    fn seed_next_id_noop_once_initialized() {
+        let mut state = ThreadActivityState {
+            next_id: 99,
+            ..Default::default()
+        };
+        seed_next_id_from_disk(&mut state, None);
+        assert_eq!(state.next_id, 99);
     }
 }

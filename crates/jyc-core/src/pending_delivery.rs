@@ -4,10 +4,13 @@
 //! Channel-agnostic: uses the OutboundAdapter trait for delivery.
 //! Watches for `reply-sent.flag` + `reply.md` files and delivers immediately.
 
+use chrono::Utc;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::thread_event::ThreadEvent;
+use crate::thread_event_bus::ThreadEventBusRef;
 use jyc_types::{InboundMessage, OutboundAdapter};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -18,6 +21,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// during the SSE stream. This watcher detects them and delivers immediately
 /// via the outbound adapter, without waiting for the SSE stream to complete.
 ///
+/// When delivery succeeds, the watcher also publishes a `ReplySent` event on
+/// the provided thread event bus so dashboard clients can display the reply
+/// live. If the bus is omitted, the reply is still delivered but not fanned
+/// out to the dashboard.
+///
 /// The watcher runs until cancelled (when the agent finishes processing).
 pub async fn watch_pending_deliveries(
     thread_path: &Path,
@@ -25,6 +33,8 @@ pub async fn watch_pending_deliveries(
     message: &InboundMessage,
     outbound: &dyn OutboundAdapter,
     cancel: CancellationToken,
+    event_bus: Option<ThreadEventBusRef>,
+    thread_name: &str,
 ) {
     let jyc_dir = thread_path.join(".jyc");
     let signal_path = jyc_dir.join("reply-sent.flag");
@@ -60,6 +70,23 @@ pub async fn watch_pending_deliveries(
             tracing::error!(error = %e, "Failed to deliver pending message");
         } else {
             tracing::info!("Pending message delivered successfully");
+            // Fan out a ReplySent event so the dashboard can display the
+            // reply live. The main post-SSE delivery path does this too;
+            // when the watcher wins the race we must still emit it.
+            if let Some(bus) = &event_bus {
+                let event = ThreadEvent::ReplySent {
+                    thread_name: thread_name.to_string(),
+                    text: reply_text.clone(),
+                    timestamp: Utc::now(),
+                };
+                if let Err(e) = bus.publish(event).await {
+                    tracing::warn!(
+                        error = %e,
+                        thread = %thread_name,
+                        "Failed to publish ReplySent event from pending delivery watcher"
+                    );
+                }
+            }
         }
 
         // Clean up signal file (reply.md stays for chat log)
@@ -72,6 +99,8 @@ pub async fn watch_pending_deliveries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thread_event::ThreadEvent;
+    use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
     use async_trait::async_trait;
     use jyc_types::{
         InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult,
@@ -184,8 +213,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                "test",
+            )
+            .await;
         });
 
         // Wait for watcher to pick up the files
@@ -222,8 +259,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                "test",
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -255,8 +300,16 @@ mod tests {
 
         let tp = thread_path.clone();
         let handle = tokio::spawn(async move {
-            watch_pending_deliveries(&tp, message_dir, &test_message(), &outbound, cancel_clone)
-                .await;
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                "test",
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -287,6 +340,8 @@ mod tests {
                 &test_message(),
                 &outbound,
                 cancel_clone,
+                None,
+                "test",
             )
             .await;
         });
@@ -296,5 +351,58 @@ mod tests {
             .await
             .expect("Watcher should stop within 5 seconds")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_publishes_reply_sent_event_on_delivery() {
+        let tmp = tempdir().unwrap();
+        let thread_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+        let jyc_dir = thread_path.join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "Hi from watcher")
+            .await
+            .unwrap();
+
+        let (outbound, delivered) = MockOutbound::new();
+        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let tp = thread_path.clone();
+        let bus_for_watcher = bus.clone();
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                Some(bus_for_watcher),
+                "test-thread",
+            )
+            .await;
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Should receive ReplySent event")
+            .expect("Event channel closed unexpectedly");
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert!(
+            matches!(event, ThreadEvent::ReplySent { ref text, .. } if text == "Hi from watcher"),
+            "Expected ReplySent event, got {:?}",
+            event
+        );
+        assert_eq!(delivered.lock().unwrap().len(), 1);
+        assert!(!jyc_dir.join("reply-sent.flag").exists());
+        assert!(!jyc_dir.join("reply.md").exists());
     }
 }

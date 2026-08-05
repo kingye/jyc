@@ -53,17 +53,6 @@ pub(super) struct ChatState {
     pub(super) pattern_selected: usize,
     pub(super) thread: Option<String>,
     pub(super) channel: Option<String>,
-    /// Path of the currently-selected thread — the one whose branch
-    /// `selected_branch` was resolved against. Tracked so the poll loop
-    /// can detect selection changes and invalidate the branch cache.
-    pub(super) selected_thread_path: Option<std::path::PathBuf>,
-    /// Last-resolved git branch for the selected thread's working dir.
-    /// `None` when the path isn't a git repo or the lookup failed.
-    /// Read by renderers; written only by `refresh_selected_branch`.
-    pub(super) selected_branch: Option<String>,
-    /// When `selected_branch` was last resolved. Re-resolved on a slow
-    /// cadence so a `git checkout` is reflected within ~30s.
-    pub(super) branch_checked_at: Option<std::time::Instant>,
     pub(super) messages: Vec<ChatMessage>,
     /// Vim-style editor state for the chat input (edtui).
     pub(super) editor: EditorState,
@@ -1949,9 +1938,6 @@ impl ChatState {
             pattern_selected: 0,
             thread: None,
             channel: None,
-            selected_thread_path: None,
-            selected_branch: None,
-            branch_checked_at: None,
             messages: vec![],
             editor: empty_chat_editor(),
             handler: EditorEventHandler::default(),
@@ -2661,31 +2647,6 @@ impl ChatState {
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
     }
-
-    /// Refresh the cached git branch for the currently-selected thread.
-    ///
-    /// Called from the dashboard poll loop on each poll. Sync `.git/HEAD`
-    /// read is ~20µs so blocking the poll thread is fine. Re-resolves when:
-    /// - the selected thread path changed (selection switch), or
-    /// - it's been more than `BRANCH_RECHECK_SECS` since the last check
-    ///   (so a `git checkout` eventually shows up).
-    pub(super) fn refresh_selected_branch(&mut self, selected_path: Option<&std::path::Path>) {
-        const BRANCH_RECHECK_SECS: u64 = 30;
-        let path_changed = self.selected_thread_path.as_deref() != selected_path;
-        let stale = self
-            .branch_checked_at
-            .map(|t| t.elapsed().as_secs() >= BRANCH_RECHECK_SECS)
-            .unwrap_or(true);
-        if path_changed {
-            self.selected_branch = None;
-            self.branch_checked_at = None;
-        }
-        if path_changed || stale {
-            self.selected_branch = selected_path.and_then(branch_for_thread_path);
-            self.branch_checked_at = Some(std::time::Instant::now());
-        }
-        self.selected_thread_path = selected_path.map(|p| p.to_path_buf());
-    }
 }
 
 /// Static empty deque used as a fallback when no live data is seeded for a
@@ -2695,39 +2656,6 @@ static EMPTY_VEC_DEQUE: std::sync::LazyLock<std::collections::VecDeque<jyc_types
 static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
     std::collections::VecDeque<jyc_types::ChatMessageEntry>,
 > = std::sync::LazyLock::new(std::collections::VecDeque::new);
-
-/// Read the current branch name from `.git/HEAD` under `path`.
-///
-/// Looks first at `<path>/.git/HEAD`, then falls back to
-/// `<path>/repo/.git/HEAD` (the shared-repo symlink layout used when
-/// a pattern sets `repo_group`). Returns:
-/// - `Some(branch)` for a symbolic ref `ref: refs/heads/<branch>`
-/// - `Some("(detached)")` for a raw SHA in `.git/HEAD`
-/// - `None` when neither file is readable (not a git repo, perms, etc.)
-///
-/// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
-/// `std::fs::read_to_string` follows the `repo/` symlink for us.
-fn branch_for_thread_path(path: &std::path::Path) -> Option<String> {
-    let head_path = if path.join(".git").join("HEAD").is_file() {
-        path.join(".git").join("HEAD")
-    } else if path.join("repo").join(".git").join("HEAD").is_file() {
-        path.join("repo").join(".git").join("HEAD")
-    } else {
-        return None;
-    };
-    let raw = std::fs::read_to_string(&head_path).ok()?;
-    let trimmed = raw.trim();
-    if let Some(rest) = trimmed.strip_prefix("ref: refs/heads/") {
-        if rest.is_empty() || rest.contains('\n') || rest.contains(' ') {
-            return None;
-        }
-        Some(rest.to_string())
-    } else if trimmed.len() == 40 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some("(detached)".to_string())
-    } else {
-        None
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -4337,58 +4265,5 @@ mod tests {
         // Wide char that doesn't fit the remaining column is dropped.
         let out = truncate_to_width("你好", 3);
         assert_eq!(out, "你…");
-    }
-
-    #[test]
-    fn branch_reads_symbolic_ref() {
-        let dir = tempfile::tempdir().unwrap();
-        let git = dir.path().join(".git");
-        std::fs::create_dir_all(&git).unwrap();
-        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(branch_for_thread_path(dir.path()).as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn branch_reads_detached_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let git = dir.path().join(".git");
-        std::fs::create_dir_all(&git).unwrap();
-        // 40 hex chars with no newline — git's detached HEAD shape.
-        std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567").unwrap();
-        assert_eq!(
-            branch_for_thread_path(dir.path()).as_deref(),
-            Some("(detached)")
-        );
-    }
-
-    #[test]
-    fn branch_returns_none_when_no_git() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(branch_for_thread_path(dir.path()).is_none());
-    }
-
-    #[test]
-    fn branch_follows_repo_subdir_layout() {
-        // Mirrors the shared-repo layout used by patterns with
-        // `repo_group = "..."`: the actual git repo lives under
-        // `<thread_path>/repo/.git/`, not `<thread_path>/.git/`.
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        let git = repo.join(".git");
-        std::fs::create_dir_all(&git).unwrap();
-        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
-        assert_eq!(
-            branch_for_thread_path(dir.path()).as_deref(),
-            Some("feature-x")
-        );
-    }
-
-    #[test]
-    fn branch_returns_none_on_garbage_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let git = dir.path().join(".git");
-        std::fs::create_dir_all(&git).unwrap();
-        std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
-        assert!(branch_for_thread_path(dir.path()).is_none());
     }
 }

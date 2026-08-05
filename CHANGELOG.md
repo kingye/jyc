@@ -24,7 +24,7 @@ All notable changes to JYC will be documented in this file.
   dashboard to connect to a remote inspect server and still display
   the branch. Old clients/servers (pre-this-field) continue to work:
   `branch` is `#[serde(default)]` so absent values become `None` and
-  the segment is simply omitted.
+  the segment is simply omitted. (#512)
 
 - **Anthropic cache-creation (write) pricing.** Anthropic splits
   prompt-cache tokens into two buckets that bill at different rates:

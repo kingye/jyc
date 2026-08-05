@@ -1195,11 +1195,6 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
 /// Build the chat header row: "╭─ {mode} · {channel} · {pattern}[ · {branch}]"
 /// left-aligned, ─ padding filling the rest of the chat-pane width. No
 /// bottom or right border. Falls back gracefully when any field is missing.
-///
-/// `model` and `pct` from `ctx` are no longer rendered here — the version
-/// string moved to the status bar, and the model/percent live in the
-/// dashboard thread info pane. Kept on the ctx for now because removing
-/// them would touch unrelated render paths.
 fn build_chat_header_line(
     width: usize,
     ctx: &ChatHeaderCtx<'_>,
@@ -4210,7 +4205,7 @@ mod tests {
 
     #[test]
     fn header_line_omits_branch_segment_when_none() {
-        // Same ctx as `header_line_includes_mode_channel_pattern_and_chip`
+        // Same ctx as `header_line_includes_mode_channel_pattern`
         // but with branch=None — the left segment must end at "· jyc"
         // without a dangling separator.
         let ctx = ctx_with_full_data();

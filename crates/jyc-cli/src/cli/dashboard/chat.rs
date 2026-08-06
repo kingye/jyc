@@ -1120,6 +1120,39 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             }
             out.push(Line::from(thinking_line));
         }
+        // Separated section at the end: files changed on the current
+        // branch vs `main`, resolved server-side and shipped on
+        // `ThreadSummary.changed_files`. Visual separator is a blank
+        // `Line` followed by a bold count header, then one path per
+        // line (capped at 8). Whole block skipped when the thread is
+        // not a git repo, HEAD is detached, or `git diff` failed.
+        if t.changed_files.is_some() {
+            out.push(Line::default());
+            match t.changed_files.as_deref() {
+                Some([]) => out.push(Line::from(vec![
+                    Span::styled("Files: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("(none vs main)", Style::default().fg(Color::DarkGray)),
+                ])),
+                Some(files) => {
+                    let total = files.len();
+                    let shown = total.min(8);
+                    out.push(Line::from(Span::styled(
+                        format!("Files ({total} vs main):"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )));
+                    for path in &files[..shown] {
+                        out.push(Line::from(Span::raw(path.as_str())));
+                    }
+                    if total > shown {
+                        out.push(Line::from(Span::styled(
+                            format!("  ... and {} more files", total - shown),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+                None => {} // unreachable: gated by is_some() above
+            }
+        }
         out
     } else {
         vec![Line::from("Select a thread")]

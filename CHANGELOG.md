@@ -16,7 +16,7 @@ All notable changes to JYC will be documented in this file.
   links work for end users. `/reset` removes the published files and the
   token, invalidating previously shared links. The link base URL is
   configurable via the new `[inspect] public_base_url` setting
-  (fallback: `http://<inspect.bind>`).
+  (fallback: `http://<inspect.bind>`). (#519)
 
 - **Show the selected thread's git branch in the TUI.** The dashboard
   thread info pane, chat thread info pane, and chat input header line

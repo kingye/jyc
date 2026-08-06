@@ -1191,23 +1191,24 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
         vec![Line::from("Select a thread")]
     };
 
-    // ponytail: coarse `inner.height - 1` upper bound. The precise clamp is
-// `lines.len() - inner.height`, but reading `lines.len()` here conflicts
-// with the borrow `lines` holds on `app` (it would have to be cloned or
-// rebuilt). One frame of empty pane is the worst case when info_scroll
-// drifts above the precise max — Paragraph::scroll clamps internally and
-// the next render converges. Upgrade when line-building is refactored
-// into a helper that returns an owned `Vec<Line>`.
-let scroll_offset = app.chat.info_scroll;
-    let paragraph = Paragraph::new(lines)
-        .scroll((scroll_offset as u16, 0))
-        .wrap(Wrap { trim: true });
+    // Slice-skip in Rust (matching the activity pane's pattern) so we
+    // never feed `usize::MAX` into `Paragraph::scroll` — that overflows
+    // ratatui's `offset_y + height` math and panics the TUI.
+    // Offset-from-top: `info_scroll == 0` shows the first rows, the
+    // max shows the last. The precise upper bound
+    // (`lines.len() - inner_height`) is computed in the same scope that
+    // owns `lines`, so the clamp is exact.
+    let inner_height = inner.height as usize;
+    let max_skip = lines.len().saturating_sub(inner_height);
+    // `scroll` and `skip` are read while `lines` is still in scope
+    // (lines borrows app via the ThreadSummary snapshot). Write the
+    // clamped value back after rendering, when the borrow has ended.
+    let scroll = app.chat.info_scroll;
+    let skip = scroll.min(max_skip);
+    let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
-
-    let max_skip = inner.height.saturating_sub(1) as usize;
-    if app.chat.info_scroll > max_skip {
-        app.chat.info_scroll = max_skip;
-    }
+    app.chat.info_scroll = skip;
 }
 
 pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
@@ -4311,6 +4312,185 @@ mod tests {
         assert!(
             title_row.contains("── Thread Info"),
             "thread info title row should contain `── Thread Info`, got: {title_row:?}"
+        );
+    }
+
+    /// Regression: the Files section must color `uncommitted: true`
+    /// entries yellow and leave `uncommitted: false` entries plain.
+    /// Driven by ratatui's `TestBackend` so we read styles off the
+    /// rendered buffer rather than asserting on internal state.
+    #[test]
+    fn files_section_colors_uncommitted_paths_yellow() {
+        use jyc_types::ChangedFileEntry;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.info_visible = true;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "jyc".to_string(),
+                channel: "local_dev".to_string(),
+                pattern: Some("jyc".to_string()),
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                branch: None,
+                changed_files: Some(vec![
+                    ChangedFileEntry {
+                        path: "committed.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "dirty.rs".into(),
+                        uncommitted: true,
+                    },
+                ]),
+                context_input_tokens: None,
+                total_input_tokens: None,
+                total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
+                max_tokens: None,
+                output_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+                cost: None,
+            }],
+            ..Default::default()
+        });
+        app.table_state.select(Some(0));
+
+        // Tall enough pane that nothing scrolls — both rows must appear.
+        let width = 30;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+
+        // Walk the buffer, find the rows containing each file name,
+        // and check the foreground color of the first matching cell.
+        let find_row_color = |needle: &str| -> Option<Color> {
+            for y in 0..buffer.area.height {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect();
+                if row.contains(needle) {
+                    // Scan the cells in the row until we hit the needle
+                    // and return the foreground of that cell.
+                    let needle_chars: Vec<char> = needle.chars().collect();
+                    for start in 0..(buffer.area.width as usize).saturating_sub(needle_chars.len())
+                    {
+                        let cells: Vec<char> = (start..start + needle_chars.len())
+                            .map(|x| buffer[(x as u16, y)].symbol().chars().next().unwrap_or(' '))
+                            .collect();
+                        if cells == needle_chars {
+                            return Some(buffer[(start as u16, y)].fg);
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        let committed_color = find_row_color("committed.rs")
+            .expect("committed.rs must appear in the rendered buffer");
+        let dirty_color =
+            find_row_color("dirty.rs").expect("dirty.rs must appear in the rendered buffer");
+
+        assert_eq!(
+            committed_color,
+            Color::Reset,
+            "committed-only paths must use the default foreground"
+        );
+        assert_eq!(
+            dirty_color,
+            Color::Yellow,
+            "uncommitted paths must be rendered in yellow"
+        );
+    }
+
+    /// Regression: when `info_scroll` is set past the pane height, the
+    /// post-render clamp must bring it back to `inner.height - 1`.
+    /// Otherwise the next render scrolls past the end and shows an
+    /// empty pane.
+    #[test]
+    fn info_scroll_is_clamped_after_render() {
+        use jyc_types::ChangedFileEntry;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.info_visible = true;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "jyc".to_string(),
+                channel: "local_dev".to_string(),
+                pattern: Some("jyc".to_string()),
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                branch: None,
+                // Three files — fits easily in a tall pane.
+                changed_files: Some(vec![
+                    ChangedFileEntry {
+                        path: "a.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "b.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "c.rs".into(),
+                        uncommitted: false,
+                    },
+                ]),
+                context_input_tokens: None,
+                total_input_tokens: None,
+                total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
+                max_tokens: None,
+                output_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+                cost: None,
+            }],
+            ..Default::default()
+        });
+        app.table_state.select(Some(0));
+        // Pretend we previously scrolled way past the end.
+        app.chat.info_scroll = usize::MAX;
+
+        let width = 20;
+        let height = 10;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        // The pane is 10 rows tall, 1 row consumed by the border, so the
+        // coarse clamp upper bound is `10 - 1 = 9`.
+        assert!(
+            app.chat.info_scroll < height as usize,
+            "info_scroll must be clamped to inner.height - 1, got {}",
+            app.chat.info_scroll
         );
     }
 

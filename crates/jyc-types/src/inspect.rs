@@ -126,7 +126,7 @@ pub struct ThreadSummary {
     /// working directory is not a git repo, or when the `git`
     /// invocation fails (no `main` ref, missing binary). Detached
     /// HEAD still resolves `main` via `refs/heads/main`, so it
-    /// surfaces `Some(vec)` (possibly empty). `Some(vec![])` when the
+    /// surfaces `Some(_)` (possibly empty). `Some(vec![])` when the
     /// branch is `main` itself or has no commits ahead of `main`;
     /// `Some(paths)` lists the changed files otherwise.
     /// `#[serde(default)]` so old payloads (pre-this-field) deserialize

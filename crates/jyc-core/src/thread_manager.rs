@@ -2253,17 +2253,14 @@ pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
 /// - `None` when `git` isn't on PATH, when there is no `main` ref, or
 ///   when the subprocess exits non-zero for any reason — same skip
 ///   rule as `branch`. Note: detached HEAD still resolves `main` via
-///   `refs/heads/main`, so it surfaces `Some(vec)` (possibly empty).
+///   `refs/heads/main`, so it surfaces `Some(_)` (possibly empty).
 /// - `Some(vec![])` when the branch is `main` or has no commits ahead
 ///   of `main`.
 /// - `Some(vec!["a.rs", ...])` for the files touched by commits on
 ///   the branch.
 ///
-/// Synchronous `std::process::Command` to match
-/// `branch_for_thread_path`'s style — `git diff --name-only` is fast
-/// enough for typical repos that the existing per-poll `list_threads`
-/// discipline already covers. Switch to `tokio::process::Command`
-/// with a timeout if a thread ever points at a giant monorepo.
+/// Synchronous `std::process::Command` to match `branch_for_thread_path`'s
+/// style.
 pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<String>> {
     let cwd = if path.join(".git").join("HEAD").is_file() {
         path.to_path_buf()
@@ -2285,7 +2282,6 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<String>> 
 
     let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|l| !l.is_empty())
         .map(String::from)
         .collect();
 

@@ -9,8 +9,8 @@ Real-time protocols exposed by the JYC monitor on the inspect TCP port
   the activity / thinking / processing event stream.
 
 Both protocols share **one TCP listener** and **one Bearer token**
-(`[inspect].auth_token`). The same `Authorization: Bearer <token>`
-header gates every route.
+generated automatically at startup (see §1.2). The same
+`Authorization: Bearer <token>` header gates every route.
 
 > **Source of truth.** The protocol types live in
 > `crates/jyc-types/src/inspect.rs`, the server in
@@ -56,15 +56,17 @@ header gates every route.
 [inspect]
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
-# auth_token = "..."      # Optional; when set, every request must
-                          # carry `Authorization: Bearer <token>`.
 ```
 
-| Field        | Required | Default              | Notes                                                                                |
-|--------------|----------|----------------------|--------------------------------------------------------------------------------------|
-| `enabled`    | yes      | `false`              | When `false`, the inspect server is not started.                                     |
-| `bind`       | no       | `127.0.0.1:9876`     | TCP bind address. Loopback by default; expose externally only with `auth_token`.      |
-| `auth_token` | no       | `None`               | When set, both REST and WS routes enforce the same Bearer token (see §2.2, §3.1).     |
+| Field     | Required | Default              | Notes                                                                                |
+|-----------|----------|----------------------|--------------------------------------------------------------------------------------|
+| `enabled` | yes      | `false`              | When `false`, the inspect server is not started.                                     |
+| `bind`    | no       | `127.0.0.1:9876`     | TCP bind address. Loopback by default; expose externally only with auth enabled.     |
+
+When `enabled = true`, the server generates a random 256-bit authorization token
+at startup, persists it to `<workdir>/auth.token` (mode `0600`), and uses it
+to gate every REST and WebSocket request (see §2.2, §3.1). Retrieve it with
+`jyc token show`; the dashboard auto-loads it from the same path.
 
 ### 1.3 Versioning
 
@@ -98,8 +100,9 @@ Authorization: Bearer <token>
 
 Scheme matching is case-insensitive per RFC 7235 §2.1. Missing or
 mismatched token → HTTP `401 Unauthorized` with body
-`{"error":"auth_failed"}`. No auth is enforced when the server has no
-`auth_token` configured.
+`{"error":"auth_failed"}`. The token is always set when the inspect
+server is running (see §1.2); the no-auth path is only reached when
+`inspect.enabled = false` and the server is not started at all.
 
 The token is compared in constant time. A `WWW-Authenticate: Bearer`
 challenge is not currently emitted.
@@ -274,6 +277,7 @@ re-creates channel state.
 | Status | Body | Trigger |
 |--------|------|---------|
 | `422`  | `{"error":"config reload not available (no config path)"}`  | No config path registered. |
+| `422`  | `{"error":"failed to load config: …"}`                       | Layered config load failed (parse / IO). |
 | `422`  | `{"error":"validation failed: …"}`                            | Config validation failed. |
 | `500`  | `{"error":"config reloaded, but channel reload failed: …"}`  | Reload callback error.   |
 
@@ -339,13 +343,19 @@ or use a cookie/query-param auth (not currently supported).
 
 ### 3.3 Client → Server messages
 
-All client messages are JSON text frames with a `type` discriminator:
+All client messages are JSON text frames with a `type` discriminator.
+There are **two** `ClientMessage` enums, depending on which handler
+serves the route (see §3.2):
 
-| `type`        | Payload                              | Effect                                                                                  |
-|---------------|--------------------------------------|-----------------------------------------------------------------------------------------|
-| `message`     | `{ "thread"?: "<name>", "text": "..." }` | Send a chat message to the bound thread. `thread` required on `/ws` and `/ws/<channel>`; optional on `/ws/<channel>/<thread>` (URL wins). |
-| `disconnect`  | `{}`                                 | Close the WebSocket cleanly.                                                            |
-| `ping`        | `{}`                                 | Application-level keep-alive (no-op). WS protocol-level pings are auto-replied.        |
+| Route                        | Handler                  | `message` payload                            |
+|------------------------------|--------------------------|----------------------------------------------|
+| `/ws`                        | first WS channel         | `{ "thread": "<name>", "text": "..." }`     |
+| `/ws/<channel>`              | channel's WS adapter     | `{ "thread": "<name>", "text": "..." }`     |
+| `/ws/<channel>/<thread>` (WS channel)   | `ScopedWsHandler` → adapter   | `{ "thread"?: "<name>", "text": "..." }` (payload `thread` overrides the URL) |
+| `/ws/<channel>/<thread>` (other channel) | `ThreadProxyHandler`          | `{ "text": "..." }` (payload `thread` is ignored; URL is the only source) |
+
+`disconnect` (`{}`) and `ping` (`{}`) are accepted by both handlers
+with identical semantics.
 
 > **Removed.** Earlier protocol versions carried `list_patterns`,
 > `subscribe`, and `create_thread` as client messages. These were
@@ -364,6 +374,7 @@ Server-pushed events are JSON text frames from a shared
 | `thinking`     | `{ "channel", "thread", "text" }`                                  | The agent publishes a thinking chunk.                                         |
 | `processing`   | `{ "channel", "thread", "is_processing": bool, "has_error": bool }` | A thread enters / leaves the Processing state.                                |
 | `reply`        | `{ "thread": "<name>", "text": "..." }`                            | A websocket-channel `WebsocketOutboundAdapter` broadcasts an AI reply.        |
+| `loop_tick`    | `{ "channel", "thread", "elapsed_ms": u64 }`                       | 1 Hz wall-clock tick during a processing cycle (first tick at `t=0`). Drives the dashboard's live-duration ticker. Not persisted. |
 | `resync`       | `{ "channel", "thread", "dropped": <n> }`                          | The client's broadcast receiver lagged and missed messages.                   |
 
 #### 3.4.1 `activity`
@@ -380,9 +391,11 @@ Server-pushed events are JSON text frames from a shared
 }
 ```
 
-> `is_internal: true` entries (e.g. progress heartbeats) **are
-> forwarded on the WebSocket**; they are filtered only on the REST
-> `GET /api/threads/.../activity` path.
+> `is_internal: true` entries (e.g. `ProcessingProgress` heartbeats) are
+> filtered out on **both** surfaces: they are not persisted to
+> `activity.jsonl`, not returned by `GET /api/threads/.../activity`, and
+> not forwarded as an `activity` event on the WebSocket. Only the
+> in-memory `ThreadActivityState` buffer keeps them, for debug purposes.
 
 #### 3.4.2 `chat_message`
 
@@ -468,23 +481,29 @@ no `activity`, no `recent_messages`, no `thinking_text` per thread.
 Both have the fields below, except `ThreadSummary` **omits** `activity`,
 `recent_messages`, and `thinking_text`.
 
-| Field             | Type                  | In `ThreadInfo` | In `ThreadSummary` |
-|-------------------|-----------------------|:---------------:|:------------------:|
-| `name`            | string                | ✓               | ✓                  |
-| `channel`         | string                | ✓               | ✓                  |
-| `pattern`         | string?               | ✓               | ✓                  |
-| `status`          | `ThreadStatus`        | ✓               | ✓                  |
-| `model`           | string?               | ✓               | ✓                  |
-| `mode`            | string?               | ✓               | ✓                  |
-| `input_tokens`    | u64?                  | ✓               | ✓                  |
-| `max_tokens`      | u64?                  | ✓               | ✓                  |
-| `output_tokens`   | u64?                  | ✓               | ✓                  |
-| `last_active_at`  | string? (RFC 3339)    | ✓               | ✓                  |
-| `skills`          | `Vec<string>`         | ✓               | ✓                  |
-| `thread_path`     | `PathBuf?`            | ✓               | ✓                  |
-| `activity`        | `Vec<ActivityEntry>`  | ✓               | —                  |
-| `recent_messages` | `Vec<ChatMessageEntry>`| ✓              | —                  |
-| `thinking_text`   | string?               | ✓               | —                  |
+| Field                        | Type                  | In `ThreadInfo` | In `ThreadSummary` |
+|------------------------------|-----------------------|:---------------:|:------------------:|
+| `name`                       | string                | ✓               | ✓                  |
+| `channel`                    | string                | ✓               | ✓                  |
+| `pattern`                    | string?               | ✓               | ✓                  |
+| `status`                     | `ThreadStatus`        | ✓               | ✓                  |
+| `model`                      | string?               | ✓               | ✓                  |
+| `mode`                       | string?               | ✓               | ✓                  |
+| `context_input_tokens`       | u64?                  | ✓               | ✓                  |
+| `max_tokens`                 | u64?                  | ✓               | ✓                  |
+| `output_tokens`              | u64?                  | ✓               | ✓                  |
+| `total_input_tokens`         | u64?                  | ✓               | ✓                  |
+| `total_cache_hit_tokens`     | u64?                  | ✓               | ✓                  |
+| `total_cache_creation_tokens`| u64?                  | ✓               | ✓                  |
+| `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
+| `skills`                     | `Vec<string>`         | ✓               | ✓                  |
+| `thread_path`                | `PathBuf?`            | ✓               | ✓                  |
+| `branch`                     | string?               | ✓               | ✓                  |
+| `changed_files`              | `Vec<string>?`        | ✓               | ✓                  |
+| `cost`                       | `ThreadCost?`         | ✓               | ✓                  |
+| `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
+| `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
+| `thinking_text`              | string?               | ✓               | —                  |
 
 ### 4.4 Other types
 
@@ -493,6 +512,7 @@ Both have the fields below, except `ThreadSummary` **omits** `activity`,
 - `ActivityEntry` — `text`, `timestamp?`, `severity`, `id`, `is_internal`
 - `ChatMessageEntry` — `sender`, `text`, `timestamp?`, `id`
 - `ChannelInfo` — `name`, `channel_type`, `active_workers`, `max_concurrent`
+- `ThreadCost` — `session: f64` (current agent session, zeroes on reset), `today: f64` (UTC day total from billing ledger), `currency: string` (`"USD"` or `"mixed"` when today's entries span multiple currencies)
 - `GlobalStats` — `active_workers`, `total_threads`, `max_concurrent`, `available_workers`, `messages_received`, `messages_processed`, `errors`
 - `CommandInfo` — `name` (e.g. `"/model"`), `description`
 - `ModelInfo` — `name` (e.g. `"deepseek/deepseek-chat"`)

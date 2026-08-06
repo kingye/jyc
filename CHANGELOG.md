@@ -41,6 +41,29 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **`docs/api.md` out of sync with the implementation.** The API
+  reference predated several recent additions and contained one
+  incorrect statement. Updated to match current code:
+  - §1.2 / intro: `auth_token` is auto-generated and persisted to
+    `<workdir>/auth.token` (retrieved via `jyc token show`); it is
+    not a user-configurable `[inspect]` field.
+  - §2.4.7: documented the missing 422 `failed to load config` error
+    raised when the layered config fails to load.
+  - §3.3: split the `message` row to show the asymmetry — the
+    dashboard-side `ThreadProxyHandler` ignores a payload `thread`
+    field (URL is the only source); the WS channel adapter accepts
+    it and lets it override the URL.
+  - §3.4.1: corrected the `is_internal` filtering claim — internal
+    entries are filtered from **both** the REST activity endpoint
+    and the WebSocket `activity` event, not just REST.
+  - §3.4: added the missing `loop_tick` event (1 Hz wall-clock tick
+    for the dashboard's live-duration ticker).
+  - §4.3: `ThreadInfo` / `ThreadSummary` table now lists the actual
+    fields (`context_input_tokens`, `total_input_tokens`,
+    `total_cache_hit_tokens`, `total_cache_creation_tokens`,
+    `branch`, `changed_files`, `cost`) instead of the stale subset.
+  - §4.4: added `ThreadCost`.
+
 - **Chat input header regains model and context-window percentage.**
   Removing the `jyc ai v{}` chip in #512 also dropped the model name
   and pct% that lived alongside it. Both are restored as a right-side

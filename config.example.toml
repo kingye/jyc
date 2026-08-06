@@ -439,6 +439,12 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
+# Base URL for shareable links returned by the jyc_publish_file tool
+# (files served at /public/<channel>/<thread>/<name>?token=...).
+# Set this when a reverse proxy exposes the inspect server externally.
+# Falls back to http://<bind> when unset.
+# public_base_url = "https://jyc.example.com"
+
 # --- Custom Commands ---
 # User-defined slash commands. Each `[[commands]]` entry adds a `/<name>`
 # command that appears in `/?` and the dashboard command popup (press `/`).

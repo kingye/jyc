@@ -639,6 +639,12 @@ pub struct InspectConfig {
     /// TCP bind address (default: "127.0.0.1:9876")
     #[serde(default = "default_inspect_bind")]
     pub bind: String,
+
+    /// Public base URL used by the `jyc_publish_file` tool to build
+    /// shareable links to `/public/<channel>/<thread>/<name>`.
+    /// Falls back to `http://<bind>` when unset.
+    #[serde(default)]
+    pub public_base_url: Option<String>,
 }
 
 impl Default for InspectConfig {
@@ -646,6 +652,7 @@ impl Default for InspectConfig {
         Self {
             enabled: false,
             bind: default_inspect_bind(),
+            public_base_url: None,
         }
     }
 }

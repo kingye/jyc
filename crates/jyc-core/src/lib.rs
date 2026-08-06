@@ -24,9 +24,9 @@ pub mod thread_manager;
 pub mod thread_path;
 
 /// Directory under `<thread>/.jyc/` holding agent-published files that are
-/// served over HTTP at `/public/<channel>/<thread>/<name>`.
-pub const PUBLIC_DIR_NAME: &str = "public";
+/// served over HTTP at `/exchange/<channel>/<thread>/<name>`.
+pub const EXCHANGE_DIR_NAME: &str = "exchange";
 
-/// Per-thread token file under `<thread>/.jyc/` guarding `/public/...` URLs.
+/// Per-thread token file under `<thread>/.jyc/` guarding `/exchange/...` URLs.
 /// Created on first `jyc_publish_file` call; deleted by `/reset` so links die.
-pub const PUBLIC_TOKEN_FILENAME: &str = "public-token";
+pub const EXCHANGE_TOKEN_FILENAME: &str = "exchange-token";

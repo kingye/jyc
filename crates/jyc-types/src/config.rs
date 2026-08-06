@@ -644,14 +644,14 @@ pub struct InspectConfig {
     /// shareable links to `/exchange/<channel>/<thread>/<name>`.
     /// Falls back to `http://<bind>` when unset.
     #[serde(default)]
-    pub public_base_url: Option<String>,
+    pub exchange_base_url: Option<String>,
 }
 
 impl InspectConfig {
-    /// Base URL for published-file links: the configured `public_base_url`
+    /// Base URL for published-file links: the configured `exchange_base_url`
     /// (trailing slashes trimmed) or `http://<bind>` when unset.
-    pub fn effective_public_base_url(&self) -> String {
-        self.public_base_url
+    pub fn effective_exchange_base_url(&self) -> String {
+        self.exchange_base_url
             .clone()
             .unwrap_or_else(|| format!("http://{}", self.bind))
             .trim_end_matches('/')
@@ -664,7 +664,7 @@ impl Default for InspectConfig {
         Self {
             enabled: false,
             bind: default_inspect_bind(),
-            public_base_url: None,
+            exchange_base_url: None,
         }
     }
 }

@@ -20,14 +20,14 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // Clear agent-published files and the public-access token: /reset must
+        // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
         let jyc_dir = context.thread_path.join(".jyc");
-        tokio::fs::remove_dir_all(jyc_dir.join(crate::PUBLIC_DIR_NAME))
+        tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
-        tokio::fs::remove_file(jyc_dir.join(crate::PUBLIC_TOKEN_FILENAME))
+        tokio::fs::remove_file(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
             .await
             .ok();
 
@@ -147,12 +147,12 @@ mode = "agent"
     async fn test_reset_clears_public_files_and_token() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
-        let public_dir = jyc_dir.join(crate::PUBLIC_DIR_NAME);
+        let public_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&public_dir).await.unwrap();
         tokio::fs::write(public_dir.join("report.pdf"), b"pdf")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join(crate::PUBLIC_TOKEN_FILENAME), "abc123")
+        tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
             .await
             .unwrap();
 
@@ -162,7 +162,7 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!public_dir.exists());
-        assert!(!jyc_dir.join(crate::PUBLIC_TOKEN_FILENAME).exists());
+        assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 
     #[tokio::test]

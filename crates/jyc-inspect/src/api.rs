@@ -159,7 +159,7 @@ async fn resolve_thread_path(
 
 /// Query params for `GET /exchange/...`.
 #[derive(Debug, Deserialize)]
-pub struct PublicQuery {
+pub struct ExchangeQuery {
     token: Option<String>,
 }
 
@@ -169,34 +169,34 @@ pub struct PublicQuery {
 /// `jyc_publish_file` tool, rotated by `/reset`), so this route is mounted
 /// WITHOUT the bearer middleware: links must work for end users who have no
 /// dashboard token.
-pub async fn get_public_file(
+pub async fn get_exchange_file(
     State(ctx): State<Arc<InspectContext>>,
     Path((channel, thread, file_path)): Path<(String, String, String)>,
-    Query(q): Query<PublicQuery>,
+    Query(q): Query<ExchangeQuery>,
 ) -> Result<Response, ApiError> {
     let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
-    serve_public_file(&thread_path, q.token.as_deref(), &file_path).await
+    serve_exchange_file(&thread_path, q.token.as_deref(), &file_path).await
 }
 
 /// Token-check, then resolve and read a published file under
-/// `<thread>/.jyc/public/`, guarding against path traversal (including
+/// `<thread>/.jyc/exchange/`, guarding against path traversal (including
 /// symlink escapes via canonicalization).
-async fn serve_public_file(
+async fn serve_exchange_file(
     thread_path: &std::path::Path,
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
     let jyc_dir = thread_path.join(".jyc");
 
-    let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::PUBLIC_TOKEN_FILENAME))
+    let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await
-        .map_err(|_| ApiError::forbidden("public access not enabled for this thread"))?;
+        .map_err(|_| ApiError::forbidden("exchange access not enabled for this thread"))?;
     let expected = expected.trim();
     if expected.is_empty() || token != Some(expected) {
         return Err(ApiError::forbidden("missing or invalid token"));
     }
 
-    let base = jyc_dir.join(jyc_core::PUBLIC_DIR_NAME);
+    let base = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
     let rel = std::path::Path::new(rel_path);
     if rel
         .components()
@@ -217,7 +217,7 @@ async fn serve_public_file(
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
-            public_content_type(&canonical),
+            exchange_content_type(&canonical),
         )],
         bytes,
     )
@@ -228,7 +228,7 @@ async fn serve_public_file(
 ///
 /// Duplicated from jyc-agent's `mcp_bridge::detect_content_type` (private
 /// there); jyc-inspect does not depend on jyc-agent.
-fn public_content_type(path: &std::path::Path) -> &'static str {
+fn exchange_content_type(path: &std::path::Path) -> &'static str {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -376,17 +376,17 @@ pub async fn post_reload_config(
 }
 
 #[cfg(test)]
-mod public_file_tests {
+mod exchange_file_tests {
     use super::*;
 
-    /// Seed `<tmp>/.jyc/public/<file>` and `<tmp>/.jyc/public-token`.
+    /// Seed `<tmp>/.jyc/exchange/<file>` and `<tmp>/.jyc/exchange-token`.
     fn seed(tmp: &tempfile::TempDir, file: &str, body: &[u8], token: Option<&str>) {
         let jyc = tmp.path().join(".jyc");
-        let public = jyc.join(jyc_core::PUBLIC_DIR_NAME);
-        std::fs::create_dir_all(&public).unwrap();
-        std::fs::write(public.join(file), body).unwrap();
+        let exchange = jyc.join(jyc_core::EXCHANGE_DIR_NAME);
+        std::fs::create_dir_all(&exchange).unwrap();
+        std::fs::write(exchange.join(file), body).unwrap();
         if let Some(t) = token {
-            std::fs::write(jyc.join(jyc_core::PUBLIC_TOKEN_FILENAME), t).unwrap();
+            std::fs::write(jyc.join(jyc_core::EXCHANGE_TOKEN_FILENAME), t).unwrap();
         }
     }
 
@@ -395,7 +395,7 @@ mod public_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "notes.txt", b"hello", Some("tok123"));
 
-        let res = serve_public_file(tmp.path(), Some("tok123"), "notes.txt")
+        let res = serve_exchange_file(tmp.path(), Some("tok123"), "notes.txt")
             .await
             .unwrap();
 
@@ -413,17 +413,17 @@ mod public_file_tests {
     #[tokio::test]
     async fn serves_nested_file() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".jyc/public/sub")).unwrap();
-        std::fs::write(tmp.path().join(".jyc/public/sub/a.json"), b"{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join(".jyc/exchange/sub")).unwrap();
+        std::fs::write(tmp.path().join(".jyc/exchange/sub/a.json"), b"{}").unwrap();
         std::fs::write(
             tmp.path()
                 .join(".jyc")
-                .join(jyc_core::PUBLIC_TOKEN_FILENAME),
+                .join(jyc_core::EXCHANGE_TOKEN_FILENAME),
             "t",
         )
         .unwrap();
 
-        let res = serve_public_file(tmp.path(), Some("t"), "sub/a.json")
+        let res = serve_exchange_file(tmp.path(), Some("t"), "sub/a.json")
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -438,12 +438,12 @@ mod public_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("right"));
 
-        let err = serve_public_file(tmp.path(), None, "f.txt")
+        let err = serve_exchange_file(tmp.path(), None, "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
 
-        let err = serve_public_file(tmp.path(), Some("wrong"), "f.txt")
+        let err = serve_exchange_file(tmp.path(), Some("wrong"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -454,7 +454,7 @@ mod public_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", None);
 
-        let err = serve_public_file(tmp.path(), Some("any"), "f.txt")
+        let err = serve_exchange_file(tmp.path(), Some("any"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -465,7 +465,7 @@ mod public_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_public_file(tmp.path(), Some("t"), "nope.txt")
+        let err = serve_exchange_file(tmp.path(), Some("t"), "nope.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
@@ -476,7 +476,7 @@ mod public_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_public_file(tmp.path(), Some("t"), "../public-token")
+        let err = serve_exchange_file(tmp.path(), Some("t"), "../exchange-token")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -488,7 +488,7 @@ mod public_file_tests {
         seed(&tmp, "f.txt", b"x", Some("t"));
 
         // No directory listing: the base dir itself is not a file.
-        let err = serve_public_file(tmp.path(), Some("t"), "")
+        let err = serve_exchange_file(tmp.path(), Some("t"), "")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);

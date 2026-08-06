@@ -290,9 +290,9 @@ re-creates channel state.
 #### 2.4.8 `GET /exchange/{channel}/{thread}/{file...}?token=`
 
 Serves a file previously published by the `jyc_publish_file` agent tool
-(stored under `<thread>/.jyc/public/`). NOT gated by the bearer
+(stored under `<thread>/.jyc/exchange/`). NOT gated by the bearer
 middleware (§2.2) — the per-thread `token` query parameter is the access
-control. The token lives in `<thread>/.jyc/public-token`, is created on
+control. The token lives in `<thread>/.jyc/exchange-token`, is created on
 first publish, and is deleted by `/reset` (which also removes the
 published files), invalidating previously shared links.
 
@@ -310,7 +310,7 @@ curl 'http://127.0.0.1:9876/exchange/email/weather/report.pdf?token=<64-hex>'
 
 | Status | Trigger |
 |--------|---------|
-| `403`  | Missing/wrong `token`, or no `public-token` for the thread. |
+| `403`  | Missing/wrong `token`, or no `exchange-token` for the thread. |
 | `400`  | Path contains non-normal components (`..`, `.`, absolute). |
 | `404`  | Unknown channel/thread, missing file, or path is a directory (no listing). |
 

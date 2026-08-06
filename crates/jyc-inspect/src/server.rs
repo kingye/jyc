@@ -1229,7 +1229,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
     Router::new()
         .route(
             "/exchange/:channel/:thread/*file_path",
-            get(api::get_public_file),
+            get(api::get_exchange_file),
         )
         .merge(authed)
         .with_state(context)
@@ -1403,7 +1403,7 @@ mod next_id_tests {
 }
 
 #[cfg(test)]
-mod public_route_auth_tests {
+mod exchange_route_auth_tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request as HttpRequest, StatusCode};

@@ -39,8 +39,8 @@ pub fn create_builtin_registry() -> ToolRegistry {
 
 /// Register the `jyc_publish_file` built-in tool.
 ///
-/// `base_url` is prepended to the returned `/public/...` links (from
-/// `[inspect] public_base_url`, falling back to `http://<bind>`).
+/// `base_url` is prepended to the returned `/exchange/...` links (from
+/// `[inspect] exchange_base_url`, falling back to `http://<bind>`).
 pub fn register_publish_file(registry: &mut ToolRegistry, base_url: String) {
     registry.register(Box::new(publish_file::PublishFileTool::new(base_url)));
 }

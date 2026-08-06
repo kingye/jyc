@@ -1,9 +1,9 @@
 //! Builtin tool: `jyc_publish_file` — publish a thread-local file over HTTP.
 //!
-//! Copies (or moves) a file into `<thread>/.jyc/public/` and returns a
+//! Copies (or moves) a file into `<thread>/.jyc/exchange/` and returns a
 //! shareable URL served by the inspect server at
 //! `/exchange/<channel>/<thread>/<name>?token=<per-thread-token>`.
-//! The token lives in `<thread>/.jyc/public-token`, is created on first
+//! The token lives in `<thread>/.jyc/exchange-token`, is created on first
 //! publish, and is deleted by `/reset` (killing previously shared links).
 
 use anyhow::{Context, Result};
@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Tool for publishing files from the thread directory to a public URL.
+/// Tool for publishing files from the thread directory to a exchange URL.
 pub struct PublishFileTool {
     /// Base URL prepended to `/exchange/...` links (from
-    /// `[inspect] public_base_url`, falling back to `http://<bind>`).
+    /// `[inspect] exchange_base_url`, falling back to `http://<bind>`).
     base_url: String,
 }
 
@@ -34,7 +34,7 @@ impl Tool for PublishFileTool {
 
     fn description(&self) -> &str {
         "Publish a file from the thread directory to make it accessible via a \
-         public HTTP link. Copies the file by default; set move=true to move \
+         exchange HTTP link. Copies the file by default; set move=true to move \
          it (the source file disappears). Returns a shareable URL protected \
          by an access token. Use when the user needs to download or view a \
          generated file (report, PDF, image) via a link."
@@ -113,26 +113,26 @@ impl Tool for PublishFileTool {
             (Some(c), Some(t)) => (c.clone(), t.clone()),
             _ => {
                 return Ok(ToolOutput::error(
-                    "Channel/thread context unavailable; cannot build public URL",
+                    "Channel/thread context unavailable; cannot build exchange URL",
                 ));
             }
         };
 
         let jyc_dir = ctx.working_dir.join(".jyc");
-        let public_dir = jyc_dir.join(jyc_core::PUBLIC_DIR_NAME);
+        let public_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&public_dir)
             .await
-            .context("failed to create public directory")?;
+            .context("failed to create exchange directory")?;
 
         let target = public_dir.join(name);
         if do_move {
             tokio::fs::rename(&src_canonical, &target)
                 .await
-                .context("failed to move file into public directory")?;
+                .context("failed to move file into exchange directory")?;
         } else {
             tokio::fs::copy(&src_canonical, &target)
                 .await
-                .context("failed to copy file into public directory")?;
+                .context("failed to copy file into exchange directory")?;
         }
 
         let token = load_or_create_token(&jyc_dir)?;
@@ -146,7 +146,7 @@ impl Tool for PublishFileTool {
             thread = %thread,
             name = %name,
             moved = do_move,
-            "File published to public URL"
+            "File published to exchange URL"
         );
 
         Ok(ToolOutput::success(format!(
@@ -155,16 +155,16 @@ impl Tool for PublishFileTool {
     }
 }
 
-/// Read the per-thread public-access token, generating and persisting it
+/// Read the per-thread exchange-access token, generating and persisting it
 /// (owner-only permissions) on first use.
 fn load_or_create_token(jyc_dir: &Path) -> Result<String> {
-    let token_path: PathBuf = jyc_dir.join(jyc_core::PUBLIC_TOKEN_FILENAME);
+    let token_path: PathBuf = jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME);
     if let Ok(token) = jyc_utils::auth_token::read_token(&token_path) {
         return Ok(token);
     }
     let token = jyc_utils::auth_token::generate_token();
     jyc_utils::auth_token::write_token(&token_path, &token)
-        .context("failed to write public token")?;
+        .context("failed to write exchange token")?;
     Ok(token)
 }
 
@@ -195,9 +195,9 @@ mod tests {
 
         // Source kept (copy), published file exists, URL returned with token.
         assert!(tmp.path().join("report.pdf").exists());
-        let published = tmp.path().join(".jyc/public/report.pdf");
+        let published = tmp.path().join(".jyc/exchange/report.pdf");
         assert_eq!(std::fs::read(&published).unwrap(), b"pdf-bytes");
-        let token = std::fs::read_to_string(tmp.path().join(".jyc/public-token")).unwrap();
+        let token = std::fs::read_to_string(tmp.path().join(".jyc/exchange-token")).unwrap();
         let token = token.trim();
         assert!(!out.content.contains("error"), "{}", out.content);
         assert!(out.content.contains(&format!(
@@ -219,7 +219,7 @@ mod tests {
             .unwrap();
 
         assert!(!tmp.path().join("chart.png").exists());
-        assert!(tmp.path().join(".jyc/public/chart.png").exists());
+        assert!(tmp.path().join(".jyc/exchange/chart.png").exists());
     }
 
     #[tokio::test]
@@ -257,7 +257,7 @@ mod tests {
             .unwrap();
 
         assert!(out.is_error);
-        assert!(!work.join(".jyc/public").exists());
+        assert!(!work.join(".jyc/exchange").exists());
     }
 
     #[tokio::test]
@@ -274,6 +274,6 @@ mod tests {
             .unwrap();
 
         assert!(out.is_error);
-        assert!(!tmp.path().join(".jyc/public").exists());
+        assert!(!tmp.path().join(".jyc/exchange").exists());
     }
 }

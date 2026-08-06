@@ -6,16 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Per-thread public file publishing.** A new built-in agent tool
+- **Per-thread exchange file publishing.** A new built-in agent tool
   `jyc_publish_file` copies (or moves, with `move: true`) a thread-local
-  file into `<thread>/.jyc/public/` and returns a shareable URL served by
+  file into `<thread>/.jyc/exchange/` and returns a shareable URL served by
   the inspect server at `GET /exchange/<channel>/<thread>/<name>?token=...`.
   Links are guarded by a per-thread 256-bit token
-  (`<thread>/.jyc/public-token`) created on first publish — the `/exchange/*`
+  (`<thread>/.jyc/exchange-token`) created on first publish — the `/exchange/*`
   route is deliberately not gated by the dashboard bearer middleware so
   links work for end users. `/reset` removes the published files and the
   token, invalidating previously shared links. The link base URL is
-  configurable via the new `[inspect] public_base_url` setting
+  configurable via the new `[inspect] exchange_base_url` setting
   (fallback: `http://<inspect.bind>`). (#519)
 
 - **Show the selected thread's git branch in the TUI.** The dashboard

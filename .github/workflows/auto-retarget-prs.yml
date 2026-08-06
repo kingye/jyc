@@ -1,0 +1,36 @@
+name: Auto-retarget PRs after base merge
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  retarget:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGED_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # Fork PRs have no head.ref on this repo — nothing to retarget.
+          if [ -z "$MERGED_BRANCH" ]; then
+            echo "No head branch on this PR (likely a fork PR). Skipping."
+            exit 0
+          fi
+          # Defensive: nothing to retarget when the merged branch is main.
+          if [ "$MERGED_BRANCH" = "main" ]; then
+            echo "Merged branch is main; nothing to retarget."
+            exit 0
+          fi
+          echo "Looking for open PRs with base=$MERGED_BRANCH"
+          for pr in $(gh pr list --base "$MERGED_BRANCH" --state open --json number --jq '.[].number'); do
+            echo "Retargeting PR #$pr: $MERGED_BRANCH -> main"
+            gh pr edit "$pr" --base main
+          done
+          echo "Done."

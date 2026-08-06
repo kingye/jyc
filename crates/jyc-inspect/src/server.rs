@@ -274,6 +274,7 @@ impl InspectServer {
                 skills: t.skills,
                 thread_path: t.thread_path,
                 branch: t.branch,
+                changed_files: t.changed_files,
                 cost: t.cost,
             })
             .collect();

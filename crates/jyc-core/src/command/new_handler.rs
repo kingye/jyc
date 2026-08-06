@@ -3,7 +3,8 @@ use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
-/// /new command — reset session and clear chat history for this thread.
+/// /new command — reset session, clear chat history, and clear
+/// exchange-published files (+ token) for this thread.
 ///
 /// Usage:
 ///   /new    Delete session state files and chat history; next AI prompt will start completely fresh
@@ -71,6 +72,16 @@ impl CommandHandler for NewCommandHandler {
             tokio::fs::remove_file(&activity_path).await?;
             deleted_session = true;
         }
+
+        // Clear exchange-published files and the exchange token, mirroring
+        // /reset: /new starts fresh, so previously shared links must die.
+        let jyc_dir = context.thread_path.join(".jyc");
+        tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
+            .await
+            .ok();
+        tokio::fs::remove_file(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
+            .await
+            .ok();
 
         // Delete all chat_history_*.jsonl files in the thread directory (both locations)
         let mut deleted_history = 0u64;
@@ -260,5 +271,27 @@ mode = "agent"
             !tmp.path().join(".jyc/activity.jsonl").exists(),
             "activity.jsonl should be deleted by /new"
         );
+    }
+
+    #[tokio::test]
+    async fn test_new_clears_exchange_files_and_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
+        tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
+        tokio::fs::write(exchange_dir.join("report.pdf"), b"pdf")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
+            .await
+            .unwrap();
+
+        let handler = NewCommandHandler;
+        let ctx = test_context(tmp.path());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(!exchange_dir.exists());
+        assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 }

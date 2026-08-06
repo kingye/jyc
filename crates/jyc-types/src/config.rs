@@ -639,6 +639,24 @@ pub struct InspectConfig {
     /// TCP bind address (default: "127.0.0.1:9876")
     #[serde(default = "default_inspect_bind")]
     pub bind: String,
+
+    /// Public base URL used by the `jyc_publish_file` tool to build
+    /// shareable links to `/exchange/<channel>/<thread>/<name>`.
+    /// Falls back to `http://<bind>` when unset.
+    #[serde(default)]
+    pub exchange_base_url: Option<String>,
+}
+
+impl InspectConfig {
+    /// Base URL for published-file links: the configured `exchange_base_url`
+    /// (trailing slashes trimmed) or `http://<bind>` when unset.
+    pub fn effective_exchange_base_url(&self) -> String {
+        self.exchange_base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", self.bind))
+            .trim_end_matches('/')
+            .to_string()
+    }
 }
 
 impl Default for InspectConfig {
@@ -646,6 +664,7 @@ impl Default for InspectConfig {
         Self {
             enabled: false,
             bind: default_inspect_bind(),
+            exchange_base_url: None,
         }
     }
 }

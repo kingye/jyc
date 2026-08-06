@@ -107,6 +107,11 @@ server is running (see §1.2); the no-auth path is only reached when
 The token is compared in constant time. A `WWW-Authenticate: Bearer`
 challenge is not currently emitted.
 
+Exception: `/exchange/*` routes are NOT gated by the bearer middleware.
+Access control there is a per-thread `?token=` query parameter generated
+by the `jyc_publish_file` tool (see §2.4), so share links work for end
+users who have no dashboard token.
+
 ### 2.3 Route table
 
 | Method | Path                                          | Purpose                                            |
@@ -118,6 +123,7 @@ challenge is not currently emitted.
 | GET    | `/api/channels/{channel}/patterns`            | Pattern names configured for a channel.            |
 | POST   | `/api/threads`                                | Register a new ad-hoc thread.                      |
 | POST   | `/api/config/reload`                          | Reload the layered config (global + workdir).      |
+| GET    | `/exchange/{channel}/{thread}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
 
 WebSocket routes are documented in §3.
 
@@ -280,6 +286,33 @@ re-creates channel state.
 | `422`  | `{"error":"failed to load config: …"}`                       | Layered config load failed (parse / IO). |
 | `422`  | `{"error":"validation failed: …"}`                            | Config validation failed. |
 | `500`  | `{"error":"config reloaded, but channel reload failed: …"}`  | Reload callback error.   |
+
+#### 2.4.8 `GET /exchange/{channel}/{thread}/{file...}?token=`
+
+Serves a file previously published by the `jyc_publish_file` agent tool
+(stored under `<thread>/.jyc/exchange/`). NOT gated by the bearer
+middleware (§2.2) — the per-thread `token` query parameter is the access
+control. The token lives in `<thread>/.jyc/exchange-token`, is created on
+first publish, and is deleted by `/reset` or `/new` (which also remove the
+published files), invalidating previously shared links.
+
+**Request:**
+
+```bash
+curl 'http://127.0.0.1:9876/exchange/email/weather/report.pdf?token=<64-hex>'
+```
+
+**Response (200):** raw file bytes with an extension-based `Content-Type`
+(`text/html`, `application/pdf`, `image/png`, …, default
+`application/octet-stream`).
+
+**Errors:**
+
+| Status | Trigger |
+|--------|---------|
+| `403`  | Missing/wrong `token`, or no `exchange-token` for the thread. |
+| `400`  | Path contains non-normal components (`..`, `.`, absolute). |
+| `404`  | Unknown channel/thread, missing file, or path is a directory (no listing). |
 
 ### 2.5 Example session (curl + Python)
 

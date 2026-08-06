@@ -1197,10 +1197,14 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 /// All routes share the same `Authorization: Bearer <token>` middleware
 /// (`auth::require_bearer`). WebSocket upgrades flow through the same
 /// auth gate.
+///
+/// Exception: `/exchange/*` is mounted WITHOUT bearer auth — access control
+/// there is the per-thread `?token=` created by the `jyc_publish_file`
+/// tool (rotated by `/reset`), so share links work for end users.
 pub fn build_router(context: Arc<InspectContext>) -> Router {
     use crate::api;
 
-    Router::new()
+    let authed = Router::new()
         .route("/api/state", get(api::get_state))
         .route("/api/state/overview", get(api::get_state_overview))
         .route(
@@ -1220,7 +1224,14 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .layer(from_fn_with_state(
             context.clone(),
             crate::auth::require_bearer,
-        ))
+        ));
+
+    Router::new()
+        .route(
+            "/exchange/:channel/:thread/*file_path",
+            get(api::get_exchange_file),
+        )
+        .merge(authed)
         .with_state(context)
 }
 
@@ -1388,5 +1399,66 @@ mod next_id_tests {
         };
         seed_next_id_from_disk(&mut state, None);
         assert_eq!(state.next_id, 99);
+    }
+}
+
+#[cfg(test)]
+mod exchange_route_auth_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request as HttpRequest, StatusCode};
+    use jyc_core::metrics::HealthStats;
+    use tower::ServiceExt;
+
+    fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
+        Arc::new(InspectContext {
+            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            channels: Arc::new(ArcSwap::from_pointee(vec![])),
+            health_stats: Arc::new(Mutex::new(HealthStats::default())),
+            activity_map: Arc::new(Mutex::new(HashMap::new())),
+            start_time: Instant::now(),
+            config_path: None,
+            global_config_path: None,
+            config: None,
+            workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+            websocket_handlers: None,
+            reload_callback: None,
+            auth_token: token.map(String::from),
+            inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+        })
+    }
+
+    /// `/exchange/*` must NOT be gated by the bearer middleware — access
+    /// control is the per-thread `?token=`. With no thread manager the
+    /// handler 403s; the point is that it is not a 401.
+    #[tokio::test]
+    async fn exchange_route_bypasses_bearer_middleware() {
+        let app = build_router(ctx_with_token(Some("secret")));
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/exchange/ch/th/f.txt?token=x")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Sanity: authed routes still reject requests without the bearer token.
+    #[tokio::test]
+    async fn api_route_still_requires_bearer() {
+        let app = build_router(ctx_with_token(Some("secret")));
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/api/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -59,7 +59,7 @@ fn unauthorized_response() -> Response {
 /// Constant-time byte comparison. Returns `false` if lengths differ (in
 /// non-constant time on the length, but `auth_token` is a fixed config string,
 /// so its length is not a useful side channel).
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

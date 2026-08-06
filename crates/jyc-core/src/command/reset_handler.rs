@@ -20,6 +20,17 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        // Clear agent-published files and the exchange-access token: /reset must
+        // kill previously shared links (token rotation forces regeneration on
+        // the next publish). Done for both the agent and fallback branches.
+        let jyc_dir = context.thread_path.join(".jyc");
+        tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
+            .await
+            .ok();
+        tokio::fs::remove_file(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
+            .await
+            .ok();
+
         // Resolve ResetCompressionConfig. Best signal we have at command time:
         // read the matched pattern from disk (written by the message router
         // when the thread was created). Falls back to first pattern if the
@@ -49,7 +60,6 @@ impl CommandHandler for ResetCommandHandler {
             })
         } else {
             // No agent service available — fallback to direct file deletion
-            let jyc_dir = context.thread_path.join(".jyc");
             tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
                 .await
                 .ok();
@@ -130,6 +140,28 @@ mode = "agent"
                 || result.message.contains("session reset")
                 || result.message.contains("no agent service")
         );
+    }
+
+    #[tokio::test]
+    async fn test_reset_clears_exchange_files_and_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
+        tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
+        tokio::fs::write(exchange_dir.join("report.pdf"), b"pdf")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
+            .await
+            .unwrap();
+
+        let handler = ResetCommandHandler;
+        let ctx = test_context(tmp.path());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(!exchange_dir.exists());
+        assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 
     #[tokio::test]

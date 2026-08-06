@@ -5,6 +5,7 @@ pub mod edit;
 pub mod glob_tool;
 pub mod grep;
 pub mod job_tools;
+pub mod publish_file;
 pub mod read;
 pub mod read_image;
 pub mod send_to_thread;
@@ -34,6 +35,14 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(send_to_thread::SendToThreadTool));
 
     registry
+}
+
+/// Register the `jyc_publish_file` built-in tool.
+///
+/// `base_url` is prepended to the returned `/exchange/...` links (from
+/// `[inspect] exchange_base_url`, falling back to `http://<bind>`).
+pub fn register_publish_file(registry: &mut ToolRegistry, base_url: String) {
+    registry.register(Box::new(publish_file::PublishFileTool::new(base_url)));
 }
 
 /// Register the `read_image` built-in tool.

@@ -1177,12 +1177,24 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
                 for entry in files {
+                    // One-column glyph + one space, then the path.
+                    // Two-space prefix for Modified keeps the path
+                    // column aligned with Added/Deleted rows so the
+                    // eye can scan vertically.
+                    let prefix = match entry.change {
+                        jyc_types::ChangeKind::Added => "+ ",
+                        jyc_types::ChangeKind::Deleted => "- ",
+                        jyc_types::ChangeKind::Modified => "  ",
+                    };
                     let style = if entry.uncommitted {
                         Style::default().fg(Color::Yellow)
                     } else {
                         Style::default()
                     };
-                    out.push(Line::from(Span::styled(entry.path.as_str(), style)));
+                    out.push(Line::from(Span::styled(
+                        format!("{}{}", prefix, entry.path),
+                        style,
+                    )));
                 }
             }
         }
@@ -1206,7 +1218,11 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
     let scroll = app.chat.info_scroll;
     let skip = scroll.min(max_skip);
     let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
-    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
+    // `Wrap { trim: false }` is required so the leading 2-space prefix
+    // on `Modified` rows survives (default `trim: true` strips
+    // leading whitespace per the `Wrap` doc). Wrap is still needed
+    // for long paths that exceed the 20%-wide pane.
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
     app.chat.info_scroll = skip;
 }
@@ -4316,11 +4332,14 @@ mod tests {
     }
 
     /// Regression: the Files section must color `uncommitted: true`
-    /// entries yellow and leave `uncommitted: false` entries plain.
-    /// Driven by ratatui's `TestBackend` so we read styles off the
-    /// rendered buffer rather than asserting on internal state.
+    /// entries yellow and leave `uncommitted: false` entries plain,
+    /// and must prefix each row with the kind glyph (`+` Added,
+    /// `-` Deleted, two-space Modified). Driven by ratatui's
+    /// `TestBackend` so we read styles off the rendered buffer
+    /// rather than asserting on internal state.
     #[test]
     fn files_section_colors_uncommitted_paths_yellow() {
+        use jyc_types::ChangeKind;
         use jyc_types::ChangedFileEntry;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -4341,16 +4360,37 @@ mod tests {
                 model: None,
                 mode: None,
                 branch: None,
+                // One of each kind — sorted alphabetically on render.
+                // added.rs       Added      clean
+                // deleted.rs     Deleted    clean
+                // dirty_add.rs   Added      dirty (yellow)
+                // dirty_mod.rs   Modified   dirty (yellow)
+                // modified.rs    Modified   clean
                 changed_files: Some(vec![
                     ChangedFileEntry {
-                        path: "committed.rs".into(),
+                        path: "modified.rs".into(),
                         uncommitted: false,
-                        change: jyc_types::ChangeKind::Modified,
+                        change: ChangeKind::Modified,
                     },
                     ChangedFileEntry {
-                        path: "dirty.rs".into(),
+                        path: "added.rs".into(),
+                        uncommitted: false,
+                        change: ChangeKind::Added,
+                    },
+                    ChangedFileEntry {
+                        path: "deleted.rs".into(),
+                        uncommitted: false,
+                        change: ChangeKind::Deleted,
+                    },
+                    ChangedFileEntry {
+                        path: "dirty_add.rs".into(),
                         uncommitted: true,
-                        change: jyc_types::ChangeKind::Modified,
+                        change: ChangeKind::Added,
+                    },
+                    ChangedFileEntry {
+                        path: "dirty_mod.rs".into(),
+                        uncommitted: true,
+                        change: ChangeKind::Modified,
                     },
                 ]),
                 context_input_tokens: None,
@@ -4379,45 +4419,100 @@ mod tests {
 
         let buffer = terminal.backend().buffer().clone();
 
-        // Walk the buffer, find the rows containing each file name,
-        // and check the foreground color of the first matching cell.
-        let find_row_color = |needle: &str| -> Option<Color> {
+        // Find the row that contains `needle` and return the cell at column
+        // `column_offset` of that row (used to inspect the prefix glyph
+        // at column 0). Returns (symbol, fg).
+        let find = |needle: &str, column_offset: usize| -> Option<(char, Color)> {
             for y in 0..buffer.area.height {
                 let row: String = (0..buffer.area.width)
                     .map(|x| buffer[(x, y)].symbol().to_string())
                     .collect();
                 if row.contains(needle) {
-                    // Scan the cells in the row until we hit the needle
-                    // and return the foreground of that cell.
-                    let needle_chars: Vec<char> = needle.chars().collect();
-                    for start in 0..(buffer.area.width as usize).saturating_sub(needle_chars.len())
-                    {
-                        let cells: Vec<char> = (start..start + needle_chars.len())
-                            .map(|x| buffer[(x as u16, y)].symbol().chars().next().unwrap_or(' '))
-                            .collect();
-                        if cells == needle_chars {
-                            return Some(buffer[(start as u16, y)].fg);
-                        }
-                    }
+                    let col = column_offset as u16;
+                    return buffer
+                        .cell((col, y))
+                        .map(|c| (c.symbol().chars().next().unwrap_or(' '), c.fg));
                 }
             }
             None
         };
 
-        let committed_color = find_row_color("committed.rs")
-            .expect("committed.rs must appear in the rendered buffer");
-        let dirty_color =
-            find_row_color("dirty.rs").expect("dirty.rs must appear in the rendered buffer");
+        // The block uses Borders::TOP | Borders::LEFT, so column 0 is the
+        // left border and column 1 is the start of the content. The
+        // prefix glyph is at column 1; the path begins at column 3
+        // (after the glyph and its trailing space).
+        let content_col = 1usize;
 
+        // Color assertions.
         assert_eq!(
-            committed_color,
+            find("modified.rs", content_col)
+                .expect("modified.rs must render")
+                .1,
             Color::Reset,
-            "committed-only paths must use the default foreground"
+            "clean Modified must use the default foreground"
         );
         assert_eq!(
-            dirty_color,
+            find("added.rs", content_col)
+                .expect("added.rs must render")
+                .1,
+            Color::Reset,
+            "clean Added must use the default foreground"
+        );
+        assert_eq!(
+            find("deleted.rs", content_col)
+                .expect("deleted.rs must render")
+                .1,
+            Color::Reset,
+            "clean Deleted must use the default foreground"
+        );
+        assert_eq!(
+            find("dirty_mod.rs", content_col)
+                .expect("dirty_mod.rs must render")
+                .1,
             Color::Yellow,
-            "uncommitted paths must be rendered in yellow"
+            "uncommitted Modified must be rendered in yellow"
+        );
+        assert_eq!(
+            find("dirty_add.rs", content_col)
+                .expect("dirty_add.rs must render")
+                .1,
+            Color::Yellow,
+            "uncommitted Added must be rendered in yellow"
+        );
+
+        // Prefix-glyph assertions.
+        assert_eq!(
+            find("added.rs", content_col).expect("added.rs prefix").0,
+            '+',
+            "Added rows must start with '+'"
+        );
+        assert_eq!(
+            find("deleted.rs", content_col)
+                .expect("deleted.rs prefix")
+                .0,
+            '-',
+            "Deleted rows must start with '-'"
+        );
+        assert_eq!(
+            find("modified.rs", content_col)
+                .expect("modified.rs prefix")
+                .0,
+            ' ',
+            "Modified rows must start with a space (2-space prefix for alignment)"
+        );
+        assert_eq!(
+            find("dirty_mod.rs", content_col)
+                .expect("dirty_mod.rs prefix")
+                .0,
+            ' ',
+            "uncommitted Modified still uses 2-space prefix"
+        );
+        assert_eq!(
+            find("dirty_add.rs", content_col)
+                .expect("dirty_add.rs prefix")
+                .0,
+            '+',
+            "uncommitted Added still uses '+' prefix"
         );
     }
 

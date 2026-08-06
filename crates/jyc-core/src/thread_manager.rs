@@ -2294,7 +2294,9 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
         };
         // `last()` is the new path for renames/copies, or just the path
         // for the common case. Skip empty lines defensively.
-        let Some(path) = fields.last() else { continue };
+        let Some(path) = fields.next_back() else {
+            continue;
+        };
         if path.is_empty() {
             continue;
         }
@@ -4112,15 +4114,27 @@ mod changed_files_resolution_tests {
         std::fs::write(dir.path().join("doomed.rs"), "fn d() {}\n").unwrap();
         run(&["add", "doomed.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "seed",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
         ]);
         // Branch off, delete the file, commit.
         run(&["checkout", "-q", "-b", "feature"]);
         run(&["rm", "-q", "doomed.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "kill",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "kill",
         ]);
 
         let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
@@ -4152,15 +4166,27 @@ mod changed_files_resolution_tests {
         std::fs::write(dir.path().join("original.rs"), "fn o() {}\n").unwrap();
         run(&["add", "original.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "seed",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
         ]);
         // Rename on the branch.
         run(&["checkout", "-q", "-b", "feature"]);
         run(&["mv", "original.rs", "renamed.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "rename",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "rename",
         ]);
 
         let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
@@ -4192,8 +4218,14 @@ mod changed_files_resolution_tests {
         std::fs::write(dir.path().join("existing.rs"), "fn e() {}\n").unwrap();
         run(&["add", "existing.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "seed",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
         ]);
         // Edit locally without committing.
         std::fs::write(dir.path().join("existing.rs"), "fn e() { /*x*/ }\n").unwrap();

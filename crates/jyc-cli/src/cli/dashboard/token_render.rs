@@ -165,6 +165,7 @@ mod tests {
             model: None,
             mode: None,
             branch: None,
+            changed_files: None,
             context_input_tokens: input,
             max_tokens: max,
             output_tokens: output,

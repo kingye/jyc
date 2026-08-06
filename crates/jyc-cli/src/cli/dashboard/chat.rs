@@ -1120,6 +1120,36 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             }
             out.push(Line::from(thinking_line));
         }
+        // Separated section at the end: files changed on the current
+        // branch vs `main`, resolved server-side and shipped on
+        // `ThreadSummary.changed_files`. Visual separator is a blank
+        // `Line` followed by a bold count header, then one path per
+        // line (capped at 8). Whole block skipped when the thread is
+        // not a git repo, has no `main` ref, or `git diff` failed.
+        if let Some(files) = t.changed_files.as_deref() {
+            out.push(Line::default());
+            if files.is_empty() {
+                out.push(Line::from(vec![
+                    Span::styled("Files: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled("(none vs main)", Style::default().fg(Color::DarkGray)),
+                ]));
+            } else {
+                let shown = files.len().min(8);
+                out.push(Line::from(Span::styled(
+                    format!("Files ({} vs main):", files.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                for path in &files[..shown] {
+                    out.push(Line::from(Span::raw(path.as_str())));
+                }
+                if files.len() > shown {
+                    out.push(Line::from(Span::styled(
+                        format!("  ... and {} more files", files.len() - shown),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+        }
         out
     } else {
         vec![Line::from("Select a thread")]
@@ -3662,6 +3692,7 @@ mod tests {
                     model: None,
                     mode: None,
                     branch: None,
+                    changed_files: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
@@ -3704,6 +3735,7 @@ mod tests {
                     model: None,
                     mode: None,
                     branch: None,
+                    changed_files: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
@@ -3745,6 +3777,7 @@ mod tests {
                 model: None,
                 mode: None,
                 branch: None,
+                changed_files: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,
@@ -3830,6 +3863,7 @@ mod tests {
                     model: None,
                     mode: None,
                     branch: None,
+                    changed_files: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
@@ -3849,6 +3883,7 @@ mod tests {
                     model: None,
                     mode: None,
                     branch: None,
+                    changed_files: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
@@ -3965,6 +4000,7 @@ mod tests {
                 model: None,
                 mode: None,
                 branch: None,
+                changed_files: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,
@@ -4070,6 +4106,7 @@ mod tests {
                 model: None,
                 mode: None,
                 branch: None,
+                changed_files: None,
                 context_input_tokens: None,
                 total_input_tokens: None,
                 total_cache_hit_tokens: None,

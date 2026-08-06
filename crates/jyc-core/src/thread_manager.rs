@@ -1126,6 +1126,7 @@ impl ThreadManager {
                 thinking_text: None,     // Filled by InspectServer from event bus
                 thread_path: Some(thread_path.clone()),
                 branch: branch_for_thread_path(&thread_path),
+                changed_files: changed_files_for_thread_path(&thread_path),
                 cost,
             });
         }
@@ -2240,6 +2241,51 @@ pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+/// List files changed on the current branch vs `main`.
+///
+/// Runs `git diff --name-only main...HEAD` against the thread's working
+/// directory. Mirrors [`branch_for_thread_path`]: looks first at
+/// `<path>/.git/HEAD`, then falls back to `<path>/repo/.git/HEAD`. Returns:
+///
+/// - `None` when neither `.git/HEAD` exists (not a git repo).
+/// - `None` when `git` isn't on PATH, when there is no `main` ref, or
+///   when the subprocess exits non-zero for any reason — same skip
+///   rule as `branch`. Note: detached HEAD still resolves `main` via
+///   `refs/heads/main`, so it surfaces `Some(_)` (possibly empty).
+/// - `Some(vec![])` when the branch is `main` or has no commits ahead
+///   of `main`.
+/// - `Some(vec!["a.rs", ...])` for the files touched by commits on
+///   the branch.
+///
+/// Synchronous `std::process::Command` to match `branch_for_thread_path`'s
+/// style.
+pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<String>> {
+    let cwd = if path.join(".git").join("HEAD").is_file() {
+        path.to_path_buf()
+    } else if path.join("repo").join(".git").join("HEAD").is_file() {
+        path.join("repo")
+    } else {
+        return None;
+    };
+
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", "main...HEAD"])
+        .current_dir(&cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(String::from)
+        .collect();
+
+    Some(files)
 }
 
 #[cfg(test)]
@@ -3550,6 +3596,109 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
 
         tm.shutdown().await;
     }
+
+    /// Regression for #220: `ThreadManager::list_threads` must populate
+    /// `ThreadInfo::changed_files` by running `git diff --name-only
+    /// main...HEAD` under each thread's path. Without this test, a
+    /// future refactor that drops the call to
+    /// `changed_files_for_thread_path` at the `threads.push(...)` site
+    /// would silently leave `changed_files == None` on every payload.
+    #[tokio::test]
+    async fn list_threads_populates_changed_files_from_git_diff() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+
+        // Thread "clean": real git repo on `main` with no commits ahead.
+        // Expect `Some(vec![])`.
+        let clean = workspace.join("clean");
+        std::fs::create_dir_all(clean.join(".jyc")).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&clean)
+                .output()
+                .expect("git failed")
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+
+        // Thread "ahead": feature branch with one commit adding "x.rs".
+        let ahead = workspace.join("ahead");
+        std::fs::create_dir_all(ahead.join(".jyc")).unwrap();
+        let run_ahead = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&ahead)
+                .output()
+                .expect("git failed")
+        };
+        run_ahead(&["init", "-q", "-b", "main"]);
+        run_ahead(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        run_ahead(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(ahead.join("x.rs"), "fn x() {}").unwrap();
+        run_ahead(&["add", "x.rs"]);
+        run_ahead(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "x",
+        ]);
+
+        // Thread "no-git": no `.git` at all → `changed_files == None`.
+        let no_git = workspace.join("no-git");
+        std::fs::create_dir_all(no_git.join(".jyc")).unwrap();
+
+        let tm = make_test_tm(&workspace);
+        let threads = tm.list_threads().await;
+
+        let by_name = |n: &str| {
+            threads
+                .iter()
+                .find(|t| t.name == n)
+                .unwrap_or_else(|| panic!("thread {n} missing from list_threads"))
+        };
+
+        assert_eq!(
+            by_name("clean").changed_files.as_deref(),
+            Some(&[][..]),
+            "branch == main must surface as Some(vec![])"
+        );
+        assert_eq!(
+            by_name("ahead").changed_files.as_deref(),
+            Some(&["x.rs".to_string()][..]),
+            "feature branch with one new file must list it"
+        );
+        assert!(
+            by_name("no-git").changed_files.is_none(),
+            "non-git thread must have changed_files=None"
+        );
+
+        tm.shutdown().await;
+    }
 }
 
 #[cfg(test)]
@@ -3604,5 +3753,159 @@ mod branch_resolution_tests {
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
         assert!(branch_for_thread_path(dir.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod changed_files_resolution_tests {
+    use super::changed_files_for_thread_path;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    /// Init a git repo with a `main` branch and an initial empty commit.
+    /// Returns the tempdir; caller is responsible for keeping it alive
+    /// (TempDir drops at end of the test function).
+    fn git_init_with_main() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // Ensure deterministic branch name + committer across CI hosts.
+        run(&["init", "-q", "-b", "main"]);
+        run(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        dir
+    }
+
+    #[test]
+    fn returns_none_when_no_git() {
+        let dir = tempdir().unwrap();
+        assert!(changed_files_for_thread_path(dir.path()).is_none());
+    }
+
+    #[test]
+    fn returns_empty_vec_when_branch_is_main() {
+        let dir = git_init_with_main();
+        // HEAD == main → diff main...HEAD is empty.
+        let files = changed_files_for_thread_path(dir.path());
+        assert_eq!(files, Some(vec![]));
+    }
+
+    #[test]
+    fn lists_files_committed_on_feature_branch() {
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // Create a feature branch with two commits touching distinct files.
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.path().join("alpha.rs"), "fn a() {}").unwrap();
+        run(&["add", "alpha.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "alpha",
+        ]);
+        std::fs::write(dir.path().join("beta.rs"), "fn b() {}").unwrap();
+        run(&["add", "beta.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "beta",
+        ]);
+
+        let mut files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        files.sort();
+        assert_eq!(files, vec!["alpha.rs".to_string(), "beta.rs".to_string()]);
+    }
+
+    #[test]
+    fn follows_repo_subdir_layout() {
+        // Shared-repo layout: thread dir contains a `repo/` subdir that
+        // holds the actual git working tree (see `branch_for_thread_path`).
+        let outer = tempdir().unwrap();
+        let repo = outer.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git failed")
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("gamma.rs"), "fn g() {}").unwrap();
+        run(&["add", "gamma.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "gamma",
+        ]);
+
+        let mut files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
+        files.sort();
+        assert_eq!(files, vec!["gamma.rs".to_string()]);
+    }
+
+    #[test]
+    fn returns_none_when_main_ref_is_missing() {
+        // Repo exists but with only a non-main branch, so `main...HEAD`
+        // fails. Use a fresh `git init` with no commits on `main`.
+        let dir = tempdir().unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        run(&["init", "-q"]);
+        run(&["checkout", "-q", "-b", "solo"]);
+        // `main` does not exist; `git diff main...HEAD` exits non-zero.
+        assert!(changed_files_for_thread_path(dir.path()).is_none());
     }
 }

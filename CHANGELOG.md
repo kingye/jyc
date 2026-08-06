@@ -6,6 +6,18 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Per-thread public file publishing.** A new built-in agent tool
+  `jyc_publish_file` copies (or moves, with `move: true`) a thread-local
+  file into `<thread>/.jyc/public/` and returns a shareable URL served by
+  the inspect server at `GET /public/<channel>/<thread>/<name>?token=...`.
+  Links are guarded by a per-thread 256-bit token
+  (`<thread>/.jyc/public-token`) created on first publish — the `/public/*`
+  route is deliberately not gated by the dashboard bearer middleware so
+  links work for end users. `/reset` removes the published files and the
+  token, invalidating previously shared links. The link base URL is
+  configurable via the new `[inspect] public_base_url` setting
+  (fallback: `http://<inspect.bind>`).
+
 - **Show the selected thread's git branch in the TUI.** The dashboard
   thread info pane, chat thread info pane, and chat input header line
   (`╭─ build · local_dev · pattern`) now include the current branch of

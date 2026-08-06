@@ -67,10 +67,7 @@ impl Tool for PublishFileTool {
             .and_then(|p| p.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'path' parameter"))?;
 
-        let do_move = input
-            .get("move")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let do_move = input.get("move").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Resolve and validate the source file (same boundary check as
         // send_to_thread attachments): must exist, be a file, and lie

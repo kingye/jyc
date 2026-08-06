@@ -401,9 +401,7 @@ mod public_file_tests {
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
-            res.headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
             "text/plain"
         );
         let body = axum::body::to_bytes(res.into_body(), usize::MAX)
@@ -418,7 +416,9 @@ mod public_file_tests {
         std::fs::create_dir_all(tmp.path().join(".jyc/public/sub")).unwrap();
         std::fs::write(tmp.path().join(".jyc/public/sub/a.json"), b"{}").unwrap();
         std::fs::write(
-            tmp.path().join(".jyc").join(jyc_core::PUBLIC_TOKEN_FILENAME),
+            tmp.path()
+                .join(".jyc")
+                .join(jyc_core::PUBLIC_TOKEN_FILENAME),
             "t",
         )
         .unwrap();
@@ -428,9 +428,7 @@ mod public_file_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
-            res.headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
             "application/json"
         );
     }

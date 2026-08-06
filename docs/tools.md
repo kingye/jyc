@@ -428,12 +428,50 @@ write = ["/tmp/jyc-builds"]         # writable + readable (write implies read)
 
 ---
 
+## File Publishing Tools
+
+### `jyc_publish_file`
+
+Publish a file from the thread directory to make it accessible via a public
+HTTP link served by the inspect server.
+
+**Parameters:**
+- `path` (string, required): File to publish, relative to the thread directory
+- `name` (string, optional): Published filename; defaults to the source basename
+- `move` (boolean, optional, default false): When `true`, the file is moved
+  (source disappears); when `false`, it is copied
+
+**Behavior:**
+- The file is placed in `<thread>/.jyc/public/<name>`
+- On first publish a per-thread access token (256-bit hex) is generated and
+  stored in `<thread>/.jyc/public-token` (owner-only permissions); subsequent
+  publishes reuse it
+- Returns a shareable URL:
+  `{base}/public/{channel}/{thread}/{name}?token={token}` where `base` comes
+  from `[inspect] public_base_url` (fallback: `http://<inspect.bind>`)
+- Files are served by the inspect server at `GET /public/...`; the bearer
+  middleware does not apply — the per-thread `?token=` is the access control
+- `/reset` deletes `.jyc/public/` and `.jyc/public-token`, killing all
+  previously shared links (a fresh token is generated on the next publish)
+
+**Constraints:**
+- Source must be a file inside the thread working directory
+- `name` must be a plain filename (no `/`, `\`, or `..`)
+
+**Example:**
+```json
+{"path": "output/report.pdf", "move": true}
+```
+
+---
+
 ## Tool Registration Flow
 
 ```
 build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch
   ├─ Register read_image (when model supports images OR vision_client configured)
+  ├─ Register jyc_publish_file (base URL from [inspect] public_base_url)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
   ├─ Register jyc_send_to_thread (when cross-channel thread_managers available)
   ├─ Load external MCP tools (filtered by disabled_mcp_servers)

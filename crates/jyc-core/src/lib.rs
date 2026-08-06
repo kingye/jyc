@@ -22,3 +22,11 @@ pub mod thread_event_bus;
 pub mod thread_json;
 pub mod thread_manager;
 pub mod thread_path;
+
+/// Directory under `<thread>/.jyc/` holding agent-published files that are
+/// served over HTTP at `/public/<channel>/<thread>/<name>`.
+pub const PUBLIC_DIR_NAME: &str = "public";
+
+/// Per-thread token file under `<thread>/.jyc/` guarding `/public/...` URLs.
+/// Created on first `jyc_publish_file` call; deleted by `/reset` so links die.
+pub const PUBLIC_TOKEN_FILENAME: &str = "public-token";

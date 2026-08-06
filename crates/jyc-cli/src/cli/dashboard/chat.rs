@@ -1037,9 +1037,7 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
 /// when it overflows the pane). Wraps content in a bordered `Block`
 /// so it is visually separable from the borderless chat pane. Takes
 /// `&mut App` because the changed-files section owns
-/// `app.chat.info_scroll`, which is clamped to the current viewport
-/// height on every render (same pattern the activity pane uses for
-/// `activity_scroll`).
+/// `app.chat.info_scroll`, which is clamped on every render.
 pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == ChatFocus::InfoPane;
     // The left edge (against the chat pane) gets a vertical border, and the
@@ -1193,15 +1191,14 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
         vec![Line::from("Select a thread")]
     };
 
-    // Render the paragraph (consuming `lines`, which releases its borrow
-    // on `app`), then clamp `info_scroll` to a coarse `inner.height - 1`
-    // upper bound. The precise max skip is `lines.len() - inner.height`,
-    // but reading `lines.len()` here would conflict with the borrow
-    // `lines` holds on `app`; we accept a one-frame stale scroll — the
-    // TUI re-renders every frame, and `Paragraph::scroll` itself
-    // clamps the offset internally so an out-of-range value just shows
-    // an empty pane for one frame.
-    let scroll_offset = app.chat.info_scroll;
+    // ponytail: coarse `inner.height - 1` upper bound. The precise clamp is
+// `lines.len() - inner.height`, but reading `lines.len()` here conflicts
+// with the borrow `lines` holds on `app` (it would have to be cloned or
+// rebuilt). One frame of empty pane is the worst case when info_scroll
+// drifts above the precise max — Paragraph::scroll clamps internally and
+// the next render converges. Upgrade when line-building is refactored
+// into a helper that returns an owned `Vec<Line>`.
+let scroll_offset = app.chat.info_scroll;
     let paragraph = Paragraph::new(lines)
         .scroll((scroll_offset as u16, 0))
         .wrap(Wrap { trim: true });

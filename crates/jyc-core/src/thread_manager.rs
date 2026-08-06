@@ -2243,12 +2243,11 @@ pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
     }
 }
 
-/// Run `git diff --name-only <args>` in `cwd` and return the trimmed
+/// Run `git diff --name-only <revspec>` in `cwd` and return the trimmed
 /// stdout lines, or `None` on spawn / non-zero exit / non-UTF8.
-fn git_diff_name_only(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
+fn run_git_diff(cwd: &Path, revspec: &str) -> Option<Vec<String>> {
     let output = std::process::Command::new("git")
-        .args(args)
-        .arg("--name-only")
+        .args(["diff", "--name-only", revspec])
         .current_dir(cwd)
         .output()
         .ok()?;
@@ -2300,18 +2299,18 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFi
         return None;
     };
 
-    let branch = git_diff_name_only(&cwd, &["diff", "main...HEAD"]);
-    let dirty = git_diff_name_only(&cwd, &["diff", "HEAD"]);
+    let branch = run_git_diff(&cwd, "main...HEAD");
+    let dirty = run_git_diff(&cwd, "HEAD");
 
     // Skip rule: not a git repo at all is the only path to `None`. If
-    // either diff produces output (or an empty vec) we have something
+    // either diff produces output (or an empty Vec) we have something
     // to ship — a clean repo with no `main` ref falls through here as
     // `Some(vec![])` and the renderer shows "(none vs main)".
     if branch.is_none() && dirty.is_none() {
         return None;
     }
 
-    let mut seen = std::collections::BTreeSet::<String>::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     let mut out = Vec::new();
     // Pass 1 — committed-on-branch files, uncommitted=false.
     for path in branch.into_iter().flatten() {

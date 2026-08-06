@@ -121,7 +121,7 @@ pub struct ThreadSummary {
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]
     pub branch: Option<String>,
-    /// A file changed relative to `main`. Each path appears at most once,
+    /// Files changed relative to `main`. Each path appears at most once,
     /// even when it is both committed on the branch and dirty in the
     /// working tree — when both, `uncommitted` is `true` (the more-noisy
     /// state wins, matches the yellow-render rule in the chat info pane).

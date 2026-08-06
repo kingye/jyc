@@ -1120,33 +1120,35 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             }
             out.push(Line::from(thinking_line));
         }
-        // Separated section at the end: files changed on the current
-        // branch vs `main`, resolved server-side and shipped on
-        // `ThreadSummary.changed_files`. Visual separator is a blank
-        // `Line` followed by a bold count header, then one path per
-        // line (capped at 8). Whole block skipped when the thread is
-        // not a git repo, has no `main` ref, or `git diff` failed.
+        // Separated section at the end: files changed relative to `main`,
+        // resolved server-side and shipped on `ThreadSummary.changed_files`
+        // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
+        // cap) — the parent pane scrolls when the list overflows. Each
+        // path is plain when only committed on the branch, yellow when
+        // currently dirty in the working tree. The section is skipped
+        // entirely when the field is `None` (not a git repo, both
+        // `git diff` invocations failed). Empty `Some(vec![])` is shown
+        // as `Files: (none)` so the user knows the field resolved to
+        // "no changes".
         if let Some(files) = t.changed_files.as_deref() {
             out.push(Line::default());
             if files.is_empty() {
                 out.push(Line::from(vec![
                     Span::styled("Files: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled("(none vs main)", Style::default().fg(Color::DarkGray)),
+                    Span::styled("(none)", Style::default().fg(Color::DarkGray)),
                 ]));
             } else {
-                let shown = files.len().min(8);
                 out.push(Line::from(Span::styled(
-                    format!("Files ({} vs main):", files.len()),
+                    format!("Files ({}):", files.len()),
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
-                for path in &files[..shown] {
-                    out.push(Line::from(Span::raw(path.as_str())));
-                }
-                if files.len() > shown {
-                    out.push(Line::from(Span::styled(
-                        format!("  ... and {} more files", files.len() - shown),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                for entry in files {
+                    let style = if entry.uncommitted {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+                    out.push(Line::from(Span::styled(entry.path.as_str(), style)));
                 }
             }
         }

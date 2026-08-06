@@ -121,6 +121,16 @@ pub struct ThreadSummary {
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]
     pub branch: Option<String>,
+    /// Files changed on the current branch vs `main`, resolved server-side
+    /// by `git diff --name-only main...HEAD`. `None` when the thread's
+    /// working directory is not a git repo, when HEAD is detached, or
+    /// when the `git` invocation fails (no `main` ref, missing binary).
+    /// `Some(vec![])` when the branch is `main` itself or has no commits
+    /// ahead of `main`; `Some(paths)` lists the changed files otherwise.
+    /// `#[serde(default)]` so old payloads (pre-this-field) deserialize
+    /// as `None` and the section is simply omitted in the renderer.
+    #[serde(default)]
+    pub changed_files: Option<Vec<String>>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
@@ -225,6 +235,10 @@ pub struct ThreadInfo {
     /// `ThreadSummary::branch` for the full semantics.
     #[serde(default)]
     pub branch: Option<String>,
+    /// Files changed on the current branch vs `main`. See
+    /// `ThreadSummary::changed_files` for the full semantics.
+    #[serde(default)]
+    pub changed_files: Option<Vec<String>>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.

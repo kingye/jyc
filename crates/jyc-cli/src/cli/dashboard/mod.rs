@@ -1736,6 +1736,7 @@ mod tests {
                     model: None,
                     mode: None,
                     branch: None,
+                    changed_files: None,
                     context_input_tokens: None,
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,

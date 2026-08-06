@@ -412,6 +412,7 @@ mod tests {
                 thinking_text: None,
                 thread_path: None,
                 branch: None,
+                changed_files: None,
                 cost: None,
             }],
             stats: GlobalStats {
@@ -584,6 +585,7 @@ mod tests {
             skills: vec!["dev-workflow".to_string()],
             thread_path: None,
             branch: None,
+            changed_files: None,
             cost: None,
         };
         let json = serde_json::to_string(&summary).unwrap();

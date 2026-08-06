@@ -3624,7 +3624,17 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
                 .expect("git failed")
         };
         run(&["init", "-q", "-b", "main"]);
-        run(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
 
         // Thread "ahead": feature branch with one commit adding "x.rs".
         let ahead = workspace.join("ahead");
@@ -3637,11 +3647,30 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
                 .expect("git failed")
         };
         run_ahead(&["init", "-q", "-b", "main"]);
-        run_ahead(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        run_ahead(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
         run_ahead(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(ahead.join("x.rs"), "fn x() {}").unwrap();
         run_ahead(&["add", "x.rs"]);
-        run_ahead(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "x"]);
+        run_ahead(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "x",
+        ]);
 
         // Thread "no-git": no `.git` at all → `changed_files == None`.
         let no_git = workspace.join("no-git");
@@ -3793,10 +3822,28 @@ mod changed_files_resolution_tests {
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.path().join("alpha.rs"), "fn a() {}").unwrap();
         run(&["add", "alpha.rs"]);
-        run(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "alpha"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "alpha",
+        ]);
         std::fs::write(dir.path().join("beta.rs"), "fn b() {}").unwrap();
         run(&["add", "beta.rs"]);
-        run(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "beta"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "beta",
+        ]);
 
         let mut files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
         files.sort();
@@ -3818,11 +3865,30 @@ mod changed_files_resolution_tests {
                 .expect("git failed")
         };
         run(&["init", "-q", "-b", "main"]);
-        run(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
         run(&["checkout", "-q", "-b", "feature"]);
         std::fs::write(repo.join("gamma.rs"), "fn g() {}").unwrap();
         run(&["add", "gamma.rs"]);
-        run(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "gamma"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "gamma",
+        ]);
 
         let mut files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
         files.sort();

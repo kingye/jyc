@@ -33,7 +33,7 @@ use crate::template_utils::copy_template_files;
 use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
-use jyc_types::{ThreadCost, ThreadInfo, ThreadStatus};
+use jyc_types::{ChangedFileEntry, ThreadCost, ThreadInfo, ThreadStatus};
 
 /// Per-thread queue stats.
 #[derive(Debug, Clone, Default)]
@@ -2243,25 +2243,55 @@ pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
     }
 }
 
-/// List files changed on the current branch vs `main`.
+/// Run `git diff --name-only <args>` in `cwd` and return the trimmed
+/// stdout lines, or `None` on spawn / non-zero exit / non-UTF8.
+fn git_diff_name_only(cwd: &Path, args: &[&str]) -> Option<Vec<String>> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .arg("--name-only")
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(String::from)
+            .collect(),
+    )
+}
+
+/// List files changed relative to `main`, with per-file uncommitted flag.
 ///
-/// Runs `git diff --name-only main...HEAD` against the thread's working
-/// directory. Mirrors [`branch_for_thread_path`]: looks first at
-/// `<path>/.git/HEAD`, then falls back to `<path>/repo/.git/HEAD`. Returns:
+/// Runs two `git diff` invocations against the thread's working directory:
+/// 1. `git diff --name-only main...HEAD` — files committed on the branch
+///    vs `main`.
+/// 2. `git diff --name-only HEAD` — files modified in the working tree
+///    but not yet committed (staged + unstaged).
+///
+/// Mirrors [`branch_for_thread_path`]: looks first at `<path>/.git/HEAD`,
+/// then falls back to `<path>/repo/.git/HEAD`. Returns:
 ///
 /// - `None` when neither `.git/HEAD` exists (not a git repo).
-/// - `None` when `git` isn't on PATH, when there is no `main` ref, or
-///   when the subprocess exits non-zero for any reason — same skip
-///   rule as `branch`. Note: detached HEAD still resolves `main` via
-///   `refs/heads/main`, so it surfaces `Some(_)` (possibly empty).
-/// - `Some(vec![])` when the branch is `main` or has no commits ahead
-///   of `main`.
-/// - `Some(vec!["a.rs", ...])` for the files touched by commits on
-///   the branch.
+/// - `None` when BOTH `git` invocations fail (missing binary, no `main`
+///   ref, etc.) — same skip rule as `branch`. If one diff succeeds and
+///   the other fails, the successful one still contributes its files;
+///   e.g. a clean branch with no `main` ref returns `None`, but a
+///   branch with a clean `main...HEAD` diff and a dirty working tree
+///   returns the dirty files alone.
+/// - `Some(vec![])` when both diffs come back empty (branch is `main`
+///   with a clean tree, or detached HEAD on `main`).
+/// - `Some(vec![{path, uncommitted}, ...])` for the union of files
+///   touched on the branch OR dirty in the working tree. A path present
+///   in both lists is emitted once with `uncommitted: true` (the
+///   more-noisy state wins — matches the yellow-render rule in the
+///   chat info pane).
 ///
 /// Synchronous `std::process::Command` to match `branch_for_thread_path`'s
 /// style.
-pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<String>> {
+pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFileEntry>> {
     let cwd = if path.join(".git").join("HEAD").is_file() {
         path.to_path_buf()
     } else if path.join("repo").join(".git").join("HEAD").is_file() {
@@ -2270,22 +2300,41 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<String>> 
         return None;
     };
 
-    let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", "main...HEAD"])
-        .current_dir(&cwd)
-        .output()
-        .ok()?;
+    let branch = git_diff_name_only(&cwd, &["diff", "main...HEAD"]);
+    let dirty = git_diff_name_only(&cwd, &["diff", "HEAD"]);
 
-    if !output.status.success() {
+    // Skip rule: not a git repo at all is the only path to `None`. If
+    // either diff produces output (or an empty vec) we have something
+    // to ship — a clean repo with no `main` ref falls through here as
+    // `Some(vec![])` and the renderer shows "(none vs main)".
+    if branch.is_none() && dirty.is_none() {
         return None;
     }
 
-    let files: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(String::from)
-        .collect();
-
-    Some(files)
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    let mut out = Vec::new();
+    // Pass 1 — committed-on-branch files, uncommitted=false.
+    for path in branch.into_iter().flatten() {
+        if seen.insert(path.clone()) {
+            out.push(ChangedFileEntry {
+                path,
+                uncommitted: false,
+            });
+        }
+    }
+    // Pass 2 — dirty-in-tree files. Promote any existing committed
+    // entry to uncommitted=true (more-noisy wins).
+    for path in dirty.into_iter().flatten() {
+        if seen.insert(path.clone()) {
+            out.push(ChangedFileEntry {
+                path,
+                uncommitted: true,
+            });
+        } else if let Some(e) = out.iter_mut().find(|e| e.path == path) {
+            e.uncommitted = true;
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -3689,7 +3738,7 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
         );
         assert_eq!(
             by_name("ahead").changed_files.as_deref(),
-            Some(&["x.rs".to_string()][..]),
+            Some(&[ChangedFileEntry { path: "x.rs".into(), uncommitted: false }][..]),
             "feature branch with one new file must list it"
         );
         assert!(
@@ -3759,6 +3808,7 @@ mod branch_resolution_tests {
 #[cfg(test)]
 mod changed_files_resolution_tests {
     use super::changed_files_for_thread_path;
+    use jyc_types::ChangedFileEntry;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -3842,8 +3892,14 @@ mod changed_files_resolution_tests {
         ]);
 
         let mut files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
-        files.sort();
-        assert_eq!(files, vec!["alpha.rs".to_string(), "beta.rs".to_string()]);
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            files,
+            vec![
+                ChangedFileEntry { path: "alpha.rs".into(), uncommitted: false },
+                ChangedFileEntry { path: "beta.rs".into(),  uncommitted: false },
+            ]
+        );
     }
 
     #[test]
@@ -3887,15 +3943,22 @@ mod changed_files_resolution_tests {
         ]);
 
         let mut files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
-        files.sort();
-        assert_eq!(files, vec!["gamma.rs".to_string()]);
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry { path: "gamma.rs".into(), uncommitted: false }]
+        );
     }
 
     #[test]
-    fn returns_none_when_main_ref_is_missing() {
-        // Repo exists but with only a non-main branch, so `main...HEAD`
-        // fails. Use a fresh `git init` with no commits on `main`.
-        let dir = tempdir().unwrap();
+    fn returns_some_empty_when_only_dirty_diff_runs() {
+        // Repo exists with only a non-main branch — `main...HEAD`
+        // fails, but `git diff --name-only HEAD` still runs (HEAD
+        // exists from `git_init_with_main`'s empty commit) and is
+        // empty because the tree is clean. The function must NOT
+        // collapse this to `None` — that would hide the entire
+        // section just because `main` is missing.
+        let dir = git_init_with_main();
         let run = |args: &[&str]| {
             Command::new("git")
                 .args(args)
@@ -3903,9 +3966,64 @@ mod changed_files_resolution_tests {
                 .output()
                 .expect("git failed")
         };
-        run(&["init", "-q"]);
-        run(&["checkout", "-q", "-b", "solo"]);
-        // `main` does not exist; `git diff main...HEAD` exits non-zero.
-        assert!(changed_files_for_thread_path(dir.path()).is_none());
+        // Drop `main` so the branch-diff fails, but keep HEAD valid.
+        run(&["branch", "-D", "main"]);
+        assert_eq!(
+            changed_files_for_thread_path(dir.path()),
+            Some(vec![]),
+            "missing main must not collapse to None when HEAD diff succeeds"
+        );
+    }
+
+    #[test]
+    fn lists_uncommitted_only_files() {
+        // Feature branch, tracked-but-not-committed file → `git diff HEAD`
+        // surfaces it as uncommitted, `main...HEAD` is empty.
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.path().join("draft.rs"), "fn d() {}").unwrap();
+        // Stage but don't commit — leaves it tracked + dirty.
+        run(&["add", "draft.rs"]);
+
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry { path: "draft.rs".into(), uncommitted: true }]
+        );
+    }
+
+    #[test]
+    fn promotes_committed_to_uncommitted_when_dirty() {
+        // Path committed earlier on the branch AND edited again since.
+        // The single entry must have `uncommitted: true` (more-noisy wins).
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.path().join("shared.rs"), "fn s() {}\n").unwrap();
+        run(&["add", "shared.rs"]);
+        run(&[
+            "-c", "user.email=t@e", "-c", "user.name=t",
+            "commit", "-q", "-m", "shared",
+        ]);
+        // Now edit the same path again — leaves it dirty in the tree.
+        std::fs::write(dir.path().join("shared.rs"), "fn s() { /*x*/ }\n").unwrap();
+
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        assert_eq!(files.len(), 1, "must dedupe to one entry");
+        assert_eq!(files[0].path, "shared.rs");
+        assert!(files[0].uncommitted, "more-noisy state must win");
     }
 }

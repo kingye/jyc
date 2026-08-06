@@ -32,8 +32,8 @@ use crate::pending_delivery::watch_pending_deliveries;
 use crate::template_utils::copy_template_files;
 use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
-use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
 use jyc_types::{ChangedFileEntry, ThreadCost, ThreadInfo, ThreadStatus};
+use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
 
 /// Per-thread queue stats.
 #[derive(Debug, Clone, Default)]
@@ -3738,7 +3738,12 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
         );
         assert_eq!(
             by_name("ahead").changed_files.as_deref(),
-            Some(&[ChangedFileEntry { path: "x.rs".into(), uncommitted: false }][..]),
+            Some(
+                &[ChangedFileEntry {
+                    path: "x.rs".into(),
+                    uncommitted: false
+                }][..]
+            ),
             "feature branch with one new file must list it"
         );
         assert!(
@@ -3896,8 +3901,14 @@ mod changed_files_resolution_tests {
         assert_eq!(
             files,
             vec![
-                ChangedFileEntry { path: "alpha.rs".into(), uncommitted: false },
-                ChangedFileEntry { path: "beta.rs".into(),  uncommitted: false },
+                ChangedFileEntry {
+                    path: "alpha.rs".into(),
+                    uncommitted: false
+                },
+                ChangedFileEntry {
+                    path: "beta.rs".into(),
+                    uncommitted: false
+                },
             ]
         );
     }
@@ -3946,7 +3957,10 @@ mod changed_files_resolution_tests {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         assert_eq!(
             files,
-            vec![ChangedFileEntry { path: "gamma.rs".into(), uncommitted: false }]
+            vec![ChangedFileEntry {
+                path: "gamma.rs".into(),
+                uncommitted: false
+            }]
         );
     }
 
@@ -3995,7 +4009,10 @@ mod changed_files_resolution_tests {
         let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
-            vec![ChangedFileEntry { path: "draft.rs".into(), uncommitted: true }]
+            vec![ChangedFileEntry {
+                path: "draft.rs".into(),
+                uncommitted: true
+            }]
         );
     }
 
@@ -4015,8 +4032,14 @@ mod changed_files_resolution_tests {
         std::fs::write(dir.path().join("shared.rs"), "fn s() {}\n").unwrap();
         run(&["add", "shared.rs"]);
         run(&[
-            "-c", "user.email=t@e", "-c", "user.name=t",
-            "commit", "-q", "-m", "shared",
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "shared",
         ]);
         // Now edit the same path again — leaves it dirty in the tree.
         std::fs::write(dir.path().join("shared.rs"), "fn s() { /*x*/ }\n").unwrap();

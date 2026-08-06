@@ -647,6 +647,18 @@ pub struct InspectConfig {
     pub public_base_url: Option<String>,
 }
 
+impl InspectConfig {
+    /// Base URL for published-file links: the configured `public_base_url`
+    /// (trailing slashes trimmed) or `http://<bind>` when unset.
+    pub fn effective_public_base_url(&self) -> String {
+        self.public_base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", self.bind))
+            .trim_end_matches('/')
+            .to_string()
+    }
+}
+
 impl Default for InspectConfig {
     fn default() -> Self {
         Self {

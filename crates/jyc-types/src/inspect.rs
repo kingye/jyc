@@ -141,17 +141,37 @@ pub struct ThreadSummary {
     pub cost: Option<ThreadCost>,
 }
 
+/// Per-file change kind relative to `main`, derived from the status
+/// letter in `git diff --name-status main...HEAD`. `Modified` is the
+/// default so old payloads (pre-this-field) and absent-on-wire copies
+/// fall through as the most common case. The chat info pane renders a
+/// one-column prefix glyph per row: `+` for Added, `-` for Deleted,
+/// two spaces for Modified. Untracked, renamed, copied, and
+/// type-change statuses from `git diff --name-status` are normalized
+/// to `Modified` server-side (YAGNI on full status coverage).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    #[default]
+    Modified,
+    Added,
+    Deleted,
+}
+
 /// A file in `ThreadSummary.changed_files` / `ThreadInfo.changed_files`.
 ///
 /// `uncommitted == true` iff the working tree has changes vs HEAD
 /// (`git diff --name-only HEAD`); the chat info pane renders such
-/// paths in yellow. `uncommitted == false` means the file is only
-/// present in the branch's diff vs `main`, with a clean working tree.
+/// paths in yellow. `change` carries the branch-side status
+/// (Added / Modified / Deleted) and is `#[serde(default)]` so old
+/// payloads without the field deserialize as `Modified`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChangedFileEntry {
     pub path: String,
     #[serde(default)]
     pub uncommitted: bool,
+    #[serde(default)]
+    pub change: ChangeKind,
 }
 
 /// Accumulated cost for a thread, in `currency`.

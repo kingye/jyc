@@ -121,23 +121,37 @@ pub struct ThreadSummary {
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]
     pub branch: Option<String>,
-    /// Files changed on the current branch vs `main`, resolved server-side
-    /// by `git diff --name-only main...HEAD`. `None` when the thread's
-    /// working directory is not a git repo, or when the `git`
-    /// invocation fails (no `main` ref, missing binary). Detached
-    /// HEAD still resolves `main` via `refs/heads/main`, so it
-    /// surfaces `Some(_)` (possibly empty). `Some(vec![])` when the
-    /// branch is `main` itself or has no commits ahead of `main`;
-    /// `Some(paths)` lists the changed files otherwise.
+    /// Files changed relative to `main`. Each path appears at most once,
+    /// even when it is both committed on the branch and dirty in the
+    /// working tree — when both, `uncommitted` is `true` (the more-noisy
+    /// state wins, matches the yellow-render rule in the chat info pane).
+    /// Resolved server-side via `git diff --name-only main...HEAD` and
+    /// `git diff --name-only HEAD`, then unioned. `None` when the
+    /// thread's working directory is not a git repo, or when the `git`
+    /// invocations fail (no `main` ref, missing binary). `Some(vec![])`
+    /// when both lists come back empty.
     /// `#[serde(default)]` so old payloads (pre-this-field) deserialize
     /// as `None` and the section is simply omitted in the renderer.
     #[serde(default)]
-    pub changed_files: Option<Vec<String>>,
+    pub changed_files: Option<Vec<ChangedFileEntry>>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
     #[serde(default)]
     pub cost: Option<ThreadCost>,
+}
+
+/// A file in `ThreadSummary.changed_files` / `ThreadInfo.changed_files`.
+///
+/// `uncommitted == true` iff the working tree has changes vs HEAD
+/// (`git diff --name-only HEAD`); the chat info pane renders such
+/// paths in yellow. `uncommitted == false` means the file is only
+/// present in the branch's diff vs `main`, with a clean working tree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangedFileEntry {
+    pub path: String,
+    #[serde(default)]
+    pub uncommitted: bool,
 }
 
 /// Accumulated cost for a thread, in `currency`.
@@ -237,10 +251,11 @@ pub struct ThreadInfo {
     /// `ThreadSummary::branch` for the full semantics.
     #[serde(default)]
     pub branch: Option<String>,
-    /// Files changed on the current branch vs `main`. See
-    /// `ThreadSummary::changed_files` for the full semantics.
+    /// Files changed relative to `main`. See
+    /// `ThreadSummary::changed_files` for the full semantics; this field
+    /// uses the same `Vec<ChangedFileEntry>` shape (path + uncommitted flag).
     #[serde(default)]
-    pub changed_files: Option<Vec<String>>,
+    pub changed_files: Option<Vec<ChangedFileEntry>>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.

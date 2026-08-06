@@ -30,6 +30,8 @@ pub(super) enum ChatFocus {
     ChatPane,
     /// The scrollable message area above the input field.
     MessageArea,
+    /// The right-hand thread info pane (thread metadata + changed files).
+    InfoPane,
     /// The activity log pane.
     ActivityPane,
     /// The left-side thread explorer pane.
@@ -60,6 +62,7 @@ pub(super) struct ChatState {
     pub(super) handler: EditorEventHandler,
     pub(super) focus: ChatFocus,
     pub(super) scroll: usize,
+    pub(super) info_scroll: usize,
     pub(super) activity_scroll: usize,
     /// Last rendered rectangle of the scrollable message area (top chunk
     /// inside the chat pane). Stored during render and used by mouse-wheel
@@ -638,6 +641,24 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 return;
             }
 
+            if app.chat.focus == ChatFocus::InfoPane {
+                // Vertical scroll only — file paths are short enough
+                // that horizontal overflow isn't a concern. No Esc-back:
+                // leaving the info pane is via Tab (focus cycle) or
+                // the leader-key popup, same as ActivityPane.
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
+                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
+                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
+                    KeyCode::Char('g') => {}
+                    KeyCode::PageUp => app.chat.page_up(),
+                    KeyCode::PageDown => app.chat.page_down(),
+                    _ => {}
+                }
+                return;
+            }
+
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     // No Esc-back here: returning to the dashboard is done
@@ -1011,16 +1032,29 @@ fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
 
 /// Render the right-hand thread info pane (always 20% wide when shown).
 ///
-/// Displays thread name, channel, pattern, model, mode, tokens, and a
-/// processing indicator. Wraps content in a bordered `Block` so it is
-/// visually separable from the borderless chat pane.
-pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) {
+/// Displays thread name, channel, pattern, model, mode, tokens, a
+/// processing indicator, and the changed-files list (which can scroll
+/// when it overflows the pane). Wraps content in a bordered `Block`
+/// so it is visually separable from the borderless chat pane. Takes
+/// `&mut App` because the changed-files section owns
+/// `app.chat.info_scroll`, which is clamped on every render.
+pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.chat.focus == ChatFocus::InfoPane;
     // The left edge (against the chat pane) gets a vertical border, and the
     // top edge carries the title inline with the top border so the title
     // row acts as a separator between the heading and the content below.
-    let block = Block::default()
+    // When focused, paint the border yellow so the user knows they own
+    // the scroll keys (mirrors render_activity_log_inner).
+    let mut block = Block::default()
         .title("── Thread Info ")
         .borders(Borders::TOP | Borders::LEFT);
+    if focused {
+        block = block.border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1120,33 +1154,35 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
             }
             out.push(Line::from(thinking_line));
         }
-        // Separated section at the end: files changed on the current
-        // branch vs `main`, resolved server-side and shipped on
-        // `ThreadSummary.changed_files`. Visual separator is a blank
-        // `Line` followed by a bold count header, then one path per
-        // line (capped at 8). Whole block skipped when the thread is
-        // not a git repo, has no `main` ref, or `git diff` failed.
+        // Separated section at the end: files changed relative to `main`,
+        // resolved server-side and shipped on `ThreadSummary.changed_files`
+        // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
+        // cap) — the parent pane scrolls when the list overflows. Each
+        // path is plain when only committed on the branch, yellow when
+        // currently dirty in the working tree. The section is skipped
+        // entirely when the field is `None` (not a git repo, both
+        // `git diff` invocations failed). Empty `Some(vec![])` is shown
+        // as `Files: (none)` so the user knows the field resolved to
+        // "no changes".
         if let Some(files) = t.changed_files.as_deref() {
             out.push(Line::default());
             if files.is_empty() {
                 out.push(Line::from(vec![
                     Span::styled("Files: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled("(none vs main)", Style::default().fg(Color::DarkGray)),
+                    Span::styled("(none)", Style::default().fg(Color::DarkGray)),
                 ]));
             } else {
-                let shown = files.len().min(8);
                 out.push(Line::from(Span::styled(
-                    format!("Files ({} vs main):", files.len()),
+                    format!("Files ({}):", files.len()),
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
-                for path in &files[..shown] {
-                    out.push(Line::from(Span::raw(path.as_str())));
-                }
-                if files.len() > shown {
-                    out.push(Line::from(Span::styled(
-                        format!("  ... and {} more files", files.len() - shown),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                for entry in files {
+                    let style = if entry.uncommitted {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+                    out.push(Line::from(Span::styled(entry.path.as_str(), style)));
                 }
             }
         }
@@ -1155,8 +1191,24 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &App) 
         vec![Line::from("Select a thread")]
     };
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    // Slice-skip in Rust (matching the activity pane's pattern) so we
+    // never feed `usize::MAX` into `Paragraph::scroll` — that overflows
+    // ratatui's `offset_y + height` math and panics the TUI.
+    // Offset-from-top: `info_scroll == 0` shows the first rows, the
+    // max shows the last. The precise upper bound
+    // (`lines.len() - inner_height`) is computed in the same scope that
+    // owns `lines`, so the clamp is exact.
+    let inner_height = inner.height as usize;
+    let max_skip = lines.len().saturating_sub(inner_height);
+    // `scroll` and `skip` are read while `lines` is still in scope
+    // (lines borrows app via the ThreadSummary snapshot). Write the
+    // clamped value back after rendering, when the borrow has ended.
+    let scroll = app.chat.info_scroll;
+    let skip = scroll.min(max_skip);
+    let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
+    app.chat.info_scroll = skip;
 }
 
 pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
@@ -1764,9 +1816,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .base(Style::default())
         .hide_status_line();
     let theme = match app.chat.focus {
-        ChatFocus::MessageArea | ChatFocus::ActivityPane | ChatFocus::ExplorerPane => {
-            theme.hide_cursor()
-        }
+        ChatFocus::MessageArea
+        | ChatFocus::ActivityPane
+        | ChatFocus::ExplorerPane
+        | ChatFocus::InfoPane => theme.hide_cursor(),
         ChatFocus::ChatPane => match app.chat.editor.mode {
             EditorMode::Insert => theme.cursor_style(
                 Style::default()
@@ -2015,6 +2068,7 @@ impl ChatState {
             handler: EditorEventHandler::default(),
             focus: ChatFocus::ChatPane,
             scroll: 0,
+            info_scroll: 0,
             activity_scroll: 0,
             last_message_area: None,
             pending_g: false,
@@ -2068,6 +2122,7 @@ impl ChatState {
         self.focus = ChatFocus::ChatPane;
         self.scroll = 0;
         self.activity_scroll = 0;
+        self.info_scroll = 0;
         self.last_message_area = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2130,6 +2185,7 @@ impl ChatState {
         self.focus = ChatFocus::ChatPane;
         self.scroll = 0;
         self.activity_scroll = 0;
+        self.info_scroll = 0;
         self.last_message_area = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2199,13 +2255,26 @@ impl ChatState {
         self.last_hydrated_key = None;
     }
 
-    /// Cycle focus: Input → MessageArea → ActivityPane → Input.
-    /// The activity pane is skipped when it is hidden so the cycle never
-    /// lands on an invisible pane.
+    /// Cycle focus: Input → MessageArea → InfoPane → ActivityPane →
+    /// ExplorerPane → Input. Each pane is skipped when it is hidden so
+    /// the cycle never lands on an invisible pane. The info pane's
+    /// "hidden" state is `!self.info_visible`; the activity pane's is
+    /// `self.activity_split == 0`.
     pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             ChatFocus::ChatPane => ChatFocus::MessageArea,
             ChatFocus::MessageArea => {
+                if self.info_visible {
+                    ChatFocus::InfoPane
+                } else if self.activity_split != 0 {
+                    ChatFocus::ActivityPane
+                } else if self.explorer_visible {
+                    ChatFocus::ExplorerPane
+                } else {
+                    ChatFocus::ChatPane
+                }
+            }
+            ChatFocus::InfoPane => {
                 if self.activity_split != 0 {
                     ChatFocus::ActivityPane
                 } else if self.explorer_visible {
@@ -2227,14 +2296,16 @@ impl ChatState {
 
     /// Toggle the activity pane on/off. Showing it restores the bottom 20%
     /// size (`activity_split = 1`); hiding it zeroes the state and moves
-    /// focus back to the input field when the pane was focused. Triggered
-    /// from the leader-key popup (`Ctrl+P` then `a`).
+    /// focus back to the input field when the pane was focused, or when
+    /// the info pane was focused (since the info pane sits "behind" the
+    /// activity pane in the focus cycle, hiding the activity pane would
+    /// otherwise leave focus on a pane whose neighbor just disappeared).
     pub(super) fn toggle_activity(&mut self) {
         if self.activity_split == 0 {
             self.activity_split = 1;
         } else {
             self.activity_split = 0;
-            if self.focus == ChatFocus::ActivityPane {
+            if self.focus == ChatFocus::ActivityPane || self.focus == ChatFocus::InfoPane {
                 self.focus = ChatFocus::ChatPane;
             }
         }
@@ -2251,7 +2322,10 @@ impl ChatState {
         self.info_visible = false;
         self.activity_split = 0;
         self.explorer_visible = false;
-        if self.focus == ChatFocus::ActivityPane || self.focus == ChatFocus::ExplorerPane {
+        if self.focus == ChatFocus::ActivityPane
+            || self.focus == ChatFocus::InfoPane
+            || self.focus == ChatFocus::ExplorerPane
+        {
             self.focus = ChatFocus::ChatPane;
         }
         // If anything was visible, we're now in zen mode (exit).
@@ -2281,6 +2355,10 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
             }
+            // Info pane uses offset-from-top semantics (vs activity's
+            // offset-from-bottom). `scroll_up` → earlier rows → smaller
+            // offset.
+            ChatFocus::InfoPane => self.info_scroll = self.info_scroll.saturating_sub(1),
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2304,6 +2382,8 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(1)
             }
+            // Info pane: scroll down → later rows → larger offset.
+            ChatFocus::InfoPane => self.info_scroll = self.info_scroll.saturating_add(1),
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2316,6 +2396,8 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = usize::MAX,
             ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
+            // Info pane: offset-from-top, so "top" is offset = 0.
+            ChatFocus::InfoPane => self.info_scroll = 0,
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2325,6 +2407,8 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = 0,
             ChatFocus::ActivityPane => self.activity_scroll = 0,
+            // Info pane: clamped to max in render.
+            ChatFocus::InfoPane => self.info_scroll = usize::MAX,
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2345,7 +2429,7 @@ impl ChatState {
                     .clamp(2, 11);
                 base.saturating_sub(input_lines).max(1)
             }
-            ChatFocus::ActivityPane | ChatFocus::ExplorerPane => base.max(1),
+            ChatFocus::ActivityPane | ChatFocus::ExplorerPane | ChatFocus::InfoPane => base.max(1),
         }
     }
 
@@ -2358,6 +2442,8 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
             }
+            // Info pane: offset-from-top, so "page up" → smaller offset.
+            ChatFocus::InfoPane => self.info_scroll = self.info_scroll.saturating_sub(page),
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2371,6 +2457,8 @@ impl ChatState {
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)
             }
+            // Info pane: offset-from-top, so "page down" → larger offset.
+            ChatFocus::InfoPane => self.info_scroll = self.info_scroll.saturating_add(page),
             ChatFocus::ExplorerPane => {}
         }
     }
@@ -2878,6 +2966,93 @@ mod tests {
         app.chat.info_visible = true;
         app.chat.focus = ChatFocus::ActivityPane;
         app.chat.toggle_zen_mode();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn tab_cycles_through_info_pane_when_visible() {
+        // info_visible defaults to false; flip it on so the cycle stops.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.info_visible = true;
+        // activity hidden, explorer hidden → cycle is Chat → MessageArea
+        // → InfoPane → Chat (per the skip rules).
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::InfoPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn tab_skips_info_pane_when_hidden() {
+        // info_visible defaults to false; cycle must skip InfoPane.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(
+            app.chat.focus,
+            ChatFocus::ChatPane,
+            "info pane must be skipped when info_visible=false"
+        );
+    }
+
+    #[test]
+    fn info_pane_scroll_uses_offset_from_top() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.focus = ChatFocus::InfoPane;
+        assert_eq!(app.chat.info_scroll, 0);
+        // scroll_down → later rows → larger offset.
+        app.chat.scroll_down();
+        assert_eq!(app.chat.info_scroll, 1);
+        // scroll_up → earlier rows → smaller offset (toward 0).
+        app.chat.scroll_up();
+        assert_eq!(app.chat.info_scroll, 0);
+        // scroll_up at 0 stays at 0 (saturating).
+        app.chat.scroll_up();
+        assert_eq!(app.chat.info_scroll, 0);
+        // scroll_to_top pins to 0.
+        app.chat.info_scroll = 5;
+        app.chat.scroll_to_top();
+        assert_eq!(app.chat.info_scroll, 0);
+        // scroll_to_bottom overshoots; render clamps.
+        app.chat.scroll_to_bottom();
+        assert_eq!(app.chat.info_scroll, usize::MAX);
+    }
+
+    #[test]
+    fn hiding_info_pane_via_zen_falls_back_to_chat() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.info_visible = true;
+        app.chat.focus = ChatFocus::InfoPane;
+        app.chat.toggle_zen_mode();
+        assert_eq!(
+            app.chat.focus,
+            ChatFocus::ChatPane,
+            "info-focused pane must not be left dangling when zen hides it"
+        );
+    }
+
+    #[test]
+    fn hiding_activity_refocuses_input_from_info_pane() {
+        // Mirrors `hiding_activity_refocuses_input` for the InfoPane
+        // focus — hiding the activity pane while InfoPane is focused
+        // must also fall back to the chat input (because InfoPane
+        // sits "behind" ActivityPane in the cycle).
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.activity_split = 1;
+        app.chat.info_visible = true;
+        app.chat.focus = ChatFocus::InfoPane;
+        app.chat.toggle_activity();
+        assert_eq!(app.chat.activity_split, 0);
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
     }
 
@@ -4127,7 +4302,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_thread_info_pane(frame, frame.area(), &app))
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
@@ -4137,6 +4312,185 @@ mod tests {
         assert!(
             title_row.contains("── Thread Info"),
             "thread info title row should contain `── Thread Info`, got: {title_row:?}"
+        );
+    }
+
+    /// Regression: the Files section must color `uncommitted: true`
+    /// entries yellow and leave `uncommitted: false` entries plain.
+    /// Driven by ratatui's `TestBackend` so we read styles off the
+    /// rendered buffer rather than asserting on internal state.
+    #[test]
+    fn files_section_colors_uncommitted_paths_yellow() {
+        use jyc_types::ChangedFileEntry;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.info_visible = true;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "jyc".to_string(),
+                channel: "local_dev".to_string(),
+                pattern: Some("jyc".to_string()),
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                branch: None,
+                changed_files: Some(vec![
+                    ChangedFileEntry {
+                        path: "committed.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "dirty.rs".into(),
+                        uncommitted: true,
+                    },
+                ]),
+                context_input_tokens: None,
+                total_input_tokens: None,
+                total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
+                max_tokens: None,
+                output_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+                cost: None,
+            }],
+            ..Default::default()
+        });
+        app.table_state.select(Some(0));
+
+        // Tall enough pane that nothing scrolls — both rows must appear.
+        let width = 30;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+
+        // Walk the buffer, find the rows containing each file name,
+        // and check the foreground color of the first matching cell.
+        let find_row_color = |needle: &str| -> Option<Color> {
+            for y in 0..buffer.area.height {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect();
+                if row.contains(needle) {
+                    // Scan the cells in the row until we hit the needle
+                    // and return the foreground of that cell.
+                    let needle_chars: Vec<char> = needle.chars().collect();
+                    for start in 0..(buffer.area.width as usize).saturating_sub(needle_chars.len())
+                    {
+                        let cells: Vec<char> = (start..start + needle_chars.len())
+                            .map(|x| buffer[(x as u16, y)].symbol().chars().next().unwrap_or(' '))
+                            .collect();
+                        if cells == needle_chars {
+                            return Some(buffer[(start as u16, y)].fg);
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        let committed_color = find_row_color("committed.rs")
+            .expect("committed.rs must appear in the rendered buffer");
+        let dirty_color =
+            find_row_color("dirty.rs").expect("dirty.rs must appear in the rendered buffer");
+
+        assert_eq!(
+            committed_color,
+            Color::Reset,
+            "committed-only paths must use the default foreground"
+        );
+        assert_eq!(
+            dirty_color,
+            Color::Yellow,
+            "uncommitted paths must be rendered in yellow"
+        );
+    }
+
+    /// Regression: when `info_scroll` is set past the pane height, the
+    /// post-render clamp must bring it back to `inner.height - 1`.
+    /// Otherwise the next render scrolls past the end and shows an
+    /// empty pane.
+    #[test]
+    fn info_scroll_is_clamped_after_render() {
+        use jyc_types::ChangedFileEntry;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app.chat.channel = Some("local_dev".to_string());
+        app.chat.info_visible = true;
+        app.state = Some(jyc_types::InspectOverview {
+            threads: vec![jyc_types::ThreadSummary {
+                name: "jyc".to_string(),
+                channel: "local_dev".to_string(),
+                pattern: Some("jyc".to_string()),
+                status: jyc_types::ThreadStatus::Idle,
+                model: None,
+                mode: None,
+                branch: None,
+                // Three files — fits easily in a tall pane.
+                changed_files: Some(vec![
+                    ChangedFileEntry {
+                        path: "a.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "b.rs".into(),
+                        uncommitted: false,
+                    },
+                    ChangedFileEntry {
+                        path: "c.rs".into(),
+                        uncommitted: false,
+                    },
+                ]),
+                context_input_tokens: None,
+                total_input_tokens: None,
+                total_cache_hit_tokens: None,
+                total_cache_creation_tokens: None,
+                max_tokens: None,
+                output_tokens: None,
+                last_active_at: None,
+                skills: vec![],
+                thread_path: None,
+                cost: None,
+            }],
+            ..Default::default()
+        });
+        app.table_state.select(Some(0));
+        // Pretend we previously scrolled way past the end.
+        app.chat.info_scroll = usize::MAX;
+
+        let width = 20;
+        let height = 10;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+            .expect("draw");
+
+        // The pane is 10 rows tall, 1 row consumed by the border, so the
+        // coarse clamp upper bound is `10 - 1 = 9`.
+        assert!(
+            app.chat.info_scroll < height as usize,
+            "info_scroll must be clamped to inner.height - 1, got {}",
+            app.chat.info_scroll
         );
     }
 

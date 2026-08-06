@@ -13,6 +13,13 @@
 //! | POST   | `/api/threads`                                          | Register a thread. |
 //! | POST   | `/api/config/reload`                                    | Reload config. |
 //!
+//! Mounted WITHOUT the bearer middleware (access control is the per-thread
+//! `?token=` in the URL, created by the `jyc_publish_file` tool):
+//!
+//! | Method | Path                                                    | Description |
+//! |--------|---------------------------------------------------------|-------------|
+//! | GET    | `/public/{channel}/{thread}/{file...}?token=`           | Agent-published file. |
+//!
 //! Response shape: success returns `200` + JSON body. Errors use `ApiError`
 //! which carries an HTTP status and a `{"error": "..."}` JSON body.
 
@@ -87,6 +94,12 @@ impl ApiError {
             message: msg.into(),
         }
     }
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: msg.into(),
+        }
+    }
     pub fn unprocessable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
@@ -142,6 +155,102 @@ async fn resolve_thread_path(
             "thread '{thread}' not found in channel '{channel}'"
         ))
     })
+}
+
+/// Query params for `GET /public/...`.
+#[derive(Debug, Deserialize)]
+pub struct PublicQuery {
+    token: Option<String>,
+}
+
+/// `GET /public/:channel/:thread/*file_path` — serve an agent-published file.
+///
+/// Access control is the per-thread token in the URL (created by the
+/// `jyc_publish_file` tool, rotated by `/reset`), so this route is mounted
+/// WITHOUT the bearer middleware: links must work for end users who have no
+/// dashboard token.
+pub async fn get_public_file(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, thread, file_path)): Path<(String, String, String)>,
+    Query(q): Query<PublicQuery>,
+) -> Result<Response, ApiError> {
+    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
+    serve_public_file(&thread_path, q.token.as_deref(), &file_path).await
+}
+
+/// Token-check, then resolve and read a published file under
+/// `<thread>/.jyc/public/`, guarding against path traversal (including
+/// symlink escapes via canonicalization).
+async fn serve_public_file(
+    thread_path: &std::path::Path,
+    token: Option<&str>,
+    rel_path: &str,
+) -> Result<Response, ApiError> {
+    let jyc_dir = thread_path.join(".jyc");
+
+    let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::PUBLIC_TOKEN_FILENAME))
+        .await
+        .map_err(|_| ApiError::forbidden("public access not enabled for this thread"))?;
+    let expected = expected.trim();
+    if expected.is_empty() || token != Some(expected) {
+        return Err(ApiError::forbidden("missing or invalid token"));
+    }
+
+    let base = jyc_dir.join(jyc_core::PUBLIC_DIR_NAME);
+    let rel = std::path::Path::new(rel_path);
+    if rel
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(ApiError::bad_request("invalid file path"));
+    }
+    let not_found = || ApiError::not_found("file not found");
+    let canonical_base = base.canonicalize().map_err(|_| not_found())?;
+    let canonical = base.join(rel).canonicalize().map_err(|_| not_found())?;
+    if !canonical.starts_with(&canonical_base) || !canonical.is_file() {
+        return Err(not_found());
+    }
+
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to read file: {e}")))?;
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            public_content_type(&canonical),
+        )],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Content type from file extension for published files.
+///
+/// Duplicated from jyc-agent's `mcp_bridge::detect_content_type` (private
+/// there); jyc-inspect does not depend on jyc-agent.
+fn public_content_type(path: &std::path::Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        "txt" | "md" | "log" => "text/plain",
+        _ => "application/octet-stream",
+    }
 }
 
 pub async fn get_thread_activity(
@@ -264,4 +373,126 @@ pub async fn post_reload_config(
     Ok(Json(ReloadBody {
         message: "configuration reloaded".to_string(),
     }))
+}
+
+#[cfg(test)]
+mod public_file_tests {
+    use super::*;
+
+    /// Seed `<tmp>/.jyc/public/<file>` and `<tmp>/.jyc/public-token`.
+    fn seed(tmp: &tempfile::TempDir, file: &str, body: &[u8], token: Option<&str>) {
+        let jyc = tmp.path().join(".jyc");
+        let public = jyc.join(jyc_core::PUBLIC_DIR_NAME);
+        std::fs::create_dir_all(&public).unwrap();
+        std::fs::write(public.join(file), body).unwrap();
+        if let Some(t) = token {
+            std::fs::write(jyc.join(jyc_core::PUBLIC_TOKEN_FILENAME), t).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_file_with_valid_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "notes.txt", b"hello", Some("tok123"));
+
+        let res = serve_public_file(tmp.path(), Some("tok123"), "notes.txt")
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "text/plain"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn serves_nested_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".jyc/public/sub")).unwrap();
+        std::fs::write(tmp.path().join(".jyc/public/sub/a.json"), b"{}").unwrap();
+        std::fs::write(
+            tmp.path().join(".jyc").join(jyc_core::PUBLIC_TOKEN_FILENAME),
+            "t",
+        )
+        .unwrap();
+
+        let res = serve_public_file(tmp.path(), Some("t"), "sub/a.json")
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_or_wrong_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x", Some("right"));
+
+        let err = serve_public_file(tmp.path(), None, "f.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+
+        let err = serve_public_file(tmp.path(), Some("wrong"), "f.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_when_token_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x", None);
+
+        let err = serve_public_file(tmp.path(), Some("any"), "f.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x", Some("t"));
+
+        let err = serve_public_file(tmp.path(), Some("t"), "nope.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x", Some("t"));
+
+        let err = serve_public_file(tmp.path(), Some("t"), "../public-token")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rejects_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x", Some("t"));
+
+        // No directory listing: the base dir itself is not a file.
+        let err = serve_public_file(tmp.path(), Some("t"), "")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
 }

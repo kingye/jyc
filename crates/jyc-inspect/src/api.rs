@@ -18,7 +18,7 @@
 //!
 //! | Method | Path                                                    | Description |
 //! |--------|---------------------------------------------------------|-------------|
-//! | GET    | `/public/{channel}/{thread}/{file...}?token=`           | Agent-published file. |
+//! | GET    | `/exchange/{channel}/{thread}/{file...}?token=`           | Agent-published file. |
 //!
 //! Response shape: success returns `200` + JSON body. Errors use `ApiError`
 //! which carries an HTTP status and a `{"error": "..."}` JSON body.
@@ -157,13 +157,13 @@ async fn resolve_thread_path(
     })
 }
 
-/// Query params for `GET /public/...`.
+/// Query params for `GET /exchange/...`.
 #[derive(Debug, Deserialize)]
 pub struct PublicQuery {
     token: Option<String>,
 }
 
-/// `GET /public/:channel/:thread/*file_path` — serve an agent-published file.
+/// `GET /exchange/:channel/:thread/*file_path` — serve an agent-published file.
 ///
 /// Access control is the per-thread token in the URL (created by the
 /// `jyc_publish_file` tool, rotated by `/reset`), so this route is mounted

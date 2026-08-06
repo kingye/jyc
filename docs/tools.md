@@ -447,9 +447,9 @@ HTTP link served by the inspect server.
   stored in `<thread>/.jyc/public-token` (owner-only permissions); subsequent
   publishes reuse it
 - Returns a shareable URL:
-  `{base}/public/{channel}/{thread}/{name}?token={token}` where `base` comes
+  `{base}/exchange/{channel}/{thread}/{name}?token={token}` where `base` comes
   from `[inspect] public_base_url` (fallback: `http://<inspect.bind>`)
-- Files are served by the inspect server at `GET /public/...`; the bearer
+- Files are served by the inspect server at `GET /exchange/...`; the bearer
   middleware does not apply — the per-thread `?token=` is the access control
 - `/reset` deletes `.jyc/public/` and `.jyc/public-token`, killing all
   previously shared links (a fresh token is generated on the next publish)

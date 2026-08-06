@@ -107,7 +107,7 @@ server is running (see §1.2); the no-auth path is only reached when
 The token is compared in constant time. A `WWW-Authenticate: Bearer`
 challenge is not currently emitted.
 
-Exception: `/public/*` routes are NOT gated by the bearer middleware.
+Exception: `/exchange/*` routes are NOT gated by the bearer middleware.
 Access control there is a per-thread `?token=` query parameter generated
 by the `jyc_publish_file` tool (see §2.4), so share links work for end
 users who have no dashboard token.
@@ -123,7 +123,7 @@ users who have no dashboard token.
 | GET    | `/api/channels/{channel}/patterns`            | Pattern names configured for a channel.            |
 | POST   | `/api/threads`                                | Register a new ad-hoc thread.                      |
 | POST   | `/api/config/reload`                          | Reload the layered config (global + workdir).      |
-| GET    | `/public/{channel}/{thread}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
+| GET    | `/exchange/{channel}/{thread}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
 
 WebSocket routes are documented in §3.
 
@@ -287,7 +287,7 @@ re-creates channel state.
 | `422`  | `{"error":"validation failed: …"}`                            | Config validation failed. |
 | `500`  | `{"error":"config reloaded, but channel reload failed: …"}`  | Reload callback error.   |
 
-#### 2.4.8 `GET /public/{channel}/{thread}/{file...}?token=`
+#### 2.4.8 `GET /exchange/{channel}/{thread}/{file...}?token=`
 
 Serves a file previously published by the `jyc_publish_file` agent tool
 (stored under `<thread>/.jyc/public/`). NOT gated by the bearer
@@ -299,7 +299,7 @@ published files), invalidating previously shared links.
 **Request:**
 
 ```bash
-curl 'http://127.0.0.1:9876/public/email/weather/report.pdf?token=<64-hex>'
+curl 'http://127.0.0.1:9876/exchange/email/weather/report.pdf?token=<64-hex>'
 ```
 
 **Response (200):** raw file bytes with an extension-based `Content-Type`

@@ -641,7 +641,7 @@ pub struct InspectConfig {
     pub bind: String,
 
     /// Public base URL used by the `jyc_publish_file` tool to build
-    /// shareable links to `/public/<channel>/<thread>/<name>`.
+    /// shareable links to `/exchange/<channel>/<thread>/<name>`.
     /// Falls back to `http://<bind>` when unset.
     #[serde(default)]
     pub public_base_url: Option<String>,

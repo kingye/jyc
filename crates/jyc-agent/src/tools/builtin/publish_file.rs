@@ -2,7 +2,7 @@
 //!
 //! Copies (or moves) a file into `<thread>/.jyc/public/` and returns a
 //! shareable URL served by the inspect server at
-//! `/public/<channel>/<thread>/<name>?token=<per-thread-token>`.
+//! `/exchange/<channel>/<thread>/<name>?token=<per-thread-token>`.
 //! The token lives in `<thread>/.jyc/public-token`, is created on first
 //! publish, and is deleted by `/reset` (killing previously shared links).
 
@@ -15,7 +15,7 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 
 /// Tool for publishing files from the thread directory to a public URL.
 pub struct PublishFileTool {
-    /// Base URL prepended to `/public/...` links (from
+    /// Base URL prepended to `/exchange/...` links (from
     /// `[inspect] public_base_url`, falling back to `http://<bind>`).
     base_url: String,
 }
@@ -137,7 +137,7 @@ impl Tool for PublishFileTool {
 
         let token = load_or_create_token(&jyc_dir)?;
         let url = format!(
-            "{}/public/{}/{}/{}?token={}",
+            "{}/exchange/{}/{}/{}?token={}",
             self.base_url, channel, thread, name, token
         );
 
@@ -201,7 +201,7 @@ mod tests {
         let token = token.trim();
         assert!(!out.content.contains("error"), "{}", out.content);
         assert!(out.content.contains(&format!(
-            "https://jyc.example.com/public/email/weather/report.pdf?token={token}"
+            "https://jyc.example.com/exchange/email/weather/report.pdf?token={token}"
         )));
     }
 

@@ -9,9 +9,9 @@ All notable changes to JYC will be documented in this file.
 - **Per-thread public file publishing.** A new built-in agent tool
   `jyc_publish_file` copies (or moves, with `move: true`) a thread-local
   file into `<thread>/.jyc/public/` and returns a shareable URL served by
-  the inspect server at `GET /public/<channel>/<thread>/<name>?token=...`.
+  the inspect server at `GET /exchange/<channel>/<thread>/<name>?token=...`.
   Links are guarded by a per-thread 256-bit token
-  (`<thread>/.jyc/public-token`) created on first publish — the `/public/*`
+  (`<thread>/.jyc/public-token`) created on first publish — the `/exchange/*`
   route is deliberately not gated by the dashboard bearer middleware so
   links work for end users. `/reset` removes the published files and the
   token, invalidating previously shared links. The link base URL is

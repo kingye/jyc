@@ -1198,7 +1198,7 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 /// (`auth::require_bearer`). WebSocket upgrades flow through the same
 /// auth gate.
 ///
-/// Exception: `/public/*` is mounted WITHOUT bearer auth — access control
+/// Exception: `/exchange/*` is mounted WITHOUT bearer auth — access control
 /// there is the per-thread `?token=` created by the `jyc_publish_file`
 /// tool (rotated by `/reset`), so share links work for end users.
 pub fn build_router(context: Arc<InspectContext>) -> Router {
@@ -1228,7 +1228,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
 
     Router::new()
         .route(
-            "/public/:channel/:thread/*file_path",
+            "/exchange/:channel/:thread/*file_path",
             get(api::get_public_file),
         )
         .merge(authed)
@@ -1428,7 +1428,7 @@ mod public_route_auth_tests {
         })
     }
 
-    /// `/public/*` must NOT be gated by the bearer middleware — access
+    /// `/exchange/*` must NOT be gated by the bearer middleware — access
     /// control is the per-thread `?token=`. With no thread manager the
     /// handler 404s; the point is that it is not a 401.
     #[tokio::test]
@@ -1437,7 +1437,7 @@ mod public_route_auth_tests {
         let res = app
             .oneshot(
                 HttpRequest::builder()
-                    .uri("/public/ch/th/f.txt?token=x")
+                    .uri("/exchange/ch/th/f.txt?token=x")
                     .body(Body::empty())
                     .unwrap(),
             )

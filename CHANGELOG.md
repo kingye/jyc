@@ -23,14 +23,21 @@ All notable changes to JYC will be documented in this file.
   section lists every changed file one per line; when the list is
   taller than the pane, the pane scrolls (Tab cycles focus to it,
   then `j`/`k`/`↑`/`↓`/`PgUp`/`PgDn`/`g`/`G` move the viewport, the
-  same keys as the activity pane). Files currently dirty in the
-  working tree (modified or staged but not committed) are rendered
-  in **yellow**; files only present on the branch vs `main` are
-  plain. Backed by `ThreadSummary.changed_files` and
-  `ThreadInfo.changed_files` — now `Vec<{path, uncommitted: bool}>`
-  resolved server-side from two `git diff` invocations
-  (`main...HEAD` ∪ `HEAD`), with the union deduped and the
-  more-noisy `uncommitted: true` winning when a path appears in both.
+  same keys as the activity pane). Each row leads with a one-column
+  prefix glyph conveying the git change kind: `+` for `Added`,
+  `-` for `Deleted`, two spaces for `Modified` (kept so the path
+  column aligns across rows). Files currently dirty in the working
+  tree (modified or staged but not committed) are rendered in
+  **yellow** — orthogonal to the kind, so e.g. an added-then-edited
+  file shows as `+ path (yellow)`. Backed by
+  `ThreadSummary.changed_files` and `ThreadInfo.changed_files` — now
+  `Vec<{path, uncommitted: bool, change: ChangeKind}>` resolved
+  server-side from two `git diff` invocations (`--name-status
+  main...HEAD` ∪ `--name-only HEAD`), unioned and sorted
+  alphabetically by path. The branch-side status letter (`A` /`,
+  `D`, etc.) populates `change`; `uncommitted: true` wins when a
+  path appears in both lists. Renames / copies / type changes from
+  `git diff --name-status` are normalized to `Modified` server-side.
   Same skip rule as `branch`: non-git paths or both diffs failing
   yields `None` and the entire section is omitted. (#220)
 

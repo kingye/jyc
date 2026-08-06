@@ -32,7 +32,7 @@ use crate::pending_delivery::watch_pending_deliveries;
 use crate::template_utils::copy_template_files;
 use crate::thread_json::ThreadJson;
 use jyc_types::InboundAttachmentConfig;
-use jyc_types::{ChangedFileEntry, ThreadCost, ThreadInfo, ThreadStatus};
+use jyc_types::{ChangeKind, ChangedFileEntry, ThreadCost, ThreadInfo, ThreadStatus};
 use jyc_types::{InboundMessage, OutboundAdapter, PatternMatch, QueueItem};
 
 /// Per-thread queue stats.
@@ -2262,31 +2262,77 @@ fn run_git_diff(cwd: &Path, revspec: &str) -> Option<Vec<String>> {
     )
 }
 
-/// List files changed relative to `main`, with per-file uncommitted flag.
+/// Run `git diff --name-status <revspec>` and parse each line as
+/// `(status_letter, path)`. Returns `None` on spawn / non-zero exit /
+/// non-UTF8, mirroring [`run_git_diff`]. Renames (`R<score><TAB>old<TAB>new`),
+/// copies (`C<score><TAB>src<TAB>dst`), and type changes (`T<TAB>path`)
+/// are normalized to `ChangeKind::Modified` — the chat info pane only
+/// distinguishes the three primary statuses (Added / Modified / Deleted),
+/// and emitting a `Renamed` variant would need a separate renderer
+/// surface (YAGNI for now). For renames / copies, the LAST
+/// tab-separated field is the post-rename path; the old name is dropped.
+fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind, String)>> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-status", revspec])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        // `<status>\t<path>` for most kinds, `<status>\t<old>\t<new>` for renames/copies.
+        let mut fields = line.split('\t');
+        let Some(status) = fields.next() else {
+            continue;
+        };
+        let kind = match status.chars().next() {
+            Some('A') => ChangeKind::Added,
+            Some('D') => ChangeKind::Deleted,
+            _ => ChangeKind::Modified,
+        };
+        // `last()` is the new path for renames/copies, or just the path
+        // for the common case. Skip empty lines defensively.
+        let Some(path) = fields.next_back() else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        out.push((kind, path.to_string()));
+    }
+    Some(out)
+}
+
+/// List files changed relative to `main`, with per-file `uncommitted`
+/// flag and `change` kind.
 ///
 /// Runs two `git diff` invocations against the thread's working directory:
-/// 1. `git diff --name-only main...HEAD` — files committed on the branch
-///    vs `main`.
+/// 1. `git diff --name-status main...HEAD` — files committed on the
+///    branch vs `main`, with status letter parsed into
+///    [`ChangeKind`].
 /// 2. `git diff --name-only HEAD` — files modified in the working tree
-///    but not yet committed (staged + unstaged).
+///    but not yet committed (staged + unstaged); kind defaults to
+///    `Modified` since these are tracked files that exist in HEAD.
+///
+/// The two are unioned by path; any path in the dirty list gets
+/// `uncommitted: true`. A path appearing in both is emitted once with the
+/// branch-side kind and `uncommitted: true` (the more-noisy state wins
+/// for the flag; kind is branch-side because the dirty-in-tree state
+/// alone doesn't reveal whether the file was Added / Modified /
+/// Deleted on the branch).
 ///
 /// Mirrors [`branch_for_thread_path`]: looks first at `<path>/.git/HEAD`,
-/// then falls back to `<path>/repo/.git/HEAD`. Returns:
+/// then falls back at `<path>/repo/.git/HEAD`. Returns:
 ///
 /// - `None` when neither `.git/HEAD` exists (not a git repo).
-/// - `None` when BOTH `git` invocations fail (missing binary, no `main`
-///   ref, etc.) — same skip rule as `branch`. If one diff succeeds and
-///   the other fails, the successful one still contributes its files;
-///   e.g. a clean branch with no `main` ref returns `None`, but a
-///   branch with a clean `main...HEAD` diff and a dirty working tree
-///   returns the dirty files alone.
-/// - `Some(vec![])` when both diffs come back empty (branch is `main`
-///   with a clean tree, or detached HEAD on `main`).
-/// - `Some(vec![{path, uncommitted}, ...])` for the union of files
-///   touched on the branch OR dirty in the working tree. A path present
-///   in both lists is emitted once with `uncommitted: true` (the
-///   more-noisy state wins — matches the yellow-render rule in the
-///   chat info pane).
+/// - `None` when BOTH `git` invocations fail (missing binary, no
+///   `main` ref, etc.). If one succeeds, the successful one still
+///   contributes its files.
+/// - `Some(vec![])` when both diffs come back empty.
+/// - `Some(vec![{path, change, uncommitted}, ...])` for the union,
+///   sorted alphabetically by path.
 ///
 /// Synchronous `std::process::Command` to match `branch_for_thread_path`'s
 /// style.
@@ -2299,40 +2345,39 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFi
         return None;
     };
 
-    let branch = run_git_diff(&cwd, "main...HEAD");
+    let branch = run_git_diff_name_status(&cwd, "main...HEAD");
     let dirty = run_git_diff(&cwd, "HEAD");
 
     // Skip rule: not a git repo at all is the only path to `None`. If
     // either diff produces output (or an empty Vec) we have something
-    // to ship — a clean repo with no `main` ref falls through here as
-    // `Some(vec![])` and the renderer shows "(none vs main)".
+    // to ship.
     if branch.is_none() && dirty.is_none() {
         return None;
     }
 
-    let mut seen = std::collections::HashSet::<String>::new();
-    let mut out = Vec::new();
-    // Pass 1 — committed-on-branch files, uncommitted=false.
-    for path in branch.into_iter().flatten() {
-        if seen.insert(path.clone()) {
-            out.push(ChangedFileEntry {
-                path,
-                uncommitted: false,
-            });
+    let mut map: std::collections::HashMap<String, (ChangeKind, bool)> =
+        std::collections::HashMap::new();
+    if let Some(branch) = branch {
+        for (kind, path) in branch {
+            map.insert(path, (kind, false));
         }
     }
-    // Pass 2 — dirty-in-tree files. Promote any existing committed
-    // entry to uncommitted=true (more-noisy wins).
-    for path in dirty.into_iter().flatten() {
-        if seen.insert(path.clone()) {
-            out.push(ChangedFileEntry {
-                path,
-                uncommitted: true,
-            });
-        } else if let Some(e) = out.iter_mut().find(|e| e.path == path) {
-            e.uncommitted = true;
+    if let Some(dirty) = dirty {
+        for path in dirty {
+            map.entry(path)
+                .and_modify(|(_, uncommitted)| *uncommitted = true)
+                .or_insert((ChangeKind::Modified, true));
         }
     }
+    let mut out: Vec<ChangedFileEntry> = map
+        .into_iter()
+        .map(|(path, (change, uncommitted))| ChangedFileEntry {
+            path,
+            change,
+            uncommitted,
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     Some(out)
 }
 
@@ -3740,7 +3785,8 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
             Some(
                 &[ChangedFileEntry {
                     path: "x.rs".into(),
-                    uncommitted: false
+                    uncommitted: false,
+                    change: ChangeKind::Added,
                 }][..]
             ),
             "feature branch with one new file must list it"
@@ -3812,7 +3858,7 @@ mod branch_resolution_tests {
 #[cfg(test)]
 mod changed_files_resolution_tests {
     use super::changed_files_for_thread_path;
-    use jyc_types::ChangedFileEntry;
+    use jyc_types::{ChangeKind, ChangedFileEntry};
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -3895,18 +3941,19 @@ mod changed_files_resolution_tests {
             "beta",
         ]);
 
-        let mut files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
-        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![
                 ChangedFileEntry {
                     path: "alpha.rs".into(),
-                    uncommitted: false
+                    uncommitted: false,
+                    change: ChangeKind::Added,
                 },
                 ChangedFileEntry {
                     path: "beta.rs".into(),
-                    uncommitted: false
+                    uncommitted: false,
+                    change: ChangeKind::Added,
                 },
             ]
         );
@@ -3952,13 +3999,13 @@ mod changed_files_resolution_tests {
             "gamma",
         ]);
 
-        let mut files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
-        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
         assert_eq!(
             files,
             vec![ChangedFileEntry {
                 path: "gamma.rs".into(),
-                uncommitted: false
+                uncommitted: false,
+                change: ChangeKind::Added,
             }]
         );
     }
@@ -4010,7 +4057,8 @@ mod changed_files_resolution_tests {
             files,
             vec![ChangedFileEntry {
                 path: "draft.rs".into(),
-                uncommitted: true
+                uncommitted: true,
+                change: ChangeKind::Modified,
             }]
         );
     }
@@ -4047,5 +4095,150 @@ mod changed_files_resolution_tests {
         assert_eq!(files.len(), 1, "must dedupe to one entry");
         assert_eq!(files[0].path, "shared.rs");
         assert!(files[0].uncommitted, "more-noisy state must win");
+    }
+
+    #[test]
+    fn lists_deleted_files() {
+        // Path deleted on the branch (status `D` from `git diff
+        // --name-status main...HEAD`). The entry must surface with
+        // `change: ChangeKind::Deleted`.
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // Seed `main` with a tracked file so there's something to delete.
+        std::fs::write(dir.path().join("doomed.rs"), "fn d() {}\n").unwrap();
+        run(&["add", "doomed.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+        ]);
+        // Branch off, delete the file, commit.
+        run(&["checkout", "-q", "-b", "feature"]);
+        run(&["rm", "-q", "doomed.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "kill",
+        ]);
+
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "doomed.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Deleted,
+            }]
+        );
+    }
+
+    #[test]
+    fn renames_label_as_modified() {
+        // `git mv` produces `R100<TAB>old<TAB>new` in
+        // `git diff --name-status`. Our parser takes the LAST tab field
+        // (the new path) and labels the kind as `Modified` (per YAGNI
+        // — no separate `Renamed` variant).
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // Seed `main` with a tracked file.
+        std::fs::write(dir.path().join("original.rs"), "fn o() {}\n").unwrap();
+        run(&["add", "original.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+        ]);
+        // Rename on the branch.
+        run(&["checkout", "-q", "-b", "feature"]);
+        run(&["mv", "original.rs", "renamed.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "rename",
+        ]);
+
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "renamed.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Modified,
+            }],
+            "rename must surface under the new path with kind=Modified"
+        );
+    }
+
+    #[test]
+    fn dirty_only_paths_label_as_modified() {
+        // Path only in `git diff --name-only HEAD` (not committed on
+        // the branch). Kind defaults to `Modified` since the file
+        // exists in HEAD and was edited locally.
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // Seed `main` with a tracked file.
+        std::fs::write(dir.path().join("existing.rs"), "fn e() {}\n").unwrap();
+        run(&["add", "existing.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+        ]);
+        // Edit locally without committing.
+        std::fs::write(dir.path().join("existing.rs"), "fn e() { /*x*/ }\n").unwrap();
+
+        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "existing.rs".into(),
+                uncommitted: true,
+                change: ChangeKind::Modified,
+            }],
+            "dirty-only path: kind=Modified (it exists in HEAD), uncommitted=true"
+        );
     }
 }

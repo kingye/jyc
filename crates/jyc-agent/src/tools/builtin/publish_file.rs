@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Tool for publishing files from the thread directory to a exchange URL.
+/// Tool for publishing files from the thread directory to an exchange URL.
 pub struct PublishFileTool {
     /// Base URL prepended to `/exchange/...` links (from
     /// `[inspect] exchange_base_url`, falling back to `http://<bind>`).
@@ -33,7 +33,7 @@ impl Tool for PublishFileTool {
     }
 
     fn description(&self) -> &str {
-        "Publish a file from the thread directory to make it accessible via a \
+        "Publish a file from the thread directory to make it accessible via an \
          exchange HTTP link. Copies the file by default; set move=true to move \
          it (the source file disappears). Returns a shareable URL protected \
          by an access token. Use when the user needs to download or view a \
@@ -119,12 +119,12 @@ impl Tool for PublishFileTool {
         };
 
         let jyc_dir = ctx.working_dir.join(".jyc");
-        let public_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
-        tokio::fs::create_dir_all(&public_dir)
+        let exchange_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
+        tokio::fs::create_dir_all(&exchange_dir)
             .await
             .context("failed to create exchange directory")?;
 
-        let target = public_dir.join(name);
+        let target = exchange_dir.join(name);
         if do_move {
             tokio::fs::rename(&src_canonical, &target)
                 .await
@@ -138,7 +138,11 @@ impl Tool for PublishFileTool {
         let token = load_or_create_token(&jyc_dir)?;
         let url = format!(
             "{}/exchange/{}/{}/{}?token={}",
-            self.base_url, channel, thread, name, token
+            self.base_url,
+            channel,
+            thread,
+            url_encode_segment(name),
+            token
         );
 
         tracing::info!(
@@ -153,6 +157,22 @@ impl Tool for PublishFileTool {
             "File published. Shareable URL:\n{url}"
         )))
     }
+}
+
+/// Percent-encode a single URL path segment (RFC 3986 unreserved set kept,
+/// everything else %-encoded) so filenames with spaces, `#`, `%`, etc.
+/// produce working links. The axum `Path` extractor decodes it on serve.
+fn url_encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Read the per-thread exchange-access token, generating and persisting it
@@ -258,6 +278,30 @@ mod tests {
 
         assert!(out.is_error);
         assert!(!work.join(".jyc/exchange").exists());
+    }
+
+    #[tokio::test]
+    async fn test_url_encodes_special_chars_in_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"a").unwrap();
+
+        let out = tool()
+            .execute(
+                json!({"path": "a.txt", "name": "report (2) #final.pdf"}),
+                &test_ctx(tmp.path()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.content.contains(
+            "https://jyc.example.com/exchange/email/weather/report%20%282%29%20%23final.pdf?token="
+        ));
+        // On disk the file keeps its real name.
+        assert!(
+            tmp.path()
+                .join(".jyc/exchange/report (2) #final.pdf")
+                .exists()
+        );
     }
 
     #[tokio::test]

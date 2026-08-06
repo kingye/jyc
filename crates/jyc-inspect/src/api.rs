@@ -174,7 +174,11 @@ pub async fn get_exchange_file(
     Path((channel, thread, file_path)): Path<(String, String, String)>,
     Query(q): Query<ExchangeQuery>,
 ) -> Result<Response, ApiError> {
-    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
+    // Unknown channel/thread gets the same 403 as a bad token, so link
+    // probing cannot distinguish "thread exists" from "token wrong".
+    let thread_path = resolve_thread_path(&ctx, &channel, &thread)
+        .await
+        .map_err(|_| ApiError::forbidden("missing or invalid token"))?;
     serve_exchange_file(&thread_path, q.token.as_deref(), &file_path).await
 }
 
@@ -192,7 +196,9 @@ async fn serve_exchange_file(
         .await
         .map_err(|_| ApiError::forbidden("exchange access not enabled for this thread"))?;
     let expected = expected.trim();
-    if expected.is_empty() || token != Some(expected) {
+    let ok = !expected.is_empty()
+        && token.is_some_and(|t| crate::auth::constant_time_eq(t.as_bytes(), expected.as_bytes()));
+    if !ok {
         return Err(ApiError::forbidden("missing or invalid token"));
     }
 
@@ -379,12 +385,13 @@ pub async fn post_reload_config(
 mod exchange_file_tests {
     use super::*;
 
-    /// Seed `<tmp>/.jyc/exchange/<file>` and `<tmp>/.jyc/exchange-token`.
+    /// Seed `<tmp>/.jyc/exchange/<file>` (parent dirs created) and
+    /// `<tmp>/.jyc/exchange-token`.
     fn seed(tmp: &tempfile::TempDir, file: &str, body: &[u8], token: Option<&str>) {
         let jyc = tmp.path().join(".jyc");
-        let exchange = jyc.join(jyc_core::EXCHANGE_DIR_NAME);
-        std::fs::create_dir_all(&exchange).unwrap();
-        std::fs::write(exchange.join(file), body).unwrap();
+        let dest = jyc.join(jyc_core::EXCHANGE_DIR_NAME).join(file);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, body).unwrap();
         if let Some(t) = token {
             std::fs::write(jyc.join(jyc_core::EXCHANGE_TOKEN_FILENAME), t).unwrap();
         }
@@ -413,15 +420,7 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn serves_nested_file() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".jyc/exchange/sub")).unwrap();
-        std::fs::write(tmp.path().join(".jyc/exchange/sub/a.json"), b"{}").unwrap();
-        std::fs::write(
-            tmp.path()
-                .join(".jyc")
-                .join(jyc_core::EXCHANGE_TOKEN_FILENAME),
-            "t",
-        )
-        .unwrap();
+        seed(&tmp, "sub/a.json", b"{}", Some("t"));
 
         let res = serve_exchange_file(tmp.path(), Some("t"), "sub/a.json")
             .await

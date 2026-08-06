@@ -60,7 +60,6 @@ impl CommandHandler for ResetCommandHandler {
             })
         } else {
             // No agent service available — fallback to direct file deletion
-            let jyc_dir = context.thread_path.join(".jyc");
             tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
                 .await
                 .ok();
@@ -144,12 +143,12 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_reset_clears_public_files_and_token() {
+    async fn test_reset_clears_exchange_files_and_token() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
-        let public_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
-        tokio::fs::create_dir_all(&public_dir).await.unwrap();
-        tokio::fs::write(public_dir.join("report.pdf"), b"pdf")
+        let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
+        tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
+        tokio::fs::write(exchange_dir.join("report.pdf"), b"pdf")
             .await
             .unwrap();
         tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
@@ -161,7 +160,7 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!public_dir.exists());
+        assert!(!exchange_dir.exists());
         assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 

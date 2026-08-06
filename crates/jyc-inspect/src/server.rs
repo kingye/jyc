@@ -1430,9 +1430,9 @@ mod exchange_route_auth_tests {
 
     /// `/exchange/*` must NOT be gated by the bearer middleware — access
     /// control is the per-thread `?token=`. With no thread manager the
-    /// handler 404s; the point is that it is not a 401.
+    /// handler 403s; the point is that it is not a 401.
     #[tokio::test]
-    async fn public_route_bypasses_bearer_middleware() {
+    async fn exchange_route_bypasses_bearer_middleware() {
         let app = build_router(ctx_with_token(Some("secret")));
         let res = app
             .oneshot(
@@ -1443,7 +1443,7 @@ mod exchange_route_auth_tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     /// Sanity: authed routes still reject requests without the bearer token.

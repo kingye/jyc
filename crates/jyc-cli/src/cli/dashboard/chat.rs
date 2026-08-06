@@ -4345,10 +4345,12 @@ mod tests {
                     ChangedFileEntry {
                         path: "committed.rs".into(),
                         uncommitted: false,
+                        change: jyc_types::ChangeKind::Modified,
                     },
                     ChangedFileEntry {
                         path: "dirty.rs".into(),
                         uncommitted: true,
+                        change: jyc_types::ChangeKind::Modified,
                     },
                 ]),
                 context_input_tokens: None,
@@ -4450,14 +4452,17 @@ mod tests {
                     ChangedFileEntry {
                         path: "a.rs".into(),
                         uncommitted: false,
+                        change: jyc_types::ChangeKind::Modified,
                     },
                     ChangedFileEntry {
                         path: "b.rs".into(),
                         uncommitted: false,
+                        change: jyc_types::ChangeKind::Modified,
                     },
                     ChangedFileEntry {
                         path: "c.rs".into(),
                         uncommitted: false,
+                        change: jyc_types::ChangeKind::Modified,
                     },
                 ]),
                 context_input_tokens: None,

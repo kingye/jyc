@@ -451,7 +451,7 @@ HTTP link served by the inspect server.
   from `[inspect] exchange_base_url` (fallback: `http://<inspect.bind>`)
 - Files are served by the inspect server at `GET /exchange/...`; the bearer
   middleware does not apply — the per-thread `?token=` is the access control
-- `/reset` deletes `.jyc/exchange/` and `.jyc/exchange-token`, killing all
+- `/reset` and `/new` delete `.jyc/exchange/` and `.jyc/exchange-token`, killing all
   previously shared links (a fresh token is generated on the next publish)
 
 **Constraints:**

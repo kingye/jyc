@@ -293,7 +293,7 @@ Serves a file previously published by the `jyc_publish_file` agent tool
 (stored under `<thread>/.jyc/exchange/`). NOT gated by the bearer
 middleware (§2.2) — the per-thread `token` query parameter is the access
 control. The token lives in `<thread>/.jyc/exchange-token`, is created on
-first publish, and is deleted by `/reset` (which also removes the
+first publish, and is deleted by `/reset` or `/new` (which also remove the
 published files), invalidating previously shared links.
 
 **Request:**

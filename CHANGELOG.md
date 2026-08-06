@@ -13,7 +13,7 @@ All notable changes to JYC will be documented in this file.
   Links are guarded by a per-thread 256-bit token
   (`<thread>/.jyc/exchange-token`) created on first publish — the `/exchange/*`
   route is deliberately not gated by the dashboard bearer middleware so
-  links work for end users. `/reset` removes the published files and the
+  links work for end users. `/reset` and `/new` remove the published files and the
   token, invalidating previously shared links. The link base URL is
   configurable via the new `[inspect] exchange_base_url` setting
   (fallback: `http://<inspect.bind>`). (#519)

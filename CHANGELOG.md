@@ -17,17 +17,22 @@ All notable changes to JYC will be documented in this file.
   simply omit the branch segment. (#512)
 
 - **Show files changed on the selected branch in the chat info pane.**
-  When the selected thread's working directory is a git repo with a
-  `main` ref, the chat thread info pane now renders a separated
-  `Files (N vs main):` section at the end (after `Cost:` and any
-  transient `⏳ AI thinking...` line). The section lists up to 8 file
-  paths one per line, with a dim `... and N more files` suffix when
-  the list is truncated. Backed by `ThreadSummary.changed_files` and
-  `ThreadInfo.changed_files`, resolved server-side via
-  `git diff --name-only main...HEAD` on every `list_threads` call.
-  Same skip rule as `branch`: non-git paths, missing `main` ref, or
-  missing `git` binary all yield `None` and the entire section is
-  omitted. (#220)
+  When the selected thread's working directory is a git repo, the chat
+  thread info pane now renders a separated `Files (N):` section at the
+  end (after `Cost:` and any transient `⏳ AI thinking...` line). The
+  section lists every changed file one per line; when the list is
+  taller than the pane, the pane scrolls (Tab cycles focus to it,
+  then `j`/`k`/`↑`/`↓`/`PgUp`/`PgDn`/`g`/`G` move the viewport, the
+  same keys as the activity pane). Files currently dirty in the
+  working tree (modified or staged but not committed) are rendered
+  in **yellow**; files only present on the branch vs `main` are
+  plain. Backed by `ThreadSummary.changed_files` and
+  `ThreadInfo.changed_files` — now `Vec<{path, uncommitted: bool}>`
+  resolved server-side from two `git diff` invocations
+  (`main...HEAD` ∪ `HEAD`), with the union deduped and the
+  more-noisy `uncommitted: true` winning when a path appears in both.
+  Same skip rule as `branch`: non-git paths or both diffs failing
+  yields `None` and the entire section is omitted. (#220)
 
 ### Changed
 

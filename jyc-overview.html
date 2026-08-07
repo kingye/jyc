@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JYC — Channel-Agnostic AI Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Archivo:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --void:#0a0c0d; --panel:#11151700; --ink:#0e1214;
+  --line:#1e2629; --line-hot:#2c383c;
+  --fg:#c7d1d4; --fg-dim:#6d7c80; --fg-faint:#495558;
+  --amber:#ffb02e; --amber-dim:#7a5518;
+  --sig:#39d98a; --sig-dim:#164d31;
+  --rust:#e0553a; --violet:#8b7fd4;
+  --mono:'IBM Plex Mono',monospace;
+  --disp:'Chakra Petch',sans-serif;
+  --body:'Archivo',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--void); color:var(--fg); font-family:var(--body);
+  font-size:15px; line-height:1.65; overflow-x:hidden;
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size:64px 64px, 64px 64px;
+  background-position:-1px -1px;
+}
+body::before{
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:100;
+  background:radial-gradient(ellipse 120% 80% at 50% -10%, rgba(255,176,46,.07), transparent 60%),
+             radial-gradient(ellipse 90% 60% at 90% 110%, rgba(57,217,138,.05), transparent 60%);
+}
+body::after{
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:101; opacity:.035;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 32px}
+.mono{font-family:var(--mono)}
+
+/* ── rails ── */
+.rail{position:fixed;top:0;bottom:0;width:1px;background:linear-gradient(180deg,transparent,var(--line-hot) 12%,var(--line-hot) 88%,transparent);z-index:2}
+.rail.l{left:max(24px,calc(50% - 622px))}
+.rail.r{right:max(24px,calc(50% - 622px))}
+@media(max-width:1100px){.rail{display:none}}
+
+/* ── topbar ── */
+.topbar{
+  position:sticky;top:0;z-index:60;backdrop-filter:blur(14px);
+  background:rgba(10,12,13,.82);border-bottom:1px solid var(--line);
+}
+.topbar .wrap{display:flex;align-items:center;gap:20px;height:52px}
+.brand{font-family:var(--disp);font-weight:700;letter-spacing:.28em;font-size:14px;color:var(--fg)}
+.brand span{color:var(--amber)}
+.tb-meta{font-family:var(--mono);font-size:11px;color:var(--fg-faint);letter-spacing:.1em}
+.tb-nav{margin-left:auto;display:flex;gap:22px}
+.tb-nav a{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--fg-dim);text-decoration:none;text-transform:uppercase;transition:color .2s}
+.tb-nav a:hover{color:var(--amber)}
+@media(max-width:820px){.tb-nav{display:none}}
+
+/* ── hero ── */
+.hero{position:relative;padding:96px 0 72px;border-bottom:1px solid var(--line)}
+.tag{
+  display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--sig);
+  border:1px solid var(--sig-dim);border-radius:2px;padding:5px 11px;margin-bottom:30px;
+}
+.pulse{width:6px;height:6px;border-radius:50%;background:var(--sig);animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(57,217,138,.5)}50%{opacity:.5;box-shadow:0 0 0 5px rgba(57,217,138,0)}}
+h1{
+  font-family:var(--disp);font-weight:700;line-height:.94;letter-spacing:-.02em;
+  font-size:clamp(56px,10vw,132px);color:#eef3f4;
+}
+h1 em{font-style:normal;display:block;color:var(--amber)}
+h1 .thin{font-weight:400;color:var(--fg-dim)}
+.lede{max-width:660px;margin-top:28px;font-size:18px;line-height:1.7;color:var(--fg-dim)}
+.lede b{color:var(--fg);font-weight:500}
+.hero-strip{
+  display:grid;grid-template-columns:repeat(4,1fr);margin-top:56px;
+  border:1px solid var(--line);border-radius:3px;overflow:hidden;background:rgba(17,21,23,.5);
+}
+.hs{padding:20px 22px;border-right:1px solid var(--line)}
+.hs:last-child{border-right:0}
+.hs dt{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-faint)}
+.hs dd{font-family:var(--disp);font-weight:600;font-size:30px;color:var(--fg);margin-top:6px;line-height:1}
+.hs dd small{font-size:13px;color:var(--fg-dim);font-weight:400}
+@media(max-width:760px){.hero-strip{grid-template-columns:repeat(2,1fr)}.hs:nth-child(2){border-right:0}.hs:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+
+/* ── section chrome ── */
+section{padding:88px 0;border-bottom:1px solid var(--line);position:relative}
+.shead{display:flex;align-items:baseline;gap:16px;margin-bottom:44px}
+.snum{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.16em}
+.shead h2{font-family:var(--disp);font-weight:600;font-size:clamp(26px,3.4vw,40px);letter-spacing:-.01em;color:#e8eef0}
+.shead p{margin-left:auto;max-width:340px;font-size:13px;color:var(--fg-dim);text-align:right}
+@media(max-width:760px){.shead{flex-wrap:wrap}.shead p{margin-left:0;text-align:left}}
+
+/* ── pipeline ── */
+.pipe{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:0;align-items:stretch}
+.node{
+  border:1px solid var(--line-hot);border-radius:3px;background:linear-gradient(160deg,rgba(20,26,28,.9),rgba(12,15,16,.9));
+  padding:22px;position:relative;overflow:hidden;
+}
+.node::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--amber),transparent);opacity:.5}
+.node h3{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber);margin-bottom:14px}
+.node ul{list-style:none;font-family:var(--mono);font-size:12px;color:var(--fg-dim);line-height:2}
+.node li::before{content:'▸ ';color:var(--fg-faint)}
+.arrow{display:flex;align-items:center;justify-content:center;width:70px;position:relative}
+.arrow::before{content:'';position:absolute;left:8px;right:8px;height:1px;background:var(--line-hot)}
+.arrow::after{
+  content:'';position:absolute;width:7px;height:7px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 10px var(--amber);animation:travel 2.6s linear infinite;
+}
+.arrow:nth-of-type(4)::after{animation-delay:1.3s}
+@keyframes travel{0%{left:8px;opacity:0}12%{opacity:1}88%{opacity:1}100%{left:calc(100% - 15px);opacity:0}}
+@media(max-width:900px){
+  .pipe{grid-template-columns:1fr}
+  .arrow{width:auto;height:52px}
+  .arrow::before{left:50%;right:auto;top:8px;bottom:8px;width:1px;height:auto}
+  .arrow::after{animation:travelv 2.6s linear infinite;left:calc(50% - 3px)}
+  @keyframes travelv{0%{top:8px;opacity:0}12%{opacity:1}88%{opacity:1}100%{top:calc(100% - 15px);opacity:0}}
+}
+
+/* ── channels ── */
+.chgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}
+.ch{background:var(--ink);padding:22px;transition:background .25s,transform .25s;position:relative}
+.ch:hover{background:#161c1f}
+.ch-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.dot.live{background:var(--sig);box-shadow:0 0 8px rgba(57,217,138,.6)}
+.dot.soon{background:var(--fg-faint)}
+.ch h4{font-family:var(--disp);font-weight:600;font-size:17px;color:#e6ecee}
+.ch .ver{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--fg-faint)}
+.ch p{font-size:13px;color:var(--fg-dim);line-height:1.6}
+.ch .proto{margin-top:12px;display:flex;flex-wrap:wrap;gap:6px}
+.proto span{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--fg-dim);border:1px solid var(--line-hot);border-radius:2px;padding:2px 7px}
+.ch.future{opacity:.5}
+
+/* ── two-col ── */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line)}
+@media(max-width:840px){.duo{grid-template-columns:1fr}}
+.cell{background:var(--ink);padding:28px}
+.cell h3{font-family:var(--disp);font-weight:600;font-size:19px;color:#e6ecee;margin-bottom:8px}
+.cell .sub{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.12em;text-transform:uppercase;margin-bottom:18px}
+.cell p{font-size:14px;color:var(--fg-dim);margin-bottom:14px}
+
+/* ── layers ── */
+.layer{display:flex;gap:16px;padding:15px 0;border-bottom:1px dashed var(--line)}
+.layer:last-child{border-bottom:0}
+.lv{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--void);background:var(--amber);border-radius:2px;padding:2px 7px;height:fit-content;flex:none}
+.lv.l2{background:var(--sig)}
+.lv.l3{background:var(--violet)}
+.layer-b strong{display:block;font-family:var(--mono);font-size:13px;color:var(--fg);font-weight:500}
+.layer-b span{font-size:13px;color:var(--fg-dim)}
+
+/* ── table ── */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-faint);text-align:left;padding:0 14px 12px 0;border-bottom:1px solid var(--line-hot);font-weight:500;
+}
+td{padding:13px 14px 13px 0;border-bottom:1px solid var(--line);color:var(--fg-dim);vertical-align:top}
+td code{font-family:var(--mono);font-size:12.5px;color:var(--amber);white-space:nowrap}
+tr:hover td{color:var(--fg)}
+
+/* ── crates ── */
+.crate{display:grid;grid-template-columns:150px 1fr 74px;gap:16px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.crate:last-child{border-bottom:0}
+.crate .cn{font-family:var(--mono);font-size:12.5px;color:var(--fg)}
+.crate .cd{font-size:12.5px;color:var(--fg-dim)}
+.crate .cl{font-family:var(--mono);font-size:11px;color:var(--fg-faint);text-align:right}
+.bar{position:relative;height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin-top:6px}
+.bar i{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,var(--amber-dim),var(--amber));border-radius:2px;transform-origin:left;animation:grow 1.1s cubic-bezier(.2,.8,.2,1) both}
+@keyframes grow{from{transform:scaleX(0)}}
+@media(max-width:700px){.crate{grid-template-columns:1fr 64px}.crate .cd{display:none}}
+
+@media(max-width:520px){
+  .wrap{padding:0 20px}
+  .cell{padding:22px 20px}
+  td code{white-space:normal;overflow-wrap:anywhere}
+  td,th{padding-right:8px}
+}
+
+/* ── reveal ── */
+.rv{opacity:0;transform:translateY(22px);transition:opacity .7s cubic-bezier(.2,.8,.2,1),transform .7s cubic-bezier(.2,.8,.2,1)}
+.rv.in{opacity:1;transform:none}
+
+/* ── footer ── */
+footer{padding:52px 0 64px}
+.fbar{display:flex;flex-wrap:wrap;gap:18px;align-items:baseline;font-family:var(--mono);font-size:11px;color:var(--fg-faint);letter-spacing:.1em}
+.fbar .bg{color:var(--fg-dim)}
+.fbar a{color:var(--amber);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="rail l"></div><div class="rail r"></div>
+
+<div class="topbar"><div class="wrap">
+  <div class="brand">J<span>Y</span>C</div>
+  <div class="tb-meta">v0.3.13 · RUST</div>
+  <nav class="tb-nav">
+    <a href="#flow">Flow</a><a href="#channels">Channels</a><a href="#runtime">Runtime</a>
+    <a href="#config">Config</a><a href="#surface">Surface</a><a href="#code">Code</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <div class="tag"><span class="pulse"></span>Production &middot; 9 channels live</div>
+  <h1>Channel<br><em>Agnostic</em><span class="thin">AI Agent</span></h1>
+  <p class="lede">
+    Messaging channels are the interface. AI is the brain. JYC watches Email, GitHub,
+    Feishu, WeCom and more, routes each inbound message to a <b>per-thread worker</b>,
+    and lets an autonomous agent reply through the channel it came from &mdash;
+    keeping conversation context per thread across turns.
+  </p>
+  <dl class="hero-strip">
+    <div class="hs"><dt>Channels</dt><dd>9 <small>live</small></dd></div>
+    <div class="hs"><dt>Workspace crates</dt><dd>9</dd></div>
+    <div class="hs"><dt>Rust source</dt><dd>82k <small>loc</small></dd></div>
+    <div class="hs"><dt>Tests</dt><dd>1396</dd></div>
+  </dl>
+</div></header>
+
+<section id="flow"><div class="wrap">
+  <div class="shead rv"><span class="snum">01</span><h2>Message Flow</h2>
+    <p>Every channel funnels into one router; adapters are the only channel-specific code.</p></div>
+  <div class="pipe rv">
+    <div class="node"><h3>Inbound</h3><ul>
+      <li>IMAP IDLE / poll</li><li>WebSocket long-conn</li><li>REST polling</li><li>Webhook (axum)</li>
+    </ul></div>
+    <div class="arrow"></div>
+    <div class="node"><h3>Router</h3><ul>
+      <li>match_message()</li><li>derive_thread_name()</li><li>hot-reload patterns</li><li>ArcSwap&lt;AppConfig&gt;</li>
+    </ul></div>
+    <div class="arrow"></div>
+    <div class="node"><h3>Thread worker</h3><ul>
+      <li>bounded queue</li><li>semaphore permit</li><li>agent turn</li><li>reply_message tool</li>
+    </ul></div>
+  </div>
+  <div class="duo rv" style="margin-top:1px;border-top:0">
+    <div class="cell">
+      <div class="sub">Why Rust</div>
+      <h3>One static binary, no runtime</h3>
+      <p>Zero runtime dependencies, memory safety without a GC, and predictable low-latency
+         behaviour for a process that stays up for weeks. Deploy by copying a file.</p>
+    </div>
+    <div class="cell">
+      <div class="sub">Extending</div>
+      <h3>Two traits per channel</h3>
+      <p>A new channel needs only <span class="mono" style="color:var(--amber)">InboundAdapter</span>
+         and <span class="mono" style="color:var(--amber)">OutboundAdapter</span>.
+         Routing, threading, queueing, sessions and commands are inherited for free.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="channels"><div class="wrap">
+  <div class="shead rv"><span class="snum">02</span><h2>Channels</h2>
+    <p>Nine transports in production, each with its own threading model.</p></div>
+  <div class="chgrid rv">
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>Email</h4><span class="ver">core</span></div>
+      <p>Full threading, attachments and HTML bodies. IMAP IDLE for push, polling as fallback.</p>
+      <div class="proto"><span>IMAP</span><span>SMTP</span><span>TLS</span><span>OAuth2</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>GitHub</h4><span class="ver">v0.1.10</span></div>
+      <p>Issue and PR comments with label-based routing. Planner / Developer / Reviewer agents drive a full PR workflow.</p>
+      <div class="proto"><span>REST poll</span><span>PAT</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>Feishu &middot; Lark</h4><span class="ver">phase 7</span></div>
+      <p>Real-time messaging over WebSocket with rich interactive cards and automatic token refresh.</p>
+      <div class="proto"><span>WebSocket</span><span>REST</span><span>openlark</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeCom</h4><span class="ver">v0.3.10</span></div>
+      <p>Bot webhook inbound plus external-contact API outbound, with signature verification.</p>
+      <div class="proto"><span>Webhook</span><span>AES-256-CBC</span><span>SHA1</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeCom KF</h4><span class="ver">v0.3.10</span></div>
+      <p>Customer-service messaging via event notifications and message-sync pull. One thread per customer per account.</p>
+      <div class="proto"><span>Events</span><span>REST</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeCom Robot</h4><span class="ver">v0.3.11</span></div>
+      <p>Smart Robot over a persistent WebSocket with streaming replies and media upload.</p>
+      <div class="proto"><span>WebSocket</span><span>streaming</span><span>media</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeChat</h4><span class="ver">v0.3.9</span></div>
+      <p>Single-bot, single-thread messaging through the OpenILink bridge. Images, files, voice, video.</p>
+      <div class="proto"><span>WebSocket</span><span>bridge</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>Gitee</h4><span class="ver">v0.3.10</span></div>
+      <p>The GitHub multi-agent workflow mirrored onto Gitee issues and pull requests.</p>
+      <div class="proto"><span>REST v5</span><span>poll</span></div></div>
+    <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WebSocket</h4><span class="ver">v0.3.12</span></div>
+      <p>Interactive chat pane inside the TUI dashboard. Multi-client via broadcast; the server lives in the serve process.</p>
+      <div class="proto"><span>ws</span><span>broadcast</span></div></div>
+    <div class="ch future"><div class="ch-top"><span class="dot soon"></span><h4>Slack &middot; Teams &middot; Discord</h4><span class="ver">planned</span></div>
+      <p>Socket Mode, Teams integration, Discord bot, plus a generic webhook API for anything custom.</p>
+      <div class="proto"><span>roadmap</span></div></div>
+  </div>
+</div></section>
+
+<section id="runtime"><div class="wrap">
+  <div class="shead rv"><span class="snum">03</span><h2>Runtime Model</h2>
+    <p>Bounded concurrency, per-thread isolation, live observability.</p></div>
+  <div class="duo rv">
+    <div class="cell">
+      <div class="sub">Concurrency</div>
+      <h3>Semaphore-bounded workers</h3>
+      <p>The thread manager holds a tokio semaphore (default 3 permits). A new thread spawns a
+         task, acquires a permit, and drains its own bounded mpsc queue (default 10) one message
+         at a time. Empty queue releases the permit and the task exits.</p>
+      <p>Messages within a thread are strictly serial &mdash; different threads run in parallel.
+         Live injection lets a new message reach an in-flight agent turn.</p>
+    </div>
+    <div class="cell">
+      <div class="sub">Per-message worker</div>
+      <h3>Deterministic turn pipeline</h3>
+      <div class="layer"><span class="lv">1</span><div class="layer-b"><strong>store + attachments</strong><span>append to the daily chat history, save allow-listed files</span></div></div>
+      <div class="layer"><span class="lv l2">2</span><div class="layer-b"><strong>commands</strong><span>parse, execute and strip in a single pass</span></div></div>
+      <div class="layer"><span class="lv l3">3</span><div class="layer-b"><strong>dispatch</strong><span>static text, OpenCode service, or the in-process agent</span></div></div>
+      <div class="layer"><span class="lv">4</span><div class="layer-b"><strong>reply</strong><span>agent tool call, or fallback text via the outbound adapter</span></div></div>
+    </div>
+    <div class="cell">
+      <div class="sub">Observability</div>
+      <h3>Thread event bus &amp; TUI</h3>
+      <p>Each thread owns an isolated event bus; agent activity is converted into thread events and
+         streamed to the inspect server. The dashboard renders live threads, processing state,
+         cost, git branch and changed files, with an embedded chat pane.</p>
+    </div>
+    <div class="cell">
+      <div class="sub">Deployment</div>
+      <h3>systemd or Docker</h3>
+      <p>Both modes support automatic restart and AI self-bootstrapping &mdash; the agent can rebuild
+         and redeploy JYC from source, then come back up on the new binary.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="config"><div class="wrap">
+  <div class="shead rv"><span class="snum">04</span><h2>Configuration Layers</h2>
+    <p>User-edited config stays separate from generated state, following platform conventions.</p></div>
+  <div class="duo rv">
+    <div class="cell">
+      <div class="sub">Three levels</div>
+      <h3>Global &rarr; workdir &rarr; thread</h3>
+      <div class="layer"><span class="lv">L1</span><div class="layer-b"><strong>config dir</strong><span>shared config.toml, skills/, templates/</span></div></div>
+      <div class="layer"><span class="lv l2">L2</span><div class="layer-b"><strong>workdir / data root</strong><span>own config.toml plus all generated state per channel and thread</span></div></div>
+      <div class="layer"><span class="lv l3">L3</span><div class="layer-b"><strong>thread</strong><span>restricted model overrides, sessions, chat history, published files</span></div></div>
+      <p style="margin-top:16px">L2 is deep-merged over L1: tables merge recursively, arrays and scalars are replaced.
+         Skills are scanned at every level with higher levels winning; templates resolve L3 to L2 to L1, first match wins.</p>
+    </div>
+    <div class="cell">
+      <div class="sub">Platform paths</div>
+      <h3>XDG on Unix, AppData on Windows</h3>
+      <table>
+        <tr><th>Platform</th><th>Config</th><th>Data</th></tr>
+        <tr><td>Linux / macOS</td><td><code>~/.config/jyc</code></td><td><code>~/.local/share/jyc</code></td></tr>
+        <tr><td>Windows</td><td><code>%APPDATA%\jyc</code></td><td><code>%LOCALAPPDATA%\jyc</code></td></tr>
+      </table>
+      <p style="margin-top:16px">Secrets use environment-variable interpolation, so config files stay
+         commitable. Model precedence runs from a per-thread override file down through
+         thread config, pattern, then global config.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="surface"><div class="wrap">
+  <div class="shead rv"><span class="snum">05</span><h2>Surface</h2>
+    <p>The same command set works on every channel; tools are what the agent reaches for.</p></div>
+  <div class="duo rv">
+    <div class="cell">
+      <div class="sub">Built-in commands</div>
+      <h3>Slash commands, any channel</h3>
+      <table>
+        <tr><th>Command</th><th>Effect</th></tr>
+        <tr><td><code>/model &lt;id&gt;</code></td><td>Switch model for this thread (bare form lists, <code>reset</code> restores)</td></tr>
+        <tr><td><code>/plan</code> <code>/build</code></td><td>Read-only planning mode, or full execution</td></tr>
+        <tr><td><code>/reset</code></td><td>Clear the AI session and start fresh</td></tr>
+        <tr><td><code>/exchange</code></td><td>List shareable URLs for files published from this thread</td></tr>
+        <tr><td><code>/template</code></td><td>Apply template files, optionally overwriting</td></tr>
+        <tr><td><code>/close</code></td><td>Close the thread and delete its directory</td></tr>
+      </table>
+    </div>
+    <div class="cell">
+      <div class="sub">Custom commands</div>
+      <h3>Declared in config</h3>
+      <p>A config entry gives a command its name, description, optional mode and skill list, plus a
+         prompt appended after whatever the user typed &mdash; so the injected instruction is always
+         the most recent one. Custom commands appear in the help listing and the dashboard popup.</p>
+      <div class="sub" style="margin-top:24px">Agent tools</div>
+      <table>
+        <tr><th>Tool</th><th>Purpose</th></tr>
+        <tr><td><code>reply_message</code></td><td>In-thread reply through the originating adapter</td></tr>
+        <tr><td><code>send_message</code></td><td>Proactive out-of-thread alerts and notifications</td></tr>
+        <tr><td><code>publish_file</code></td><td>Publish a thread file behind a per-thread token URL</td></tr>
+        <tr><td><code>analyze_image</code></td><td>Vision analysis of local paths or remote images</td></tr>
+        <tr><td><code>ask_user</code></td><td>Ask a question and block for the reply</td></tr>
+      </table>
+    </div>
+  </div>
+</div></section>
+
+<section id="code"><div class="wrap">
+  <div class="shead rv"><span class="snum">06</span><h2>Workspace</h2>
+    <p>Nine crates, 82k lines of Rust, 1396 tests running in parallel on every push.</p></div>
+  <div class="rv">
+    <div class="crate"><span class="cn">jyc-channels</span><span class="cd">Adapter implementations for all ten transports<div class="bar"><i style="width:100%;animation-delay:.05s"></i></div></span><span class="cl">23.7k</span></div>
+    <div class="crate"><span class="cn">jyc-agent</span><span class="cd">In-process agent loop, sessions, skills, tool dispatch<div class="bar"><i style="width:76%;animation-delay:.1s"></i></div></span><span class="cl">18.1k</span></div>
+    <div class="crate"><span class="cn">jyc-core</span><span class="cd">Router, thread manager, workers, command registry<div class="bar"><i style="width:67%;animation-delay:.15s"></i></div></span><span class="cl">15.9k</span></div>
+    <div class="crate"><span class="cn">jyc-cli</span><span class="cd">Binary, serve loop, TUI dashboard, subcommands<div class="bar"><i style="width:47%;animation-delay:.2s"></i></div></span><span class="cl">11.1k</span></div>
+    <div class="crate"><span class="cn">jyc-types</span><span class="cd">Shared message, config and event types<div class="bar"><i style="width:29%;animation-delay:.25s"></i></div></span><span class="cl">7.0k</span></div>
+    <div class="crate"><span class="cn">jyc-inspect</span><span class="cd">Inspection server and client, exchange routes<div class="bar"><i style="width:14%;animation-delay:.3s"></i></div></span><span class="cl">3.3k</span></div>
+    <div class="crate"><span class="cn">jyc-services</span><span class="cd">External service integrations<div class="bar"><i style="width:8%;animation-delay:.35s"></i></div></span><span class="cl">2.0k</span></div>
+    <div class="crate"><span class="cn">jyc-utils</span><span class="cd">Shared utility functions<div class="bar"><i style="width:4%;animation-delay:.4s"></i></div></span><span class="cl">1.0k</span></div>
+    <div class="crate"><span class="cn">jyc-mcp</span><span class="cd">MCP tool surface<div class="bar"><i style="width:2%;animation-delay:.45s"></i></div></span><span class="cl">0.4k</span></div>
+  </div>
+  <div class="duo rv" style="margin-top:40px">
+    <div class="cell">
+      <div class="sub">CI gates</div>
+      <h3>Green or it does not merge</h3>
+      <p>Every push to main and every non-draft PR runs formatting, clippy with warnings denied
+         across all targets, and the full test suite under coverage with a 60% floor.</p>
+    </div>
+    <div class="cell">
+      <div class="sub">Test discipline</div>
+      <h3>Isolated and parallel-safe</h3>
+      <p>Tests use temporary directories that clean themselves up, never mutate process
+         environment, and never depend on network or fixed paths &mdash; so the default parallel
+         run is stable.</p>
+    </div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <div class="fbar">
+    <span class="bg">JYC v0.3.13</span>
+    <span>RUST &middot; TOKIO &middot; SINGLE BINARY</span>
+    <span>9 CHANNELS &middot; 9 CRATES &middot; 1396 TESTS</span>
+    <span style="margin-left:auto">GENERATED FROM README &amp; DESIGN</span>
+  </div>
+</div></footer>
+
+<script>
+const io = new IntersectionObserver((entries) => {
+  entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+}, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.rv').forEach((el, i) => {
+  el.style.transitionDelay = (i % 3) * 70 + 'ms';
+  io.observe(el);
+});
+</script>
+</body>
+</html>

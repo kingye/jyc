@@ -325,7 +325,7 @@ Key sections:
   "${ENV_VAR}"` (preferred) or `api_key_env = "ENV_VAR"` (legacy), `pricing`);
   `[agent.providers.<name>.models.<id>]` overrides per model
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
-  `exchange_base_url` for `jyc_publish_file` share links)
+  `base_url` for links that leave the server, e.g. `/exchange` share links)
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 

@@ -641,26 +641,27 @@ pub struct InspectConfig {
     #[serde(default = "default_inspect_bind")]
     pub bind: String,
 
-    /// Public base URL used by the `jyc_publish_file` tool to build
-    /// shareable links to `/exchange/<channel>/<thread>/<name>`.
+    /// Externally-reachable base URL of the inspect server (scheme + host,
+    /// optionally port and subpath), used to build links that leave the
+    /// server — currently `/exchange/<channel>/<thread>/<name>` share links.
     /// Required behind a reverse proxy; falls back to `http://<bind>`
     /// (wildcard host replaced by the primary LAN IP) when unset.
     #[serde(default)]
-    pub exchange_base_url: Option<String>,
+    pub base_url: Option<String>,
 }
 
 impl InspectConfig {
-    /// Base URL for published-file links: the configured `exchange_base_url`
-    /// (trailing slashes trimmed) or `http://<bind>` when unset.
+    /// Base URL for outbound links: the configured `base_url` (trailing
+    /// slashes trimmed) or `http://<bind>` when unset.
     ///
     /// A wildcard bind host (`0.0.0.0`, `[::]`) is never a reachable
     /// destination, so it is replaced with this host's primary LAN IP —
-    /// otherwise every published link would be dead off-machine. That
+    /// otherwise every generated link would be dead off-machine. That
     /// substitution opens a throwaway UDP socket (see [`primary_lan_ip`]),
     /// so this method is not pure. Behind a reverse proxy the guess cannot
-    /// be right; set `exchange_base_url` explicitly.
-    pub fn effective_exchange_base_url(&self) -> String {
-        self.exchange_base_url
+    /// be right; set `base_url` explicitly.
+    pub fn effective_base_url(&self) -> String {
+        self.base_url
             .clone()
             .unwrap_or_else(|| format!("http://{}", self.reachable_bind()))
             .trim_end_matches('/')
@@ -677,8 +678,8 @@ impl InspectConfig {
                     bind = %self.bind,
                     guessed_host = %ip,
                     "[inspect] bind is a wildcard address, which is not reachable from \
-                     clients; guessing {ip} for published-file links. Set \
-                     [inspect] exchange_base_url to the URL clients actually use \
+                     clients; guessing {ip} for generated links. Set \
+                     [inspect] base_url to the URL clients actually use \
                      (required behind a reverse proxy)."
                 );
                 format!("{}:{}", ip, addr.port())
@@ -713,7 +714,7 @@ impl Default for InspectConfig {
         Self {
             enabled: false,
             bind: default_inspect_bind(),
-            exchange_base_url: None,
+            base_url: None,
         }
     }
 }
@@ -2018,21 +2019,21 @@ mode = "agent"
 }
 
 #[cfg(test)]
-mod exchange_base_url_tests {
+mod base_url_tests {
     use super::*;
 
-    fn cfg(bind: &str, exchange_base_url: Option<&str>) -> InspectConfig {
+    fn cfg(bind: &str, base_url: Option<&str>) -> InspectConfig {
         InspectConfig {
             enabled: true,
             bind: bind.into(),
-            exchange_base_url: exchange_base_url.map(String::from),
+            base_url: base_url.map(String::from),
         }
     }
 
     #[test]
     fn explicit_base_url_wins_and_is_trimmed() {
         assert_eq!(
-            cfg("0.0.0.0:9876", Some("https://jyc.example.com/")).effective_exchange_base_url(),
+            cfg("0.0.0.0:9876", Some("https://jyc.example.com/")).effective_base_url(),
             "https://jyc.example.com"
         );
     }
@@ -2040,8 +2041,7 @@ mod exchange_base_url_tests {
     #[test]
     fn explicit_base_url_keeps_port_and_subpath() {
         assert_eq!(
-            cfg("0.0.0.0:9876", Some("https://jyc.example.com:8443/jyc"))
-                .effective_exchange_base_url(),
+            cfg("0.0.0.0:9876", Some("https://jyc.example.com:8443/jyc")).effective_base_url(),
             "https://jyc.example.com:8443/jyc"
         );
     }
@@ -2049,7 +2049,7 @@ mod exchange_base_url_tests {
     #[test]
     fn concrete_bind_is_used_verbatim() {
         assert_eq!(
-            cfg("127.0.0.1:9876", None).effective_exchange_base_url(),
+            cfg("127.0.0.1:9876", None).effective_base_url(),
             "http://127.0.0.1:9876"
         );
     }
@@ -2059,7 +2059,7 @@ mod exchange_base_url_tests {
     #[test]
     fn wildcard_bind_is_replaced_but_port_kept() {
         for bind in ["0.0.0.0:9876", "[::]:9876"] {
-            let url = cfg(bind, None).effective_exchange_base_url();
+            let url = cfg(bind, None).effective_base_url();
             assert!(
                 !url.contains("0.0.0.0") && !url.contains("[::]"),
                 "wildcard host leaked into link: {url}"
@@ -2074,7 +2074,7 @@ mod exchange_base_url_tests {
     #[test]
     fn unparseable_bind_passes_through() {
         assert_eq!(
-            cfg("not-a-socket-addr", None).effective_exchange_base_url(),
+            cfg("not-a-socket-addr", None).effective_base_url(),
             "http://not-a-socket-addr"
         );
     }

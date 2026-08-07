@@ -448,11 +448,11 @@ HTTP link served by the inspect server.
   publishes reuse it
 - Returns a shareable URL:
   `{base}/exchange/{channel}/{thread}/{name}?token={token}` where `base` comes
-  from `[inspect] exchange_base_url`. When unset, `base` falls back to
+  from `[inspect] base_url`. When unset, `base` falls back to
   `http://<inspect.bind>`, with a wildcard bind host (`0.0.0.0`, `[::]`)
   replaced by this host's primary LAN IP — a wildcard address is not reachable
   from a client. Behind a reverse proxy that guess cannot be right: set
-  `exchange_base_url` to the URL clients actually use (scheme required; port
+  `base_url` to the URL clients actually use (scheme required; port
   and subpath allowed)
 - Files are served by the inspect server at `GET /exchange/...`; the bearer
   middleware does not apply — the per-thread `?token=` is the access control
@@ -479,7 +479,7 @@ HTTP link served by the inspect server.
 build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch
   ├─ Register read_image (when model supports images OR vision_client configured)
-  ├─ Register jyc_publish_file (base URL from [inspect] exchange_base_url)
+  ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
   ├─ Register jyc_send_to_thread (when cross-channel thread_managers available)
   ├─ Load external MCP tools (filtered by disabled_mcp_servers)

@@ -73,6 +73,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Auto-retarget workflow never retargeted anything.** The job introduced
+  in #518 has no `actions/checkout` step, so `gh` had no git remote to infer
+  the repository from and every call failed with `fatal: not a git
+  repository` — stacked PRs kept pointing at their merged base branch.
+  Fixed by setting `GH_REPO` (cheaper than a checkout; the job needs no
+  source code). The failure was silent because `for pr in $(gh ...)`
+  discards the command's exit status, so `set -e` never fired and the job
+  reported success; the PR list is now assigned to a variable first, so any
+  future breakage fails the job instead of hiding. (#522)
+
 - **Published links pointed at a wildcard host.** With
   `[inspect] bind = "0.0.0.0:9876"` and no `base_url`, the link
   base fell back to `http://0.0.0.0:9876` — a bind wildcard, never a

@@ -170,6 +170,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/pin",
     "/unpin",
     "/thinking",
+    "/exchange",
 ];
 
 /// General application settings.

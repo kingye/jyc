@@ -15,6 +15,11 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh infers the repo from the git remote in $CWD; this job has no
+          # checkout, so without GH_REPO every gh call dies with
+          # "fatal: not a git repository". Cheaper than adding a checkout —
+          # the job needs no source code.
+          GH_REPO: ${{ github.repository }}
           MERGED_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
@@ -29,7 +34,12 @@ jobs:
             exit 0
           fi
           echo "Looking for open PRs with base=$MERGED_BRANCH"
-          for pr in $(gh pr list --base "$MERGED_BRANCH" --state open --json number --jq '.[].number'); do
+          # Assign before looping: `for pr in $(gh ...)` discards the exit
+          # status, so a failing gh call yields an empty list and the job
+          # reports success — which is how the missing GH_REPO above stayed
+          # hidden. With the assignment, `set -e` aborts on failure.
+          prs=$(gh pr list --base "$MERGED_BRANCH" --state open --json number --jq '.[].number')
+          for pr in $prs; do
             echo "Retargeting PR #$pr: $MERGED_BRANCH -> main"
             gh pr edit "$pr" --base main
           done

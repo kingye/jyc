@@ -383,6 +383,24 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 message: "must be a valid socket address (e.g., 127.0.0.1:9876)".into(),
             });
         }
+        // A base URL without a scheme is read by browsers as a relative path,
+        // so the published link silently breaks. Catch it at startup instead
+        // of in a link a user already received.
+        if let Some(ref base) = inspect.exchange_base_url {
+            let base = base.trim();
+            if base.is_empty() {
+                errors.push(ValidationError {
+                    path: "inspect.exchange_base_url".into(),
+                    message: "must not be empty".into(),
+                });
+            } else if !base.starts_with("http://") && !base.starts_with("https://") {
+                errors.push(ValidationError {
+                    path: "inspect.exchange_base_url".into(),
+                    message: "must start with http:// or https:// (e.g., https://jyc.example.com)"
+                        .into(),
+                });
+            }
+        }
     }
 
     // Custom commands
@@ -712,6 +730,64 @@ mode = "agent"
         let config = load_config_from_str(valid_config_toml()).unwrap();
         let errors = validate_config(&config);
         assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    }
+
+    /// `exchange_base_url` is an opaque link prefix, so scheme + host,
+    /// optional port, and an optional subpath must all be accepted.
+    #[test]
+    fn test_exchange_base_url_accepts_scheme_port_and_subpath() {
+        for base in [
+            "https://jyc.example.com",
+            "http://192.168.1.50:9876",
+            "https://jyc.example.com:8443",
+            "https://example.com/jyc",
+            "http://192.168.1.50:9876/",
+        ] {
+            let toml = format!(
+                "{}\n[inspect]\nenabled = true\nexchange_base_url = \"{base}\"\n",
+                valid_config_toml()
+            );
+            let config = load_config_from_str(&toml).unwrap();
+            let errors = validate_config(&config);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| e.path == "inspect.exchange_base_url"),
+                "'{base}' must be accepted, got: {errors:?}"
+            );
+        }
+    }
+
+    /// Without a scheme a browser reads the value as a relative path, so the
+    /// link breaks silently — must fail at startup instead.
+    #[test]
+    fn test_exchange_base_url_rejects_missing_scheme_or_empty() {
+        for base in ["jyc.example.com", "192.168.1.50:9876", "", "  "] {
+            let toml = format!(
+                "{}\n[inspect]\nenabled = true\nexchange_base_url = \"{base}\"\n",
+                valid_config_toml()
+            );
+            let config = load_config_from_str(&toml).unwrap();
+            let errors = validate_config(&config);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.path == "inspect.exchange_base_url"),
+                "'{base}' must be rejected"
+            );
+        }
+    }
+
+    /// Omitting the setting stays legal — the fallback covers local use.
+    #[test]
+    fn test_exchange_base_url_may_be_omitted() {
+        let toml = format!(
+            "{}\n[inspect]\nenabled = true\nbind = \"0.0.0.0:9876\"\n",
+            valid_config_toml()
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
     #[test]

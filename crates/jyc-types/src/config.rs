@@ -170,6 +170,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/pin",
     "/unpin",
     "/thinking",
+    "/exchange",
 ];
 
 /// General application settings.
@@ -642,7 +643,8 @@ pub struct InspectConfig {
 
     /// Public base URL used by the `jyc_publish_file` tool to build
     /// shareable links to `/exchange/<channel>/<thread>/<name>`.
-    /// Falls back to `http://<bind>` when unset.
+    /// Required behind a reverse proxy; falls back to `http://<bind>`
+    /// (wildcard host replaced by the primary LAN IP) when unset.
     #[serde(default)]
     pub exchange_base_url: Option<String>,
 }
@@ -650,12 +652,59 @@ pub struct InspectConfig {
 impl InspectConfig {
     /// Base URL for published-file links: the configured `exchange_base_url`
     /// (trailing slashes trimmed) or `http://<bind>` when unset.
+    ///
+    /// A wildcard bind host (`0.0.0.0`, `[::]`) is never a reachable
+    /// destination, so it is replaced with this host's primary LAN IP —
+    /// otherwise every published link would be dead off-machine. That
+    /// substitution opens a throwaway UDP socket (see [`primary_lan_ip`]),
+    /// so this method is not pure. Behind a reverse proxy the guess cannot
+    /// be right; set `exchange_base_url` explicitly.
     pub fn effective_exchange_base_url(&self) -> String {
         self.exchange_base_url
             .clone()
-            .unwrap_or_else(|| format!("http://{}", self.bind))
+            .unwrap_or_else(|| format!("http://{}", self.reachable_bind()))
             .trim_end_matches('/')
             .to_string()
+    }
+
+    /// `bind` with a wildcard IP swapped for the primary LAN IP, port kept.
+    /// Unparseable or already-concrete binds are returned unchanged.
+    fn reachable_bind(&self) -> String {
+        match self.bind.parse::<std::net::SocketAddr>() {
+            Ok(addr) if addr.ip().is_unspecified() => {
+                let ip = primary_lan_ip();
+                tracing::warn!(
+                    bind = %self.bind,
+                    guessed_host = %ip,
+                    "[inspect] bind is a wildcard address, which is not reachable from \
+                     clients; guessing {ip} for published-file links. Set \
+                     [inspect] exchange_base_url to the URL clients actually use \
+                     (required behind a reverse proxy)."
+                );
+                format!("{}:{}", ip, addr.port())
+            }
+            _ => self.bind.clone(),
+        }
+    }
+}
+
+/// Best-effort primary LAN IPv4 of this host, falling back to `127.0.0.1`.
+///
+/// Asks the OS which local interface it would route from by `connect`ing a
+/// UDP socket to a public address; UDP `connect` only sets the socket's peer,
+/// so no packet is sent and the address need not be reachable.
+fn primary_lan_ip() -> std::net::Ipv4Addr {
+    let fallback = std::net::Ipv4Addr::LOCALHOST;
+    let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        return fallback;
+    };
+    if socket.connect("8.8.8.8:80").is_err() {
+        return fallback;
+    }
+    match socket.local_addr() {
+        // Bound to 0.0.0.0, so the local address is always IPv4.
+        Ok(std::net::SocketAddr::V4(addr)) => *addr.ip(),
+        _ => fallback,
     }
 }
 
@@ -1964,6 +2013,69 @@ mode = "agent"
         assert!(
             msg.contains("failed to parse TOML") && msg.contains("<bad>"),
             "error must mention the failure and ctx label; got: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod exchange_base_url_tests {
+    use super::*;
+
+    fn cfg(bind: &str, exchange_base_url: Option<&str>) -> InspectConfig {
+        InspectConfig {
+            enabled: true,
+            bind: bind.into(),
+            exchange_base_url: exchange_base_url.map(String::from),
+        }
+    }
+
+    #[test]
+    fn explicit_base_url_wins_and_is_trimmed() {
+        assert_eq!(
+            cfg("0.0.0.0:9876", Some("https://jyc.example.com/")).effective_exchange_base_url(),
+            "https://jyc.example.com"
+        );
+    }
+
+    #[test]
+    fn explicit_base_url_keeps_port_and_subpath() {
+        assert_eq!(
+            cfg("0.0.0.0:9876", Some("https://jyc.example.com:8443/jyc"))
+                .effective_exchange_base_url(),
+            "https://jyc.example.com:8443/jyc"
+        );
+    }
+
+    #[test]
+    fn concrete_bind_is_used_verbatim() {
+        assert_eq!(
+            cfg("127.0.0.1:9876", None).effective_exchange_base_url(),
+            "http://127.0.0.1:9876"
+        );
+    }
+
+    /// A wildcard bind is not reachable from a client, so it must never
+    /// appear in a published link — but the port must survive.
+    #[test]
+    fn wildcard_bind_is_replaced_but_port_kept() {
+        for bind in ["0.0.0.0:9876", "[::]:9876"] {
+            let url = cfg(bind, None).effective_exchange_base_url();
+            assert!(
+                !url.contains("0.0.0.0") && !url.contains("[::]"),
+                "wildcard host leaked into link: {url}"
+            );
+            assert!(url.ends_with(":9876"), "port must be preserved: {url}");
+            assert!(url.starts_with("http://"), "scheme missing: {url}");
+        }
+    }
+
+    /// An unparseable bind has no port to preserve; pass it through rather
+    /// than inventing one (config validation rejects it separately).
+    #[test]
+    fn unparseable_bind_passes_through() {
+        assert_eq!(
+            cfg("not-a-socket-addr", None).effective_exchange_base_url(),
+            "http://not-a-socket-addr"
         );
     }
 }

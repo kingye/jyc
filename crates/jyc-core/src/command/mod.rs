@@ -1,6 +1,7 @@
 pub mod cancel_handler;
 pub mod close_handler;
 pub mod custom_handler;
+pub mod exchange_handler;
 pub mod handler;
 pub mod help_handler;
 pub mod mode_handler;
@@ -73,6 +74,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/thinking".into(),
             description: "Show or hide AI thinking/reasoning content".into(),
         },
+        CommandInfo {
+            name: "/exchange".into(),
+            description: "Show shareable URLs for this thread's published files".into(),
+        },
     ]
 }
 
@@ -119,6 +124,7 @@ mod tests {
             "/pin",
             "/unpin",
             "/thinking",
+            "/exchange",
         ] {
             assert!(
                 names.contains(expected),
@@ -127,7 +133,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            12,
+            13,
             "all_commands() count changed. Update this test if intentional."
         );
     }

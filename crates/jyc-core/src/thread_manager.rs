@@ -15,6 +15,7 @@ use crate::agent::AgentService;
 use crate::command::cancel_handler::CancelCommandHandler;
 use crate::command::close_handler::CloseCommandHandler;
 use crate::command::custom_handler::CustomCommandHandler;
+use crate::command::exchange_handler::ExchangeCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
@@ -1583,6 +1584,9 @@ async fn process_message(
     command_registry.register(Box::new(PinCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
     command_registry.register(Box::new(ThinkingCommandHandler));
+    command_registry.register(Box::new(ExchangeCommandHandler::new(
+        thread_manager.clone(),
+    )));
 
     // User-defined commands from config.toml `[[commands]]`. Registered last,
     // but `register()` warns on collisions and config validation rejects

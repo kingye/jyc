@@ -448,11 +448,19 @@ HTTP link served by the inspect server.
   publishes reuse it
 - Returns a shareable URL:
   `{base}/exchange/{channel}/{thread}/{name}?token={token}` where `base` comes
-  from `[inspect] exchange_base_url` (fallback: `http://<inspect.bind>`)
+  from `[inspect] exchange_base_url`. When unset, `base` falls back to
+  `http://<inspect.bind>`, with a wildcard bind host (`0.0.0.0`, `[::]`)
+  replaced by this host's primary LAN IP — a wildcard address is not reachable
+  from a client. Behind a reverse proxy that guess cannot be right: set
+  `exchange_base_url` to the URL clients actually use (scheme required; port
+  and subpath allowed)
 - Files are served by the inspect server at `GET /exchange/...`; the bearer
   middleware does not apply — the per-thread `?token=` is the access control
 - `/reset` and `/new` delete `.jyc/exchange/` and `.jyc/exchange-token`, killing all
   previously shared links (a fresh token is generated on the next publish)
+- The `/exchange` command re-prints the URLs of everything already published in
+  the thread (`/exchange <name>` for a single file), so links can be recovered
+  without publishing again
 
 **Constraints:**
 - Source must be a file inside the thread working directory

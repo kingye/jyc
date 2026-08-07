@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`/exchange` command.** Shows the shareable URLs of files already
+  published in the current thread, one plain-text `filename: url` line per
+  file (no header, no markdown, so links copy-paste cleanly). `/exchange
+  <filename>` narrows the output to a single file. The token is read, never
+  created, so listing a thread that published nothing cannot grant access.
+  Links use the thread's registered name, which differs from its directory
+  basename for shared-repo and custom-`thread_path` threads. (#520)
+
 - **Per-thread exchange file publishing.** A new built-in agent tool
   `jyc_publish_file` copies (or moves, with `move: true`) a thread-local
   file into `<thread>/.jyc/exchange/` and returns a shareable URL served by
@@ -64,6 +72,16 @@ All notable changes to JYC will be documented in this file.
   the segment is simply omitted. (#512)
 
 ### Fixed
+
+- **Published links pointed at a wildcard host.** With
+  `[inspect] bind = "0.0.0.0:9876"` and no `exchange_base_url`, the link
+  base fell back to `http://0.0.0.0:9876` — a bind wildcard, never a
+  reachable destination, so every published link was dead off-machine. The
+  wildcard host is now replaced by this host's primary LAN IP (port
+  preserved) and a warning names `exchange_base_url` as the real fix.
+  `exchange_base_url` is also validated at startup: it must carry an
+  `http://` or `https://` scheme, since a scheme-less value is read by
+  browsers as a relative path and breaks silently. (#520)
 
 - **`docs/api.md` out of sync with the implementation.** The API
   reference predated several recent additions and contained one

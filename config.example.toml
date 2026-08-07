@@ -439,10 +439,15 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
-# Base URL for shareable links returned by the jyc_publish_file tool
-# (files served at /exchange/<channel>/<thread>/<name>?token=...).
-# Set this when a reverse proxy exposes the inspect server externally.
-# Falls back to http://<bind> when unset.
+# Base URL for shareable links returned by the jyc_publish_file tool and the
+# /exchange command (files served at /exchange/<channel>/<thread>/<name>?token=).
+# Must include the scheme; a port and a subpath are allowed:
+#   "https://jyc.example.com"  "http://192.168.1.50:9876"  "https://example.com/jyc"
+#
+# REQUIRED when a reverse proxy exposes the inspect server, or when `bind` is a
+# wildcard address (0.0.0.0 / [::]) — a wildcard is not reachable from a client.
+# When unset, falls back to http://<bind>, substituting this host's primary LAN
+# IP for a wildcard host (a guess that cannot account for a proxy).
 # exchange_base_url = "https://jyc.example.com"
 
 # --- Custom Commands ---

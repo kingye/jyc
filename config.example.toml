@@ -439,8 +439,9 @@ max_per_message = 5
 enabled = true
 bind = "127.0.0.1:9876"  # Default; localhost only for security
 
-# Base URL for shareable links returned by the jyc_publish_file tool and the
-# /exchange command (files served at /exchange/<channel>/<thread>/<name>?token=).
+# Externally-reachable base URL of the inspect server, used for any link that
+# leaves the server — currently the share links returned by the jyc_publish_file
+# tool and the /exchange command (/exchange/<channel>/<thread>/<name>?token=).
 # Must include the scheme; a port and a subpath are allowed:
 #   "https://jyc.example.com"  "http://192.168.1.50:9876"  "https://example.com/jyc"
 #
@@ -448,7 +449,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # wildcard address (0.0.0.0 / [::]) — a wildcard is not reachable from a client.
 # When unset, falls back to http://<bind>, substituting this host's primary LAN
 # IP for a wildcard host (a guess that cannot account for a proxy).
-# exchange_base_url = "https://jyc.example.com"
+# base_url = "https://jyc.example.com"
 
 # --- Custom Commands ---
 # User-defined slash commands. Each `[[commands]]` entry adds a `/<name>`

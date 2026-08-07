@@ -136,14 +136,7 @@ impl Tool for PublishFileTool {
         }
 
         let token = load_or_create_token(&jyc_dir)?;
-        let url = format!(
-            "{}/exchange/{}/{}/{}?token={}",
-            self.base_url,
-            channel,
-            thread,
-            url_encode_segment(name),
-            token
-        );
+        let url = jyc_core::exchange_url(&self.base_url, &channel, &thread, name, &token);
 
         tracing::info!(
             channel = %channel,
@@ -157,22 +150,6 @@ impl Tool for PublishFileTool {
             "File published. Shareable URL:\n{url}"
         )))
     }
-}
-
-/// Percent-encode a single URL path segment (RFC 3986 unreserved set kept,
-/// everything else %-encoded) so filenames with spaces, `#`, `%`, etc.
-/// produce working links. The axum `Path` extractor decodes it on serve.
-fn url_encode_segment(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// Read the per-thread exchange-access token, generating and persisting it

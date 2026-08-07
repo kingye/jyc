@@ -306,6 +306,18 @@ curl 'http://127.0.0.1:9876/exchange/email/weather/report.pdf?token=<64-hex>'
 (`text/html`, `application/pdf`, `image/png`, …, default
 `application/octet-stream`).
 
+**Behind a reverse proxy.** The link base is `[inspect] exchange_base_url`
+(scheme required; port and subpath allowed) — the server cannot infer its
+external scheme/host/port, and no request is in flight when a link is built.
+Forward the path through unchanged, e.g. nginx:
+
+```nginx
+location /exchange/ { proxy_pass http://127.0.0.1:9876; }
+```
+
+No auth header injection is needed: `/exchange/*` is not bearer-gated, and
+the `?token=` query parameter is the access control.
+
 **Errors:**
 
 | Status | Trigger |

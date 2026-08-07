@@ -635,7 +635,7 @@ impl ThreadManager {
                         let thread_name_clone = thread_name.clone();
                         tokio::spawn(async move {
                             let event = ThreadEvent::SessionStatus {
-                                thread_name: thread_name_clone,
+                                thread_name: thread_name_clone.clone(),
                                 status_type: "error".to_string(),
                                 attempt: None,
                                 message: Some(truncated),
@@ -643,6 +643,25 @@ impl ThreadManager {
                             };
                             if let Err(publish_err) = event_bus.publish(event).await {
                                 tracing::trace!("Failed to publish error event: {}", publish_err);
+                            }
+                            // Always follow an error with ProcessingCompleted:
+                            // consumers (inspect server, dashboard) clear their
+                            // "processing" state only on that event, and an error
+                            // exit from the agent loop never publishes one. Without
+                            // this the dashboard stays stuck at "AI thinking..."
+                            // forever. Duplicate completions are idempotent.
+                            let completed = ThreadEvent::ProcessingCompleted {
+                                thread_name: thread_name_clone,
+                                message_id: "processing-error".to_string(),
+                                success: false,
+                                duration_secs: 0,
+                                timestamp: chrono::Utc::now(),
+                            };
+                            if let Err(publish_err) = event_bus.publish(completed).await {
+                                tracing::trace!(
+                                    "Failed to publish completion event: {}",
+                                    publish_err
+                                );
                             }
                         });
                     }

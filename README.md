@@ -193,6 +193,8 @@ Send commands at the top of an email body. These commands work across all channe
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (start fresh conversation) |
+| `/exchange` | Show shareable URLs for this thread's published files |
+| `/exchange <file>` | Show the URL of one published file |
 | `/close` | Close thread and delete directory (requires `--confirm` or `-y`) |
 | `/template` | Apply template files to thread (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |

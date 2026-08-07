@@ -948,14 +948,14 @@ impl JycAgentService {
         );
 
         // Register jyc_publish_file with the base URL for shareable links
-        // ([inspect] exchange_base_url, falling back to http://<bind>).
+        // ([inspect] base_url, falling back to http://<bind>).
         let publish_base_url = self
             .config
             .load()
             .inspect
             .clone()
             .unwrap_or_default()
-            .effective_exchange_base_url();
+            .effective_base_url();
         crate::tools::builtin::register_publish_file(&mut registry, publish_base_url);
 
         // Add MCP bridge tools (reply_message, etc.)

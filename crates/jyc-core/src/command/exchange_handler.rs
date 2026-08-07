@@ -98,7 +98,7 @@ impl CommandHandler for ExchangeCommandHandler {
             .inspect
             .clone()
             .unwrap_or_default()
-            .effective_exchange_base_url();
+            .effective_base_url();
         let channel = &context.channel;
         let thread = self.thread_name(&context.thread_path).await;
 

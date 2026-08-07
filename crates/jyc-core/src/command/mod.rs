@@ -1,6 +1,7 @@
 pub mod cancel_handler;
 pub mod close_handler;
 pub mod custom_handler;
+pub mod exchange_handler;
 pub mod handler;
 pub mod help_handler;
 pub mod mode_handler;

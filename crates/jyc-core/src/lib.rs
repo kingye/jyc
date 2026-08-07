@@ -69,7 +69,13 @@ mod exchange_url_tests {
     #[test]
     fn plain_names_are_untouched() {
         assert_eq!(
-            exchange_url("https://x.example.com", "email", "weather", "report.pdf", "tok"),
+            exchange_url(
+                "https://x.example.com",
+                "email",
+                "weather",
+                "report.pdf",
+                "tok"
+            ),
             "https://x.example.com/exchange/email/weather/report.pdf?token=tok"
         );
     }
@@ -78,7 +84,13 @@ mod exchange_url_tests {
     #[test]
     fn special_chars_are_percent_encoded() {
         assert_eq!(
-            exchange_url("https://x.example.com", "email", "weather", "a b#c.pdf", "tok"),
+            exchange_url(
+                "https://x.example.com",
+                "email",
+                "weather",
+                "a b#c.pdf",
+                "tok"
+            ),
             "https://x.example.com/exchange/email/weather/a%20b%23c.pdf?token=tok"
         );
     }

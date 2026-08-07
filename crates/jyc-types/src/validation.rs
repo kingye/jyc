@@ -750,9 +750,7 @@ mode = "agent"
             let config = load_config_from_str(&toml).unwrap();
             let errors = validate_config(&config);
             assert!(
-                !errors
-                    .iter()
-                    .any(|e| e.path == "inspect.exchange_base_url"),
+                !errors.iter().any(|e| e.path == "inspect.exchange_base_url"),
                 "'{base}' must be accepted, got: {errors:?}"
             );
         }
@@ -770,9 +768,7 @@ mode = "agent"
             let config = load_config_from_str(&toml).unwrap();
             let errors = validate_config(&config);
             assert!(
-                errors
-                    .iter()
-                    .any(|e| e.path == "inspect.exchange_base_url"),
+                errors.iter().any(|e| e.path == "inspect.exchange_base_url"),
                 "'{base}' must be rejected"
             );
         }

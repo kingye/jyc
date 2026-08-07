@@ -73,6 +73,17 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **`/cancel` left the dashboard stuck at "AI thinking..." forever.** A
+  cancel that landed while an LLM call was in flight returned an error out
+  of the agent loop, skipping the post-loop `ProcessingCompleted` event —
+  the only signal the inspect server uses to clear its per-thread
+  `is_processing` flag. The thread kept reporting `Processing`, the chat
+  progress line kept ticking, and the last activity entry read
+  `ERROR: cancelled during LLM call`. A cancel during an LLM call is now a
+  normal loop exit (not an error), and the worker publishes
+  `ProcessingCompleted { success: false }` after *any* processing error, so
+  no failure path can leave the state stuck. (#523)
+
 - **Auto-retarget workflow never retargeted anything.** The job introduced
   in #518 has no `actions/checkout` step, so `gh` had no git remote to infer
   the repository from and every call failed with `fatal: not a git

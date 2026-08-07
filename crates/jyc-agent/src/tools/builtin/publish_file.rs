@@ -16,7 +16,7 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// Tool for publishing files from the thread directory to an exchange URL.
 pub struct PublishFileTool {
     /// Base URL prepended to `/exchange/...` links (from
-    /// `[inspect] exchange_base_url`, falling back to `http://<bind>`).
+    /// `[inspect] base_url`, falling back to `http://<bind>`).
     base_url: String,
 }
 

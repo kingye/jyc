@@ -23,7 +23,7 @@ All notable changes to JYC will be documented in this file.
   route is deliberately not gated by the dashboard bearer middleware so
   links work for end users. `/reset` and `/new` remove the published files and the
   token, invalidating previously shared links. The link base URL is
-  configurable via the new `[inspect] exchange_base_url` setting
+  configurable via the new `[inspect] base_url` setting
   (fallback: `http://<inspect.bind>`). (#519)
 
 - **Show the selected thread's git branch in the TUI.** The dashboard
@@ -74,12 +74,12 @@ All notable changes to JYC will be documented in this file.
 ### Fixed
 
 - **Published links pointed at a wildcard host.** With
-  `[inspect] bind = "0.0.0.0:9876"` and no `exchange_base_url`, the link
+  `[inspect] bind = "0.0.0.0:9876"` and no `base_url`, the link
   base fell back to `http://0.0.0.0:9876` — a bind wildcard, never a
   reachable destination, so every published link was dead off-machine. The
   wildcard host is now replaced by this host's primary LAN IP (port
-  preserved) and a warning names `exchange_base_url` as the real fix.
-  `exchange_base_url` is also validated at startup: it must carry an
+  preserved) and a warning names `base_url` as the real fix.
+  `base_url` is also validated at startup: it must carry an
   `http://` or `https://` scheme, since a scheme-less value is read by
   browsers as a relative path and breaks silently. (#520)
 

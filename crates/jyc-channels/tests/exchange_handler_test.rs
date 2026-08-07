@@ -39,7 +39,7 @@ enabled = true
 mode = "agent"
 [inspect]
 enabled = true
-exchange_base_url = "https://jyc.example.com"
+base_url = "https://jyc.example.com"
 "#,
         )
         .unwrap(),

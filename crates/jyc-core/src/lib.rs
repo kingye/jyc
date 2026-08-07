@@ -36,7 +36,7 @@ pub const EXCHANGE_TOKEN_FILENAME: &str = "exchange-token";
 /// Single source of truth for the link format so the `jyc_publish_file` tool
 /// and the `/exchange` command can never disagree. `base` is an opaque prefix
 /// (scheme + host, optionally port and subpath) with no trailing slash — see
-/// `InspectConfig::effective_exchange_base_url`.
+/// `InspectConfig::effective_base_url`.
 pub fn exchange_url(base: &str, channel: &str, thread: &str, name: &str, token: &str) -> String {
     format!(
         "{base}/exchange/{}/{}/{}?token={token}",

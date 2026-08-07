@@ -410,7 +410,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // mid-stream, body decode glitch, idle timeout) get a few automatic
         // retries with backoff before the thread is failed. See
         // `complete_with_retry` for classifier and policy.
-        let response = complete_with_retry(
+        //
+        // A failure while `cancel` is already fired is a user-initiated
+        // `/cancel`, not an error: break so the post-loop
+        // `ProcessingCompleted` event still fires (the dashboard clears its
+        // "AI thinking" state only on that event).
+        let response = match complete_with_retry(
             provider,
             &raw_context,
             &tools.definitions(),
@@ -421,7 +426,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             &cancel,
             thinking_enabled,
         )
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(e) if cancel.is_cancelled() => {
+                tracing::info!(total_iterations, error = %e, "Agent loop cancelled during LLM call");
+                break;
+            }
+            Err(e) => return Err(e),
+        };
 
         // Track tokens across LLM calls in this round:
         // - `context_input_tokens` = input tokens from the most recent LLM call

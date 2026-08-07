@@ -1,8 +1,11 @@
 # JYC
 
 [![CI](https://github.com/kingye/jyc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kingye/jyc/actions/workflows/ci.yml)
+[![Overview](https://img.shields.io/badge/overview-kingye.github.io%2Fjyc-ffb02e)](https://kingye.github.io/jyc/)
 
 Channel-agnostic AI agent that operates through messaging channels. Users interact by sending messages (Email, GitHub, FeiShu, etc.), and the agent responds autonomously using the configured AI model.
+
+📖 **[Project overview](https://kingye.github.io/jyc/)** — architecture, channels, runtime model and configuration at a glance.
 
 **Why Rust:** Single static binary, zero runtime dependencies, memory safety without GC, and predictable low-latency performance for long-running server processes.
 

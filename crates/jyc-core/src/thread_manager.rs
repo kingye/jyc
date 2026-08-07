@@ -610,6 +610,7 @@ impl ThreadManager {
                     }
                 }
 
+                let processing_started = std::time::Instant::now();
                 if let Err(e) = process_message(
                     &mut item,
                     &thread_name,
@@ -633,35 +634,35 @@ impl ThreadManager {
                     if let Some(event_bus) = event_bus_for_error.clone() {
                         let truncated: String = err_display.chars().take(200).collect();
                         let thread_name_clone = thread_name.clone();
+                        let duration_secs = processing_started.elapsed().as_secs();
                         tokio::spawn(async move {
-                            let event = ThreadEvent::SessionStatus {
-                                thread_name: thread_name_clone.clone(),
-                                status_type: "error".to_string(),
-                                attempt: None,
-                                message: Some(truncated),
-                                timestamp: chrono::Utc::now(),
-                            };
-                            if let Err(publish_err) = event_bus.publish(event).await {
-                                tracing::trace!("Failed to publish error event: {}", publish_err);
-                            }
-                            // Always follow an error with ProcessingCompleted:
-                            // consumers (inspect server, dashboard) clear their
-                            // "processing" state only on that event, and an error
-                            // exit from the agent loop never publishes one. Without
-                            // this the dashboard stays stuck at "AI thinking..."
-                            // forever. Duplicate completions are idempotent.
-                            let completed = ThreadEvent::ProcessingCompleted {
-                                thread_name: thread_name_clone,
-                                message_id: "processing-error".to_string(),
-                                success: false,
-                                duration_secs: 0,
-                                timestamp: chrono::Utc::now(),
-                            };
-                            if let Err(publish_err) = event_bus.publish(completed).await {
-                                tracing::trace!(
-                                    "Failed to publish completion event: {}",
-                                    publish_err
-                                );
+                            // The error report is always followed by
+                            // ProcessingCompleted: consumers (inspect server,
+                            // dashboard) clear their "processing" state only on
+                            // that event, and an error exit from the agent loop
+                            // never publishes one. Without it the dashboard stays
+                            // stuck at "AI thinking..." forever. Duplicate
+                            // completions are idempotent.
+                            let events = [
+                                ThreadEvent::SessionStatus {
+                                    thread_name: thread_name_clone.clone(),
+                                    status_type: "error".to_string(),
+                                    attempt: None,
+                                    message: Some(truncated),
+                                    timestamp: chrono::Utc::now(),
+                                },
+                                ThreadEvent::ProcessingCompleted {
+                                    thread_name: thread_name_clone,
+                                    message_id: "processing-error".to_string(),
+                                    success: false,
+                                    duration_secs,
+                                    timestamp: chrono::Utc::now(),
+                                },
+                            ];
+                            for event in events {
+                                if let Err(publish_err) = event_bus.publish(event).await {
+                                    tracing::trace!("Failed to publish event: {}", publish_err);
+                                }
                             }
                         });
                     }

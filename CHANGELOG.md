@@ -6,14 +6,6 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Web UI dashboard.** The inspect server now serves an adaptive
-  (mobile/desktop) web dashboard at `GET /` — a single static page with no
-  build step, offering the same overview (channels, threads, status bar) and
-  live thread chat as the TUI. The auth token is entered once and stored in
-  `localStorage`; REST calls use the Bearer header and the WebSocket
-  upgrade passes `?token=` (browsers cannot set headers on `WebSocket`),
-  which the bearer middleware now accepts as a fallback.
-
 - **`/exchange` command.** Shows the shareable URLs of files already
   published in the current thread, one plain-text `filename: url` line per
   file (no header, no markdown, so links copy-paste cleanly). `/exchange

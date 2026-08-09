@@ -2671,6 +2671,17 @@ wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
 
 Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refresh.
 
+### Web UI Dashboard
+
+`GET /` on the inspect server serves an adaptive (mobile/desktop) web
+dashboard — a single static HTML file (`crates/jyc-inspect/web/index.html`,
+embedded via `include_str!`, no build step) that mirrors the TUI's overview
+and thread chat using the same REST + WebSocket API. The page itself is not
+bearer-gated (it contains no data); the token is entered once, kept in
+`localStorage`, sent as a Bearer header on REST calls, and passed as
+`?token=` on the WebSocket upgrade (browsers cannot set headers on
+`WebSocket`) — `require_bearer` accepts the query parameter as a fallback.
+
 ### Dashboard Cross-Channel Thread Chat
 
 When the user selects a non-websocket thread (email, feishu, github) in the overview pane and presses `Enter`, the dashboard enters a detail/chat mode showing live messages and allowing message injection into the thread. This closes the gap where previously only websocket threads supported interactive chat from the dashboard.

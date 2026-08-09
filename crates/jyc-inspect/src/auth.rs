@@ -59,7 +59,9 @@ pub async fn require_bearer(
 /// URL-decoded — tokens are expected to be alphanumeric/hex (no `+`, `%`,
 /// `&`), which holds for the tokens this server is configured with.
 fn query_token(query: Option<&str>) -> Option<&str> {
-    query?.split('&').find_map(|pair| pair.strip_prefix("token="))
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
 }
 
 fn unauthorized_response() -> Response {

@@ -4,8 +4,278 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JYC Dashboard</title>
+<style>
+  :root {
+    --bg: #1a1b26; --panel: #24283b; --border: #3b4261;
+    --fg: #c0caf5; --dim: #565f89; --accent: #7aa2f7;
+    --ok: #9ece6a; --warn: #e0af68; --err: #f7768e; --queued: #7dcfff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    min-height: 100vh; display: flex; flex-direction: column;
+  }
+  [hidden] { display: none !important; }
+
+  /* ── header / status bar ── */
+  header, footer {
+    display: flex; align-items: center; gap: 1em; flex-wrap: wrap;
+    padding: .5em 1em; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  footer { border-top: 1px solid var(--border); border-bottom: 0; color: var(--dim); font-size: 12px; }
+  header h1 { font-size: 15px; color: var(--accent); }
+  header .spacer { flex: 1; }
+  button {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: .35em .8em; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: bold; }
+
+  /* ── auth ── */
+  #auth-view { margin: auto; text-align: center; padding: 2em; max-width: 22em; }
+  #auth-view input {
+    width: 100%; margin: 1em 0; padding: .5em; font: inherit;
+    background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+  }
+  #auth-view .error { color: var(--err); min-height: 1.5em; }
+
+  /* ── channels strip ── */
+  #channels {
+    display: flex; gap: 1.2em; flex-wrap: wrap;
+    padding: .4em 1em; border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  #channels .dot { color: var(--ok); }
+
+  /* ── overview layout ── */
+  #overview-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #overview-main { flex: 1; display: flex; min-height: 0; }
+  #thread-list { flex: 1; overflow-y: auto; }
+  #detail {
+    width: 22em; border-left: 1px solid var(--border);
+    padding: 1em; overflow-y: auto; background: var(--panel);
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .35em .6em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  th { color: var(--dim); font-weight: normal; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+  tr.thread { cursor: pointer; }
+  tr.thread:hover, tr.thread.selected { background: var(--panel); }
+
+  .status-Idle { color: var(--dim); }
+  .status-Processing { color: var(--ok); }
+  .status-Queued { color: var(--queued); }
+  .status-WaitingForAnswer { color: var(--warn); }
+  .status-Error { color: var(--err); }
+
+  #detail h2 { font-size: 14px; color: var(--accent); margin-bottom: .8em; word-break: break-all; }
+  #detail dl { display: grid; grid-template-columns: auto 1fr; gap: .2em 1em; font-size: 13px; }
+  #detail dt { color: var(--dim); }
+  #detail dd { word-break: break-all; }
+  #detail .empty { color: var(--dim); }
+
+  /* ── mobile: single pane, detail becomes overlay ── */
+  @media (max-width: 767px) {
+    #detail {
+      position: fixed; inset: 0; width: auto; z-index: 10;
+      border-left: 0; padding-top: 3em;
+    }
+    #detail[hidden] { display: none !important; }
+    #detail-close { position: absolute; top: .6em; right: .6em; }
+  }
+  @media (min-width: 768px) {
+    #detail-close { display: none; }
+  }
+</style>
 </head>
 <body>
-<p>JYC web UI placeholder — implemented in later steps.</p>
+
+<div id="auth-view" hidden>
+  <h1>JYC Dashboard</h1>
+  <p style="color:var(--dim); margin-top:.5em">Enter the inspect server auth token.</p>
+  <input id="token-input" type="password" placeholder="auth token" autocomplete="off">
+  <div class="error" id="auth-error"></div>
+  <button class="primary" id="token-submit">Connect</button>
+</div>
+
+<div id="overview-view" hidden>
+  <header>
+    <h1>JYC Dashboard</h1>
+    <span id="hdr-version" style="color:var(--dim)"></span>
+    <span class="spacer"></span>
+    <button id="refresh-btn" title="Refresh now">↻</button>
+    <button id="forget-btn" title="Forget token">Forget token</button>
+  </header>
+  <div id="channels"></div>
+  <div id="overview-main">
+    <div id="thread-list"><table>
+      <thead><tr>
+        <th>Thread</th><th>Channel</th><th>Pattern</th><th>Status</th><th>Tokens</th>
+      </tr></thead>
+      <tbody id="thread-rows"></tbody>
+    </table></div>
+    <div id="detail" hidden>
+      <button id="detail-close">✕</button>
+      <div id="detail-body"><p class="empty">Select a thread.</p></div>
+    </div>
+  </div>
+  <footer id="statusbar">connecting…</footer>
+</div>
+
+<script>
+'use strict';
+
+// ── token gate ──
+const TOKEN_KEY = 'jyc_token';
+let token = localStorage.getItem(TOKEN_KEY) || '';
+let selected = null; // {channel, name} of the selected thread
+
+const $ = id => document.getElementById(id);
+
+async function api(path) {
+  const res = await fetch(path, { headers: { Authorization: 'Bearer ' + token } });
+  if (res.status === 401) { showAuth('Invalid token.'); throw new Error('auth'); }
+  if (!res.ok) throw new Error(res.status + ' ' + path);
+  return res.json();
+}
+
+function showAuth(error) {
+  $('overview-view').hidden = true;
+  $('auth-view').hidden = false;
+  $('auth-error').textContent = error || '';
+  $('token-input').focus();
+}
+
+async function submitToken() {
+  token = $('token-input').value.trim();
+  try {
+    await api('/api/state/overview');
+    localStorage.setItem(TOKEN_KEY, token);
+    $('auth-view').hidden = true;
+    $('overview-view').hidden = false;
+    startPolling();
+  } catch (e) { /* showAuth already called on 401; network errors below */
+    if (e.message !== 'auth') $('auth-error').textContent = 'Cannot reach server: ' + e.message;
+  }
+}
+
+$('token-submit').onclick = submitToken;
+$('token-input').onkeydown = e => { if (e.key === 'Enter') submitToken(); };
+$('forget-btn').onclick = () => { localStorage.removeItem(TOKEN_KEY); location.reload(); };
+$('refresh-btn').onclick = () => poll();
+$('detail-close').onclick = () => { selected = null; renderDetail(null); markSelected(); };
+
+// ── overview polling ──
+let pollTimer = null;
+
+function startPolling() {
+  poll();
+  if (!pollTimer) pollTimer = setInterval(poll, 2000);
+}
+
+async function poll() {
+  try {
+    const s = await api('/api/state/overview');
+    render(s);
+  } catch (e) {
+    if (e.message !== 'auth') $('statusbar').textContent = 'poll failed: ' + e.message;
+  }
+}
+
+// ── rendering ──
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function fmtK(n) {
+  if (n == null) return '-';
+  return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
+}
+
+function fmtTokens(t) {
+  if (t.context_input_tokens == null) return '-';
+  let s = fmtK(t.context_input_tokens);
+  if (t.max_tokens) {
+    s += '/' + fmtK(t.max_tokens);
+    s += ' (' + Math.round(100 * t.context_input_tokens / t.max_tokens) + '%)';
+  }
+  return s;
+}
+
+function fmtUptime(secs) {
+  const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60);
+  return h ? h + 'h' + String(m).padStart(2, '0') + 'm' : m + 'm';
+}
+
+function render(s) {
+  $('hdr-version').textContent = 'v' + s.version;
+  $('channels').innerHTML = s.channels.map(c =>
+    `<span><span class="dot">●</span> ${esc(c.name)} <span style="color:var(--dim)">(${esc(c.channel_type)})</span></span>`
+  ).join('');
+
+  $('thread-rows').innerHTML = s.threads.map(t => `
+    <tr class="thread" data-channel="${esc(t.channel)}" data-name="${esc(t.name)}">
+      <td>${esc(t.name)}</td>
+      <td>${esc(t.channel)}</td>
+      <td>${esc(t.pattern || '-')}</td>
+      <td class="status-${esc(t.status)}">${esc(t.status)}</td>
+      <td>${fmtTokens(t)}</td>
+    </tr>`).join('');
+
+  for (const row of $('thread-rows').querySelectorAll('tr.thread')) {
+    row.onclick = () => {
+      selected = { channel: row.dataset.channel, name: row.dataset.name };
+      renderDetail(s.threads.find(t => t.channel === selected.channel && t.name === selected.name));
+      markSelected();
+    };
+  }
+  markSelected();
+
+  // keep the detail pane in sync with the polled data
+  if (selected) {
+    const t = s.threads.find(t => t.channel === selected.channel && t.name === selected.name);
+    if (t) renderDetail(t);
+  }
+
+  const st = s.stats;
+  $('statusbar').textContent =
+    `${st.active_workers} active / ${st.total_threads} threads │ ${st.messages_received} recv │ up ${fmtUptime(s.uptime_secs)} │ v${s.version}`;
+}
+
+function markSelected() {
+  for (const row of $('thread-rows').querySelectorAll('tr.thread')) {
+    row.classList.toggle('selected',
+      !!selected && row.dataset.channel === selected.channel && row.dataset.name === selected.name);
+  }
+}
+
+function renderDetail(t) {
+  const pane = $('detail'), body = $('detail-body');
+  if (!t) { pane.hidden = true; body.innerHTML = '<p class="empty">Select a thread.</p>'; return; }
+  pane.hidden = false;
+  const rows = [
+    ['Channel', t.channel], ['Pattern', t.pattern], ['Status', t.status],
+    ['Model', t.model], ['Mode', t.mode],
+    ['Tokens', fmtTokens(t)],
+    ['Output', fmtK(t.output_tokens)],
+    ['Total in', fmtK(t.total_input_tokens)],
+    ['Cache hit', fmtK(t.total_cache_hit_tokens)],
+    ['Last active', t.last_active_at],
+    ['Skills', (t.skills || []).join(', ')],
+    ['Branch', t.branch],
+  ].filter(([, v]) => v != null && v !== '' && v !== '-');
+  body.innerHTML = `<h2>${esc(t.name)}</h2><dl>` +
+    rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('') +
+    '</dl>';
+}
+
+// ── boot ──
+if (token) {
+  $('overview-view').hidden = false;
+  startPolling();
+} else {
+  showAuth();
+}
+</script>
 </body>
 </html>

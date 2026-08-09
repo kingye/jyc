@@ -1198,9 +1198,11 @@ fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
 /// (`auth::require_bearer`). WebSocket upgrades flow through the same
 /// auth gate.
 ///
-/// Exception: `/exchange/*` is mounted WITHOUT bearer auth — access control
-/// there is the per-thread `?token=` created by the `jyc_publish_file`
-/// tool (rotated by `/reset`), so share links work for end users.
+/// Exceptions mounted WITHOUT bearer auth:
+/// - `GET /` — the web UI static shell (no data; its API calls are gated).
+/// - `/exchange/*` — access control is the per-thread `?token=` created by
+///   the `jyc_publish_file` tool (rotated by `/reset`), so share links work
+///   for end users.
 pub fn build_router(context: Arc<InspectContext>) -> Router {
     use crate::api;
 
@@ -1227,12 +1229,19 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         ));
 
     Router::new()
+        .route("/", get(web_ui))
         .route(
             "/exchange/:channel/:thread/*file_path",
             get(api::get_exchange_file),
         )
         .merge(authed)
         .with_state(context)
+}
+
+/// `GET /` — serve the web UI shell. Unauthenticated: the page is a static
+/// shell with no data; every REST/WS call it makes is bearer-gated.
+async fn web_ui() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../web/index.html"))
 }
 
 /// WS upgrade for `GET /ws` — use the first registered handler.

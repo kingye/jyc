@@ -4,6 +4,9 @@
 //! WebSocket upgrade (`/ws/*`). When the server has no `auth_token` configured,
 //! the middleware is a no-op.
 //!
+//! Browsers cannot set headers on `WebSocket` upgrades, so a `?token=` query
+//! parameter is accepted as a fallback (same pattern as `/exchange/*`).
+//!
 //! Token comparison is constant-time. RFC 7235 §2.1: the `Bearer` scheme name
 //! is matched case-insensitively.
 
@@ -40,12 +43,21 @@ pub async fn require_bearer(
             s.strip_prefix("Bearer ")
                 .or_else(|| s.strip_prefix("bearer "))
         })
-        .map(str::trim);
+        .map(str::trim)
+        .or_else(|| query_token(req.uri().query()));
 
     match presented {
         Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
         _ => unauthorized_response(),
     }
+}
+
+/// Extract the `token` query parameter from a raw query string.
+///
+/// Browser `WebSocket` upgrades cannot carry an `Authorization` header, so
+/// the web UI passes the token as `?token=` instead.
+fn query_token(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|pair| pair.strip_prefix("token="))
 }
 
 fn unauthorized_response() -> Response {
@@ -222,6 +234,28 @@ mod tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn correct_query_token_passes_through() {
+        let app = build_app(ctx_with_token(Some("secret")));
+        let req = HttpRequest::builder()
+            .uri("/probe?token=secret")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn wrong_query_token_returns_401() {
+        let app = build_app(ctx_with_token(Some("secret")));
+        let req = HttpRequest::builder()
+            .uri("/probe?token=wrong")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]

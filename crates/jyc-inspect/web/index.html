@@ -182,6 +182,7 @@ async function api(path) {
 
 function showAuth(error) {
   chatThread = null; // stop any WS reconnect loop
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   $('overview-view').hidden = true;
   $('chat-view').hidden = true;
@@ -318,7 +319,6 @@ function renderDetail(t) {
 let chatThread = null;   // {channel, name} while chat is open
 let ws = null;
 let lastId = 0;          // last chat_message id seen (dedup)
-let chatInfo = '';       // info line captured at open time
 
 async function openChat(channel, name) {
   chatThread = { channel, name };
@@ -331,10 +331,9 @@ async function openChat(channel, name) {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 
   const t = lastState && lastState.threads.find(t => t.channel === channel && t.name === name);
-  chatInfo = t
+  $('chat-info').textContent = t
     ? [t.channel, t.model, t.mode, fmtTokens(t)].filter(v => v && v !== '-').join(' │ ')
     : channel;
-  $('chat-info').textContent = chatInfo;
   setProcessing(t && t.status === 'Processing', false);
 
   try {
@@ -366,10 +365,15 @@ function wsUrl() {
 
 function connectWs() {
   ws = new WebSocket(wsUrl());
-  ws.onmessage = e => handleWsEvent(JSON.parse(e.data));
+  ws.onmessage = e => {
+    try { handleWsEvent(JSON.parse(e.data)); } catch { /* drop malformed frame */ }
+  };
   ws.onclose = () => {
     // Unexpected drop while chat is open → reconnect after a pause.
-    if (chatThread) setTimeout(() => { if (chatThread) connectWs(); }, 2000);
+    if (chatThread) {
+      $('chat-thinking').textContent = 'reconnecting…';
+      setTimeout(() => { if (chatThread) connectWs(); }, 2000);
+    }
   };
   ws.onerror = () => ws.close();
 }

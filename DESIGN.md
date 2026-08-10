@@ -2758,13 +2758,13 @@ When the user selects a non-websocket thread (email, feishu, github) in the over
 │                                                                   │
 │  Auxiliary UI (info + status visible by default):                  │
 │   Ctrl+P s/i toggle status / info panes individually;              │
-│   Ctrl+Z (or Ctrl+P z) zen mode hides all panes and restores       │
-│   the exact pre-zen state on exit.                                 │
+│   Ctrl+P z zen mode hides all panes and restores the exact         │
+│   pre-zen state on exit.                                           │
 │  ┌─────────────┐                                                 │
 │  │ Thread Info │ (20% wide right pane)                            │
 │  │ (bordered)  │                                                 │
 │  └─────────────┘                                                 │
-│  [Tab]focus [↑↓]scroll [^A]activity [^Z]zen [Esc]back [^Q]quit    │
+│  [Tab]focus [↑↓]scroll [^P]leader [Esc]back [^Q]quit              │
 └───────────────────────────────────────────────────────────────────┘
 ```
 

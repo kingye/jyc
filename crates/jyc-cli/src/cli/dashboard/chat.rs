@@ -99,8 +99,8 @@ pub(super) struct ChatState {
     /// Thread explorer pane (left side, 20% width). Default hidden;
     /// toggled via the leader-key popup (`e`).
     pub(super) explorer_visible: bool,
-    /// Aux-pane snapshot taken when entering zen mode (`Ctrl+Z` / leader
-    /// `z`), restored exactly on exit. `Some` = currently in zen mode.
+    /// Aux-pane snapshot taken when entering zen mode (leader `z`),
+    /// restored exactly on exit. `Some` = currently in zen mode.
     pub(super) zen_saved: Option<ZenSnapshot>,
     /// Selected row in the explorer pane.
     pub(super) explorer_selected: usize,
@@ -4190,13 +4190,13 @@ mod tests {
         app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 1);
 
-        // Press Ctrl+Z → enter zen mode: info, status AND activity hidden.
+        // Ctrl+P z → enter zen mode: info, status AND activity hidden.
         app.chat.toggle_zen_mode();
         assert!(!app.chat.info_visible);
         assert!(!app.chat.status_visible);
         assert_eq!(app.chat.activity_split, 0);
 
-        // Press Ctrl+Z again → exit zen mode: the full snapshot is
+        // Ctrl+P z again → exit zen mode: the full snapshot is
         // restored, including the activity pane.
         app.chat.toggle_zen_mode();
         assert!(app.chat.info_visible);
@@ -4248,7 +4248,7 @@ mod tests {
 
     #[test]
     fn toggle_resets_after_zen_mode() {
-        // Regression: after Ctrl+Z hides the activity pane, the next toggle
+        // Regression: after zen mode hides the activity pane, the next toggle
         // must show the bottom 20% size, not whatever (no-longer-meaningful)
         // intermediate state.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();

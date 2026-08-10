@@ -8,9 +8,9 @@ All notable changes to JYC will be documented in this file.
 
 - **Independent chat-pane visibility toggles.** New leader-key actions
   in the dashboard chat screen: `Ctrl+P s` toggles the bottom status
-  bar, `Ctrl+P i` toggles the thread info pane. Zen mode (`Ctrl+Z` /
-  `Ctrl+P z`) now snapshots all aux panes (activity, thread info, status
-  bar, explorer) on entry and restores the exact pre-zen state on exit,
+  bar, `Ctrl+P i` toggles the thread info pane. Zen mode (`Ctrl+P z`)
+  now snapshots all aux panes (activity, thread info, status bar,
+  explorer) on entry and restores the exact pre-zen state on exit,
   instead of only restoring the info pane.
 
 - **`/exchange` command.** Shows the shareable URLs of files already
@@ -73,7 +73,7 @@ All notable changes to JYC will be documented in this file.
 - **Chat screen shows thread info + status bar by default.** The
   dashboard chat screen no longer starts in zen mode: the thread info
   pane and status bar are visible on entry. Zen mode is now opt-in via
-  `Ctrl+Z` / `Ctrl+P z`.
+  `Ctrl+P z`.
 
 - **Branch resolution moved server-side.** The CLI no longer reads
   `.git/HEAD` directly — the inspect server resolves it on every

@@ -39,10 +39,14 @@ pub enum LocalAction {
     Quit,
     /// Toggle the thread explorer pane (left side).
     ToggleExplorer,
-    /// Toggle zen mode (hide/show info pane + status bar).
+    /// Toggle zen mode (hide all aux panes; restore the snapshot on exit).
     ToggleZen,
     /// Show/hide the activity pane (bottom 20% on, hidden off).
     ToggleActivity,
+    /// Show/hide the bottom status bar.
+    ToggleStatus,
+    /// Show/hide the thread info pane (right side).
+    ToggleInfo,
     /// Open the chat input in an external editor ($EDITOR).
     OpenExternalEditor,
     /// Toggle terminal mouse capture. While on, the wheel scrolls the
@@ -121,7 +125,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "toggle zen",
-            description: "Hide/show info pane and status bar",
+            description: "Zen mode: hide all panes, restore on exit",
             scope: Chat,
             action: LocalAction::ToggleZen,
             leader_keys: "z",
@@ -132,6 +136,20 @@ pub fn local_commands() -> &'static [LocalCommand] {
             scope: Chat,
             action: LocalAction::ToggleActivity,
             leader_keys: "a",
+        },
+        LocalCommand {
+            name: "toggle status",
+            description: "Show/hide the bottom status bar",
+            scope: Chat,
+            action: LocalAction::ToggleStatus,
+            leader_keys: "s",
+        },
+        LocalCommand {
+            name: "toggle info",
+            description: "Show/hide thread info pane",
+            scope: Chat,
+            action: LocalAction::ToggleInfo,
+            leader_keys: "i",
         },
         LocalCommand {
             name: "open in editor",

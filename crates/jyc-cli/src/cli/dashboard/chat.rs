@@ -431,6 +431,8 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
         LocalAction::ToggleZen => app.chat.toggle_zen_mode(),
         LocalAction::ToggleActivity => app.chat.toggle_activity(),
+        LocalAction::ToggleStatus => app.chat.toggle_status_bar(),
+        LocalAction::ToggleInfo => app.chat.toggle_info_pane(),
         LocalAction::OpenExternalEditor => {
             if app.chat.focus == ChatFocus::ChatPane
                 && let Err(e) = edit_input_externally(app, terminal)

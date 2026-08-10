@@ -2988,9 +2988,13 @@ mod tests {
         let mut app = App::new(rx, None);
         app.chat.activity_split = 1; // activity pane visible
 
+        // info pane is visible by default → full cycle:
+        // Chat → MessageArea → InfoPane → ActivityPane → Chat.
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+        app.chat.toggle_focus();
+        assert_eq!(app.chat.focus, ChatFocus::InfoPane);
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
         app.chat.toggle_focus();
@@ -3003,10 +3007,18 @@ mod tests {
         let mut app = App::new(rx, None);
         assert_eq!(app.chat.activity_split, 0); // activity hidden
 
+        // MessageArea → InfoPane (visible by default) → Chat: the hidden
+        // activity pane must be skipped.
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::MessageArea);
         app.chat.toggle_focus();
-        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+        assert_eq!(app.chat.focus, ChatFocus::InfoPane);
+        app.chat.toggle_focus();
+        assert_eq!(
+            app.chat.focus,
+            ChatFocus::ChatPane,
+            "activity pane must be skipped when activity_split=0"
+        );
     }
 
     #[test]
@@ -3031,10 +3043,9 @@ mod tests {
 
     #[test]
     fn tab_cycles_through_info_pane_when_visible() {
-        // info_visible defaults to false; flip it on so the cycle stops.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
-        app.chat.info_visible = true;
+        app.chat.info_visible = true; // also the default; set explicitly for clarity
         // activity hidden, explorer hidden → cycle is Chat → MessageArea
         // → InfoPane → Chat (per the skip rules).
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
@@ -3048,9 +3059,10 @@ mod tests {
 
     #[test]
     fn tab_skips_info_pane_when_hidden() {
-        // info_visible defaults to false; cycle must skip InfoPane.
+        // With the info pane hidden, the cycle must skip InfoPane.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
+        app.chat.info_visible = false;
         assert_eq!(app.chat.focus, ChatFocus::ChatPane);
         app.chat.toggle_focus();
         assert_eq!(app.chat.focus, ChatFocus::MessageArea);
@@ -3882,35 +3894,37 @@ mod tests {
     }
 
     #[test]
-    fn opens_with_info_and_activity_hidden() {
-        // All visibility flags default to hidden when a new ChatState is
-        // constructed. Mirrors the "borderless chat, no chrome" UX.
+    fn opens_with_info_and_status_visible() {
+        // Thread info pane and status bar default to visible; activity,
+        // explorer and zen mode stay opt-in.
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let app = App::new(rx, None);
-        assert!(!app.chat.info_visible);
+        assert!(app.chat.info_visible);
+        assert!(app.chat.status_visible);
         assert_eq!(app.chat.activity_split, 0);
+        assert!(!app.chat.explorer_visible);
+        assert!(app.chat.zen_saved.is_none());
     }
 
     #[test]
-    fn zen_mode_hides_explorer_and_does_not_restore_it() {
+    fn zen_mode_restores_explorer() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
 
-        // Explorer open alongside visible info pane.
-        app.chat.toggle_zen_mode(); // exit default zen: info visible
+        // Explorer open alongside the default-visible info pane.
         app.chat.toggle_explorer();
         assert!(app.chat.explorer_visible);
         assert!(app.chat.info_visible);
 
-        // Enter zen → explorer hidden.
+        // Enter zen → both hidden.
         app.chat.toggle_zen_mode();
         assert!(!app.chat.explorer_visible);
         assert!(!app.chat.info_visible);
 
-        // Exit zen → info restored, explorer stays hidden.
+        // Exit zen → snapshot restored: explorer and info both back.
         app.chat.toggle_zen_mode();
+        assert!(app.chat.explorer_visible);
         assert!(app.chat.info_visible);
-        assert!(!app.chat.explorer_visible);
     }
 
     #[test]
@@ -4051,6 +4065,7 @@ mod tests {
     fn focus_cycle_includes_explorer_only_when_visible() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
+        app.chat.info_visible = false; // isolate explorer cycling
 
         // Hidden: ChatPane → MessageArea → ChatPane (no activity pane).
         app.chat.toggle_focus();
@@ -4163,35 +4178,72 @@ mod tests {
     }
 
     #[test]
-    fn zen_mode_hides_info_and_activity() {
+    fn zen_mode_restores_info_status_and_activity() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
-        // Start in zen mode (info hidden, activity hidden).
-        assert!(!app.chat.info_visible);
-        assert_eq!(app.chat.activity_split, 0);
-
-        // Press Ctrl+Z → exit zen mode: info+status visible, activity still hidden.
-        app.chat.toggle_zen_mode();
+        // Default: info+status visible, activity hidden.
         assert!(app.chat.info_visible);
+        assert!(app.chat.status_visible);
         assert_eq!(app.chat.activity_split, 0);
 
         // User opens activity via the leader popup (`Ctrl+P` then `a`).
-        // Now both info and activity are visible.
         app.chat.toggle_activity();
         assert_eq!(app.chat.activity_split, 1);
-        assert!(app.chat.info_visible);
 
-        // Press Ctrl+Z → enter zen mode: info hidden AND activity hidden,
-        // regardless of its current size.
+        // Press Ctrl+Z → enter zen mode: info, status AND activity hidden.
         app.chat.toggle_zen_mode();
         assert!(!app.chat.info_visible);
+        assert!(!app.chat.status_visible);
         assert_eq!(app.chat.activity_split, 0);
 
-        // Press Ctrl+Z again → exit zen mode: info+status restored, activity
-        // stays hidden (not auto-restored).
+        // Press Ctrl+Z again → exit zen mode: the full snapshot is
+        // restored, including the activity pane.
         app.chat.toggle_zen_mode();
         assert!(app.chat.info_visible);
-        assert_eq!(app.chat.activity_split, 0);
+        assert!(app.chat.status_visible);
+        assert_eq!(app.chat.activity_split, 1);
+    }
+
+    #[test]
+    fn toggle_status_bar_independent_of_info_pane() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.toggle_status_bar();
+        assert!(!app.chat.status_visible);
+        assert!(app.chat.info_visible, "info pane must not follow status");
+        app.chat.toggle_status_bar();
+        assert!(app.chat.status_visible);
+    }
+
+    #[test]
+    fn toggle_info_pane_independent_and_refocuses() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.toggle_info_pane();
+        assert!(!app.chat.info_visible);
+        assert!(app.chat.status_visible, "status bar must not follow info");
+
+        // Hiding the info pane while focused moves focus to the chat pane.
+        app.chat.toggle_info_pane();
+        app.chat.focus = ChatFocus::InfoPane;
+        app.chat.toggle_info_pane();
+        assert!(!app.chat.info_visible);
+        assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    }
+
+    #[test]
+    fn zen_exit_restores_snapshot_over_in_zen_toggles() {
+        // Documented edge: panes toggled individually while in zen are
+        // discarded in favor of the pre-zen snapshot.
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.toggle_status_bar(); // status hidden before zen
+        app.chat.toggle_zen_mode(); // snapshot: status=false
+        app.chat.toggle_status_bar(); // in-zen toggle: status=true
+        assert!(app.chat.status_visible);
+        app.chat.toggle_zen_mode(); // exit → snapshot wins
+        assert!(!app.chat.status_visible);
+        assert!(app.chat.zen_saved.is_none());
     }
 
     #[test]

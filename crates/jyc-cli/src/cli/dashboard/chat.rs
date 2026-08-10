@@ -46,6 +46,16 @@ pub(super) struct ChatMessage {
     pub(super) timestamp: Option<String>,
 }
 
+/// Aux-pane visibility snapshot taken when entering zen mode and restored
+/// on exit (see `ChatState::zen_saved`).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ZenSnapshot {
+    activity_split: u8,
+    info_visible: bool,
+    status_visible: bool,
+    explorer_visible: bool,
+}
+
 /// Chat pane state: WebSocket thread chat for any channel type.
 pub(super) struct ChatState {
     // Chat pane state
@@ -80,14 +90,18 @@ pub(super) struct ChatState {
     /// Activity pane visibility/size state.
     /// 0 = hidden, 1 = bottom 20%, 2 = bottom 80%, 3 = activity-only (full pane)
     pub(super) activity_split: u8,
-    /// Thread info pane + bottom status bar visibility. They share state
-    /// because `Ctrl+Z` toggles them together.
-    /// `false` = both hidden (zen mode), `true` = both visible.
+    /// Thread info pane (right side, 20% width) visibility. Default
+    /// visible; toggled via the leader-key popup (`i`).
     pub(super) info_visible: bool,
+    /// Bottom status bar visibility. Default visible; toggled via the
+    /// leader-key popup (`s`).
+    pub(super) status_visible: bool,
     /// Thread explorer pane (left side, 20% width). Default hidden;
-    /// toggled via the leader-key popup (`e`). Entering zen mode hides
-    /// it; exiting zen mode does not restore it.
+    /// toggled via the leader-key popup (`e`).
     pub(super) explorer_visible: bool,
+    /// Aux-pane snapshot taken when entering zen mode (`Ctrl+Z` / leader
+    /// `z`), restored exactly on exit. `Some` = currently in zen mode.
+    pub(super) zen_saved: Option<ZenSnapshot>,
     /// Selected row in the explorer pane.
     pub(super) explorer_selected: usize,
     pub(super) ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -792,37 +806,38 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     //   │  activity pane (bottom 20% / 80% / full when visible)         │
     //   └───────────────────────────────────────────────────────────────┘
     //
-    // Both status bar and thread info pane are tied to `info_visible` so
-    // `Ctrl+Z` toggles them together.
+    // Status bar and thread info pane have independent visibility flags
+    // (leader `s` / `i`); zen mode hides both.
 
     if app.chat.phase == ChatPhase::PatternSelect {
         // Pattern select is the initial screen when no thread is chosen.
-        // No channel bar, no status bar — the user is picking where to go.
-        let mut chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Thread info pane
-                Constraint::Min(0),    // Pattern select
-                Constraint::Length(1), // Status bar
-            ])
-            .split(area);
-        if !app.chat.info_visible {
-            // Zen-style: drop info row and status row, expand pattern area.
-            chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0)])
-                .split(area);
-        }
-        render_pattern_select(frame, chunks[chunks.len() - 1], app);
+        // Info row and status row are independent; zen hides both.
+        let mut constraints = Vec::with_capacity(3);
         if app.chat.info_visible {
-            render_thread_info_pane(frame, chunks[0], app);
-            render_status_bar(frame, chunks[2], app);
+            constraints.push(Constraint::Length(1)); // Thread info pane
+        }
+        constraints.push(Constraint::Min(0)); // Pattern select
+        if app.chat.status_visible {
+            constraints.push(Constraint::Length(1)); // Status bar
+        }
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+        let mut i = 0;
+        if app.chat.info_visible {
+            render_thread_info_pane(frame, chunks[i], app);
+            i += 1;
+        }
+        render_pattern_select(frame, chunks[i], app);
+        if app.chat.status_visible {
+            render_status_bar(frame, chunks[i + 1], app);
         }
         return;
     }
 
     // Chatting phase.
-    let show_status = app.chat.info_visible;
+    let show_status = app.chat.status_visible;
     let show_activity = app.chat.activity_split != 0;
     let show_explorer = app.chat.explorer_visible;
     if show_explorer {
@@ -2091,8 +2106,10 @@ impl ChatState {
             activity_hscroll: 0,
             awaiting_response: false,
             activity_split: 0,
-            info_visible: false,
+            info_visible: true,
+            status_visible: true,
             explorer_visible: false,
+            zen_saved: None,
             explorer_selected: 0,
             ws_tx: None,
             ws_rx,
@@ -2143,7 +2160,9 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
-        self.info_visible = false;
+        self.info_visible = true;
+        self.status_visible = true;
+        self.zen_saved = None;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -2206,7 +2225,9 @@ impl ChatState {
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
-        self.info_visible = false;
+        self.info_visible = true;
+        self.status_visible = true;
+        self.zen_saved = None;
         self.ws_connected = false;
         self.input_history.clear();
         self.history_pos = None;
@@ -2327,16 +2348,28 @@ impl ChatState {
         }
     }
 
-    /// Toggle zen mode. Zen mode hides the thread info pane, the bottom
-    /// status bar, and any visible activity pane. Exiting zen mode
-    /// restores the thread info pane and status bar only — the activity
-    /// pane stays hidden until the user re-opens it via the leader-key
-    /// popup (`Ctrl+P` then `a`).
+    /// Toggle zen mode. Entering zen snapshots the aux-pane state
+    /// (activity, thread info, status bar, explorer) and hides all of
+    /// them, leaving only the chat pane. Exiting zen restores the
+    /// snapshot exactly — panes toggled individually while in zen are
+    /// discarded in favor of the snapshot.
     pub(super) fn toggle_zen_mode(&mut self) {
-        let was_info_visible = self.info_visible;
-        // Hide auxiliary UI unconditionally.
-        self.info_visible = false;
+        if let Some(saved) = self.zen_saved.take() {
+            self.activity_split = saved.activity_split;
+            self.info_visible = saved.info_visible;
+            self.status_visible = saved.status_visible;
+            self.explorer_visible = saved.explorer_visible;
+            return;
+        }
+        self.zen_saved = Some(ZenSnapshot {
+            activity_split: self.activity_split,
+            info_visible: self.info_visible,
+            status_visible: self.status_visible,
+            explorer_visible: self.explorer_visible,
+        });
         self.activity_split = 0;
+        self.info_visible = false;
+        self.status_visible = false;
         self.explorer_visible = false;
         if self.focus == ChatFocus::ActivityPane
             || self.focus == ChatFocus::InfoPane
@@ -2344,10 +2377,19 @@ impl ChatState {
         {
             self.focus = ChatFocus::ChatPane;
         }
-        // If anything was visible, we're now in zen mode (exit).
-        // Otherwise restore info+status.
-        if !was_info_visible {
-            self.info_visible = true;
+    }
+
+    /// Toggle the bottom status bar (leader-key popup `s`).
+    pub(super) fn toggle_status_bar(&mut self) {
+        self.status_visible = !self.status_visible;
+    }
+
+    /// Toggle the thread info pane (leader-key popup `i`). Hiding it
+    /// while focused moves focus back to the chat pane.
+    pub(super) fn toggle_info_pane(&mut self) {
+        self.info_visible = !self.info_visible;
+        if !self.info_visible && self.focus == ChatFocus::InfoPane {
+            self.focus = ChatFocus::ChatPane;
         }
     }
 

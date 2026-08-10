@@ -100,13 +100,15 @@ starts in Insert mode.
 | `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
 | `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
 | `Esc` | Insert → Normal mode; message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` / `:` (Normal mode) | Open the command palette: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (zen, explorer, toggle activity, editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
-| `Ctrl+O` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
-| `Tab` | Cycle focus: Input → Message area → Activity pane (skipped when hidden) |
+| `Ctrl+P` / `:` (Normal mode) | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` thread info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
+| `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
+| `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
-| `Ctrl+E` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
-| `Ctrl+Z` | Toggle zen mode: hide (or show) thread info pane and status bar together. If the activity pane is visible, `Ctrl+Z` also hides it. Exiting zen mode restores only info + status, not activity. |
+| `Ctrl+P` → `e` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
+| `Ctrl+P` → `s` | Toggle the bottom status bar |
+| `Ctrl+P` → `i` | Toggle the thread info pane (right side) |
+| `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, thread info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
 | `Ctrl+Q` | Quit the dashboard |
@@ -144,19 +146,16 @@ Normal mode (default):
 ```
 
 Chat mode (`c` toggled on). The channel bar is hidden; chat, thread info
-pane, activity pane, and status bar are individually togglable. By
-default all auxiliary UI is hidden (zen mode). Each chat round has only
-a top time rule and a bottom right-aligned duration rule — there are no
-side borders or middle dividers.
+pane, activity pane, explorer pane, and status bar are individually
+togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The thread info pane
+and status bar are visible by default; zen mode (`Ctrl+P` then `z`)
+hides all auxiliary UI and restores the previous state when pressed
+again. Each chat round has only a top time rule and a bottom
+right-aligned duration rule — there are no side borders or middle
+dividers.
 
 ```
-Default (zen mode):
-┌────────────────────────┐
-│ Chat conversation      │
-│ (borderless, full size)│
-└────────────────────────┘
-
-After Ctrl+Z (info + status shown):
+Default (info + status shown):
 ┌────────────────────────┐
 │ Chat conversation      │┌─────────────┐
 │ (borderless)           ││ Thread Info │
@@ -164,6 +163,12 @@ After Ctrl+Z (info + status shown):
 │                        ││             │
 └────────────────────────┘└─────────────┘
  Help bar (1 line)
+
+Zen mode (`Ctrl+P` `z`):
+┌────────────────────────┐
+│ Chat conversation      │
+│ (borderless, full size)│
+└────────────────────────┘
 
 After `Ctrl+P` `a` (activity 20% bottom):
 ┌────────────────────────┐

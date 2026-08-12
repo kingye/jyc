@@ -377,11 +377,10 @@ pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
 
 /// Move the explorer selection by `delta` rows, clamped to the current
 /// thread list.
-/// Refocus the chat input and forward the key to the editor — the user
-/// can scroll any pane, then just start typing.
-fn refocus_input_and_forward(app: &mut App, key: event::KeyEvent) {
+/// Refocus the chat input, consuming the key — the user can scroll any
+/// pane, then press any key to return to the input and start typing.
+fn refocus_input(app: &mut App) {
     app.chat.focus = ChatFocus::ChatPane;
-    app.chat.handler.on_key_event(key, &mut app.chat.editor);
 }
 
 fn explorer_move(app: &mut App, delta: i64) {
@@ -650,8 +649,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
             // Explorer pane: navigate the thread list; Enter switches the
             // chat to the selected thread. Esc returns focus to the input.
-            // Any other printable key refocuses the input and is forwarded
-            // to the editor, so the user can browse then just start typing.
+            // Any other key refocuses the input (consumed, not forwarded),
+            // so the user can browse then just start typing.
             if app.chat.focus == ChatFocus::ExplorerPane {
                 match key.code {
                     KeyCode::Esc => {
@@ -662,7 +661,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
                     KeyCode::Char('G') => explorer_move(app, i64::MAX),
                     KeyCode::Enter => explorer_open_selected(app),
-                    _ => refocus_input_and_forward(app, key),
+                    _ => refocus_input(app),
                 }
                 return;
             }
@@ -672,8 +671,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 // that horizontal overflow isn't a concern. No Esc-back:
                 // leaving the info pane is via Tab (focus cycle) or
                 // the leader-key popup, same as ActivityPane. Any other
-                // printable key refocuses the input and is forwarded to
-                // the editor, so the user can scroll then just start typing.
+                // key refocuses the input (consumed, not forwarded), so
+                // the user can scroll then just start typing.
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
@@ -683,7 +682,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('g') => {}
                     // PageUp/PageDown never reach here: the app-level
                     // match above intercepts them for every pane.
-                    _ => refocus_input_and_forward(app, key),
+                    _ => refocus_input(app),
                 }
                 return;
             }
@@ -692,8 +691,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 match key.code {
                     // No Esc-back here: returning to the dashboard is done
                     // via the leader-key popup (`open dashboard`, Ctrl+P / Space).
-                    // Any other printable key refocuses the input and is
-                    // forwarded to the editor (same as MessageArea).
+                    // Any other key refocuses the input, consumed (same
+                    // as MessageArea).
                     KeyCode::Esc => {}
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
@@ -706,15 +705,15 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Right => {
                         app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
                     }
-                    _ => refocus_input_and_forward(app, key),
+                    _ => refocus_input(app),
                 }
                 return;
             }
 
             // Message area: scroll the conversation with arrows / vim keys.
             // Esc returns focus to the input field (does not exit the chat).
-            // Any other printable key refocuses the input and is forwarded
-            // to the editor, so the user can scroll then just start typing.
+            // Any other key refocuses the input (consumed, not forwarded),
+            // so the user can scroll then just start typing.
             if app.chat.focus == ChatFocus::MessageArea {
                 match key.code {
                     KeyCode::Esc => {
@@ -725,7 +724,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
                     KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    _ => refocus_input_and_forward(app, key),
+                    _ => refocus_input(app),
                 }
                 return;
             }
@@ -3353,7 +3352,7 @@ mod tests {
     }
 
     #[test]
-    fn printable_key_refocuses_input_from_any_pane() {
+    fn printable_key_refocuses_input_without_inserting() {
         for focus in [
             ChatFocus::MessageArea,
             ChatFocus::InfoPane,
@@ -3369,7 +3368,10 @@ mod tests {
                 &mut test_terminal(),
             );
             assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?}");
-            assert_eq!(app.chat.editor.lines.to_string(), "x", "{focus:?}");
+            assert!(
+                app.chat.editor.lines.to_string().is_empty(),
+                "{focus:?}: refocus key must be consumed, not inserted"
+            );
         }
     }
 

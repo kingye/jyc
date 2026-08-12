@@ -8,15 +8,15 @@ use crossterm::{
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use edtui::{EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Lines};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Widget, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
+use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,11 +93,11 @@ struct App {
     /// buffers so the chat pane shows the new thread's history.
     pending_hydrate: Option<(String, String)>,
 
-    /// Set by the leader `new chat` (Space/n) action; the async poll loop runs the
+    /// Set by the leader `new chat` action; the async poll loop runs the
     /// pattern-select flow (needs InspectClient for `list_patterns`).
     pending_new_chat: bool,
 
-    /// Set by the leader `reload config` (Space/r) action; the async poll loop runs
+    /// Set by the leader `reload config` action; the async poll loop runs
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
 
@@ -111,7 +111,7 @@ struct App {
     mouse_capture_enabled: bool,
 
     /// Open leader-key popup on the dashboard screen (dashboard + shared
-    /// commands). Triggered by `Ctrl+P` or `Space`.
+    /// commands). Triggered by `Ctrl+P`.
     leader: Option<leader::Leader>,
 
     /// Authorization token propagated to the WebSocket upgrade requests.
@@ -570,7 +570,7 @@ pub async fn run(
                         // Bracketed paste delivers the whole pasted chunk as
                         // one event. Forward it to the editor so it never
                         // triggers Enter handling / send.
-                        app.chat.handler.on_paste_event(data, &mut app.chat.editor);
+                        app.chat.editor.insert_str(data);
                     }
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if app.chat.visible {
@@ -879,7 +879,7 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, thre
 }
 
 /// Start a new chat: fetch patterns via REST and open the chat screen in
-/// pattern-select mode. Used by the `c` key and the leader `new chat` (Space/n)
+/// pattern-select mode. Used by the `c` key and the leader `new chat`
 /// action (via `pending_new_chat`).
 async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
     let channel = app.state.as_ref().and_then(|o| {
@@ -899,7 +899,7 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
 
 /// Open the chat screen for the table-selected thread. All channel types
 /// use the unified `/ws/<channel>/<thread>` endpoint. Used by the Enter key
-/// and the leader `open chat` (Space/c) action.
+/// and the leader `open chat` action.
 async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: &str) {
     let thread_info = app.state.as_ref().and_then(|s| {
         app.table_state
@@ -976,10 +976,9 @@ async fn handle_normal_keys(
         return;
     }
 
-    // Ctrl+P or Space opens the leader popup (dashboard + shared commands).
+    // Ctrl+P opens the leader popup (dashboard + shared commands).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
-    let is_space = key.code == KeyCode::Char(' ') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_p || is_space {
+    if is_ctrl_p {
         app.leader = Some(leader::Leader::new(local_commands::CommandScope::Dashboard));
         return;
     }
@@ -1389,33 +1388,15 @@ fn close_overview_ws(app: &mut App) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    // Shortcuts live in the leader-key popup (Ctrl+P / Space); the status
+    // Shortcuts live in the leader-key popup (Ctrl+P); the status
     // bar only advertises how to reach them.
-    let help_text = "[^P/Spc]leader [^Q]quit".to_string();
+    let help_text = "[^P]leader [^Q]quit".to_string();
 
-    // Right-aligned chips. The vim mode chip shows while chatting (8 cells);
-    // the mouse-capture chip is always visible (8 cells, global terminal
-    // state). Mouse chip sits at the rightmost edge; vim chip immediately
-    // to its left when present.
-    let vim_width: u16 = if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-        8
-    } else {
-        0
-    };
+    // Right-aligned chip: the mouse-capture chip is always visible
+    // (8 cells, global terminal state) and sits at the rightmost edge.
     let mouse_width: u16 = 8;
-    let total_right = vim_width + mouse_width;
-    let [left_area, right_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(total_right)]).areas(area);
-    let (vim_area, mouse_area) = if vim_width > 0 {
-        let [v, m] = Layout::horizontal([
-            Constraint::Length(vim_width),
-            Constraint::Length(mouse_width),
-        ])
-        .areas(right_area);
-        (Some(v), m)
-    } else {
-        (None, right_area)
-    };
+    let [left_area, mouse_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(mouse_width)]).areas(area);
 
     let state = match &app.state {
         Some(s) => s,
@@ -1462,43 +1443,11 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(bar, left_area);
 
-    // Right-align the vim mode chip (Catppuccin Mocha palette).
-    if let Some(vim_area) = vim_area {
-        let (label, bg, fg) = match app.chat.editor.mode {
-            EditorMode::Normal => (
-                " NORMAL ",
-                Color::Rgb(137, 180, 250),
-                Color::Rgb(30, 30, 46),
-            ),
-            EditorMode::Insert => (
-                " INSERT ",
-                Color::Rgb(166, 227, 161),
-                Color::Rgb(30, 30, 46),
-            ),
-            EditorMode::Visual => (
-                " VISUAL ",
-                Color::Rgb(203, 166, 247),
-                Color::Rgb(30, 30, 46),
-            ),
-            _ => (
-                " NORMAL ",
-                Color::Rgb(137, 180, 250),
-                Color::Rgb(30, 30, 46),
-            ),
-        };
-        let mode_para = Paragraph::new(Span::styled(
-            label,
-            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center);
-        frame.render_widget(mode_para, vim_area);
-    }
-
     render_mouse_chip(frame, mouse_area, app.mouse_capture_enabled);
 }
 
 /// Render the right-aligned mouse-capture chip. Same 8-cell padded
-/// format as the vim mode chip (see `render_status_bar`). Peach means
+/// format as the other status-bar chips (see `render_status_bar`). Peach means
 /// capture is on (wheel scrolls, tmux select disabled); overlay0 means
 /// off (tmux select works, wheel ignored).
 fn render_mouse_chip(frame: &mut Frame, area: Rect, mouse_capture_enabled: bool) {

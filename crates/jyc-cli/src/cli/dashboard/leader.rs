@@ -1,7 +1,7 @@
 //! Leader-key popup controller used by both the dashboard and the chat
 //! screen.
 //!
-//! Invoked by `Ctrl+P` (everywhere) or `Space` (Normal mode + dashboard).
+//! Invoked by `Ctrl+P`.
 //! Shows all local commands for the active scope with their assigned
 //! leader keys; typing the keys (one or two chars) dispatches the action
 //! immediately, `Esc` closes. Multi-char keys (e.g., `gg` for scroll

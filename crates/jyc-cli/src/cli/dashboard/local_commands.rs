@@ -3,8 +3,7 @@
 //! Unlike `/` commands (registered in `jyc-core` and executed server-side),
 //! local commands are dispatched entirely within the TUI: navigation,
 //! zen mode, activity pane, external editor, scrolling. The leader
-//! popup is invoked with `Ctrl+P` (everywhere) or `Space` (Normal mode +
-//! dashboard) and shows all in-scope commands. Typing the assigned
+//! popup is invoked with `Ctrl+P` and shows all in-scope commands. Typing the assigned
 //! keys (one or two chars) dispatches the action immediately; `Esc`
 //! closes. Multi-char sequences (e.g., `gg` for scroll top) wait for the
 //! next key while a prefix is still ambiguous.
@@ -52,7 +51,7 @@ pub enum LocalAction {
     /// Toggle terminal mouse capture. While on, the wheel scrolls the
     /// chat message area (PR #484); while off, tmux/terminal-native
     /// text selection works. Default is on. A right-aligned status-bar
-    /// chip (mirroring the vim mode chip format) shows the state.
+    /// chip (mirroring the status-bar chip format) shows the state.
     ToggleMouseCapture,
     /// Focus the chat message area for keyboard scrolling.
     FocusChat,

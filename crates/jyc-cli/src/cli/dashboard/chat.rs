@@ -328,6 +328,13 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
     out
 }
 
+/// Markdown render options for chat messages: Base16MochaDark code theme.
+/// The highlighter emits foreground colors only — the terminal background
+/// is kept, so the theme cannot clash with the TUI.
+pub(super) fn chat_markdown_options() -> tui_markdown::Options {
+    tui_markdown::Options::default().code_theme(tui_markdown::BuiltinCodeTheme::Base16MochaDark)
+}
+
 /// Rewrites markdown soft breaks (`\n` inside a paragraph) into hard breaks
 /// (`"  \n"`) outside fenced code blocks, so line breaks the user typed into
 /// the chat input survive rendering.
@@ -336,19 +343,13 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 /// and renders `SoftBreak` as a space, collapsing multi-line messages into
 /// one visual line. Fenced code blocks are left untouched — trailing spaces
 /// inside them would alter the code.
-/// Markdown render options for chat messages: Base16MochaDark code theme.
-/// The highlighter emits foreground colors only — the terminal background
-/// is kept, so the theme cannot clash with the TUI.
-pub(super) fn chat_markdown_options() -> tui_markdown::Options {
-    tui_markdown::Options::default().code_theme(tui_markdown::BuiltinCodeTheme::Base16MochaDark)
-}
-
 // ponytail: local workaround; drop if tui-markdown ever exposes parser options.
 pub(super) fn softbreaks_to_hardbreaks(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
     let mut in_fence = false;
     for line in md.split_inclusive('\n') {
-        if line.trim_start().starts_with("```") {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
             out.push_str(line);
             continue;
@@ -5252,14 +5253,19 @@ mod tests {
             softbreaks_to_hardbreaks(md),
             "before  \n```rust\nlet x = 1;\nlet y = 2;\n```\nafter  \n"
         );
+        // Tilde fences are recognized too.
+        assert_eq!(
+            softbreaks_to_hardbreaks("~~~\ncode\n~~~\n"),
+            "~~~\ncode\n~~~\n"
+        );
     }
 
     #[test]
     fn transformed_message_renders_on_two_lines() {
-        // End-to-end pin: tui-markdown must emit two lines for a two-line
-        // chat message after the transform (regression: soft break → space).
+        // End-to-end pin on the production render path: a two-line chat
+        // message must emit two lines (regression: soft break → space).
         let md = softbreaks_to_hardbreaks("one\ntwo\n");
-        let text = tui_markdown::from_str(&md);
+        let text = tui_markdown::from_str_with_options(&md, &chat_markdown_options());
         assert_eq!(text.lines.len(), 2);
     }
 

@@ -3359,19 +3359,21 @@ mod tests {
             ChatFocus::ActivityPane,
             ChatFocus::ExplorerPane,
         ] {
-            let mut app = chatting_app();
-            app.chat.editor.mode = EditorMode::Insert;
-            app.chat.focus = focus;
-            handle_chat_keys(
-                &mut app,
-                crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-                &mut test_terminal(),
-            );
-            assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?}");
-            assert!(
-                app.chat.editor.lines.to_string().is_empty(),
-                "{focus:?}: refocus key must be consumed, not inserted"
-            );
+            for ch in ['i', 'a', 'x'] {
+                let mut app = chatting_app();
+                app.chat.editor.mode = EditorMode::Insert;
+                app.chat.focus = focus;
+                handle_chat_keys(
+                    &mut app,
+                    crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    &mut test_terminal(),
+                );
+                assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?} {ch:?}");
+                assert!(
+                    app.chat.editor.lines.to_string().is_empty(),
+                    "{focus:?} {ch:?}: refocus key must be consumed, not inserted"
+                );
+            }
         }
     }
 

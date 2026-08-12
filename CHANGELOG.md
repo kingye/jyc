@@ -29,6 +29,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **TUI stack upgraded to the ratatui 0.30 ecosystem.** `ratatui`
+  0.29 → 0.30, `crossterm` 0.28 → 0.29, and `edtui` 0.9.9 → 0.11.6
+  (adds find/till motions, dot-repeat, and paste-before `P` to the chat
+  input). The chat message markdown renderer was replaced with
+  [`tui-markdown`](https://github.com/joshka/tui-markdown); rendered
+  messages are now word-wrapped to the pane width by our own
+  `wrap_styled_lines` helper instead of inside the renderer. (#384)
+
 - **Keypress refocus works from every chat pane, consuming the key.**
   Pressing a key while a chat pane (message area, thread info,
   activity, explorer) is focused returns focus to the input; the key is

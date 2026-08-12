@@ -108,7 +108,7 @@ starts in Insert mode.
 | `Ctrl+P` → `e` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
 | `Ctrl+P` → `i` | Toggle the thread info pane (right side) |
-| `Ctrl+P` → `c` | Focus the chat message area (j/k/arrow scroll); typing any printable key returns focus to the input |
+| `Ctrl+P` → `c` | Focus the chat message area (j/k/arrow scroll); pressing any key returns focus to the input (the key itself is consumed) |
 | `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, thread info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
@@ -123,7 +123,8 @@ jumps (`Ctrl+d` / `Ctrl+u`), and Visual mode (`v`). See the
 Note: with the input field focused, Up/Down recall sent-message history when
 the input is empty (Insert mode); to scroll the conversation, press `Tab` to
 focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or `gg/G`. Typing
-while the message area is focused refocuses the input automatically. The input
+while the message area is focused refocuses the input automatically (the
+keypress is consumed). The input
 area grows with content from 1 up to 10 text lines. The input prompt shows an
 always-visible agent-mode letter chip before `❯ `: `B` (green) for build mode,
 `P` (yellow) for plan mode.
@@ -153,10 +154,10 @@ and status bar are visible by default; zen mode (`Ctrl+P` then `z`)
 hides all auxiliary UI and restores the previous state when pressed
 again. `Ctrl+P` then `c` focuses the message area for keyboard
 scrolling; from any focused pane (message area, thread info, activity,
-explorer) typing a printable key refocuses the input and forwards the
-keystroke. Each chat round has only a top time rule and a bottom
-right-aligned duration rule — there are no side borders or middle
-dividers.
+explorer) pressing any key refocuses the input; the first keypress is
+consumed, so no stray characters land in the input. Each chat round has
+only a top time rule and a bottom right-aligned duration rule — there
+are no side borders or middle dividers.
 
 ```
 Default (info + status shown):

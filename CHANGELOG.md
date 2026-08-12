@@ -34,6 +34,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Chat code-block syntax theme: Base16OceanDark → Base16MochaDark.**
+  Fenced code blocks in chat messages now highlight with the warm,
+  higher-contrast Base16 Mocha palette. Foreground colors only — the
+  terminal background is kept, so the theme fits any dark terminal.
+  (#534)
+
 - **Chat input editor replaced: edtui → ratatui-textarea.** The chat
   input is now a plain multi-line editor (soft word wrapping, undo/redo
   `Ctrl+U`/`Ctrl+R`, readline-style keys) instead of a vi-style modal

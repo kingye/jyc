@@ -29,12 +29,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **Printable-key refocus works from every chat pane.** Typing a
-  printable key while the thread info, activity, or explorer pane is
-  focused now returns focus to the input and forwards the keystroke
-  (previously only the message area did this); pane-local keys
-  (`j`/`k`/`g`/`G`/arrows/`Enter`) are unchanged. Esc still does not
-  leave the info/activity panes (use Tab or the leader). (#527)
+- **Keypress refocus works from every chat pane, consuming the key.**
+  Pressing a key while a chat pane (message area, thread info,
+  activity, explorer) is focused returns focus to the input; the key is
+  consumed, so no stray characters (e.g. `i` in Insert mode) land in
+  the input field. Pane-local keys (`j`/`k`/`g`/`G`/arrows/`Enter`)
+  are unchanged. Esc still does not leave the info/activity panes (use
+  Tab or the leader). (#527, #528)
 
 - **Per-thread exchange file publishing.** A new built-in agent tool
   `jyc_publish_file` copies (or moves, with `move: true`) a thread-local

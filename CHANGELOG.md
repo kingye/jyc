@@ -29,6 +29,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Chat input editor replaced: edtui → ratatui-textarea.** The chat
+  input is now a plain multi-line editor (soft word wrapping, undo/redo
+  `Ctrl+U`/`Ctrl+R`, readline-style keys) instead of a vi-style modal
+  editor. Key behavior is unchanged from the former Insert mode: `Enter`
+  sends, `Shift+Enter`/`Alt+Enter` inserts a newline, `Up`/`Down` recall
+  history when the input is empty, `/` opens the command popup only as
+  the first character. The status bar vim-mode chip is removed; the
+  prompt arrow is always `❯`. (#530)
+
 - **TUI stack upgraded to the ratatui 0.30 ecosystem.** `ratatui`
   0.29 → 0.30, `crossterm` 0.28 → 0.29, and `edtui` 0.9.9 → 0.11.6
   (adds find/till motions, dot-repeat, and paste-before `P` to the chat
@@ -106,6 +115,18 @@ All notable changes to JYC will be documented in this file.
   the branch. Old clients/servers (pre-this-field) continue to work:
   `branch` is `#[serde(default)]` so absent values become `None` and
   the segment is simply omitted. (#512)
+
+### Removed
+
+- **Vim modal editing in the chat input.** Insert/Normal/Visual modes,
+  motions, text objects, and the `Esc`-to-Normal flow went away with the
+  edtui → ratatui-textarea replacement. Message scrolling lives in the
+  pane-focus model (`Tab` / leader `c`, any key refocuses the input).
+  (#530)
+
+- **`Space` as an alternative leader key.** The leader popup is now
+  opened with `Ctrl+P` only, on both the dashboard and chat screens.
+  (#530)
 
 ### Fixed
 

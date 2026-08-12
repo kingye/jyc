@@ -322,6 +322,103 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
     out
 }
 
+/// Word-wrap styled `lines` to `max_width` display columns, preserving span
+/// styles and the line-level style (tui-markdown puts heading and
+/// blockquote styling there, not on the spans), and return owned lines —
+/// one entry per visual row.
+///
+/// The message area renders with `Paragraph` *without* `.wrap()`, so the
+/// wrapping must happen here: scroll math counts `all_lines` entries and
+/// must match the visual rows on screen. Breaks prefer the last space on
+/// the row (the space itself is dropped); a word longer than `max_width`
+/// is split at the column boundary. Wide characters (CJK, emoji) count for
+/// the columns they occupy; zero-width characters attach to the current row
+/// without advancing the width counter. `max_width` is clamped to at least
+/// 1 to guarantee progress on extremely narrow panes.
+pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+
+    /// Rebuild a `Line` from (char, style) cells, merging adjacent cells
+    /// that share a style into one span.
+    fn cells_to_line(cells: &[(char, Style)]) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for &(ch, style) in cells {
+            match spans.last_mut() {
+                Some(last) if last.style == style => last.content.to_mut().push(ch),
+                _ => spans.push(Span::styled(ch.to_string(), style)),
+            }
+        }
+        Line::from(spans)
+    }
+
+    /// Display width of a (char, style) row.
+    fn row_width(row: &[(char, Style)]) -> usize {
+        row.iter()
+            .map(|&(ch, _)| UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum()
+    }
+
+    let max_width = max_width.max(1);
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    for line in lines {
+        // Line-level style (headings, blockquotes) applies to every row the
+        // line wraps into.
+        let line_style = line.style;
+        // Flatten spans to (char, style) cells so wrapping can split spans.
+        let cells: Vec<(char, Style)> = line
+            .spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style)))
+            .collect();
+        if cells.is_empty() {
+            // Preserve blank lines from the source markdown.
+            out.push(Line::default().style(line_style));
+            continue;
+        }
+
+        let mut row: Vec<(char, Style)> = Vec::new();
+        let mut width: usize = 0;
+        // Index into `row` of the last space — the preferred break point.
+        let mut last_space: Option<usize> = None;
+
+        for cell @ (ch, _) in cells {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+
+            // Overflow: break at the last space when it is not the row's
+            // first cell (dropping the space), otherwise hard-split at the
+            // boundary. Loops because the carried-over tail plus `cell` can
+            // still overflow after a word-break; each iteration makes
+            // progress (a word-break emits ≥1 cell, a hard-split empties
+            // the row and exits). An over-wide char on an empty row always
+            // lands — a character cannot be split.
+            while width + ch_width > max_width && !row.is_empty() {
+                if let Some(sp) = last_space.filter(|&sp| sp > 0) {
+                    out.push(cells_to_line(&row[..sp]).style(line_style));
+                    row.drain(..=sp);
+                    width = row_width(&row);
+                    last_space = row.iter().rposition(|&(c, _)| c == ' ');
+                } else {
+                    out.push(cells_to_line(&row).style(line_style));
+                    row.clear();
+                    width = 0;
+                    last_space = None;
+                }
+            }
+
+            if ch == ' ' {
+                last_space = Some(row.len());
+            }
+            row.push(cell);
+            width += ch_width;
+        }
+
+        out.push(cells_to_line(&row).style(line_style));
+    }
+
+    out
+}
+
 /// Open an external editor ($VISUAL, $EDITOR, or vi) with the current chat
 /// input, then replace the input with the edited contents.
 ///
@@ -330,7 +427,12 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
-) -> Result<()> {
+) -> Result<()>
+where
+    // ratatui 0.30 no longer bounds `Backend::Error` by Send + Sync, but
+    // anyhow conversion requires them.
+    B::Error: Send + Sync + 'static,
+{
     let tmp = tempfile::Builder::new()
         .prefix("jyc-chat-")
         .suffix(".md")
@@ -425,7 +527,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     action: local_commands::LocalAction,
-) {
+) where
+    B::Error: Send + Sync + 'static,
+{
     use local_commands::LocalAction;
     match action {
         LocalAction::OpenDashboard => app.chat.close(),
@@ -478,7 +582,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     app: &mut App,
     key: event::KeyEvent,
     terminal: &mut Terminal<B>,
-) {
+) where
+    B::Error: Send + Sync + 'static,
+{
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -1493,8 +1599,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     app.chat.last_message_area = Some(chunks[0]);
 
     // --- Messages area (markdown-rendered) ---
-    let renderer = ratatui_markdown::markdown::MarkdownRenderer::new(chunks[0].width as usize);
-    let theme = ratatui_markdown::theme::ThemeConfig::default();
+    // tui-markdown renders without wrapping, so messages are word-wrapped
+    // to the pane width here — the scroll math below counts one entry per
+    // visual row.
+    let messages_width = chunks[0].width as usize;
 
     let mut all_lines: Vec<Line> = Vec::new();
 
@@ -1570,8 +1678,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
         // Render message (no side gutters).
         let md_text = format!("{prefix}{}\n", msg.text);
-        let blocks = renderer.parse(&md_text);
-        let msg_lines = renderer.render(&blocks, &theme);
+        let msg_lines = wrap_styled_lines(tui_markdown::from_str(&md_text).lines, messages_width);
         all_lines.extend(msg_lines);
     }
 
@@ -3772,6 +3879,72 @@ mod tests {
         let out = wrap_text_to_width("abc", 0);
         let joined: String = out.join("");
         assert_eq!(joined, "abc");
+    }
+
+    /// Flatten wrapped lines to plain strings for assertions.
+    fn line_texts(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn wrap_styled_lines_short_line_passes_through() {
+        let out = wrap_styled_lines(vec![Line::from("hello")], 80);
+        assert_eq!(line_texts(&out), vec!["hello"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_word_wraps_at_spaces() {
+        // "hello world" fills row 1 exactly; the break drops the space
+        // after "hello"; "world again" (11 cols) then fills row 2 exactly.
+        let out = wrap_styled_lines(vec![Line::from("hello world again")], 11);
+        assert_eq!(line_texts(&out), vec!["hello", "world again"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_hard_splits_long_words() {
+        let out = wrap_styled_lines(vec![Line::from("abcdefghij")], 4);
+        assert_eq!(line_texts(&out), vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_wide_chars_count_two_columns() {
+        let out = wrap_styled_lines(vec![Line::from("你好你好")], 4);
+        assert_eq!(line_texts(&out), vec!["你好", "你好"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_preserves_styles_across_breaks() {
+        let red = Style::default().fg(Color::Red);
+        let line = Line::from(vec![
+            Span::styled("hello ", Style::default()),
+            Span::styled("world", red),
+        ]);
+        let out = wrap_styled_lines(vec![line], 8);
+        assert_eq!(line_texts(&out), vec!["hello", "world"]);
+        // The styled word keeps its style after being wrapped onto row 2.
+        assert_eq!(out[1].spans[0].style, red);
+        // Adjacent same-style cells merge into a single span.
+        assert_eq!(out[1].spans.len(), 1);
+    }
+
+    #[test]
+    fn wrap_styled_lines_preserves_blank_lines() {
+        let out = wrap_styled_lines(vec![Line::from("a"), Line::default(), Line::from("b")], 80);
+        assert_eq!(line_texts(&out), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_preserves_line_style_on_every_row() {
+        // tui-markdown puts heading/blockquote styling on `Line::style`
+        // (spans unstyled), so every wrapped row must carry it.
+        let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+        let line = Line::styled("# heading text here", bold);
+        let out = wrap_styled_lines(vec![line], 10);
+        assert_eq!(line_texts(&out), vec!["# heading", "text here"]);
+        assert!(out.iter().all(|l| l.style == bold));
     }
 
     #[test]

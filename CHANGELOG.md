@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Leader `c` focuses the chat message area.** New chat-screen leader
+  action `Ctrl+P c` moves focus to the message area for keyboard
+  scrolling (`j`/`k`/arrows). Leader-key dispatch is now scope-aware,
+  so `c` can mean `open chat` on the dashboard and `focus chat` in the
+  chat screen.
+
 - **Independent chat-pane visibility toggles.** New leader-key actions
   in the dashboard chat screen: `Ctrl+P s` toggles the bottom status
   bar, `Ctrl+P i` toggles the thread info pane. Zen mode (`Ctrl+P z`)
@@ -18,6 +24,15 @@ All notable changes to JYC will be documented in this file.
   file (no header, no markdown, so links copy-paste cleanly). `/exchange
   <filename>` narrows the output to a single file. The token is read, never
   created, so listing a thread that published nothing cannot grant access.
+
+### Changed
+
+- **Printable-key refocus works from every chat pane.** Typing a
+  printable key while the thread info, activity, or explorer pane is
+  focused now returns focus to the input and forwards the keystroke
+  (previously only the message area did this); pane-local keys
+  (`j`/`k`/`g`/`G`/arrows/`Enter`) are unchanged. Esc still does not
+  leave the info/activity panes (use Tab or the leader).
   Links use the thread's registered name, which differs from its directory
   basename for shared-repo and custom-`thread_path` threads. (#520)
 

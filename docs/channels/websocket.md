@@ -108,6 +108,7 @@ starts in Insert mode.
 | `Ctrl+P` → `e` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
 | `Ctrl+P` → `i` | Toggle the thread info pane (right side) |
+| `Ctrl+P` → `c` | Focus the chat message area (j/k/arrow scroll); typing any printable key returns focus to the input |
 | `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, thread info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
@@ -150,7 +151,10 @@ pane, activity pane, explorer pane, and status bar are individually
 togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The thread info pane
 and status bar are visible by default; zen mode (`Ctrl+P` then `z`)
 hides all auxiliary UI and restores the previous state when pressed
-again. Each chat round has only a top time rule and a bottom
+again. `Ctrl+P` then `c` focuses the message area for keyboard
+scrolling; from any focused pane (message area, thread info, activity,
+explorer) typing a printable key refocuses the input and forwards the
+keystroke. Each chat round has only a top time rule and a bottom
 right-aligned duration rule — there are no side borders or middle
 dividers.
 

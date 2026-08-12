@@ -323,7 +323,9 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
 }
 
 /// Word-wrap styled `lines` to `max_width` display columns, preserving span
-/// styles, and return owned lines — one entry per visual row.
+/// styles and the line-level style (tui-markdown puts heading and
+/// blockquote styling there, not on the spans), and return owned lines —
+/// one entry per visual row.
 ///
 /// The message area renders with `Paragraph` *without* `.wrap()`, so the
 /// wrapping must happen here: scroll math counts `all_lines` entries and
@@ -360,6 +362,9 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
     let mut out: Vec<Line<'static>> = Vec::new();
 
     for line in lines {
+        // Line-level style (headings, blockquotes) applies to every row the
+        // line wraps into.
+        let line_style = line.style;
         // Flatten spans to (char, style) cells so wrapping can split spans.
         let cells: Vec<(char, Style)> = line
             .spans
@@ -368,7 +373,7 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
             .collect();
         if cells.is_empty() {
             // Preserve blank lines from the source markdown.
-            out.push(Line::default());
+            out.push(Line::default().style(line_style));
             continue;
         }
 
@@ -380,18 +385,21 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
         for cell @ (ch, _) in cells {
             let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
 
-            if width + ch_width > max_width && !row.is_empty() {
-                // Overflow: break at the last space when it is not the row's
-                // first cell (dropping the space), otherwise hard-split at
-                // the boundary. An over-wide first char still lands on the
-                // next (empty) row — a character cannot be split.
+            // Overflow: break at the last space when it is not the row's
+            // first cell (dropping the space), otherwise hard-split at the
+            // boundary. Loops because the carried-over tail plus `cell` can
+            // still overflow after a word-break; each iteration makes
+            // progress (a word-break emits ≥1 cell, a hard-split empties
+            // the row and exits). An over-wide char on an empty row always
+            // lands — a character cannot be split.
+            while width + ch_width > max_width && !row.is_empty() {
                 if let Some(sp) = last_space.filter(|&sp| sp > 0) {
-                    out.push(cells_to_line(&row[..sp]));
+                    out.push(cells_to_line(&row[..sp]).style(line_style));
                     row.drain(..=sp);
                     width = row_width(&row);
                     last_space = row.iter().rposition(|&(c, _)| c == ' ');
                 } else {
-                    out.push(cells_to_line(&row));
+                    out.push(cells_to_line(&row).style(line_style));
                     row.clear();
                     width = 0;
                     last_space = None;
@@ -405,7 +413,7 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
             width += ch_width;
         }
 
-        out.push(cells_to_line(&row));
+        out.push(cells_to_line(&row).style(line_style));
     }
 
     out
@@ -3926,6 +3934,17 @@ mod tests {
     fn wrap_styled_lines_preserves_blank_lines() {
         let out = wrap_styled_lines(vec![Line::from("a"), Line::default(), Line::from("b")], 80);
         assert_eq!(line_texts(&out), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn wrap_styled_lines_preserves_line_style_on_every_row() {
+        // tui-markdown puts heading/blockquote styling on `Line::style`
+        // (spans unstyled), so every wrapped row must carry it.
+        let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+        let line = Line::styled("# heading text here", bold);
+        let out = wrap_styled_lines(vec![line], 10);
+        assert_eq!(line_texts(&out), vec!["# heading", "text here"]);
+        assert!(out.iter().all(|l| l.style == bold));
     }
 
     #[test]

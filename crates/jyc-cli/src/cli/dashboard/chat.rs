@@ -328,6 +328,43 @@ pub(super) fn wrap_text_to_width(text: &str, max_width: usize) -> Vec<String> {
     out
 }
 
+/// Markdown render options for chat messages: Base16MochaDark code theme.
+/// The highlighter emits foreground colors only — the terminal background
+/// is kept, so the theme cannot clash with the TUI.
+pub(super) fn chat_markdown_options() -> tui_markdown::Options {
+    tui_markdown::Options::default().code_theme(tui_markdown::BuiltinCodeTheme::Base16MochaDark)
+}
+
+/// Rewrites markdown soft breaks (`\n` inside a paragraph) into hard breaks
+/// (`"  \n"`) outside fenced code blocks, so line breaks the user typed into
+/// the chat input survive rendering.
+///
+/// tui-markdown parses with hardcoded `ParseOptions` (no `ENABLE_HARDBREAKS`)
+/// and renders `SoftBreak` as a space, collapsing multi-line messages into
+/// one visual line. Fenced code blocks are left untouched — trailing spaces
+/// inside them would alter the code.
+// ponytail: local workaround; drop if tui-markdown ever exposes parser options.
+pub(super) fn softbreaks_to_hardbreaks(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut in_fence = false;
+    for line in md.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        match (!in_fence).then(|| line.strip_suffix('\n')).flatten() {
+            Some(body) => {
+                out.push_str(body);
+                out.push_str("  \n");
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
 /// Word-wrap styled `lines` to `max_width` display columns, preserving span
 /// styles and the line-level style (tui-markdown puts heading and
 /// blockquote styling there, not on the spans), and return owned lines —
@@ -1670,8 +1707,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         // Render message (no side gutters).
-        let md_text = format!("{prefix}{}\n", msg.text);
-        let msg_lines = wrap_styled_lines(tui_markdown::from_str(&md_text).lines, messages_width);
+        let md_text = softbreaks_to_hardbreaks(&format!("{prefix}{}\n", msg.text));
+        let msg_lines = wrap_styled_lines(
+            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines,
+            messages_width,
+        );
         all_lines.extend(msg_lines);
     }
 
@@ -5194,5 +5234,54 @@ mod tests {
         // Wide char that doesn't fit the remaining column is dropped.
         let out = truncate_to_width("你好", 3);
         assert_eq!(out, "你…");
+    }
+
+    #[test]
+    fn softbreaks_become_hardbreaks_outside_fences() {
+        assert_eq!(
+            softbreaks_to_hardbreaks("first\nsecond\n"),
+            "first  \nsecond  \n"
+        );
+        // No trailing newline: last line is left as-is.
+        assert_eq!(softbreaks_to_hardbreaks("a\nb"), "a  \nb");
+    }
+
+    #[test]
+    fn softbreaks_untouched_inside_fences() {
+        let md = "before\n```rust\nlet x = 1;\nlet y = 2;\n```\nafter\n";
+        assert_eq!(
+            softbreaks_to_hardbreaks(md),
+            "before  \n```rust\nlet x = 1;\nlet y = 2;\n```\nafter  \n"
+        );
+        // Tilde fences are recognized too.
+        assert_eq!(
+            softbreaks_to_hardbreaks("~~~\ncode\n~~~\n"),
+            "~~~\ncode\n~~~\n"
+        );
+    }
+
+    #[test]
+    fn transformed_message_renders_on_two_lines() {
+        // End-to-end pin on the production render path: a two-line chat
+        // message must emit two lines (regression: soft break → space).
+        let md = softbreaks_to_hardbreaks("one\ntwo\n");
+        let text = tui_markdown::from_str_with_options(&md, &chat_markdown_options());
+        assert_eq!(text.lines.len(), 2);
+    }
+
+    #[test]
+    fn code_fence_renders_with_highlight_colors() {
+        // Pin: chat render options keep syntect highlighting active (24-bit
+        // colors come through as Rgb spans).
+        let text = tui_markdown::from_str_with_options(
+            "```rust\nfn main() {}\n```\n",
+            &chat_markdown_options(),
+        );
+        let has_rgb_fg = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| matches!(span.style.fg, Some(Color::Rgb(..))));
+        assert!(has_rgb_fg, "code fence produced no highlighted spans");
     }
 }

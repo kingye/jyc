@@ -377,6 +377,13 @@ pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
 
 /// Move the explorer selection by `delta` rows, clamped to the current
 /// thread list.
+/// Refocus the chat input and forward the key to the editor — the user
+/// can scroll any pane, then just start typing.
+fn refocus_input_and_forward(app: &mut App, key: event::KeyEvent) {
+    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.handler.on_key_event(key, &mut app.chat.editor);
+}
+
 fn explorer_move(app: &mut App, delta: i64) {
     let len = app.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
     if len == 0 {
@@ -655,10 +662,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
                     KeyCode::Char('G') => explorer_move(app, i64::MAX),
                     KeyCode::Enter => explorer_open_selected(app),
-                    _ => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
-                    }
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -677,12 +681,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
                     KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    KeyCode::PageUp => app.chat.page_up(),
-                    KeyCode::PageDown => app.chat.page_down(),
-                    _ => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
-                    }
+                    // PageUp/PageDown never reach here: the app-level
+                    // match above intercepts them for every pane.
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -705,10 +706,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Right => {
                         app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
                     }
-                    _ => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
-                    }
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -727,10 +725,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
                     KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    _ => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
-                    }
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }

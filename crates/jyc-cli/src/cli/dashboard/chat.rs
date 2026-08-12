@@ -26,7 +26,7 @@ pub(super) enum ChatPhase {
 /// Which pane has focus in chat mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatFocus {
-    /// The chat input field (vim editor).
+    /// The chat input field.
     ChatPane,
     /// The scrollable message area above the input field.
     MessageArea,
@@ -66,10 +66,8 @@ pub(super) struct ChatState {
     pub(super) thread: Option<String>,
     pub(super) channel: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
-    /// Vim-style editor state for the chat input (edtui).
-    pub(super) editor: EditorState,
-    /// Vim-mode key event handler for the chat input (edtui).
-    pub(super) handler: EditorEventHandler,
+    /// Multi-line text editor for the chat input (ratatui-textarea).
+    pub(super) editor: TextArea<'static>,
     pub(super) focus: ChatFocus,
     pub(super) scroll: usize,
     pub(super) info_scroll: usize,
@@ -155,21 +153,29 @@ pub(super) struct ChatState {
     pub(super) token: Option<String>,
 }
 
-/// Creates a fresh, empty chat input editor in Insert mode.
-pub(super) fn empty_chat_editor() -> EditorState {
-    let mut editor = EditorState::default();
-    editor.mode = EditorMode::Insert;
+/// Creates a chat input editor containing `text` (possibly multi-line),
+/// cursor at the end. Line numbers and the cursor-line highlight are off;
+/// long lines soft-wrap at word boundaries.
+pub(super) fn chat_editor(text: &str) -> TextArea<'static> {
+    let mut editor = TextArea::new(text.split('\n').map(str::to_string).collect());
+    editor.remove_line_number();
+    editor.set_cursor_line_style(Style::default());
+    editor.set_wrap_mode(WrapMode::WordOrGlyph);
+    editor.move_cursor(CursorMove::Bottom);
+    editor.move_cursor(CursorMove::End);
     editor
 }
 
+/// Creates a fresh, empty chat input editor.
+pub(super) fn empty_chat_editor() -> TextArea<'static> {
+    chat_editor("")
+}
+
 impl ChatState {
-    /// Replace the editor contents with `cmd`, cursor at end, Insert mode.
-    /// Used by the command popup when delivering a selected command.
+    /// Replace the editor contents with `cmd`, cursor at end. Used by the
+    /// command popup when delivering a selected command.
     pub(super) fn populate_editor(&mut self, cmd: &str) {
-        self.editor = EditorState::new(Lines::from(cmd));
-        self.editor.cursor.row = 0;
-        self.editor.cursor.col = cmd.len();
-        self.editor.mode = EditorMode::Insert;
+        self.editor = chat_editor(cmd);
     }
 }
 
@@ -464,8 +470,7 @@ where
                 .with_context(|| format!("Failed to read {}", tmp.path().display()))?;
             // Drop the single trailing newline editors typically append on save
             let edited = edited.strip_suffix('\n').unwrap_or(&edited);
-            app.chat.editor = EditorState::new(Lines::from(edited));
-            app.chat.editor.mode = EditorMode::Insert;
+            app.chat.editor = chat_editor(edited);
         }
         Ok(s) => {
             app.set_status(format!("Editor exited with {s}; input unchanged"));
@@ -624,26 +629,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // Ctrl+P is the leader (works from any editor mode and in any chat
-    // phase — it is the only way back to the dashboard from
-    // PatternSelect).
+    // Ctrl+P is the leader (works in any chat phase — it is the only way
+    // back to the dashboard from PatternSelect).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_p {
-        app.chat.command_popup = None;
-        app.chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
-        return;
-    }
-
-    // Space opens the leader in Normal mode (vim-style, symmetric with
-    // "/" opening the backend command popup). Suppressed while the
-    // command popup is open — there Space is legitimate editor input.
-    let is_space = key.code == KeyCode::Char(' ') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_space
-        && app.chat.phase == ChatPhase::Chatting
-        && app.chat.focus == ChatFocus::ChatPane
-        && app.chat.editor.mode == EditorMode::Normal
-        && app.chat.command_popup.is_none()
-    {
         app.chat.command_popup = None;
         app.chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
         return;
@@ -668,27 +657,23 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // Check for "/" to open the command popup (before it reaches the editor)
+    // "/" opens the command popup as the first char of an empty input
+    // (intercepted before it reaches the editor).
     let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_slash && app.chat.phase == ChatPhase::Chatting && app.chat.focus == ChatFocus::ChatPane {
-        let should_open = match app.chat.editor.mode {
-            // Normal mode: "/" always opens the popup
-            EditorMode::Normal => true,
-            // Insert mode: only when editor is empty (first char)
-            EditorMode::Insert => app.chat.text().trim().is_empty(),
-            _ => false,
-        };
-        if should_open {
-            app.chat.leader = None;
-            app.chat.command_popup = Some(CommandPopupState::new());
-            return;
-        }
+    if is_slash
+        && app.chat.phase == ChatPhase::Chatting
+        && app.chat.focus == ChatFocus::ChatPane
+        && app.chat.text().trim().is_empty()
+    {
+        app.chat.leader = None;
+        app.chat.command_popup = Some(CommandPopupState::new());
+        return;
     }
 
     match app.chat.phase {
         ChatPhase::PatternSelect => match key.code {
             // No Esc-back here: returning to the dashboard is done via the
-            // leader-key popup (`open dashboard`, Ctrl+P / Space).
+            // leader-key popup (`open dashboard`, Ctrl+P).
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.chat.pattern_selected > 0 {
                     app.chat.pattern_selected -= 1;
@@ -712,7 +697,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             // other key resets the sequence state.
             let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
 
-            // App-level keys take precedence over the vim editor.
+            // App-level keys take precedence over the editor.
             match key.code {
                 KeyCode::Tab => {
                     app.chat.toggle_focus();
@@ -796,7 +781,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             if app.chat.focus == ChatFocus::ActivityPane {
                 match key.code {
                     // No Esc-back here: returning to the dashboard is done
-                    // via the leader-key popup (`open dashboard`, Ctrl+P / Space).
+                    // via the leader-key popup (`open dashboard`, Ctrl+P).
                     // Any other key refocuses the input, consumed (same
                     // as MessageArea).
                     KeyCode::Esc => {}
@@ -835,39 +820,38 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 return;
             }
 
-            // Chat input field: vim editor. Everything not matched here is
-            // delegated to the edtui event handler.
-            match (app.chat.editor.mode, key.code) {
+            // Chat input field. Everything not matched here is delegated
+            // to the textarea (character input, editing keys, undo/redo).
+            match key.code {
                 // Esc does not leave the thread: returning to the dashboard
-                // is done via the leader-key popup (`open dashboard`, Ctrl+P / Space).
-                // The editor uses Esc to return to Normal mode.
-                // Plain Enter in Insert mode sends the message. Pasted
-                // multi-line text goes through on_paste_event (not key events),
-                // so no paste debounce is needed.
-                (EditorMode::Insert, KeyCode::Enter)
+                // is done via the leader-key popup (`open dashboard`, Ctrl+P).
+                // Plain Enter sends the message. Pasted multi-line text
+                // goes through insert_str (not key events), so no paste
+                // debounce is needed.
+                KeyCode::Enter
                     if !key.modifiers.contains(KeyModifiers::SHIFT)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     app.chat.send_message()
                 }
-                // Shift/Alt+Enter in Insert mode inserts a newline.
-                (EditorMode::Insert, KeyCode::Enter) => {
-                    app.chat.handler.on_key_event(key, &mut app.chat.editor)
+                // Shift/Alt+Enter inserts a newline.
+                KeyCode::Enter => {
+                    app.chat.editor.insert_newline();
                 }
-                // Up/Down in Insert mode, when input is empty or browsing history, recall history.
-                (EditorMode::Insert, KeyCode::Up)
+                // Up/Down, when input is empty or browsing history, recall history.
+                KeyCode::Up
                     if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
                 {
                     app.chat.recall_older()
                 }
-                (EditorMode::Insert, KeyCode::Down)
+                KeyCode::Down
                     if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
                 {
                     app.chat.recall_newer()
                 }
-                // Enter in Normal mode also sends (newlines come from o/O).
-                (EditorMode::Normal, KeyCode::Enter) => app.chat.send_message(),
-                _ => app.chat.handler.on_key_event(key, &mut app.chat.editor),
+                _ => {
+                    app.chat.editor.input(key);
+                }
             }
         }
     }
@@ -1956,31 +1940,23 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);
 
-    // --- Input area (vim editor, at bottom) ---
-    // The editor renders its own wrapping, scroll-follow, and mode status
-    // line. The cursor is a blinking underline in Insert mode and the
-    // default inverted block otherwise; hidden when the input field does
-    // not have focus. A two-line prompt gutter sits left of the editor:
-    // the header row shows "╭─ {mode} · {channel} · {pattern}[ · {branch}]",
-    // and "╰─❯" (Insert mode) / "╰─❮" (other vim modes) on the first editor
-    // row; both dim when the input field loses focus.
-    let theme = EditorTheme::default()
-        .base(Style::default())
-        .hide_status_line();
-    let theme = match app.chat.focus {
+    // --- Input area (text editor, at bottom) ---
+    // The editor renders its own wrapping and scroll-follow. A two-line
+    // prompt gutter sits left of the editor: the header row shows
+    // "╭─ {mode} · {channel} · {pattern}[ · {branch}]", and "╰─❯" on the
+    // first editor row; both dim when the input field loses focus.
+    // The cursor is a blinking underline when the input has focus and
+    // invisible when another pane does (a default-styled cursor cell is
+    // indistinguishable from the text under it).
+    app.chat.editor.set_cursor_style(match app.chat.focus {
+        ChatFocus::ChatPane => Style::default()
+            .add_modifier(Modifier::UNDERLINED)
+            .add_modifier(Modifier::SLOW_BLINK),
         ChatFocus::MessageArea
         | ChatFocus::ActivityPane
         | ChatFocus::ExplorerPane
-        | ChatFocus::InfoPane => theme.hide_cursor(),
-        ChatFocus::ChatPane => match app.chat.editor.mode {
-            EditorMode::Insert => theme.cursor_style(
-                Style::default()
-                    .add_modifier(Modifier::UNDERLINED)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-            _ => theme,
-        },
-    };
+        | ChatFocus::InfoPane => Style::default(),
+    });
     let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(chunks[1]);
     let [prompt_area, editor_area] =
@@ -2014,31 +1990,22 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         line_style,
     );
     frame.render_widget(Paragraph::new(header_line), header_area);
-    // Vim-mode arrow: "╰─❯ " in Insert mode, "╰─❮ " otherwise. The
-    // box-drawing prefix uses the focus-dependent line style, the arrow is
-    // yellow when focused and dims to #393552 when not. The full vim-mode
-    // chip lives in the status bar.
+    // Prompt arrow: "╰─❯ ". The box-drawing prefix uses the
+    // focus-dependent line style; the arrow is yellow when focused and
+    // dims to #393552 when not.
     let arrow_style = if focused {
         Style::default().fg(Color::Yellow)
     } else {
         LINE_DRAWING
     };
-    let arrow = if app.chat.editor.mode == EditorMode::Insert {
-        "❯ "
-    } else {
-        "❮ "
-    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("╰─", line_style),
-            Span::styled(arrow, arrow_style),
+            Span::styled("❯ ", arrow_style),
         ])),
         prompt_area,
     );
-    EditorView::new(&mut app.chat.editor)
-        .theme(theme)
-        .wrap(true)
-        .render(editor_area, frame.buffer_mut());
+    frame.render_widget(&app.chat.editor, editor_area);
 
     // ── Command popup overlay ──
     if let Some(ref popup) = app.chat.command_popup {
@@ -2217,7 +2184,6 @@ impl ChatState {
             channel: None,
             messages: vec![],
             editor: empty_chat_editor(),
-            handler: EditorEventHandler::default(),
             focus: ChatFocus::ChatPane,
             scroll: 0,
             info_scroll: 0,
@@ -2644,7 +2610,7 @@ impl ChatState {
 
     /// Current chat input text (editor lines joined with newlines).
     pub(super) fn text(&self) -> String {
-        self.editor.lines.to_string()
+        self.editor.lines().join("\n")
     }
 
     pub(super) fn send_message(&mut self) {
@@ -2731,8 +2697,7 @@ impl ChatState {
             return; // Already at oldest
         }
         let new_pos = pos - 1;
-        self.editor = EditorState::new(Lines::from(self.input_history[new_pos].as_str()));
-        self.editor.mode = EditorMode::Insert;
+        self.editor = chat_editor(&self.input_history[new_pos]);
         self.history_pos = Some(new_pos);
     }
 
@@ -2742,8 +2707,7 @@ impl ChatState {
         match self.history_pos {
             Some(pos) if pos + 1 < self.input_history.len() => {
                 let new_pos = pos + 1;
-                self.editor = EditorState::new(Lines::from(self.input_history[new_pos].as_str()));
-                self.editor.mode = EditorMode::Insert;
+                self.editor = chat_editor(&self.input_history[new_pos]);
                 self.history_pos = Some(new_pos);
             }
             _ => {
@@ -3404,14 +3368,13 @@ mod tests {
     }
 
     #[test]
-    fn esc_does_not_close_chat_in_editor_normal_mode() {
+    fn esc_does_not_close_chat_with_input_focused() {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
         app.chat.visible = true;
         app.chat.phase = ChatPhase::Chatting;
         app.chat.thread = Some("jyc".to_string());
         app.chat.focus = ChatFocus::ChatPane;
-        app.chat.editor.mode = EditorMode::Normal;
 
         handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
         assert!(app.chat.visible, "Esc must not close the chat screen");
@@ -3468,7 +3431,6 @@ mod tests {
         ] {
             for ch in ['i', 'a', 'x'] {
                 let mut app = chatting_app();
-                app.chat.editor.mode = EditorMode::Insert;
                 app.chat.focus = focus;
                 handle_chat_keys(
                     &mut app,
@@ -3477,7 +3439,7 @@ mod tests {
                 );
                 assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?} {ch:?}");
                 assert!(
-                    app.chat.editor.lines.to_string().is_empty(),
+                    app.chat.text().is_empty(),
                     "{focus:?} {ch:?}: refocus key must be consumed, not inserted"
                 );
             }
@@ -3493,7 +3455,6 @@ mod tests {
             ChatFocus::ExplorerPane,
         ] {
             let mut app = chatting_app();
-            app.chat.editor.mode = EditorMode::Insert;
             app.chat.focus = focus;
             handle_chat_keys(
                 &mut app,
@@ -3502,7 +3463,7 @@ mod tests {
             );
             assert_eq!(app.chat.focus, focus, "{focus:?}");
             assert!(
-                app.chat.editor.lines.to_string().is_empty(),
+                app.chat.text().is_empty(),
                 "{focus:?}: scroll key must not reach the editor"
             );
         }

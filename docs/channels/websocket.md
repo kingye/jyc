@@ -82,25 +82,24 @@ folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
 
 3. Press `c` to open the chat pane:
    - Select a pattern with `↑/↓` + `Enter`
-   - Type a message and press `Shift+Enter` / `Alt+Enter` to send (`Enter` inserts a newline); in Normal (vi) mode `Enter` sends
-   - Press `Esc` to enter Normal (vi) mode
+   - Type a message and press `Enter` to send (`Shift+Enter` / `Alt+Enter` inserts a newline)
    - Press `Ctrl+P` to open the command palette and choose `open dashboard` to close the chat (this also works at pattern selection)
 
 ### Chat Pane Controls
 
-The chat input is a vi-style modal editor (via [edtui](https://docs.rs/edtui))
-with Insert/Normal/Visual modes and a mode indicator in its status line. It
-starts in Insert mode.
+The chat input is a multi-line text editor (via
+[ratatui-textarea](https://docs.rs/ratatui-textarea)) with soft wrapping,
+undo/redo, and standard readline-style editing keys.
 
 | Key | Action |
 |-----|--------|
 | `c` | Open chat pane (from thread list) |
-| `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (message-area focus); move cursor (Insert/Visual mode) |
+| `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (message-area focus); move cursor / recall history (input, when empty) |
 | `gg` / `G` | Jump to top / bottom of the focused pane (message-area focus) |
-| `Enter` | Select pattern / insert newline (Insert mode) / send message (Normal mode) |
-| `Shift+Enter` / `Alt+Enter` | Send message (Insert mode) |
-| `Esc` | Insert → Normal mode; message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` / `:` (Normal mode) | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` thread info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
+| `Enter` | Select pattern / send message (chat input) |
+| `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
+| `Esc` | Message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
+| `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` thread info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
@@ -114,14 +113,8 @@ starts in Insert mode.
 | `Shift+Tab` | Toggle plan / build mode |
 | `Ctrl+Q` | Quit the dashboard |
 
-In Normal mode the usual vi keys are available: motions (`h j k l w e b 0 $ gg
-G % { } f`/`t`), edits (`x dd dw D cw J o O`), text objects (`diw ciw vi" di(` …),
-yank/paste (`y yy p P`), undo/redo (`u` / `Ctrl+r`), repeat (`.`), half-page
-jumps (`Ctrl+d` / `Ctrl+u`), and Visual mode (`v`). See the
-[edtui keybinding list](https://docs.rs/edtui) for details.
-
 Note: with the input field focused, Up/Down recall sent-message history when
-the input is empty (Insert mode); to scroll the conversation, press `Tab` to
+the input is empty; to scroll the conversation, press `Tab` to
 focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or `gg/G`. Typing
 while the message area is focused refocuses the input automatically (the
 keypress is consumed). The input

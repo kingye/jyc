@@ -419,7 +419,12 @@ pub(super) fn wrap_styled_lines(lines: Vec<Line<'_>>, max_width: usize) -> Vec<L
 pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
-) -> Result<()> {
+) -> Result<()>
+where
+    // ratatui 0.30 no longer bounds `Backend::Error` by Send + Sync, but
+    // anyhow conversion requires them.
+    B::Error: Send + Sync + 'static,
+{
     let tmp = tempfile::Builder::new()
         .prefix("jyc-chat-")
         .suffix(".md")
@@ -514,7 +519,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     action: local_commands::LocalAction,
-) {
+) where
+    B::Error: Send + Sync + 'static,
+{
     use local_commands::LocalAction;
     match action {
         LocalAction::OpenDashboard => app.chat.close(),
@@ -567,7 +574,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     app: &mut App,
     key: event::KeyEvent,
     terminal: &mut Terminal<B>,
-) {
+) where
+    B::Error: Send + Sync + 'static,
+{
     // Ctrl+Q quits the entire dashboard (consistent across all modes)
     let is_ctrl_q = key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL);
 

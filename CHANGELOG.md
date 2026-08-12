@@ -32,7 +32,7 @@ All notable changes to JYC will be documented in this file.
 - **Pane refocus no longer forwards the keypress.** Pressing a key
   while a chat pane (message area, thread info, activity, explorer) is
   focused returns focus to the input but consumes the key — no stray
-  characters (e.g. `i` in Insert mode) land in the input field.
+  characters (e.g. `i` in Insert mode) land in the input field. (#528)
 
 - **Printable-key refocus works from every chat pane.** Typing a
   printable key while the thread info, activity, or explorer pane is

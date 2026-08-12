@@ -135,6 +135,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Multi-line chat messages rendered as one line in the message area.**
+  Line breaks typed into the chat input were sent to the agent intact,
+  but the local echo collapsed them: tui-markdown parses with hardcoded
+  options (no `ENABLE_HARDBREAKS`) and renders markdown soft breaks as
+  a space. Chat rendering now rewrites soft breaks to hard breaks
+  (`"  \n"`) outside fenced code blocks before rendering, for both user
+  and AI messages. (#534)
+
 - **`/cancel` left the dashboard stuck at "AI thinking..." forever.** A
   cancel that landed while an LLM call was in flight returned an error out
   of the agent loop, skipping the post-loop `ProcessingCompleted` event —

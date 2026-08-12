@@ -54,6 +54,8 @@ pub enum LocalAction {
     /// text selection works. Default is on. A right-aligned status-bar
     /// chip (mirroring the vim mode chip format) shows the state.
     ToggleMouseCapture,
+    /// Focus the chat message area for keyboard scrolling.
+    FocusChat,
     /// Scroll the message area to the top.
     ScrollTop,
     /// Scroll the message area to the bottom.
@@ -73,7 +75,9 @@ pub struct LocalCommand {
     /// Leader keys (1-2 chars) the user types after the leader trigger
     /// to dispatch this command. Multi-char keys support sequences like
     /// `gg` (scroll top): the parser waits for the next key when the
-    /// buffer is a prefix of any entry's keys.
+    /// buffer is a prefix of any entry's keys. Keys must be unique within
+    /// a scope but may repeat across scopes (e.g. `c` opens chat on the
+    /// dashboard and focuses the message area in chat).
     pub leader_keys: &'static str,
 }
 
@@ -166,6 +170,13 @@ pub fn local_commands() -> &'static [LocalCommand] {
             leader_keys: "m",
         },
         LocalCommand {
+            name: "focus chat",
+            description: "Focus the message area (j/k scroll; typing returns to input)",
+            scope: Chat,
+            action: LocalAction::FocusChat,
+            leader_keys: "c",
+        },
+        LocalCommand {
             name: "scroll top",
             description: "Scroll messages to the top",
             scope: Chat,
@@ -209,14 +220,6 @@ pub fn leader_entries_for(screen: CommandScope) -> Vec<LeaderEntry> {
         .collect()
 }
 
-/// Look up the action for a leader entry by `keys`.
-pub fn find_action_by_keys(keys: &str) -> Option<LocalAction> {
-    local_commands()
-        .iter()
-        .find(|c| c.leader_keys == keys)
-        .map(|c| c.action)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,14 +230,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), local_commands().len());
-    }
-
-    #[test]
-    fn leader_keys_are_unique_per_command() {
-        let mut keys: Vec<_> = local_commands().iter().map(|c| c.leader_keys).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        assert_eq!(keys.len(), local_commands().len());
     }
 
     /// No two commands visible in the same scope may share a leader-key
@@ -271,14 +266,6 @@ mod tests {
     }
 
     #[test]
-    fn find_action_by_keys_roundtrip() {
-        for cmd in local_commands() {
-            assert_eq!(find_action_by_keys(cmd.leader_keys), Some(cmd.action));
-        }
-        assert_eq!(find_action_by_keys("zzzz"), None);
-    }
-
-    #[test]
     fn leader_entries_for_filters_by_scope() {
         let dashboard = leader_entries_for(CommandScope::Dashboard);
         let chat = leader_entries_for(CommandScope::Chat);
@@ -303,9 +290,11 @@ mod tests {
         assert!(chat_keys.contains(&"n"));
         assert!(chat_keys.contains(&"r"));
         assert!(chat_keys.contains(&"q"));
-        assert!(
-            !chat_keys.contains(&"c"),
-            "open chat must be Dashboard-only"
-        );
+        // `c` is focus chat on the chat screen, open chat on the dashboard.
+        assert!(chat_keys.contains(&"c"), "focus chat must be on chat");
+        let chat_c = chat.iter().find(|e| e.keys == "c").unwrap();
+        assert_eq!(chat_c.action, LocalAction::FocusChat);
+        let dash_c = dashboard.iter().find(|e| e.keys == "c").unwrap();
+        assert_eq!(dash_c.action, LocalAction::OpenChat);
     }
 }

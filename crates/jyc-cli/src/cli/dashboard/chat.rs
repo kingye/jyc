@@ -559,6 +559,15 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
+        // Leader equivalent of typing `/` in an empty input, minus the
+        // empty-input requirement (the leader is explicit intent).
+        // Chatting-only: the popup is meaningless in PatternSelect.
+        LocalAction::OpenCommandPopup => {
+            if app.chat.phase == ChatPhase::Chatting {
+                app.chat.focus = ChatFocus::ChatPane;
+                app.chat.command_popup = Some(CommandPopupState::new());
+            }
+        }
     }
 }
 
@@ -3419,6 +3428,24 @@ mod tests {
         );
         assert!(app.chat.leader.is_none());
         assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    }
+
+    #[test]
+    fn leader_slash_opens_command_popup() {
+        let mut app = chatting_app();
+        handle_chat_keys(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &mut test_terminal(),
+        );
+        assert!(app.chat.leader.is_some());
+        handle_chat_keys(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            &mut test_terminal(),
+        );
+        assert!(app.chat.leader.is_none());
+        assert!(app.chat.command_popup.is_some());
     }
 
     #[test]

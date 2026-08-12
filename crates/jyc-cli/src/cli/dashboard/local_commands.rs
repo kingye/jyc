@@ -59,6 +59,9 @@ pub enum LocalAction {
     ScrollTop,
     /// Scroll the message area to the bottom.
     ScrollBottom,
+    /// Open the `/` command popup (leader equivalent of typing `/` in
+    /// an empty input).
+    OpenCommandPopup,
 }
 
 /// Static metadata for one leader entry.
@@ -84,6 +87,13 @@ pub struct LocalCommand {
 pub fn local_commands() -> &'static [LocalCommand] {
     use CommandScope::{Chat, Dashboard, Shared};
     &[
+        LocalCommand {
+            name: "command popup",
+            description: "Open the / command popup",
+            scope: Chat,
+            action: LocalAction::OpenCommandPopup,
+            leader_keys: "/",
+        },
         LocalCommand {
             name: "open dashboard",
             description: "Close chat and return to the dashboard",
@@ -284,6 +294,8 @@ mod tests {
         assert!(!dash_keys.contains(&"z"));
 
         // Chat screen: chat-scoped + shared.
+        assert!(chat_keys.contains(&"/"), "command popup must be Chat-only");
+        assert!(!dash_keys.contains(&"/"));
         assert!(chat_keys.contains(&"d"));
         assert!(chat_keys.contains(&"z"));
         assert!(chat_keys.contains(&"n"));

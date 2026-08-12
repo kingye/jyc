@@ -6,6 +6,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Leader `/` opens the `/` command popup.** New chat-screen leader
+  action `Ctrl+P /` opens the `/` command popup from any focus (typing
+  `/` requires an empty input and input focus). Chat scope only — the
+  dashboard leader does not offer it. (#532)
+
 - **Leader `c` focuses the chat message area.** New chat-screen leader
   action `Ctrl+P c` moves focus to the message area for keyboard
   scrolling (`j`/`k`/arrows). Leader-key dispatch is now scope-aware,

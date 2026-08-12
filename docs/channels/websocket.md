@@ -101,6 +101,7 @@ undo/redo, and standard readline-style editing keys.
 | `Esc` | Message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
 | `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` thread info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
+| `Ctrl+P` → `/` | Open the `/` command popup (same as typing `/` in an empty input, but works from any focus) |
 | `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |

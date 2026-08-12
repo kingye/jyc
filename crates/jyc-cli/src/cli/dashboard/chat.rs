@@ -375,14 +375,14 @@ pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// Move the explorer selection by `delta` rows, clamped to the current
-/// thread list.
 /// Refocus the chat input, consuming the key — the user can scroll any
 /// pane, then press any key to return to the input and start typing.
 fn refocus_input(app: &mut App) {
     app.chat.focus = ChatFocus::ChatPane;
 }
 
+/// Move the explorer selection by `delta` rows, clamped to the current
+/// thread list.
 fn explorer_move(app: &mut App, delta: i64) {
     let len = app.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
     if len == 0 {

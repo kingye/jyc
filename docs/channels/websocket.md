@@ -155,9 +155,9 @@ hides all auxiliary UI and restores the previous state when pressed
 again. `Ctrl+P` then `c` focuses the message area for keyboard
 scrolling; from any focused pane (message area, thread info, activity,
 explorer) pressing any key refocuses the input; the first keypress is
-consumed, so no stray characters land in the input. Each chat round has only a top time rule and a bottom
-right-aligned duration rule — there are no side borders or middle
-dividers.
+consumed, so no stray characters land in the input. Each chat round has
+only a top time rule and a bottom right-aligned duration rule — there
+are no side borders or middle dividers.
 
 ```
 Default (info + status shown):

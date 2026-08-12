@@ -377,6 +377,13 @@ pub(super) fn edit_input_externally<B: ratatui::backend::Backend>(
 
 /// Move the explorer selection by `delta` rows, clamped to the current
 /// thread list.
+/// Refocus the chat input and forward the key to the editor — the user
+/// can scroll any pane, then just start typing.
+fn refocus_input_and_forward(app: &mut App, key: event::KeyEvent) {
+    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.handler.on_key_event(key, &mut app.chat.editor);
+}
+
 fn explorer_move(app: &mut App, delta: i64) {
     let len = app.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
     if len == 0 {
@@ -440,6 +447,7 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
                 app.set_status(format!("Editor error: {e:#}"));
             }
         }
+        LocalAction::FocusChat => app.chat.focus = ChatFocus::MessageArea,
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
@@ -642,6 +650,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
             // Explorer pane: navigate the thread list; Enter switches the
             // chat to the selected thread. Esc returns focus to the input.
+            // Any other printable key refocuses the input and is forwarded
+            // to the editor, so the user can browse then just start typing.
             if app.chat.focus == ChatFocus::ExplorerPane {
                 match key.code {
                     KeyCode::Esc => {
@@ -652,7 +662,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
                     KeyCode::Char('G') => explorer_move(app, i64::MAX),
                     KeyCode::Enter => explorer_open_selected(app),
-                    _ => {}
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -661,16 +671,19 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 // Vertical scroll only — file paths are short enough
                 // that horizontal overflow isn't a concern. No Esc-back:
                 // leaving the info pane is via Tab (focus cycle) or
-                // the leader-key popup, same as ActivityPane.
+                // the leader-key popup, same as ActivityPane. Any other
+                // printable key refocuses the input and is forwarded to
+                // the editor, so the user can scroll then just start typing.
                 match key.code {
+                    KeyCode::Esc => {}
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
                     KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    KeyCode::PageUp => app.chat.page_up(),
-                    KeyCode::PageDown => app.chat.page_down(),
-                    _ => {}
+                    // PageUp/PageDown never reach here: the app-level
+                    // match above intercepts them for every pane.
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -679,6 +692,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 match key.code {
                     // No Esc-back here: returning to the dashboard is done
                     // via the leader-key popup (`open dashboard`, Ctrl+P / Space).
+                    // Any other printable key refocuses the input and is
+                    // forwarded to the editor (same as MessageArea).
+                    KeyCode::Esc => {}
                     KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
@@ -690,7 +706,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Right => {
                         app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
                     }
-                    _ => {}
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -709,10 +725,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     KeyCode::Char('G') => app.chat.scroll_to_bottom(),
                     KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
                     KeyCode::Char('g') => {}
-                    _ => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                        app.chat.handler.on_key_event(key, &mut app.chat.editor);
-                    }
+                    _ => refocus_input_and_forward(app, key),
                 }
                 return;
             }
@@ -3310,6 +3323,78 @@ mod tests {
         handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
         assert!(app.chat.visible, "Esc must not close the chat screen");
         assert_eq!(app.chat.focus, ChatFocus::ActivityPane);
+    }
+
+    fn chatting_app() -> App {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.visible = true;
+        app.chat.phase = ChatPhase::Chatting;
+        app.chat.thread = Some("jyc".to_string());
+        app
+    }
+
+    #[test]
+    fn leader_c_focuses_message_area() {
+        let mut app = chatting_app();
+        handle_chat_keys(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &mut test_terminal(),
+        );
+        assert!(app.chat.leader.is_some());
+        handle_chat_keys(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &mut test_terminal(),
+        );
+        assert!(app.chat.leader.is_none());
+        assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    }
+
+    #[test]
+    fn printable_key_refocuses_input_from_any_pane() {
+        for focus in [
+            ChatFocus::MessageArea,
+            ChatFocus::InfoPane,
+            ChatFocus::ActivityPane,
+            ChatFocus::ExplorerPane,
+        ] {
+            let mut app = chatting_app();
+            app.chat.editor.mode = EditorMode::Insert;
+            app.chat.focus = focus;
+            handle_chat_keys(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                &mut test_terminal(),
+            );
+            assert_eq!(app.chat.focus, ChatFocus::ChatPane, "{focus:?}");
+            assert_eq!(app.chat.editor.lines.to_string(), "x", "{focus:?}");
+        }
+    }
+
+    #[test]
+    fn local_scroll_keys_do_not_refocus() {
+        for focus in [
+            ChatFocus::MessageArea,
+            ChatFocus::InfoPane,
+            ChatFocus::ActivityPane,
+            ChatFocus::ExplorerPane,
+        ] {
+            let mut app = chatting_app();
+            app.chat.editor.mode = EditorMode::Insert;
+            app.chat.focus = focus;
+            handle_chat_keys(
+                &mut app,
+                crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                &mut test_terminal(),
+            );
+            assert_eq!(app.chat.focus, focus, "{focus:?}");
+            assert!(
+                app.chat.editor.lines.to_string().is_empty(),
+                "{focus:?}: scroll key must not reach the editor"
+            );
+        }
     }
 
     fn mouse_event(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {

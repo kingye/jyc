@@ -61,7 +61,11 @@ impl Leader {
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let mut buf = std::mem::take(&mut self.buffer);
                 buf.push(c);
-                if let Some(action) = local_commands::find_action_by_keys(&buf) {
+                // Scope-aware lookup: keys may repeat across scopes (e.g.
+                // `c` = open chat on the dashboard, focus chat in chat),
+                // so match against this screen's entries only.
+                if let Some(entry) = self.entries.iter().find(|e| e.keys == buf) {
+                    let action = entry.action;
                     self.buffer.clear();
                     LeaderResult::Action(action)
                 } else if self.entries.iter().any(|e| e.keys.starts_with(&buf)) {

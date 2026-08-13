@@ -141,6 +141,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Chat input typing lag.** Every frame (each keystroke, 50ms poll,
+  1Hz live tick) re-parsed the entire transcript's markdown — O(history)
+  per keystroke. Rendered history lines are now cached in `ChatState`
+  and rebuilt only when the messages or pane width change (fingerprint:
+  message count, summed text lengths, last timestamp, width); the
+  dynamic progress tail stays per-frame. (#537)
+
 - **Chat message pane scroll reversal lag.** Two compounding causes:
   the scroll offset grew past the rendered maximum (the overshoot had
   to be scrolled back off before the view visibly moved), and the event

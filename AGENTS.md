@@ -46,7 +46,7 @@ and uses OpenCode to generate AI replies.
 > - `cargo clippy --workspace --all-targets -- -D warnings`（静态检查；同时编译所有 target，等价于 `cargo check` / `cargo build`）
 > - `cargo llvm-cov --workspace --all-targets`（运行所有测试并生成覆盖率报告，附带 60% 阈值检查）
 >
-> 本地运行这些检查既慢又浪费资源；CI 会重新执行且结果权威。
+> **禁止在本地运行任何 cargo 编译/检查/测试命令**（`cargo build`、`cargo check`、`cargo test`、`cargo clippy`、`cargo fmt -- --check` 等）——开发机资源受限，本地验证既慢又浪费资源。所有验证以 CI 结果为准：push 到 PR 后 CI 自动运行，失败再修复重推。
 
 1. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
 

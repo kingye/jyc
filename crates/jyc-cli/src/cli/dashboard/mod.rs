@@ -518,6 +518,14 @@ pub async fn run(
         let mut mouse_frag_filter = MouseFragmentFilter::default();
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
+        // Overview fetches run off-loop: each poll is spawned and its
+        // result arrives on this channel, so the HTTP round-trip never
+        // blocks keystroke handling. (The old inline `await` froze input
+        // for one RTT twice per second.) At most one poll is in flight,
+        // so results cannot arrive out of order.
+        let (poll_tx, mut poll_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<InspectOverview>>();
+        let mut poll_in_flight = false;
 
         // If a thread was requested on the CLI, open chat directly.
         if let Some(thread) = initial_thread {
@@ -528,9 +536,20 @@ pub async fn run(
         }
 
         loop {
-            // Poll for new state (slim overview — no activity/messages/thinking)
-            if last_poll.elapsed() >= poll_interval {
-                match client.get_overview().await {
+            // Poll for new state (slim overview — no activity/messages/thinking).
+            // Spawn the fetch off-loop; handle the result below when it arrives.
+            if !poll_in_flight && last_poll.elapsed() >= poll_interval {
+                poll_in_flight = true;
+                let client = client.clone();
+                let tx = poll_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(client.get_overview().await);
+                });
+            }
+            if let Ok(result) = poll_rx.try_recv() {
+                poll_in_flight = false;
+                last_poll = std::time::Instant::now();
+                match result {
                     Ok(overview) => {
                         // Clear awaiting_response once the server confirms the thread
                         // is no longer processing (with a small grace period to avoid
@@ -630,7 +649,6 @@ pub async fn run(
                         app.error = Some(format!("{e:#}"));
                     }
                 }
-                last_poll = std::time::Instant::now();
             }
 
             // Hydrate the new thread's history when the explorer pane

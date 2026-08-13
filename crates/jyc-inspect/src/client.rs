@@ -13,6 +13,7 @@ use url::Url;
 use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
 
 /// HTTP client for the inspect server.
+#[derive(Clone)]
 pub struct InspectClient {
     base_url: Url,
     http: Client,
@@ -37,6 +38,11 @@ impl InspectClient {
         }
         let http = Client::builder()
             .default_headers(headers)
+            // Generous ceiling so a blackholed server errors out instead
+            // of hanging the request forever — the dashboard's off-loop
+            // overview poll would otherwise never complete, silently
+            // freezing all future polls (poll_in_flight stuck true).
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client must build");
         Self { base_url, http }

@@ -13,6 +13,7 @@ use url::Url;
 use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
 
 /// HTTP client for the inspect server.
+#[derive(Clone)]
 pub struct InspectClient {
     base_url: Url,
     http: Client,

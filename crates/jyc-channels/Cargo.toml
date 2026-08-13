@@ -31,8 +31,8 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 sha1 = "0.10"
 hex = "0.4"
-aes = "0.8"
-cbc = "0.1"
+aes = "0.9"
+cbc = "0.2"
 axum = { version = "0.7", features = ["macros", "ws"] }
 tower = "0.5"
 arc-swap = "1"

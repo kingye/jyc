@@ -6,7 +6,7 @@
 //!
 //! Reference: https://developer.work.weixin.qq.com/document/path/90968
 
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 use anyhow::{Context, Result};
 use base64::{Engine, alphabet, engine::GeneralPurpose};
 use sha1::{Digest, Sha1};
@@ -97,16 +97,14 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
     // The AES key is all 32 bytes of the decoded encoding_aes_key
     let aes_key = &raw_key[..32];
     // IV is the first 16 bytes of the AES key, per WeCom spec
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&raw_key[..16]);
-
     let ciphertext = PERMISSIVE_BASE64
         .decode(encrypt)
         .context("failed to decode encrypt from base64")?;
 
     let mut buf = ciphertext;
-    let decrypted = Aes256CbcDec::new(aes_key.into(), &iv.into())
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+    let decrypted = Aes256CbcDec::new_from_slices(aes_key, &raw_key[..16])
+        .map_err(|e| anyhow::anyhow!("invalid AES key/iv length: {e:?}"))?
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| anyhow::anyhow!("AES decryption failed: {:?}", e))?;
 
     // WeCom uses PKCS#7 with block_size=32 (not the AES block size of 16).

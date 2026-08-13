@@ -314,9 +314,7 @@ impl FeishuClient {
             .await
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
-        use open_lark::communication::im::v1::file::create::{
-            CreateFileBody, CreateFileRequest,
-        };
+        use open_lark::communication::im::v1::file::create::{CreateFileBody, CreateFileRequest};
 
         let body = CreateFileBody::new(file_type, filename);
         let resp = CreateFileRequest::new(core_config)

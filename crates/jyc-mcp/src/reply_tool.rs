@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
 };
@@ -53,22 +53,12 @@ pub struct ReplyMessageParams {
 }
 
 /// The MCP reply tool handler.
-#[derive(Debug, Clone)]
-pub struct ReplyToolHandler {
-    tool_router: ToolRouter<Self>,
-}
-
-impl Default for ReplyToolHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Debug, Clone, Default)]
+pub struct ReplyToolHandler;
 
 impl ReplyToolHandler {
     pub fn new() -> Self {
-        Self {
-            tool_router: Self::tool_router(),
-        }
+        Self
     }
 }
 

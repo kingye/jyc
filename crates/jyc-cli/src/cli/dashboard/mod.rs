@@ -561,29 +561,43 @@ pub async fn run(
             // Draw
             terminal.draw(|f| ui(f, &mut app))?;
 
-            // Handle input (non-blocking, 50ms timeout)
+            // Handle input: block up to 50ms for the first event, then
+            // drain everything already pending. One draw per burst (above)
+            // instead of one per event — otherwise wheel gestures queue up
+            // and keep replaying after the user reverses direction.
             if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Paste(data)
-                        if app.chat.visible && app.chat.focus == ChatFocus::ChatPane =>
-                    {
-                        // Bracketed paste delivers the whole pasted chunk as
-                        // one event. Forward it to the editor so it never
-                        // triggers Enter handling / send.
-                        app.chat.editor.insert_str(data);
-                    }
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if app.chat.visible {
-                            handle_chat_keys(&mut app, key, &mut terminal);
-                        } else {
-                            handle_normal_keys(&mut app, key, &client, &mut last_poll, &args.addr)
-                                .await;
+                loop {
+                    match event::read()? {
+                        Event::Paste(data)
+                            if app.chat.visible && app.chat.focus == ChatFocus::ChatPane =>
+                        {
+                            // Bracketed paste delivers the whole pasted chunk as
+                            // one event. Forward it to the editor so it never
+                            // triggers Enter handling / send.
+                            app.chat.editor.insert_str(data);
                         }
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            if app.chat.visible {
+                                handle_chat_keys(&mut app, key, &mut terminal);
+                            } else {
+                                handle_normal_keys(
+                                    &mut app,
+                                    key,
+                                    &client,
+                                    &mut last_poll,
+                                    &args.addr,
+                                )
+                                .await;
+                            }
+                        }
+                        Event::Mouse(mouse) if app.chat.visible => {
+                            handle_chat_mouse(&mut app, mouse);
+                        }
+                        _ => {}
                     }
-                    Event::Mouse(mouse) if app.chat.visible => {
-                        handle_chat_mouse(&mut app, mouse);
+                    if !event::poll(Duration::ZERO)? {
+                        break;
                     }
-                    _ => {}
                 }
             }
 

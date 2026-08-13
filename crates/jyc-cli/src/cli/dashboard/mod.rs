@@ -491,6 +491,20 @@ pub async fn run(
     // Without this, crossterm swallows mouse events at the terminal level.
     stdout().execute(EnableMouseCapture)?;
 
+    // Restore the terminal on panic. Without this a crash leaves raw mode
+    // and mouse capture enabled, and wheel scrolling at the shell prompt
+    // sprays mouse escape sequences into readline. Best-effort: ignore
+    // errors, then defer to the default hook for the panic message.
+    // (Not restored on normal exit — the process ends after `run`.)
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = stdout().execute(DisableBracketedPaste);
+        let _ = stdout().execute(DisableMouseCapture);
+        let _ = disable_raw_mode();
+        let _ = stdout().execute(LeaveAlternateScreen);
+        default_hook(info);
+    }));
+
     // Terminal and its backend are scoped so they drop *before* we restore
     // the terminal. Otherwise the backend's Drop flushes buffered escape
     // codes after LeaveAlternateScreen, corrupting line alignment.

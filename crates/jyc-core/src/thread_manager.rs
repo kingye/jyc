@@ -542,9 +542,14 @@ impl ThreadManager {
                 if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }
-                let pattern_file = jyc_dir.join("pattern");
-                if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
-                    tracing::warn!(error = %e, "Failed to write pattern file");
+                // Injected messages (jyc_send_to_thread, dashboard thread
+                // proxy) carry an empty pattern_name when no pattern could be
+                // resolved; don't let them erase the thread's real pattern.
+                if !item.pattern_match.pattern_name.is_empty() {
+                    let pattern_file = jyc_dir.join("pattern");
+                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                        tracing::warn!(error = %e, "Failed to write pattern file");
+                    }
                 }
                 // Persist the logical thread name so custom thread_path
                 // directories can be rediscovered after restart.
@@ -823,6 +828,21 @@ impl ThreadManager {
         let mut paths = self.thread_paths.lock().await;
         paths.insert(thread_name.to_string(), path);
         Ok(())
+    }
+
+    /// Resolve the enabled pattern whose name matches `thread_name`.
+    ///
+    /// Used by cross-thread injection (`jyc_send_to_thread`) so injected
+    /// messages carry the same pattern identity — name, template/role
+    /// metadata, live_injection, custom `thread_path` — as router-matched
+    /// messages (#542).
+    pub fn pattern_for_thread(&self, thread_name: &str) -> Option<jyc_types::ChannelPattern> {
+        let cfg = self.config.load();
+        cfg.channels
+            .get(&self.channel_name)
+            .and_then(|c| c.patterns.as_ref())
+            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == thread_name))
+            .cloned()
     }
 
     /// Names of enabled patterns for this channel.
@@ -2754,13 +2774,9 @@ mod has_active_queue_tests {
     }
 
     fn make_test_tm(workspace: &std::path::Path) -> Arc<ThreadManager> {
-        let storage = Arc::new(MessageStorage::new(workspace));
-        let cancel = CancellationToken::new();
-        let metrics_cancel = CancellationToken::new();
-        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
-        let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str(
-                r#"
+        make_test_tm_with_config(
+            workspace,
+            r#"
 [general]
 [channels.test]
 type = "email"
@@ -2778,8 +2794,19 @@ password = "p"
 enabled = true
 mode = "agent"
 "#,
-            )
-            .unwrap(),
+        )
+    }
+
+    fn make_test_tm_with_config(
+        workspace: &std::path::Path,
+        config_str: &str,
+    ) -> Arc<ThreadManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(config_str).unwrap(),
         ));
 
         Arc::new(ThreadManager::new_with_options(
@@ -2870,6 +2897,160 @@ mode = "agent"
 
         // Clean up
         tm.shutdown().await;
+    }
+
+    /// Regression test (#542): injected messages (jyc_send_to_thread,
+    /// dashboard thread proxy) carry an empty pattern_name. The worker must
+    /// not overwrite `.jyc/pattern` with it, or the dashboard loses the
+    /// thread's pattern identity until a router-matched message rewrites it.
+    #[tokio::test]
+    async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let make_msg = || InboundMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "test".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+        let make_pm = |name: &str| PatternMatch {
+            pattern_name: name.to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+
+        // Router-matched message writes the real pattern name.
+        tm.enqueue(
+            make_msg(),
+            "test-thread".to_string(),
+            make_pm("jyc"),
+            None,
+            false,
+            None,
+        )
+        .await;
+        let thread_path = workspace.join("test-thread");
+        assert!(
+            wait_for_history_lines(&thread_path, 1).await,
+            "worker did not process the first message in time"
+        );
+        let pattern_file = thread_path.join(".jyc").join("pattern");
+        assert_eq!(
+            tokio::fs::read_to_string(&pattern_file).await.unwrap(),
+            "jyc"
+        );
+
+        // Injected message with empty pattern_name must leave the file
+        // alone. Wait until the worker provably processed it (second chat
+        // history line) before asserting — otherwise a slow worker would
+        // let the test pass even without the guard.
+        tm.enqueue(
+            make_msg(),
+            "test-thread".to_string(),
+            make_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            wait_for_history_lines(&thread_path, 2).await,
+            "worker did not process the injected message in time"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&pattern_file).await.unwrap(),
+            "jyc"
+        );
+
+        tm.shutdown().await;
+    }
+
+    /// Poll until the thread's chat history holds at least `n` lines
+    /// (i.e. the worker processed `n` messages). ~2s timeout.
+    async fn wait_for_history_lines(thread_path: &std::path::Path, n: usize) -> bool {
+        for _ in 0..40 {
+            let (files, _) = crate::chat_log_store::list_chat_history_files(thread_path);
+            let mut count = 0;
+            for f in files {
+                if let Ok(content) = tokio::fs::read_to_string(&f).await {
+                    count += content.lines().filter(|l| !l.trim().is_empty()).count();
+                }
+            }
+            if count >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// `pattern_for_thread` (#542): resolves the enabled pattern named after
+    /// the thread, including its template/role/custom `thread_path`; returns
+    /// None for unknown/disabled names so injection falls back to an empty
+    /// pattern.
+    #[tokio::test]
+    async fn test_pattern_for_thread() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let custom_path = tmp.path().join("custom-jyc");
+
+        let config_str = format!(
+            r#"
+[general]
+[channels.test-channel]
+type = "websocket"
+[[channels.test-channel.patterns]]
+name = "jyc"
+enabled = true
+thread_path = "{}"
+template = "dev"
+role = "Developer"
+[channels.test-channel.patterns.rules]
+[[channels.test-channel.patterns]]
+name = "disabled"
+enabled = false
+thread_path = "/nowhere"
+[channels.test-channel.patterns.rules]
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            custom_path.display()
+        );
+        let tm = make_test_tm_with_config(&workspace, &config_str);
+
+        let p = tm
+            .pattern_for_thread("jyc")
+            .expect("pattern should resolve");
+        assert_eq!(p.name, "jyc");
+        assert_eq!(
+            p.thread_path.as_deref(),
+            Some(custom_path.to_str().unwrap())
+        );
+        assert_eq!(p.template.as_deref(), Some("dev"));
+        assert_eq!(p.role.as_deref(), Some("Developer"));
+        assert!(p.live_injection);
+        assert!(tm.pattern_for_thread("disabled").is_none());
+        assert!(tm.pattern_for_thread("unknown").is_none());
     }
 
     /// Regression test: the per-worker clone must share the parent's

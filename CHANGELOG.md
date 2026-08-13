@@ -141,6 +141,19 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **`jyc_send_to_thread` erased the target thread's pattern identity.**
+  Injected messages carried an empty `pattern_name`, and the thread worker
+  wrote it to `.jyc/pattern` unconditionally — the dashboard chat header
+  lost the pattern segment and Thread Info showed `Pattern: -` (and
+  pattern-level model overrides were skipped) until a manual message
+  re-matched the pattern. The worker now only writes `.jyc/pattern` for
+  non-empty pattern names, and `jyc_send_to_thread` resolves the pattern
+  named after the target thread so injected messages carry the real
+  `pattern_name`, template/role metadata, attachment config and
+  `live_injection` flag, and the pattern's custom `thread_path` — newly
+  auto-created threads now land in the configured directory instead of
+  the default workspace. (#542)
+
 - **Periodic input freeze from the inline overview poll.** The dashboard
   input loop awaited the 500ms overview REST poll inline, freezing
   keystroke handling and redraw for one HTTP round-trip twice per

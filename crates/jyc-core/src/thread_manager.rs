@@ -2933,23 +2933,52 @@ mode = "agent"
         // Router-matched message writes the real pattern name.
         tm.enqueue(make_msg(), "test-thread".to_string(), make_pm("jyc"), None, false, None)
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let pattern_file = workspace.join("test-thread").join(".jyc").join("pattern");
+        let thread_path = workspace.join("test-thread");
+        assert!(
+            wait_for_history_lines(&thread_path, 1).await,
+            "worker did not process the first message in time"
+        );
+        let pattern_file = thread_path.join(".jyc").join("pattern");
         assert_eq!(
             tokio::fs::read_to_string(&pattern_file).await.unwrap(),
             "jyc"
         );
 
-        // Injected message with empty pattern_name must leave the file alone.
+        // Injected message with empty pattern_name must leave the file
+        // alone. Wait until the worker provably processed it (second chat
+        // history line) before asserting — otherwise a slow worker would
+        // let the test pass even without the guard.
         tm.enqueue(make_msg(), "test-thread".to_string(), make_pm(""), None, false, None)
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            wait_for_history_lines(&thread_path, 2).await,
+            "worker did not process the injected message in time"
+        );
         assert_eq!(
             tokio::fs::read_to_string(&pattern_file).await.unwrap(),
             "jyc"
         );
 
         tm.shutdown().await;
+    }
+
+    /// Poll until the thread's chat history holds at least `n` lines
+    /// (i.e. the worker processed `n` messages). ~2s timeout.
+    async fn wait_for_history_lines(thread_path: &std::path::Path, n: usize) -> bool {
+        for _ in 0..40 {
+            let (files, _) = crate::chat_log_store::list_chat_history_files(thread_path);
+            let mut count = 0;
+            for f in files {
+                if let Ok(content) = tokio::fs::read_to_string(&f).await {
+                    count += content.lines().filter(|l| !l.trim().is_empty()).count();
+                }
+            }
+            if count >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
     }
 
     /// `pattern_for_thread` (#542): resolves the enabled pattern named after

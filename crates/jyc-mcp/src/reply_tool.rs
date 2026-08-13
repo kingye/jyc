@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
 };
@@ -54,23 +54,7 @@ pub struct ReplyMessageParams {
 
 /// The MCP reply tool handler.
 #[derive(Debug, Clone)]
-pub struct ReplyToolHandler {
-    tool_router: ToolRouter<Self>,
-}
-
-impl Default for ReplyToolHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ReplyToolHandler {
-    pub fn new() -> Self {
-        Self {
-            tool_router: Self::tool_router(),
-        }
-    }
-}
+pub struct ReplyToolHandler;
 
 #[tool_router]
 impl ReplyToolHandler {
@@ -263,8 +247,24 @@ fn validate_attachments(
 
 /// Start the MCP reply tool server on stdio.
 pub async fn run_server() -> Result<()> {
-    let handler = ReplyToolHandler::new();
+    let handler = ReplyToolHandler;
     let service = handler.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `#[tool_router]` macro wiring must register the tool under its
+    /// fn name — this fails if the generated router ever stops including it.
+    #[test]
+    fn tool_router_registers_reply_message() {
+        let tools = ReplyToolHandler::tool_router().list_all();
+        assert!(
+            tools.iter().any(|t| t.name.as_ref() == "reply_message"),
+            "reply_message must be registered, got: {tools:?}"
+        );
+    }
 }

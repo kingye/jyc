@@ -366,7 +366,7 @@ async fn handle_connection_impl(
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(payload) => {
-                        if let Err(e) = ws_tx.send(Message::Text(payload)).await {
+                        if let Err(e) = ws_tx.send(Message::Text(payload.into())).await {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send broadcast");
                             break;
                         }
@@ -394,7 +394,7 @@ async fn handle_connection_impl(
                         // Only forward events for our channel. If the
                         // connection is thread-scoped, also filter by thread.
                         if should_forward_inspect(&payload, &channel_name, scoped_thread)
-                            && let Err(e) = ws_tx.send(Message::Text(payload)).await
+                            && let Err(e) = ws_tx.send(Message::Text(payload.into())).await
                         {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
                             break;

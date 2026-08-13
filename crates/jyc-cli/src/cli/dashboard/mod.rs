@@ -409,9 +409,7 @@ impl MouseFragmentFilter {
         if self.swallowing {
             return match key.code {
                 // Fragment body: parameters, separators, SGR marker.
-                KeyCode::Char(c) if c.is_ascii_digit() || c == ';' || c == '<' => {
-                    Filtered::Swallow
-                }
+                KeyCode::Char(c) if c.is_ascii_digit() || c == ';' || c == '<' => Filtered::Swallow,
                 // Final byte: M (press/scroll) or m (release).
                 KeyCode::Char('M') | KeyCode::Char('m') => {
                     self.swallowing = false;
@@ -1712,7 +1710,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
         assert_replay(
-            filter.feed(char_key('['), t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10)),
+            filter.feed(
+                char_key('['),
+                t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10),
+            ),
             KeyCode::Esc,
             KeyCode::Char('['),
         );

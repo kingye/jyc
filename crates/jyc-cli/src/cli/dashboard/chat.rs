@@ -2638,10 +2638,7 @@ impl ChatState {
         let page = self.page_size();
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self
-                    .scroll
-                    .saturating_add(page)
-                    .min(self.last_max_scroll)
+                self.scroll = self.scroll.saturating_add(page).min(self.last_max_scroll)
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)

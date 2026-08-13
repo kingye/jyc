@@ -20,7 +20,7 @@ async-imap = { version = "0.11", default-features = false, features = ["runtime-
 async-native-tls = "0.5"
 mail-parser = "0.9"
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
-comrak = "0.37"
+comrak = "0.54"
 htmd = "0.5"
 regex = "1"
 base64 = "0.23"

@@ -23,7 +23,6 @@ anyhow = "1"
 async-trait = "0.1"
 openlark = { version = "0.15.0-rc.2", default-features = false, features = ["auth", "communication", "websocket"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
-comrak = "0.37"
 regex = "1"
 base64 = "0.23"
 md5 = "0.7"

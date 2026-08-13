@@ -24,16 +24,11 @@ pub struct EmailAttachment {
 
 /// Markdown to HTML conversion using comrak (GFM mode).
 pub fn markdown_to_html(markdown: &str) -> String {
-    let options = comrak::Options {
-        extension: comrak::ExtensionOptions {
-            strikethrough: true,
-            table: true,
-            autolink: true,
-            tasklist: true,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let mut options = comrak::Options::default();
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
     comrak::markdown_to_html(markdown, &options)
 }
 

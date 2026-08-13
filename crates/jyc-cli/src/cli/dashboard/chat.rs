@@ -82,6 +82,11 @@ pub(super) struct ChatState {
     /// the source — without this the offset overshoots the top and the
     /// overshoot must be scrolled back off before the view visibly moves.
     pub(super) last_max_scroll: usize,
+    /// Rendered transcript lines cache — rebuilt only when the message
+    /// history or pane width changes (see `history_fingerprint`). Avoids
+    /// re-parsing the full transcript markdown on every frame (each
+    /// keystroke / 50ms poll / 1Hz tick used to cost O(history)).
+    pub(super) render_cache: Option<(RenderFingerprint, Vec<Line<'static>>)>,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
     /// Horizontal scroll offset for the activity pane (left-right).
@@ -1606,6 +1611,131 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
     out
 }
 
+/// Fingerprint of the message history + pane width used to invalidate
+/// `ChatState::render_cache`. Covers every message mutation in the
+/// codebase (push, last-message streaming append, clear) — messages are
+/// never edited in place mid-history. The cache is additionally reset on
+/// `open()` so a cross-thread collision (same count/lengths/timestamp)
+/// can never serve the previous thread's lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RenderFingerprint {
+    count: usize,
+    text_len_sum: usize,
+    last_timestamp: Option<String>,
+    width: usize,
+}
+
+fn history_fingerprint(messages: &[ChatMessage], width: usize) -> RenderFingerprint {
+    RenderFingerprint {
+        count: messages.len(),
+        text_len_sum: messages.iter().map(|m| m.text.len()).sum(),
+        last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
+        width,
+    }
+}
+
+/// Render the full message history to wrapped, styled lines: per-round
+/// top/bottom rules (time / duration), user→AI separators, and each
+/// message's markdown body word-wrapped to `width`. Pure in
+/// `(messages, width)` so the result is cached per frame — the dynamic
+/// progress tail (thinking / activity / live ticker) is appended by the
+/// caller after these lines and stays per-frame.
+fn render_history_lines(messages: &[ChatMessage], width: usize) -> Vec<Line<'static>> {
+    let mut all_lines: Vec<Line<'static>> = Vec::new();
+
+    let dim_style = Style::default().fg(Color::DarkGray);
+    let mut group_start_ts: Option<String> = None;
+
+    for (idx, msg) in messages.iter().enumerate() {
+        let is_user = msg.sender == "user";
+        let prefix = if is_user { "**You:** " } else { "**AI:** " };
+
+        let prev_sender = if idx > 0 {
+            Some(messages[idx - 1].sender.as_str())
+        } else {
+            None
+        };
+
+        // Close previous round when transitioning AI → user. Bottom rule
+        // has the duration right-aligned with breathing space:
+        // "──────── 1m ──"
+        if is_user && prev_sender == Some("ai") {
+            let last_ts = messages.get(idx - 1).and_then(|m| m.timestamp.clone());
+            let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+            if elapsed.is_empty() {
+                let dashes = "─".repeat(width);
+                all_lines.push(Line::from(Span::styled(dashes, dim_style)));
+            } else {
+                // <dashes> <elapsed> ──
+                let dash_count = width.saturating_sub(elapsed.len() + 3);
+                all_lines.push(Line::from(vec![
+                    Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
+                    Span::styled(elapsed, dim_style),
+                    Span::styled(" ──", dim_style),
+                ]));
+            }
+            all_lines.push(Line::from(""));
+            group_start_ts = None;
+        }
+
+        // Open new round at the start of a user turn. Top rule has the
+        // timestamp left-aligned with breathing space:
+        // "── 09:50 ────────"
+        if is_user {
+            group_start_ts = msg.timestamp.clone();
+            let time_str = format_msg_time(&msg.timestamp);
+            if time_str.is_empty() {
+                all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
+            } else {
+                // ── <time> <dashes>
+                let dash_count = width.saturating_sub(time_str.len() + 3);
+                all_lines.push(Line::from(vec![
+                    Span::styled("── ", dim_style),
+                    Span::styled(time_str, dim_style),
+                    Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
+                ]));
+            }
+        }
+
+        // Separator between the user message and the AI response within
+        // a round: a light dashed rule, visually subordinate to the
+        // solid "─" round rules.
+        if !is_user && prev_sender == Some("user") {
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled("┄".repeat(width), dim_style)));
+            all_lines.push(Line::from(""));
+        }
+
+        // Render message (no side gutters).
+        let md_text = softbreaks_to_hardbreaks(&format!("{prefix}{}\n", msg.text));
+        let msg_lines = wrap_styled_lines(
+            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines,
+            width,
+        );
+        all_lines.extend(msg_lines);
+    }
+
+    // Close any open round at the end (same bottom-rule format as above).
+    if group_start_ts.is_some() {
+        let last_ts = messages.last().and_then(|m| m.timestamp.clone());
+        let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
+        if elapsed.is_empty() {
+            let dashes = "─".repeat(width);
+            all_lines.push(Line::from(Span::styled(dashes, dim_style)));
+        } else {
+            let dash_count = width.saturating_sub(elapsed.len() + 3);
+            all_lines.push(Line::from(vec![
+                Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
+                Span::styled(elapsed, dim_style),
+                Span::styled(" ──", dim_style),
+            ]));
+        }
+        all_lines.push(Line::from(""));
+    }
+
+    all_lines
+}
+
 pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Borderless chat pane — no outer block, no side borders, no
     // per-message `│ ` gutter. Each chat round is bounded by a horizontal
@@ -1639,105 +1769,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // visual row.
     let messages_width = chunks[0].width as usize;
 
-    let mut all_lines: Vec<Line> = Vec::new();
-
-    let dim_style = Style::default().fg(Color::DarkGray);
-    let mut group_start_ts: Option<String> = None;
-
-    for (idx, msg) in app.chat.messages.iter().enumerate() {
-        let is_user = msg.sender == "user";
-        let prefix = if is_user { "**You:** " } else { "**AI:** " };
-
-        let prev_sender = if idx > 0 {
-            Some(app.chat.messages[idx - 1].sender.as_str())
-        } else {
-            None
-        };
-
-        // Close previous round when transitioning AI → user. Bottom rule
-        // has the duration right-aligned with breathing space:
-        // "──────── 1m ──"
-        if is_user && prev_sender == Some("ai") {
-            let last_ts = app
-                .chat
-                .messages
-                .get(idx - 1)
-                .and_then(|m| m.timestamp.clone());
-            let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
-            let width = chunks[0].width as usize;
-            if elapsed.is_empty() {
-                let dashes = "─".repeat(width);
-                all_lines.push(Line::from(Span::styled(dashes, dim_style)));
-            } else {
-                // <dashes> <elapsed> ──
-                let dash_count = width.saturating_sub(elapsed.len() + 3);
-                all_lines.push(Line::from(vec![
-                    Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
-                    Span::styled(elapsed, dim_style),
-                    Span::styled(" ──", dim_style),
-                ]));
-            }
-            all_lines.push(Line::from(""));
-            group_start_ts = None;
-        }
-
-        // Open new round at the start of a user turn. Top rule has the
-        // timestamp left-aligned with breathing space:
-        // "── 09:50 ────────"
-        if is_user {
-            group_start_ts = msg.timestamp.clone();
-            let time_str = format_msg_time(&msg.timestamp);
-            let width = chunks[0].width as usize;
-            if time_str.is_empty() {
-                all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
-            } else {
-                // ── <time> <dashes>
-                let dash_count = width.saturating_sub(time_str.len() + 3);
-                all_lines.push(Line::from(vec![
-                    Span::styled("── ", dim_style),
-                    Span::styled(time_str, dim_style),
-                    Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
-                ]));
-            }
-        }
-
-        // Separator between the user message and the AI response within
-        // a round: a light dashed rule, visually subordinate to the
-        // solid "─" round rules.
-        if !is_user && prev_sender == Some("user") {
-            let width = chunks[0].width as usize;
-            all_lines.push(Line::from(""));
-            all_lines.push(Line::from(Span::styled("┄".repeat(width), dim_style)));
-            all_lines.push(Line::from(""));
-        }
-
-        // Render message (no side gutters).
-        let md_text = softbreaks_to_hardbreaks(&format!("{prefix}{}\n", msg.text));
-        let msg_lines = wrap_styled_lines(
-            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines,
-            messages_width,
-        );
-        all_lines.extend(msg_lines);
+    // Message-history lines are cached: they only change when a message
+    // arrives / streams / clears or the pane width changes. Without the
+    // cache every frame (each keystroke, 50ms poll, 1Hz tick) re-parsed
+    // the whole transcript's markdown — the per-keystroke input lag.
+    let fingerprint = history_fingerprint(&app.chat.messages, messages_width);
+    let cache_hit = matches!(&app.chat.render_cache, Some((fp, _)) if *fp == fingerprint);
+    if !cache_hit {
+        let lines = render_history_lines(&app.chat.messages, messages_width);
+        app.chat.render_cache = Some((fingerprint, lines));
     }
 
-    // Close any open round at the end (same bottom-rule format as above).
-    if group_start_ts.is_some() {
-        let last_ts = app.chat.messages.last().and_then(|m| m.timestamp.clone());
-        let elapsed = format_group_elapsed(&group_start_ts, &last_ts);
-        let width = chunks[0].width as usize;
-        if elapsed.is_empty() {
-            let dashes = "─".repeat(width);
-            all_lines.push(Line::from(Span::styled(dashes, dim_style)));
-        } else {
-            let dash_count = width.saturating_sub(elapsed.len() + 3);
-            all_lines.push(Line::from(vec![
-                Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
-                Span::styled(elapsed, dim_style),
-                Span::styled(" ──", dim_style),
-            ]));
-        }
-        all_lines.push(Line::from(""));
-    }
+    // Dynamic progress tail (thinking / activity / live ticker) — small,
+    // rebuilt every frame, appended after the cached history lines.
+    let mut tail_lines: Vec<Line> = Vec::new();
 
     // Show progress indicator
     // Determine if the thread is processing: prefer the live processing
@@ -1817,7 +1862,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             // the correct visual row count.
             let avail = chunks[0].width.saturating_sub(2) as usize;
             for line in wrap_text_to_width(thinking, avail) {
-                all_lines.push(Line::from(vec![
+                tail_lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(line, gray_style),
                 ]));
@@ -1835,7 +1880,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
                 None => "⏳ AI is thinking...".to_string(),
             };
-            all_lines.push(Line::from(vec![
+            tail_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
                     placeholder,
@@ -1976,7 +2021,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     } else {
                         style
                     };
-                    all_lines.push(Line::from(vec![
+                    tail_lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(label, label_style),
                     ]));
@@ -1986,11 +2031,33 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     let inner_height = chunks[0].height as usize;
-    let max_skip = all_lines.len().saturating_sub(inner_height);
+    // Borrow the cached history lines without cloning; scroll math below
+    // only touches disjoint fields (`last_max_scroll`, `scroll`).
+    let history: &[Line] = &app
+        .chat
+        .render_cache
+        .as_ref()
+        .expect("render cache stored above")
+        .1;
+    let history_len = history.len();
+    let max_skip = (history_len + tail_lines.len()).saturating_sub(inner_height);
     app.chat.last_max_scroll = max_skip;
     app.chat.scroll = app.chat.scroll.min(max_skip);
     let skip = max_skip.saturating_sub(app.chat.scroll);
-    let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
+    // Clone only the visible window (≤ inner_height lines) — the
+    // Paragraph clips anything beyond the area anyway.
+    let hist_slice: &[Line] = if skip < history_len {
+        &history[skip..]
+    } else {
+        &[]
+    };
+    let tail_start = skip.saturating_sub(history_len);
+    let visible_lines: Vec<Line> = hist_slice
+        .iter()
+        .chain(&tail_lines[tail_start..])
+        .take(inner_height)
+        .cloned()
+        .collect();
 
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);
@@ -2245,6 +2312,7 @@ impl ChatState {
             activity_scroll: 0,
             last_message_area: None,
             last_max_scroll: 0,
+            render_cache: None,
             pending_g: false,
             activity_hscroll: 0,
             awaiting_response: false,
@@ -2301,6 +2369,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
+        self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
@@ -2367,6 +2436,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
+        self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
@@ -3021,6 +3091,75 @@ static EMPTY_CHAT_DEQUE: std::sync::LazyLock<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            sender: sender.to_string(),
+            text: text.to_string(),
+            timestamp: ts.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn history_fingerprint_stable_for_unchanged_input() {
+        // The typing case: same messages + width → same fingerprint →
+        // cache hit → no markdown re-parse.
+        let msgs = vec![
+            history_msg("user", "hello", Some("2026-08-13T10:00:00Z")),
+            history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
+        ];
+        assert_eq!(
+            history_fingerprint(&msgs, 80),
+            history_fingerprint(&msgs, 80)
+        );
+    }
+
+    #[test]
+    fn history_fingerprint_changes_on_message_mutations() {
+        let msgs = vec![
+            history_msg("user", "hello", Some("2026-08-13T10:00:00Z")),
+            history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
+        ];
+        let base = history_fingerprint(&msgs, 80);
+
+        // New message pushed.
+        let mut pushed = msgs.clone();
+        pushed.push(history_msg("user", "again", None));
+        assert_ne!(base, history_fingerprint(&pushed, 80));
+
+        // Streaming append to the last message's text.
+        let mut streamed = msgs.clone();
+        streamed[1].text.push_str(" more");
+        assert_ne!(base, history_fingerprint(&streamed, 80));
+
+        // Last message timestamp set after the fact.
+        let mut stamped = msgs.clone();
+        stamped[1].timestamp = Some("2026-08-13T10:00:06Z".to_string());
+        assert_ne!(base, history_fingerprint(&stamped, 80));
+
+        // Cleared history.
+        assert_ne!(base, history_fingerprint(&[], 80));
+
+        // Pane resize (re-wrap needed).
+        assert_ne!(base, history_fingerprint(&msgs, 100));
+    }
+
+    #[test]
+    fn render_history_lines_deterministic_for_cache_reuse() {
+        let msgs = vec![
+            history_msg("user", "hello **bold**", Some("2026-08-13T10:00:00Z")),
+            history_msg("ai", "world\nsecond line", Some("2026-08-13T10:00:05Z")),
+        ];
+        assert_eq!(
+            render_history_lines(&msgs, 80),
+            render_history_lines(&msgs, 80)
+        );
+        // Different width re-wraps — cache must not be reused.
+        assert_ne!(
+            render_history_lines(&msgs, 80),
+            render_history_lines(&msgs, 20)
+        );
+    }
 
     #[test]
     fn format_elapsed_ms_below_60s() {

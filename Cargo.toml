@@ -8,6 +8,13 @@ edition = "2024"
 
 [profile.dev]
 debug = 1
-split-debuginfo = "unpacked"
+opt-level = 1
+split-debuginfo = "packed"
+lto = false
+panic = "abort"
 [profile.dev.package."*"]
-debug = 0
+debug = 1
+opt-level = 1
+split-debuginfo = "packed"
+lto = false
+panic = "abort"

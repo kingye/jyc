@@ -77,6 +77,11 @@ pub(super) struct ChatState {
     /// hit-testing so scrolling only happens when the cursor is over the
     /// message area, not the editor / activity / explorer / info panes.
     pub(super) last_message_area: Option<Rect>,
+    /// Last rendered maximum message-area scroll offset (`max_skip`).
+    /// Stored during render and used to clamp `scroll_up` / `page_up` at
+    /// the source — without this the offset overshoots the top and the
+    /// overshoot must be scrolled back off before the view visibly moves.
+    pub(super) last_max_scroll: usize,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
     /// Horizontal scroll offset for the activity pane (left-right).
@@ -1982,6 +1987,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
     let inner_height = chunks[0].height as usize;
     let max_skip = all_lines.len().saturating_sub(inner_height);
+    app.chat.last_max_scroll = max_skip;
     app.chat.scroll = app.chat.scroll.min(max_skip);
     let skip = max_skip.saturating_sub(app.chat.scroll);
     let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
@@ -2238,6 +2244,7 @@ impl ChatState {
             info_scroll: 0,
             activity_scroll: 0,
             last_message_area: None,
+            last_max_scroll: 0,
             pending_g: false,
             activity_hscroll: 0,
             awaiting_response: false,
@@ -2293,6 +2300,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_max_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
@@ -2358,6 +2366,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_max_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
@@ -2544,7 +2553,7 @@ impl ChatState {
     pub(super) fn scroll_up(&mut self) {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_add(1)
+                self.scroll = self.scroll.saturating_add(1).min(self.last_max_scroll)
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
@@ -2631,7 +2640,7 @@ impl ChatState {
         let page = self.page_size();
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_add(page)
+                self.scroll = self.scroll.saturating_add(page).min(self.last_max_scroll)
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
@@ -3265,6 +3274,8 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(rx, None);
         app.chat.focus = ChatFocus::MessageArea;
+        // Render stores the max before input; mirror that here.
+        app.chat.last_max_scroll = 10;
         app.chat.scroll_to_top();
         assert_eq!(app.chat.scroll, usize::MAX);
         app.chat.scroll_to_bottom();
@@ -3273,6 +3284,22 @@ mod tests {
         assert_eq!(app.chat.scroll, 1);
         app.chat.scroll_down();
         assert_eq!(app.chat.scroll, 0);
+    }
+
+    #[test]
+    fn message_area_scroll_up_clamps_at_rendered_max() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        let mut app = App::new(rx, None);
+        app.chat.focus = ChatFocus::MessageArea;
+        app.chat.last_max_scroll = 5;
+        for _ in 0..10 {
+            app.chat.scroll_up();
+        }
+        // No overshoot past the rendered maximum...
+        assert_eq!(app.chat.scroll, 5);
+        // ...so reversing direction moves the view immediately.
+        app.chat.scroll_down();
+        assert_eq!(app.chat.scroll, 4);
     }
 
     #[test]
@@ -3561,18 +3588,15 @@ mod tests {
         // cursor over the message area while typing into the input.
         app.chat.focus = ChatFocus::ChatPane;
         app.chat.scroll = 0;
-        // Need at least a couple of messages so the scroll offset is
-        // non-zero once we step up.
-        app.chat.messages.push(ChatMessage {
-            sender: "user".into(),
-            text: "hi".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-        });
-        app.chat.messages.push(ChatMessage {
-            sender: "ai".into(),
-            text: "hello".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-        });
+        // Enough messages to overflow the 24-row pane, so the rendered
+        // scroll maximum (last_max_scroll) is non-zero.
+        for i in 0..100 {
+            app.chat.messages.push(ChatMessage {
+                sender: "user".into(),
+                text: format!("msg {i}"),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+            });
+        }
 
         terminal
             .draw(|f| ui_chat_mode(f, f.area(), &mut app))
@@ -3733,16 +3757,15 @@ mod tests {
         app.chat.visible = true;
         app.chat.phase = ChatPhase::Chatting;
         app.chat.thread = Some("jyc".to_string());
-        app.chat.messages.push(ChatMessage {
-            sender: "user".into(),
-            text: "hi".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-        });
-        app.chat.messages.push(ChatMessage {
-            sender: "ai".into(),
-            text: "hello".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-        });
+        // Enough messages to overflow the pane, so the rendered scroll
+        // maximum (last_max_scroll) is non-zero.
+        for i in 0..100 {
+            app.chat.messages.push(ChatMessage {
+                sender: "user".into(),
+                text: format!("msg {i}"),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+            });
+        }
 
         // --- ActivityPane focus ---
         app.chat.focus = ChatFocus::ActivityPane;
@@ -3770,16 +3793,13 @@ mod tests {
         app2.chat.visible = true;
         app2.chat.phase = ChatPhase::Chatting;
         app2.chat.thread = Some("jyc".to_string());
-        app2.chat.messages.push(ChatMessage {
-            sender: "user".into(),
-            text: "hi".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-        });
-        app2.chat.messages.push(ChatMessage {
-            sender: "ai".into(),
-            text: "hello".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-        });
+        for i in 0..100 {
+            app2.chat.messages.push(ChatMessage {
+                sender: "user".into(),
+                text: format!("msg {i}"),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+            });
+        }
         app2.chat.focus = ChatFocus::ExplorerPane;
         app2.chat.scroll = 0;
         terminal

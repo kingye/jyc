@@ -141,6 +141,24 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Chat message pane scroll reversal lag.** Two compounding causes:
+  the scroll offset grew past the rendered maximum (the overshoot had
+  to be scrolled back off before the view visibly moved), and the event
+  loop read one input event per frame, so wheel bursts queued up and
+  kept replaying after reversing direction. The offset is now clamped
+  at the source and all pending input events are drained once per frame.
+  (#535)
+
+- **Mouse escape garbage (`[<65;35;12M`) inserted into the chat input on
+  fast wheel scrolling.** crossterm 0.29 treats input as complete unless
+  a read fills its whole buffer, so a wheel burst that splits a mouse
+  sequence right after ESC leaks the remainder as plain character keys.
+  A lone `Esc` is now held for 20ms: a following `[` starts fragment
+  swallowing up to the `M`/`m` terminator; otherwise the `Esc` is
+  replayed as a real keypress. The terminal is also restored on panic
+  (raw mode, mouse capture, alternate screen) so a crash no longer
+  sprays escape sequences into the shell. (#535)
+
 - **Multi-line chat messages rendered as one line in the message area.**
   Line breaks typed into the chat input were sent to the agent intact,
   but the local echo collapsed them: tui-markdown parses with hardcoded

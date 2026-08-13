@@ -4,7 +4,7 @@ use crossterm::{
     ExecutableCommand,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -369,6 +369,94 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> String {
     tail.join("\n")
 }
 
+/// How long a lone `Esc` is held while we wait to see whether it is the
+/// head of a split mouse escape sequence.
+const ESC_FRAGMENT_WINDOW: Duration = Duration::from_millis(20);
+
+/// Outcome of feeding one key through [`MouseFragmentFilter`].
+enum Filtered {
+    /// Dispatch the key normally.
+    Dispatch(KeyEvent),
+    /// A held `Esc` turned out to be a real keypress: dispatch it first,
+    /// then the current key.
+    Replay(KeyEvent, KeyEvent),
+    /// The key is part of a mouse escape fragment — drop it.
+    Swallow,
+}
+
+/// Swallows mouse escape fragments (`[<65;35;12M`) that leak through
+/// crossterm as plain character keys.
+///
+/// crossterm 0.29 assumes more input is pending only when a read fills
+/// its whole 1024-byte buffer (`more = read_count == TTY_BUFFER_SIZE`).
+/// During a fast wheel burst the pty chunks the byte stream arbitrarily;
+/// when a chunk ends exactly at ESC, the parser emits a lone `Esc` key
+/// and the remaining `[<65;35;12M` bytes arrive as plain `Char` keys,
+/// which the composer would insert as garbage. A real `Esc` press is
+/// held for [`ESC_FRAGMENT_WINDOW`] and replayed unless `[` follows
+/// immediately — humans cannot type that fast, and pastes arrive as
+/// `Event::Paste`, so there are no false positives.
+#[derive(Default)]
+struct MouseFragmentFilter {
+    /// A lone `Esc` held for the fragment window, with its arrival time.
+    pending_esc: Option<(KeyEvent, std::time::Instant)>,
+    /// Whether we are inside a fragment body (after `ESC` `[`).
+    swallowing: bool,
+}
+
+impl MouseFragmentFilter {
+    fn feed(&mut self, key: KeyEvent, now: std::time::Instant) -> Filtered {
+        if self.swallowing {
+            return match key.code {
+                // Fragment body: parameters, separators, SGR marker.
+                KeyCode::Char(c) if c.is_ascii_digit() || c == ';' || c == '<' => {
+                    Filtered::Swallow
+                }
+                // Final byte: M (press/scroll) or m (release).
+                KeyCode::Char('M') | KeyCode::Char('m') => {
+                    self.swallowing = false;
+                    Filtered::Swallow
+                }
+                // Not a fragment after all — stop filtering. Characters
+                // already swallowed are lost; accepted trade-off inside a
+                // 20ms window after Esc.
+                _ => {
+                    self.swallowing = false;
+                    Filtered::Dispatch(key)
+                }
+            };
+        }
+        if let Some((esc, at)) = self.pending_esc.take() {
+            if now.duration_since(at) <= ESC_FRAGMENT_WINDOW
+                && key.code == KeyCode::Char('[')
+                && key.modifiers.is_empty()
+            {
+                self.swallowing = true;
+                return Filtered::Swallow;
+            }
+            return Filtered::Replay(esc, key);
+        }
+        if key.code == KeyCode::Esc {
+            self.pending_esc = Some((key, now));
+            return Filtered::Swallow;
+        }
+        Filtered::Dispatch(key)
+    }
+
+    /// Flush a held `Esc` whose fragment window has expired (a real
+    /// `Esc` press). Call once per event-loop iteration; the loop's 50ms
+    /// poll cadence guarantees it runs.
+    fn flush(&mut self, now: std::time::Instant) -> Option<KeyEvent> {
+        match self.pending_esc {
+            Some((esc, at)) if now.duration_since(at) > ESC_FRAGMENT_WINDOW => {
+                self.pending_esc = None;
+                Some(esc)
+            }
+            _ => None,
+        }
+    }
+}
+
 pub async fn run(
     args: &DashboardArgs,
     workdir: &std::path::Path,
@@ -412,6 +500,7 @@ pub async fn run(
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
+        let mut mouse_frag_filter = MouseFragmentFilter::default();
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
 
@@ -558,6 +647,16 @@ pub async fn run(
             // Clear expired status messages
             app.tick_status();
 
+            // Dispatch a held `Esc` whose fragment window has expired —
+            // it was a real keypress, not a split mouse sequence.
+            if let Some(esc) = mouse_frag_filter.flush(std::time::Instant::now()) {
+                if app.chat.visible {
+                    handle_chat_keys(&mut app, esc, &mut terminal);
+                } else {
+                    handle_normal_keys(&mut app, esc, &client, &mut last_poll, &args.addr).await;
+                }
+            }
+
             // Draw
             terminal.draw(|f| ui(f, &mut app))?;
 
@@ -577,17 +676,25 @@ pub async fn run(
                             app.chat.editor.insert_str(data);
                         }
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            if app.chat.visible {
-                                handle_chat_keys(&mut app, key, &mut terminal);
-                            } else {
-                                handle_normal_keys(
-                                    &mut app,
-                                    key,
-                                    &client,
-                                    &mut last_poll,
-                                    &args.addr,
-                                )
-                                .await;
+                            let (first, second) =
+                                match mouse_frag_filter.feed(key, std::time::Instant::now()) {
+                                    Filtered::Dispatch(k) => (Some(k), None),
+                                    Filtered::Replay(esc, k) => (Some(esc), Some(k)),
+                                    Filtered::Swallow => (None, None),
+                                };
+                            for key in [first, second].into_iter().flatten() {
+                                if app.chat.visible {
+                                    handle_chat_keys(&mut app, key, &mut terminal);
+                                } else {
+                                    handle_normal_keys(
+                                        &mut app,
+                                        key,
+                                        &client,
+                                        &mut last_poll,
+                                        &args.addr,
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         Event::Mouse(mouse) if app.chat.visible => {
@@ -1521,6 +1628,117 @@ fn format_last_active(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn char_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn assert_swallow(f: Filtered) {
+        assert!(matches!(f, Filtered::Swallow), "expected Swallow");
+    }
+
+    fn assert_dispatch(f: Filtered, code: KeyCode) {
+        match f {
+            Filtered::Dispatch(k) => assert_eq!(k.code, code),
+            _ => panic!("expected Dispatch({code:?})"),
+        }
+    }
+
+    fn assert_replay(f: Filtered, first: KeyCode, second: KeyCode) {
+        match f {
+            Filtered::Replay(a, b) => {
+                assert_eq!(a.code, first);
+                assert_eq!(b.code, second);
+            }
+            _ => panic!("expected Replay({first:?}, {second:?})"),
+        }
+    }
+
+    #[test]
+    fn sgr_mouse_fragment_is_swallowed() {
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        for c in "[<65;35;12M".chars() {
+            assert_swallow(filter.feed(char_key(c), t0 + Duration::from_millis(1)));
+        }
+        // Keys after the fragment flow normally again.
+        assert_dispatch(
+            filter.feed(char_key('a'), t0 + Duration::from_millis(2)),
+            KeyCode::Char('a'),
+        );
+    }
+
+    #[test]
+    fn rxvt_mouse_fragment_is_swallowed() {
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        for c in "[65;35;12M".chars() {
+            assert_swallow(filter.feed(char_key(c), t0 + Duration::from_millis(1)));
+        }
+    }
+
+    #[test]
+    fn esc_then_letter_replays_both() {
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        assert_replay(
+            filter.feed(char_key('a'), t0 + Duration::from_millis(5)),
+            KeyCode::Esc,
+            KeyCode::Char('a'),
+        );
+    }
+
+    #[test]
+    fn slow_bracket_after_esc_replays_both() {
+        // A human typing Esc then '[' cannot beat the fragment window.
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        assert_replay(
+            filter.feed(char_key('['), t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10)),
+            KeyCode::Esc,
+            KeyCode::Char('['),
+        );
+    }
+
+    #[test]
+    fn held_esc_flushes_after_window() {
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        assert!(filter.flush(t0 + Duration::from_millis(10)).is_none());
+        let esc = filter
+            .flush(t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(10))
+            .expect("stale Esc must flush");
+        assert_eq!(esc.code, KeyCode::Esc);
+        // Already flushed — nothing pending.
+        assert!(
+            filter
+                .flush(t0 + ESC_FRAGMENT_WINDOW + Duration::from_millis(20))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deviation_mid_fragment_stops_swallowing() {
+        let mut filter = MouseFragmentFilter::default();
+        let t0 = std::time::Instant::now();
+        assert_swallow(filter.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0));
+        assert_swallow(filter.feed(char_key('['), t0 + Duration::from_millis(1)));
+        assert_swallow(filter.feed(char_key('<'), t0 + Duration::from_millis(1)));
+        // 'x' is not fragment syntax — filtering stops and it dispatches.
+        assert_dispatch(
+            filter.feed(char_key('x'), t0 + Duration::from_millis(1)),
+            KeyCode::Char('x'),
+        );
+        assert_dispatch(
+            filter.feed(char_key('5'), t0 + Duration::from_millis(1)),
+            KeyCode::Char('5'),
+        );
+    }
 
     #[test]
     fn resolve_thread_path_defaults_to_cwd() {

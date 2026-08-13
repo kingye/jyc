@@ -1774,14 +1774,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // cache every frame (each keystroke, 50ms poll, 1Hz tick) re-parsed
     // the whole transcript's markdown — the per-keystroke input lag.
     let fingerprint = history_fingerprint(&app.chat.messages, messages_width);
-    let mut all_lines: Vec<Line> = match &app.chat.render_cache {
-        Some((cached_fp, lines)) if *cached_fp == fingerprint => lines.clone(),
-        _ => {
-            let lines = render_history_lines(&app.chat.messages, messages_width);
-            app.chat.render_cache = Some((fingerprint, lines.clone()));
-            lines
-        }
-    };
+    let cache_hit = matches!(&app.chat.render_cache, Some((fp, _)) if *fp == fingerprint);
+    if !cache_hit {
+        let lines = render_history_lines(&app.chat.messages, messages_width);
+        app.chat.render_cache = Some((fingerprint, lines));
+    }
+
+    // Dynamic progress tail (thinking / activity / live ticker) — small,
+    // rebuilt every frame, appended after the cached history lines.
+    let mut tail_lines: Vec<Line> = Vec::new();
 
     // Show progress indicator
     // Determine if the thread is processing: prefer the live processing
@@ -1861,7 +1862,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             // the correct visual row count.
             let avail = chunks[0].width.saturating_sub(2) as usize;
             for line in wrap_text_to_width(thinking, avail) {
-                all_lines.push(Line::from(vec![
+                tail_lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(line, gray_style),
                 ]));
@@ -1879,7 +1880,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
                 None => "⏳ AI is thinking...".to_string(),
             };
-            all_lines.push(Line::from(vec![
+            tail_lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
                     placeholder,
@@ -2020,7 +2021,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     } else {
                         style
                     };
-                    all_lines.push(Line::from(vec![
+                    tail_lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(label, label_style),
                     ]));
@@ -2030,11 +2031,33 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     let inner_height = chunks[0].height as usize;
-    let max_skip = all_lines.len().saturating_sub(inner_height);
+    // Borrow the cached history lines without cloning; scroll math below
+    // only touches disjoint fields (`last_max_scroll`, `scroll`).
+    let history: &[Line] = &app
+        .chat
+        .render_cache
+        .as_ref()
+        .expect("render cache stored above")
+        .1;
+    let history_len = history.len();
+    let max_skip = (history_len + tail_lines.len()).saturating_sub(inner_height);
     app.chat.last_max_scroll = max_skip;
     app.chat.scroll = app.chat.scroll.min(max_skip);
     let skip = max_skip.saturating_sub(app.chat.scroll);
-    let visible_lines: Vec<Line> = all_lines.into_iter().skip(skip).collect();
+    // Clone only the visible window (≤ inner_height lines) — the
+    // Paragraph clips anything beyond the area anyway.
+    let hist_slice: &[Line] = if skip < history_len {
+        &history[skip..]
+    } else {
+        &[]
+    };
+    let tail_start = skip.saturating_sub(history_len);
+    let visible_lines: Vec<Line> = hist_slice
+        .iter()
+        .chain(&tail_lines[tail_start..])
+        .take(inner_height)
+        .cloned()
+        .collect();
 
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);

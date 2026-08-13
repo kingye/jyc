@@ -146,7 +146,8 @@ All notable changes to JYC will be documented in this file.
   per keystroke. Rendered history lines are now cached in `ChatState`
   and rebuilt only when the messages or pane width change (fingerprint:
   message count, summed text lengths, last timestamp, width); the
-  dynamic progress tail stays per-frame. (#537)
+  dynamic progress tail stays per-frame, and each frame clones only the
+  visible window of cached lines (≤ one screenful). (#537)
 
 - **Chat message pane scroll reversal lag.** Two compounding causes:
   the scroll offset grew past the rendered maximum (the overshoot had

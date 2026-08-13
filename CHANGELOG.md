@@ -34,6 +34,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Dependency upgrades.** Lockfile refreshed to latest compatible
+  versions (tokio 1.53, rmcp 1.8, openlark 0.15.0) and major bumps
+  applied: axum 0.8 (route syntax `:param` → `{param}`, ws `Message`
+  now uses `Utf8Bytes`), comrak 0.54, mail-parser 0.11, aes 0.9 +
+  cbc 0.2 (cipher 0.5), base64 0.23, getrandom 0.4, toml 1, toml_edit
+  0.25. Unused comrak deps dropped from jyc-channels/jyc-core.
+
 - **Chat code-block syntax theme: Base16OceanDark → Base16MochaDark.**
   Fenced code blocks in chat messages now highlight with the warm,
   higher-contrast Base16 Mocha palette. Foreground colors only — the

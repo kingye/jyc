@@ -2774,13 +2774,9 @@ mod has_active_queue_tests {
     }
 
     fn make_test_tm(workspace: &std::path::Path) -> Arc<ThreadManager> {
-        let storage = Arc::new(MessageStorage::new(workspace));
-        let cancel = CancellationToken::new();
-        let metrics_cancel = CancellationToken::new();
-        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
-        let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str(
-                r#"
+        make_test_tm_with_config(
+            workspace,
+            r#"
 [general]
 [channels.test]
 type = "email"
@@ -2798,8 +2794,16 @@ password = "p"
 enabled = true
 mode = "agent"
 "#,
-            )
-            .unwrap(),
+        )
+    }
+
+    fn make_test_tm_with_config(workspace: &std::path::Path, config_str: &str) -> Arc<ThreadManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(config_str).unwrap(),
         ));
 
         Arc::new(ThreadManager::new_with_options(
@@ -3015,30 +3019,7 @@ mode = "agent"
 "#,
             custom_path.display()
         );
-        let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str(&config_str).unwrap(),
-        ));
-        let storage = Arc::new(MessageStorage::new(&workspace));
-        let cancel = CancellationToken::new();
-        let metrics_cancel = CancellationToken::new();
-        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
-        let tm = ThreadManager::new_with_options(
-            1,
-            10,
-            storage,
-            Arc::new(NoopOutbound),
-            Arc::new(StaticAgentService::new("ok")),
-            cancel,
-            true,
-            workspace.join("templates"),
-            config,
-            "test-channel".to_string(),
-            "websocket".to_string(),
-            workspace.parent().unwrap_or(&workspace).to_path_buf(),
-            workspace.to_path_buf(),
-            metrics,
-            None,
-        );
+        let tm = make_test_tm_with_config(&workspace, &config_str);
 
         let p = tm.pattern_for_thread("jyc").expect("pattern should resolve");
         assert_eq!(p.name, "jyc");

@@ -86,7 +86,7 @@ async fn test_websocket_adapter_start_and_handle() {
         message_text
     );
     write
-        .send(tokio_tungstenite::tungstenite::Message::Text(message_msg))
+        .send(tokio_tungstenite::tungstenite::Message::Text(message_msg.into()))
         .await
         .unwrap();
 

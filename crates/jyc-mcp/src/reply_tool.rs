@@ -53,14 +53,8 @@ pub struct ReplyMessageParams {
 }
 
 /// The MCP reply tool handler.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ReplyToolHandler;
-
-impl ReplyToolHandler {
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 #[tool_router]
 impl ReplyToolHandler {
@@ -253,8 +247,24 @@ fn validate_attachments(
 
 /// Start the MCP reply tool server on stdio.
 pub async fn run_server() -> Result<()> {
-    let handler = ReplyToolHandler::new();
+    let handler = ReplyToolHandler;
     let service = handler.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `#[tool_router]` macro wiring must register the tool under its
+    /// fn name — this fails if the generated router ever stops including it.
+    #[test]
+    fn tool_router_registers_reply_message() {
+        let tools = ReplyToolHandler::tool_router().list_all();
+        assert!(
+            tools.iter().any(|t| t.name.as_ref() == "reply_message"),
+            "reply_message must be registered, got: {tools:?}"
+        );
+    }
 }

@@ -11,10 +11,3 @@ debug = 1
 opt-level = 1
 split-debuginfo = "packed"
 lto = false
-panic = "abort"
-[profile.dev.package."*"]
-debug = 1
-opt-level = 1
-split-debuginfo = "packed"
-lto = false
-panic = "abort"

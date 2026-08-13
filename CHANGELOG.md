@@ -141,6 +141,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Periodic input freeze from the inline overview poll.** The dashboard
+  input loop awaited the 500ms overview REST poll inline, freezing
+  keystroke handling and redraw for one HTTP round-trip twice per
+  second — keys typed during the stall echoed late. The fetch now runs
+  in a spawned task and its result is handled via a channel (at most
+  one poll in flight, so ordering is preserved). (#540)
+
 - **Chat input typing lag.** Every frame (each keystroke, 50ms poll,
   1Hz live tick) re-parsed the entire transcript's markdown — O(history)
   per keystroke. Rendered history lines are now cached in `ChatState`

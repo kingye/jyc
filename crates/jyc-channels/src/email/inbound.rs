@@ -91,7 +91,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
     let references: Option<Vec<String>> = {
         let refs = parsed.references();
         if let Some(list) = refs.as_text_list() {
-            Some(list.into_iter().map(|s| s.to_string()).collect())
+            Some(list.iter().map(|s| s.to_string()).collect())
         } else {
             refs.as_text().map(|s| vec![s.to_string()])
         }

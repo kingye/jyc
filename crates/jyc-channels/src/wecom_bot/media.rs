@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 use anyhow::{Context, Result};
 use base64::{Engine, alphabet, engine::GeneralPurpose};
 
@@ -267,12 +267,11 @@ pub fn decrypt_aes256cbc(ciphertext: &[u8], aeskey: &str) -> Result<Vec<u8>> {
     }
 
     let aes_key = &raw_key[..32];
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&raw_key[..16]);
 
     let mut buf = ciphertext.to_vec();
-    let decrypted = Aes256CbcDec::new(aes_key.into(), &iv.into())
-        .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut buf)
+    let decrypted = Aes256CbcDec::new_from_slices(aes_key, &raw_key[..16])
+        .map_err(|e| anyhow::anyhow!("invalid AES key/iv length: {e:?}"))?
+        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
         .map_err(|e| anyhow::anyhow!("AES-256-CBC decryption failed: {e:?}"))?;
 
     strip_pkcs7_padding(decrypted)

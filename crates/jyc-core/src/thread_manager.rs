@@ -2797,7 +2797,10 @@ mode = "agent"
         )
     }
 
-    fn make_test_tm_with_config(workspace: &std::path::Path, config_str: &str) -> Arc<ThreadManager> {
+    fn make_test_tm_with_config(
+        workspace: &std::path::Path,
+        config_str: &str,
+    ) -> Arc<ThreadManager> {
         let storage = Arc::new(MessageStorage::new(workspace));
         let cancel = CancellationToken::new();
         let metrics_cancel = CancellationToken::new();
@@ -2935,8 +2938,15 @@ mode = "agent"
         };
 
         // Router-matched message writes the real pattern name.
-        tm.enqueue(make_msg(), "test-thread".to_string(), make_pm("jyc"), None, false, None)
-            .await;
+        tm.enqueue(
+            make_msg(),
+            "test-thread".to_string(),
+            make_pm("jyc"),
+            None,
+            false,
+            None,
+        )
+        .await;
         let thread_path = workspace.join("test-thread");
         assert!(
             wait_for_history_lines(&thread_path, 1).await,
@@ -2952,8 +2962,15 @@ mode = "agent"
         // alone. Wait until the worker provably processed it (second chat
         // history line) before asserting — otherwise a slow worker would
         // let the test pass even without the guard.
-        tm.enqueue(make_msg(), "test-thread".to_string(), make_pm(""), None, false, None)
-            .await;
+        tm.enqueue(
+            make_msg(),
+            "test-thread".to_string(),
+            make_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
         assert!(
             wait_for_history_lines(&thread_path, 2).await,
             "worker did not process the injected message in time"
@@ -3021,7 +3038,9 @@ mode = "agent"
         );
         let tm = make_test_tm_with_config(&workspace, &config_str);
 
-        let p = tm.pattern_for_thread("jyc").expect("pattern should resolve");
+        let p = tm
+            .pattern_for_thread("jyc")
+            .expect("pattern should resolve");
         assert_eq!(p.name, "jyc");
         assert_eq!(
             p.thread_path.as_deref(),

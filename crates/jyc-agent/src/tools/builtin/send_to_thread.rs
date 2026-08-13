@@ -225,31 +225,30 @@ impl Tool for SendToThreadTool {
         // attachment config, live_injection, custom thread_path — as
         // router-matched messages (mirrors MessageRouter, #542).
         let pattern = target_tm.pattern_for_thread(thread_name);
-        let (pattern_name, attachment_config, live_injection, thread_path_override) =
-            match &pattern {
-                Some(p) => {
-                    if let Some(ref template) = p.template {
-                        inbound.metadata.insert(
-                            "template".to_string(),
-                            Value::String(template.clone()),
-                        );
-                    }
-                    if let Some(ref role) = p.role {
-                        inbound
-                            .metadata
-                            .insert("role".to_string(), Value::String(role.clone()));
-                    }
-                    (
-                        p.name.clone(),
-                        p.attachments.clone(),
-                        p.live_injection,
-                        p.thread_path.as_ref().map(|tp| {
-                            jyc_core::thread_path::resolve_thread_path(tp, target_tm.data_root())
-                        }),
-                    )
+        let (pattern_name, attachment_config, live_injection, thread_path_override) = match &pattern
+        {
+            Some(p) => {
+                if let Some(ref template) = p.template {
+                    inbound
+                        .metadata
+                        .insert("template".to_string(), Value::String(template.clone()));
                 }
-                None => (String::new(), None, true, None),
-            };
+                if let Some(ref role) = p.role {
+                    inbound
+                        .metadata
+                        .insert("role".to_string(), Value::String(role.clone()));
+                }
+                (
+                    p.name.clone(),
+                    p.attachments.clone(),
+                    p.live_injection,
+                    p.thread_path.as_ref().map(|tp| {
+                        jyc_core::thread_path::resolve_thread_path(tp, target_tm.data_root())
+                    }),
+                )
+            }
+            None => (String::new(), None, true, None),
+        };
         let pattern_match = PatternMatch {
             pattern_name,
             channel: channel.to_string(),

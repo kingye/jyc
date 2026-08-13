@@ -2300,6 +2300,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_max_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;
@@ -2365,6 +2366,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_max_scroll = 0;
         self.activity_hscroll = 0;
         self.pending_g = false;
         self.activity_split = 0;

@@ -396,6 +396,9 @@ enum Filtered {
 /// held for [`ESC_FRAGMENT_WINDOW`] and replayed unless `[` follows
 /// immediately — humans cannot type that fast, and pastes arrive as
 /// `Event::Paste`, so there are no false positives.
+// ponytail: local workaround for crossterm's incomplete-read heuristic
+// (more = read_count == TTY_BUFFER_SIZE); delete this filter if crossterm
+// ever buffers partial escape sequences across reads.
 #[derive(Default)]
 struct MouseFragmentFilter {
     /// A lone `Esc` held for the fragment window, with its arrival time.
@@ -677,7 +680,9 @@ pub async fn run(
             // instead of one per event — otherwise wheel gestures queue up
             // and keep replaying after the user reverses direction.
             if event::poll(Duration::from_millis(50))? {
-                loop {
+                // Cap per frame: a continuous event flood (e.g. any-event
+                // motion tracking) must not starve redraws.
+                for _ in 0..64 {
                     match event::read()? {
                         Event::Paste(data)
                             if app.chat.visible && app.chat.focus == ChatFocus::ChatPane =>

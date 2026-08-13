@@ -93,7 +93,7 @@ impl FeishuClient {
     }
 
     /// Get the openlark core config (for use with IM APIs and AuthService).
-    async fn get_core_config(&self) -> Result<open_lark::core::config::Config> {
+    async fn get_core_config(&self) -> Result<open_lark::Config> {
         let client = self.get_client().await?;
         Ok(client.api_config().clone())
     }

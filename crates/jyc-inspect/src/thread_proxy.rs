@@ -245,7 +245,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                             // Payload format: {"type":..., "channel":..., "thread":..., ...}
                             if let Some(filtered) = filter_for_thread(&payload, &channel, &thread)
                                 && let Err(e) = write
-                                    .send(axum::extract::ws::Message::Text(filtered))
+                                    .send(axum::extract::ws::Message::Text(filtered.into()))
                                     .await
                             {
                                 tracing::debug!(error = %e, "Failed to forward event");
@@ -261,7 +261,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                                 "dropped": n,
                             });
                             if let Err(e) = write
-                                .send(axum::extract::ws::Message::Text(resync.to_string()))
+                                .send(axum::extract::ws::Message::Text(resync.to_string().into()))
                                 .await
                             {
                                 tracing::debug!(error = %e, "Failed to send resync");

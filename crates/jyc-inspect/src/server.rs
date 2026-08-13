@@ -1208,19 +1208,19 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .route("/api/state", get(api::get_state))
         .route("/api/state/overview", get(api::get_state_overview))
         .route(
-            "/api/threads/:channel/:thread/activity",
+            "/api/threads/{channel}/{thread}/activity",
             get(api::get_thread_activity),
         )
         .route(
-            "/api/threads/:channel/:thread/chat",
+            "/api/threads/{channel}/{thread}/chat",
             get(api::get_thread_chat),
         )
-        .route("/api/channels/:channel/patterns", get(api::get_patterns))
+        .route("/api/channels/{channel}/patterns", get(api::get_patterns))
         .route("/api/threads", post(api::post_thread))
         .route("/api/config/reload", post(api::post_reload_config))
         .route("/ws", get(ws_bare))
-        .route("/ws/:channel", get(ws_channel))
-        .route("/ws/:channel/:thread", get(ws_thread))
+        .route("/ws/{channel}", get(ws_channel))
+        .route("/ws/{channel}/{thread}", get(ws_thread))
         .layer(from_fn_with_state(
             context.clone(),
             crate::auth::require_bearer,
@@ -1228,7 +1228,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
 
     Router::new()
         .route(
-            "/exchange/:channel/:thread/*file_path",
+            "/exchange/{channel}/{thread}/{*file_path}",
             get(api::get_exchange_file),
         )
         .merge(authed)

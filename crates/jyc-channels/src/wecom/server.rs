@@ -2,7 +2,7 @@
 //!
 //! All WeCom channels share a single axum HTTP server that listens on
 //! the global `[wecom].bind_addr`. Each channel registers a handler for
-//! `/webhook/:channel_name`.
+//! `/webhook/{channel_name}`.
 //!
 //! ## WeCom Callback Protocol
 //!
@@ -110,7 +110,7 @@ impl WecomWebhookServer {
         let channels = self.channels.clone();
 
         let app = Router::new()
-            .route("/webhook/:channel_name", get(handle_get).post(handle_post))
+            .route("/webhook/{channel_name}", get(handle_get).post(handle_post))
             .with_state(channels);
 
         let bind_addr: std::net::SocketAddr = self
@@ -697,7 +697,7 @@ mod tests {
 
         let channels = server.channels.clone();
         let app = Router::new()
-            .route("/webhook/:channel_name", get(handle_get).post(handle_post))
+            .route("/webhook/{channel_name}", get(handle_get).post(handle_post))
             .with_state(channels);
 
         // GET to a registered channel — must NOT be 404 (empty body).

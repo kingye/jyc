@@ -33,7 +33,7 @@ sha1 = "0.10"
 hex = "0.4"
 aes = "0.9"
 cbc = "0.2"
-axum = { version = "0.7", features = ["macros", "ws"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 tower = "0.5"
 arc-swap = "1"
 url = "2"

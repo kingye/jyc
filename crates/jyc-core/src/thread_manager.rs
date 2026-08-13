@@ -542,9 +542,14 @@ impl ThreadManager {
                 if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }
-                let pattern_file = jyc_dir.join("pattern");
-                if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
-                    tracing::warn!(error = %e, "Failed to write pattern file");
+                // Injected messages (jyc_send_to_thread, dashboard thread
+                // proxy) carry an empty pattern_name when no pattern could be
+                // resolved; don't let them erase the thread's real pattern.
+                if !item.pattern_match.pattern_name.is_empty() {
+                    let pattern_file = jyc_dir.join("pattern");
+                    if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
+                        tracing::warn!(error = %e, "Failed to write pattern file");
+                    }
                 }
                 // Persist the logical thread name so custom thread_path
                 // directories can be rediscovered after restart.
@@ -2869,6 +2874,66 @@ mode = "agent"
         );
 
         // Clean up
+        tm.shutdown().await;
+    }
+
+    /// Regression test (#542): injected messages (jyc_send_to_thread,
+    /// dashboard thread proxy) carry an empty pattern_name. The worker must
+    /// not overwrite `.jyc/pattern` with it, or the dashboard loses the
+    /// thread's pattern identity until a router-matched message rewrites it.
+    #[tokio::test]
+    async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_test_tm(&workspace);
+
+        let make_msg = || InboundMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "test".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        };
+        let make_pm = |name: &str| PatternMatch {
+            pattern_name: name.to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        };
+
+        // Router-matched message writes the real pattern name.
+        tm.enqueue(make_msg(), "test-thread".to_string(), make_pm("jyc"), None, false, None)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let pattern_file = workspace.join("test-thread").join(".jyc").join("pattern");
+        assert_eq!(
+            tokio::fs::read_to_string(&pattern_file).await.unwrap(),
+            "jyc"
+        );
+
+        // Injected message with empty pattern_name must leave the file alone.
+        tm.enqueue(make_msg(), "test-thread".to_string(), make_pm(""), None, false, None)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            tokio::fs::read_to_string(&pattern_file).await.unwrap(),
+            "jyc"
+        );
+
         tm.shutdown().await;
     }
 

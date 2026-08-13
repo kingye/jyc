@@ -219,9 +219,15 @@ impl Tool for SendToThreadTool {
             matched_pattern: None,
         };
 
-        // Enqueue the message into the target thread
+        // Enqueue the message into the target thread. Resolve the pattern
+        // named after the thread (when one exists) so injected messages
+        // carry the same pattern identity and custom thread_path as
+        // router-matched messages (#542).
+        let (pattern_name, thread_path_override) = target_tm
+            .pattern_for_thread(thread_name)
+            .unwrap_or_else(|| (String::new(), None));
         let pattern_match = PatternMatch {
-            pattern_name: String::new(),
+            pattern_name,
             channel: channel.to_string(),
             matches: HashMap::new(),
         };
@@ -233,7 +239,7 @@ impl Tool for SendToThreadTool {
                 pattern_match,
                 None,
                 true,
-                None,
+                thread_path_override,
             )
             .await;
 

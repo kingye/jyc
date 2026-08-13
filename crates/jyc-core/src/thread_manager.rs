@@ -830,6 +830,26 @@ impl ThreadManager {
         Ok(())
     }
 
+    /// Resolve the enabled pattern whose name matches `thread_name`.
+    ///
+    /// Returns the pattern name and its resolved custom `thread_path` (if
+    /// configured). Used by cross-thread injection (`jyc_send_to_thread`)
+    /// so injected messages carry the same pattern identity — and land in
+    /// the same directory — as router-matched messages (#542).
+    pub fn pattern_for_thread(&self, thread_name: &str) -> Option<(String, Option<PathBuf>)> {
+        let cfg = self.config.load();
+        let pattern = cfg
+            .channels
+            .get(&self.channel_name)
+            .and_then(|c| c.patterns.as_ref())
+            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == thread_name))?;
+        let thread_path = pattern
+            .thread_path
+            .as_ref()
+            .map(|tp| crate::thread_path::resolve_thread_path(tp, self.data_root()));
+        Some((pattern.name.clone(), thread_path))
+    }
+
     /// Names of enabled patterns for this channel.
     ///
     /// Used by the inspect server's `list_patterns` REST handler to
@@ -2935,6 +2955,70 @@ mode = "agent"
         );
 
         tm.shutdown().await;
+    }
+
+    /// `pattern_for_thread` (#542): resolves the enabled pattern named after
+    /// the thread, including its custom `thread_path`; returns None for
+    /// unknown/disabled names so injection falls back to an empty pattern.
+    #[tokio::test]
+    async fn test_pattern_for_thread() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let custom_path = tmp.path().join("custom-jyc");
+
+        let config_str = format!(
+            r#"
+[general]
+[channels.test-channel]
+type = "websocket"
+[[channels.test-channel.patterns]]
+name = "jyc"
+enabled = true
+thread_path = "{}"
+[channels.test-channel.patterns.rules]
+[[channels.test-channel.patterns]]
+name = "disabled"
+enabled = false
+thread_path = "/nowhere"
+[channels.test-channel.patterns.rules]
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            custom_path.display()
+        );
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(&config_str).unwrap(),
+        ));
+        let storage = Arc::new(MessageStorage::new(&workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let tm = ThreadManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test-channel".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(&workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        );
+
+        assert_eq!(
+            tm.pattern_for_thread("jyc"),
+            Some(("jyc".to_string(), Some(custom_path)))
+        );
+        assert_eq!(tm.pattern_for_thread("disabled"), None);
+        assert_eq!(tm.pattern_for_thread("unknown"), None);
     }
 
     /// Regression test: the per-worker clone must share the parent's

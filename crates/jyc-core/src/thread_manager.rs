@@ -832,22 +832,17 @@ impl ThreadManager {
 
     /// Resolve the enabled pattern whose name matches `thread_name`.
     ///
-    /// Returns the pattern name and its resolved custom `thread_path` (if
-    /// configured). Used by cross-thread injection (`jyc_send_to_thread`)
-    /// so injected messages carry the same pattern identity — and land in
-    /// the same directory — as router-matched messages (#542).
-    pub fn pattern_for_thread(&self, thread_name: &str) -> Option<(String, Option<PathBuf>)> {
+    /// Used by cross-thread injection (`jyc_send_to_thread`) so injected
+    /// messages carry the same pattern identity — name, template/role
+    /// metadata, live_injection, custom `thread_path` — as router-matched
+    /// messages (#542).
+    pub fn pattern_for_thread(&self, thread_name: &str) -> Option<jyc_types::ChannelPattern> {
         let cfg = self.config.load();
-        let pattern = cfg
-            .channels
+        cfg.channels
             .get(&self.channel_name)
             .and_then(|c| c.patterns.as_ref())
-            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == thread_name))?;
-        let thread_path = pattern
-            .thread_path
-            .as_ref()
-            .map(|tp| crate::thread_path::resolve_thread_path(tp, self.data_root()));
-        Some((pattern.name.clone(), thread_path))
+            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == thread_name))
+            .cloned()
     }
 
     /// Names of enabled patterns for this channel.
@@ -2958,8 +2953,9 @@ mode = "agent"
     }
 
     /// `pattern_for_thread` (#542): resolves the enabled pattern named after
-    /// the thread, including its custom `thread_path`; returns None for
-    /// unknown/disabled names so injection falls back to an empty pattern.
+    /// the thread, including its template/role/custom `thread_path`; returns
+    /// None for unknown/disabled names so injection falls back to an empty
+    /// pattern.
     #[tokio::test]
     async fn test_pattern_for_thread() {
         let tmp = tempdir().unwrap();
@@ -2976,6 +2972,8 @@ type = "websocket"
 name = "jyc"
 enabled = true
 thread_path = "{}"
+template = "dev"
+role = "Developer"
 [channels.test-channel.patterns.rules]
 [[channels.test-channel.patterns]]
 name = "disabled"
@@ -3013,12 +3011,17 @@ mode = "agent"
             None,
         );
 
+        let p = tm.pattern_for_thread("jyc").expect("pattern should resolve");
+        assert_eq!(p.name, "jyc");
         assert_eq!(
-            tm.pattern_for_thread("jyc"),
-            Some(("jyc".to_string(), Some(custom_path)))
+            p.thread_path.as_deref(),
+            Some(custom_path.to_str().unwrap())
         );
-        assert_eq!(tm.pattern_for_thread("disabled"), None);
-        assert_eq!(tm.pattern_for_thread("unknown"), None);
+        assert_eq!(p.template.as_deref(), Some("dev"));
+        assert_eq!(p.role.as_deref(), Some("Developer"));
+        assert!(p.live_injection);
+        assert!(tm.pattern_for_thread("disabled").is_none());
+        assert!(tm.pattern_for_thread("unknown").is_none());
     }
 
     /// Regression test: the per-worker clone must share the parent's

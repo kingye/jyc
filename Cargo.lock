@@ -1873,30 +1873,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jyc-bridge-feishu"
-version = "0.3.15"
-dependencies = [
- "anyhow",
- "chrono",
- "futures-util",
- "jyc-types",
- "jyc-utils",
- "openlark-client",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "jyc-channels"
 version = "0.3.15"
 dependencies = [
@@ -1918,6 +1894,7 @@ dependencies = [
  "jyc-utils",
  "mail-parser",
  "md5",
+ "openlark-client",
  "regex",
  "reqwest",
  "serde",

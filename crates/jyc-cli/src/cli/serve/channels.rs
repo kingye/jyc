@@ -37,7 +37,7 @@ pub(crate) fn build_outbound_adapter(
     storage: Arc<MessageStorage>,
     outbound_attachment_config: Option<OutboundAttachmentConfig>,
     footer_enabled: bool,
-    workspace_dir: &std::path::PathBuf,
+    workspace_dir: &std::path::Path,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
     wechat_sender_arc: &mut Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
     wecom_bot_handle_arc: &mut Option<Arc<Mutex<Option<WecomBotConnectionHandle>>>>,
@@ -157,7 +157,7 @@ pub(crate) fn build_outbound_adapter(
             let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
             // Store the inbound adapter for later registration with the inspect server
             let mut handler = WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx);
-            handler.set_workspace_dir(workspace_dir.clone());
+            handler.set_workspace_dir(workspace_dir.to_path_buf());
             handler.set_inspect_broadcast(inspect_broadcast.clone());
             let handler = Arc::new(handler);
             ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());

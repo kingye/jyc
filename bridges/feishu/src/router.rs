@@ -36,7 +36,8 @@ pub fn forward_for(cfg: &BridgeConfig, message: &InboundMessage) -> Option<Forwa
     let route = cfg.route(&chat_name, &chat_id)?;
 
     // Respond filter: when the route declares mentions, forward only if one
-    // of them is @-mentioned (matches id or display name).
+    // of them is @-mentioned. Each mention yields its id AND display name,
+    // so a route configured with either matches.
     if let Some(required) = &route.mentions {
         let mentioned: Vec<String> = message
             .metadata
@@ -44,12 +45,19 @@ pub fn forward_for(cfg: &BridgeConfig, message: &InboundMessage) -> Option<Forwa
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|m| {
-                        m.as_str()
-                            .or_else(|| m.get("name").and_then(|n| n.as_str()))
-                            .or_else(|| m.get("id").and_then(|i| i.as_str()))
+                    .flat_map(|m| {
+                        let mut vals = Vec::new();
+                        if let Some(s) = m.as_str() {
+                            vals.push(s.to_lowercase());
+                        }
+                        if let Some(id) = m.get("id").and_then(|i| i.as_str()) {
+                            vals.push(id.to_lowercase());
+                        }
+                        if let Some(name) = m.get("name").and_then(|n| n.as_str()) {
+                            vals.push(name.to_lowercase());
+                        }
+                        vals
                     })
-                    .map(|s| s.to_lowercase())
                     .collect()
             })
             .unwrap_or_default();

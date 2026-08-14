@@ -78,11 +78,17 @@ pub fn stream_sse(
                     mut buf,
                 } => loop {
                     // A complete event ends at a blank line.
-                    if let Some(data) = take_complete_event(&mut buf) {
-                        return Some((
-                            Ok(Event::Message(Message { data })),
-                            SseState::Read { stream, buf },
-                        ));
+                    if let Some(raw) = take_event_block(&mut buf) {
+                        // Blocks without `data:` (event:/id:/comments) are
+                        // discarded, then we keep draining the buffer before
+                        // touching the network again.
+                        if let Some(data) = parse_data(&String::from_utf8_lossy(&raw)) {
+                            return Some((
+                                Ok(Event::Message(Message { data })),
+                                SseState::Read { stream, buf },
+                            ));
+                        }
+                        continue;
                     }
                     match stream.next().await {
                         Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
@@ -114,12 +120,12 @@ pub fn stream_sse(
     })
 }
 
-/// Extract one complete event (terminated by a blank line) from `buf`,
-/// returning its `data:` payload. Incomplete trailing bytes stay in `buf`.
-fn take_complete_event(buf: &mut Vec<u8>) -> Option<String> {
+/// Drain one complete event block (terminated by a blank line) from `buf`.
+/// Returns `None` when no complete block is present; incomplete trailing
+/// bytes stay in `buf`.
+fn take_event_block(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     let end = find_event_end(buf)?;
-    let raw: Vec<u8> = buf.drain(..end).collect();
-    parse_data(&String::from_utf8_lossy(&raw))
+    Some(buf.drain(..end).collect())
 }
 
 /// Index just past the first blank line (`\n\n` or `\r\n\r\n`).
@@ -245,5 +251,30 @@ mod tests {
         assert!(msg.contains("Invalid status code: 429"), "got: {msg}");
         assert!(msg.contains("retry-after: 30s"), "got: {msg}");
         assert!(msg.contains("rate limited"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn skips_events_without_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/sse"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "event: ping\n\n: comment\ndata: hello\n\n",
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let mut events = stream_sse(client.post(format!("{}/sse", server.uri())));
+
+        assert!(matches!(events.next().await.unwrap().unwrap(), Event::Open));
+        let Event::Message(m) = events.next().await.unwrap().unwrap() else {
+            panic!("expected message");
+        };
+        assert_eq!(m.data, "hello", "event:/comment blocks must be skipped");
+        let err = events.next().await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Stream ended"), "got: {err}");
+        assert!(events.next().await.is_none());
     }
 }

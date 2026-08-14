@@ -58,7 +58,7 @@ impl ChannelMatcher for GiteeMatcher {
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
         let mut ordered: Vec<&ChannelPattern> = patterns.iter().collect();
-        ordered.sort_by_key(|p| pattern_priority(p.role.as_deref()));
+        ordered.sort_by_key(|p| crate::git_host::pattern_priority(p.role.as_deref()));
 
         for pattern in ordered {
             if !pattern.enabled {
@@ -97,87 +97,10 @@ impl ChannelMatcher for GiteeMatcher {
     }
 }
 
-fn pattern_priority(role: Option<&str>) -> u8 {
-    match role {
-        Some(r) if r.eq_ignore_ascii_case("Reviewer") => 0,
-        _ => 255,
-    }
-}
-
 impl GiteeMatcher {
     fn rules_match(&self, rules: &PatternRules, message: &InboundMessage) -> bool {
-        if let Some(ref allowed_types) = rules.github_type {
-            let msg_type = message
-                .metadata
-                .get("gitee_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !allowed_types
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(msg_type))
-            {
-                return false;
-            }
-        }
-
-        let msg_labels: Vec<String> = message
-            .metadata
-            .get("gitee_labels")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if let Some(ref label_rule) = rules.labels
-            && !label_rule.matches(&msg_labels)
-        {
-            return false;
-        }
-
-        if let Some(ref exclude_labels) = rules.exclude_labels {
-            let has_excluded = exclude_labels
-                .iter()
-                .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if has_excluded {
-                return false;
-            }
-        }
-
-        if let Some(ref allowed_assignees) = rules.assignees {
-            let msg_assignees: Vec<String> = message
-                .metadata
-                .get("gitee_assignees")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let has_match = allowed_assignees
-                .iter()
-                .any(|a| msg_assignees.contains(&a.to_lowercase()));
-            if !has_match {
-                return false;
-            }
-        }
-
-        true
+        crate::git_host::rules_match(rules, message, "gitee_")
     }
-}
-
-/// Extract [Role] prefix from comment body for self-loop prevention.
-fn extract_comment_role(body: &str) -> Option<String> {
-    let trimmed = body.trim_start();
-    if trimmed.starts_with('[')
-        && let Some(end) = trimmed.find("] ")
-    {
-        return Some(trimmed[1..end].to_string());
-    }
-    None
 }
 
 /// Gitee inbound adapter — polls Gitee API for events.
@@ -200,68 +123,27 @@ impl GiteeInboundAdapter {
     }
 
     async fn load_processed_comments(&self) -> HashSet<String> {
-        let file = self.state_dir.join("processed-comments.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => content
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to load processed comments");
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .load()
+            .await
     }
 
     async fn track_comment(&self, key: &str, processed: &mut HashSet<String>) {
-        processed.insert(key.to_string());
-        let file = self.state_dir.join("processed-comments.txt");
-        use tokio::io::AsyncWriteExt;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .await
-        {
-            let _ = f.write_all(format!("{}\n", key).as_bytes()).await;
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .insert(key, processed)
+            .await;
     }
 
     async fn load_seen_issues(&self) -> HashSet<String> {
-        let file = self.state_dir.join("seen-issues.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => content
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to load seen issues");
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .load()
+            .await
     }
 
     async fn track_seen_issue(&self, key: &str, seen: &mut HashSet<String>) {
-        if seen.insert(key.to_string()) {
-            let file = self.state_dir.join("seen-issues.txt");
-            use tokio::io::AsyncWriteExt;
-            if let Ok(mut f) = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file)
-                .await
-            {
-                let _ = f.write_all(format!("{}\n", key).as_bytes()).await;
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .insert(key, seen)
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -618,7 +500,7 @@ impl GiteeInboundAdapter {
             }
 
             let body_trimmed = comment.body.trim();
-            let comment_role = extract_comment_role(body_trimmed);
+            let comment_role = crate::git_host::extract_comment_role(body_trimmed, None);
             let issue_number = comment.issue_number().unwrap_or_default();
 
             if !current_open_numbers.contains(&issue_number) {
@@ -700,7 +582,8 @@ impl GiteeInboundAdapter {
                         }
 
                         let body_trimmed = comment.body.trim();
-                        let comment_role = extract_comment_role(body_trimmed);
+                        let comment_role =
+                            crate::git_host::extract_comment_role(body_trimmed, None);
                         // Gitee PR comments have target=null; use the known PR number from the loop
                         let pr_number = pr.number.to_string();
 

@@ -260,6 +260,21 @@ pub trait Provider: Send + Sync {
 /// - "ark/ep-xxxxx" → provider="ark", model="ep-xxxxx"
 ///
 /// The provider_name must match a key in the `[agent.providers.*]` config.
+/// Merge provider/model-level extra params into a request body.
+///
+/// `params` is the optional `{ "extra": { ... } }` config value; when it is
+/// an object, each key/value is inserted into `body` (overriding defaults).
+pub fn merge_params(body: &mut serde_json::Value, params: &Option<serde_json::Value>) {
+    if let Some(params) = params
+        && let Some(params_obj) = params.as_object()
+        && let Some(body_obj) = body.as_object_mut()
+    {
+        for (k, v) in params_obj {
+            body_obj.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 pub fn create_provider(
     model: &str,
     providers: &std::collections::HashMap<String, jyc_types::ProviderDef>,

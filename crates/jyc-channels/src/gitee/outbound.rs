@@ -107,23 +107,7 @@ impl OutboundAdapter for GiteeOutboundAdapter {
             self.footer_enabled,
         );
 
-        let clean_reply = jyc_core::email_parser::strip_trailing_separators(reply_text);
-
-        let reply_with_footer = if footer.is_empty() {
-            clean_reply
-        } else {
-            format!("{}\n\n{}", clean_reply, footer)
-        };
-
-        let comment_body = if role.is_empty()
-            || reply_with_footer
-                .trim_start()
-                .starts_with(&format!("[{}]", role))
-        {
-            reply_with_footer
-        } else {
-            format!("[{}] {}", role, reply_with_footer)
-        };
+        let comment_body = crate::git_host::build_comment_body(reply_text, role, &footer);
 
         let comment_id = self
             .client

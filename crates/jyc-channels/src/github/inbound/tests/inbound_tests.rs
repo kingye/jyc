@@ -424,13 +424,13 @@ fn test_non_reviewer_patterns_preserve_toml_order() {
 #[test]
 fn test_pattern_priority_helper() {
     // Reviewer (any case) → 0, anything else → 255.
-    assert_eq!(pattern_priority(Some("Reviewer")), 0);
-    assert_eq!(pattern_priority(Some("reviewer")), 0);
-    assert_eq!(pattern_priority(Some("REVIEWER")), 0);
-    assert_eq!(pattern_priority(Some("Developer")), 255);
-    assert_eq!(pattern_priority(Some("Planner")), 255);
-    assert_eq!(pattern_priority(None), 255);
-    assert_eq!(pattern_priority(Some("")), 255);
+    assert_eq!(crate::git_host::pattern_priority(Some("Reviewer")), 0);
+    assert_eq!(crate::git_host::pattern_priority(Some("reviewer")), 0);
+    assert_eq!(crate::git_host::pattern_priority(Some("REVIEWER")), 0);
+    assert_eq!(crate::git_host::pattern_priority(Some("Developer")), 255);
+    assert_eq!(crate::git_host::pattern_priority(Some("Planner")), 255);
+    assert_eq!(crate::git_host::pattern_priority(None), 255);
+    assert_eq!(crate::git_host::pattern_priority(Some("")), 255);
 }
 
 #[test]
@@ -715,25 +715,32 @@ fn test_fallback_to_second_pattern_when_first_rules_fail() {
 
 #[test]
 fn test_extract_comment_role() {
+    let allowed = Some(crate::git_host::GITHUB_COMMENT_ROLES);
     assert_eq!(
-        extract_comment_role("[Developer] some text"),
+        crate::git_host::extract_comment_role("[Developer] some text", allowed),
         Some("Developer".to_string())
     );
     assert_eq!(
-        extract_comment_role("[Reviewer] code looks good"),
+        crate::git_host::extract_comment_role("[Reviewer] code looks good", allowed),
         Some("Reviewer".to_string())
     );
     assert_eq!(
-        extract_comment_role("[Planner] questions"),
+        crate::git_host::extract_comment_role("[Planner] questions", allowed),
         Some("Planner".to_string())
     );
     assert_eq!(
-        extract_comment_role("[High-Level Planner] planning"),
+        crate::git_host::extract_comment_role("[High-Level Planner] planning", allowed),
         Some("High-Level Planner".to_string())
     );
-    assert_eq!(extract_comment_role("normal comment"), None);
-    assert_eq!(extract_comment_role("[Unknown] something"), None);
-    assert_eq!(extract_comment_role(""), None);
+    assert_eq!(
+        crate::git_host::extract_comment_role("normal comment", allowed),
+        None
+    );
+    assert_eq!(
+        crate::git_host::extract_comment_role("[Unknown] something", allowed),
+        None
+    );
+    assert_eq!(crate::git_host::extract_comment_role("", allowed), None);
 }
 
 // --- Persistent comment tracking ---

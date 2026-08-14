@@ -100,28 +100,8 @@ impl OutboundAdapter for GithubOutboundAdapter {
             self.footer_enabled,
         );
 
-        // Clean reply text
-        let clean_reply = jyc_core::email_parser::strip_trailing_separators(reply_text);
-
-        // Combine reply with footer
-        let reply_with_footer = if footer.is_empty() {
-            clean_reply
-        } else {
-            format!("{}\n\n{}", clean_reply, footer)
-        };
-
-        // Build comment body with role prefix (avoid double-prefix if AI already added it)
-        let comment_body = if role.is_empty() {
-            reply_with_footer
-        } else if reply_with_footer
-            .trim_start()
-            .starts_with(&format!("[{}]", role))
-        {
-            // AI already included the role prefix — don't add again
-            reply_with_footer
-        } else {
-            format!("[{}] {}", role, reply_with_footer)
-        };
+        // Build comment body: strip separators + footer + [Role] prefix
+        let comment_body = crate::git_host::build_comment_body(reply_text, role, &footer);
 
         // Post comment via GitHub API
         let comment_id = self

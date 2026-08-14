@@ -109,14 +109,7 @@ impl Provider for AnthropicProvider {
         }
 
         // Merge extra params from config (provider-level + model-level)
-        if let Some(ref params) = self.params
-            && let Some(params_obj) = params.as_object()
-            && let Some(body_obj) = body.as_object_mut()
-        {
-            for (k, v) in params_obj {
-                body_obj.insert(k.clone(), v.clone());
-            }
-        }
+        crate::provider::merge_params(&mut body, &self.params);
 
         // Prompt-cache breakpoints. See `complete_raw` above for why this
         // runs after the params merge.
@@ -290,14 +283,7 @@ impl Provider for AnthropicProvider {
         }
 
         // Merge extra params
-        if let Some(ref params) = self.params
-            && let Some(params_obj) = params.as_object()
-            && let Some(body_obj) = body.as_object_mut()
-        {
-            for (k, v) in params_obj {
-                body_obj.insert(k.clone(), v.clone());
-            }
-        }
+        crate::provider::merge_params(&mut body, &self.params);
 
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`
         // override coming from `params` is marked too, and cannot clobber

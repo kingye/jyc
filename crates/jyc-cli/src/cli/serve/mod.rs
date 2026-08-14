@@ -1,30 +1,13 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-use clap::Args;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 /// RAII guard that removes a PID file on drop.
-struct PidFileGuard {
-    path: PathBuf,
-}
-
-impl PidFileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for PidFileGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 use jyc_agent::JycAgentService;
 
 use jyc_services::job_scheduler::JobScheduler;
@@ -67,43 +50,6 @@ use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
 
 /// Serve command — start the agent, monitor inbound channels, process messages.
-#[derive(Debug, Args)]
-pub struct ServeArgs {
-    /// Config file path (default: <config_home>/config.toml, e.g.
-    /// ~/.config/jyc/config.toml; or config.toml in --workdir when given)
-    #[arg(short, long)]
-    pub config: Option<String>,
-
-    /// Use polling instead of IMAP IDLE
-    #[arg(long)]
-    pub no_idle: bool,
-
-    /// Reset monitoring state before starting
-    #[arg(long)]
-    pub reset: bool,
-}
-
-/// Wait for a shutdown signal (Ctrl+C on all platforms, plus SIGTERM on Unix).
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to create SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received Ctrl+C, shutting down...");
-            }
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, shutting down...");
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Received Ctrl+C, shutting down...");
-    }
-}
 
 pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Result<()> {
     // 1. Resolve config locations, provision default config on first run
@@ -1369,3 +1315,8 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     tracing::info!("Serve stopped");
     Ok(())
 }
+
+mod shutdown;
+
+pub use shutdown::ServeArgs;
+use shutdown::{PidFileGuard, shutdown_signal};

@@ -1,3 +1,4 @@
+pub mod crypto;
 pub mod email;
 pub mod feishu;
 pub mod gitee;

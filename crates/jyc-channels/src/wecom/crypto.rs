@@ -6,21 +6,8 @@
 //!
 //! Reference: https://developer.work.weixin.qq.com/document/path/90968
 
-use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 use anyhow::{Context, Result};
-use base64::{Engine, alphabet, engine::GeneralPurpose};
 use sha1::{Digest, Sha1};
-
-/// Permissive base64 engine that allows non-zero trailing bits.
-///
-/// WeCom's EncodingAESKey may have non-zero trailing bits in base64 padding,
-/// which the standard strict decoder rejects. This engine accepts them.
-static PERMISSIVE_BASE64: GeneralPurpose = GeneralPurpose::new(
-    &alphabet::STANDARD,
-    base64::engine::GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true),
-);
-
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
 /// Verify the callback signature.
 ///
@@ -70,42 +57,18 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
         );
     }
 
-    // WeCom's encoding_aes_key is 43 chars with trailing '=' padding removed.
-    // Re-add padding so standard base64 decoding works.
-    let padded_key = match encoding_aes_key.len() % 4 {
-        0 => encoding_aes_key.to_string(),
-        n => format!("{}{}", encoding_aes_key, "=".repeat(4 - n)),
-    };
-
-    let raw_key = PERMISSIVE_BASE64.decode(&padded_key)
-    .with_context(|| {
+    let (aes_key, iv) = crate::crypto::decode_aes256_key(encoding_aes_key).with_context(|| {
         format!(
-            "failed to decode encoding_aes_key from base64 (len={}, padded_len={}, has_non_ascii={:?})",
+            "encoding_aes_key (len={}, has_non_ascii={:?})",
             encoding_aes_key.len(),
-            padded_key.len(),
             encoding_aes_key.bytes().any(|b| !b.is_ascii_alphanumeric()),
         )
     })?;
 
-    if raw_key.len() != 32 {
-        anyhow::bail!(
-            "encoding_aes_key decoded length is {}, expected 32 bytes (AES-256 key)",
-            raw_key.len()
-        );
-    }
-
-    // The AES key is all 32 bytes of the decoded encoding_aes_key
-    let aes_key = &raw_key[..32];
-    // IV is the first 16 bytes of the AES key, per WeCom spec
-    let ciphertext = PERMISSIVE_BASE64
-        .decode(encrypt)
+    let ciphertext = crate::crypto::base64_decode(encrypt)
         .context("failed to decode encrypt from base64")?;
 
-    let mut buf = ciphertext;
-    let decrypted = Aes256CbcDec::new_from_slices(aes_key, &raw_key[..16])
-        .map_err(|e| anyhow::anyhow!("invalid AES key/iv length: {e:?}"))?
-        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
-        .map_err(|e| anyhow::anyhow!("AES decryption failed: {:?}", e))?;
+    let decrypted = crate::crypto::decrypt_aes256_cbc(&aes_key, &iv, &ciphertext)?;
 
     // WeCom uses PKCS#7 with block_size=32 (not the AES block size of 16).
     // Manual unpadding required.

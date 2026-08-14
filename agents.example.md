@@ -10,10 +10,10 @@ uncomment the environment section that matches your deployment.
    git clone https://github.com/kingye/jyc.git jyc
    ```
 
-2. Symlink the deploy skills so OpenCode can discover them:
+2. Symlink the deploy skills so the agent can discover them:
    ```bash
-   mkdir -p .opencode
-   ln -s ../jyc/skills .opencode/skills
+   mkdir -p .jyc
+   ln -s ../jyc/skills .jyc/skills
    ```
 
 3. Copy this file as AGENTS.md:

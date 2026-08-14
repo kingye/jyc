@@ -21,7 +21,6 @@ Minimal runtime with only essential tools:
 
 | Tool | Purpose |
 |------|---------|
-| OpenCode | AI agent runtime (bind-mounted) |
 | ripgrep, jq | Code search, JSON processing |
 | curl | HTTP requests |
 | python3 | Python scripting |
@@ -58,7 +57,6 @@ cd docker && docker compose up --build -d
 
 - Docker or Podman
 - JYC data directory with `config.toml` configured
-- OpenCode config file (`opencode.jsonc`) with API keys
 
 ## Directory Structure
 
@@ -71,9 +69,6 @@ cd docker && docker compose up --build -d
 │   └── workspace/           ← Thread workspaces
 ├── .netrc                   ← Git credentials
 └── gh_hosts.yml             ← GitHub CLI auth
-
-/root/.config/opencode/
-└── opencode.jsonc           ← OpenCode global config (bind-mounted)
 
 /root/.claude/skills/        ← Skills (bind-mounted, read-only)
 /root/.agents/skills/        ← Agent skills (bind-mounted, read-only)
@@ -108,7 +103,6 @@ podman build --target slim -t jyc:slim -f docker/Dockerfile ..
 podman run -d --name jyc \
   --network=host \
   -v /path/to/jyc-data:/opt/jyc \
-  -v /path/to/opencode.jsonc:/root/.config/opencode/opencode.jsonc:ro \
   -v /path/to/.claude/skills:/root/.claude/skills:ro \
   -v /path/to/.agents/skills:/root/.agents/skills:ro \
   --restart unless-stopped \
@@ -134,8 +128,6 @@ docker compose restart jyc
 | Mount | Container Path | Purpose |
 |-------|---------------|---------|
 | JYC data dir | `/opt/jyc` | Config, channels, workspace |
-| OpenCode config | `/root/.config/opencode/opencode.jsonc` | API keys, providers |
-| OpenCode data | `/root/.local/share/opencode` | Sessions DB, logs, snapshots |
 | Claude skills | `/root/.claude/skills` | Skills (read-only) |
 | Agent skills | `/root/.agents/skills` | Agent skills (read-only) |
 | .netrc | `/root/.netrc` | Git credentials (full image only) |
@@ -159,8 +151,8 @@ Check container logs:
 docker compose logs -f jyc
 ```
 
-### OpenCode not found
-The install script may fail behind a proxy. Build with proxy args:
+### Build fails behind a proxy
+Build with proxy args:
 ```bash
 docker build --build-arg HTTP_PROXY=http://proxy:8080 --build-arg HTTPS_PROXY=http://proxy:8080 -t jyc:latest -f docker/Dockerfile .
 ```

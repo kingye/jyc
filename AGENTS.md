@@ -2,12 +2,12 @@
 
 JYC is a channel-agnostic AI agent framework written in Rust.
 It monitors inbound channels (email via IMAP), routes messages to threads,
-and uses OpenCode to generate AI replies.
+and uses an in-process AI agent to generate replies.
 
 ## Tech Stack
 - Rust, tokio async runtime
 - IMAP/SMTP for email channels
-- OpenCode as the AI backend
+- In-process AI agent as the AI backend
 - Docker for containerized deployment
 
 ## Code Conventions
@@ -105,5 +105,5 @@ and uses OpenCode to generate AI replies.
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history
 - See IMPLEMENTATION.md for implementation phases
-- OpenCode Server API: https://opencode.ai/docs/server/
+
 - jin AGENTS.md (约束来源参考): https://github.com/kingye/jin/blob/main/AGENTS.md

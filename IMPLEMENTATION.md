@@ -24,7 +24,7 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 1.6 | `config init` command | `src/cli/config.rs` | Write default `config.toml` template to working directory | Manual: `jyc config init` creates file |
 | 1.7 | `config validate` command | `src/cli/config.rs` | Load and validate config, print results | Manual: `jyc config validate` reports issues |
 | 1.8 | Tracing setup | `src/main.rs` | Initialize `tracing-subscriber` with env filter (`RUST_LOG`), structured format. `-d/--debug` and `-v/--verbose` flags set log levels | Logs appear with correct levels |
-| 1.9 | Error types | `src/utils/mod.rs` | Define `thiserror` error enums for config, IMAP, SMTP, OpenCode, MCP errors | Compiles |
+| 1.9 | Error types | `src/utils/mod.rs` | Define `thiserror` error enums for config, IMAP, SMTP, in-process agent, MCP errors | Compiles |
 | 1.10 | Utility functions | `src/utils/helpers.rs`, `src/utils/constants.rs` | `parse_file_size("25mb")`, regex validation helpers, default constants (timeouts, limits) | Unit tests for parse_file_size, regex validation |
 
 **Deliverable:** `jyc config init && jyc config validate` works end-to-end.
@@ -74,23 +74,23 @@ This document outlines the phased implementation plan for building JYC, the Rust
 
 ## Phase 4: AI Integration
 
-**Goal:** OpenCode AI generates replies via SSE streaming with full session management.
+**Goal:** in-process agent generates replies via SSE streaming with full session management.
 
 ### Tasks
 
 | # | Task | Files | Description | Test Strategy |
 |---|------|-------|-------------|---------------|
-| 4.1 | OpenCode server manager | `src/services/opencode/mod.rs` | Start/stop OpenCode server process (`tokio::process::Command`). Auto-find free port (49152+). Health check (HTTP ping). Auto-restart on death | Manual: server starts, health check passes |
-| 4.2 | OpenCode HTTP client | `src/services/opencode/client.rs` | `reqwest`-based client: `create_session()`, `prompt_async()`, `prompt_blocking()`, `get_session()`. JSON request/response types matching OpenCode API | Unit test with mock HTTP server |
-| 4.3 | SSE streaming | `src/services/opencode/client.rs` | `subscribe_events(directory)` → `reqwest-eventsource` stream. Event parsing: `server.connected`, `message.updated`, `message.part.updated`, `session.status`, `session.idle`, `session.error`. Part accumulation with dedup by ID | Unit test: parse sample SSE events |
-| 4.4 | Activity-based timeout | `src/services/opencode/client.rs` | `tokio::select!` with `tokio::time::interval(5s)`. Check `last_activity` vs now. 30min default, 60min when tool running. Progress logging every 10s | Unit test: timeout triggers correctly |
-| 4.5 | Session management | `src/services/opencode/session.rs` | Per-thread session persistence (`opencode-session.json`). `get_or_create_session()`, `delete_session()`. Thread OpenCode config (`opencode.json`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
-| 4.6 | Prompt builder | `src/services/opencode/prompt_builder.rs` | `build_system_prompt(thread_path)` — base prompt + optional `system.md`. `build_prompt(msg, thread_path, message_dir)` — incoming message body (stripped of quoted history). Reply context saved to `.jyc/reply-context.json` on disk. Respects token budget constants | Unit test: prompt construction with various inputs |
-| 4.7 | Stale session detection | `src/services/opencode/client.rs` | If SSE reports tool success but signal file missing → delete session → retry once with fresh session. Signal file cleanup before each prompt | Unit test: detection logic |
-| 4.8 | ContextOverflow recovery | `src/services/opencode/client.rs` | On `session.error` with ContextOverflow → create new session → retry with blocking prompt | Unit test: recovery flow |
-| 4.9 | Wire AI into workers | `src/core/thread_manager.rs` | Replace static reply with `OpenCodeService::generate_reply()`. Handle reply-sent-by-tool vs fallback | Manual: end-to-end AI reply |
+| 4.1 | agent service manager | `src/services/agent/mod.rs` | Start/stop agent service process (`tokio::process::Command`). Auto-find free port (49152+). Health check (HTTP ping). Auto-restart on death | Manual: server starts, health check passes |
+| 4.2 | agent HTTP client | `src/services/agent/client.rs` | `reqwest`-based client: `create_session()`, `prompt_async()`, `prompt_blocking()`, `get_session()`. JSON request/response types matching the agent API | Unit test with mock HTTP server |
+| 4.3 | SSE streaming | `src/services/agent/client.rs` | `subscribe_events(directory)` → `reqwest-eventsource` stream. Event parsing: `server.connected`, `message.updated`, `message.part.updated`, `session.status`, `session.idle`, `session.error`. Part accumulation with dedup by ID | Unit test: parse sample SSE events |
+| 4.4 | Activity-based timeout | `src/services/agent/client.rs` | `tokio::select!` with `tokio::time::interval(5s)`. Check `last_activity` vs now. 30min default, 60min when tool running. Progress logging every 10s | Unit test: timeout triggers correctly |
+| 4.5 | Session management | `src/services/agent/session.rs` | Per-thread session persistence (`agent-session.json`). `get_or_create_session()`, `delete_session()`. Thread in-process agent config (`agent config`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
+| 4.6 | Prompt builder | `src/services/agent/prompt_builder.rs` | `build_system_prompt(thread_path)` — base prompt + optional `system.md`. `build_prompt(msg, thread_path, message_dir)` — incoming message body (stripped of quoted history). Reply context saved to `.jyc/reply-context.json` on disk. Respects token budget constants | Unit test: prompt construction with various inputs |
+| 4.7 | Stale session detection | `src/services/agent/client.rs` | If SSE reports tool success but signal file missing → delete session → retry once with fresh session. Signal file cleanup before each prompt | Unit test: detection logic |
+| 4.8 | ContextOverflow recovery | `src/services/agent/client.rs` | On `session.error` with ContextOverflow → create new session → retry with blocking prompt | Unit test: recovery flow |
+| 4.9 | Wire AI into workers | `src/core/thread_manager.rs` | Replace static reply with `AgentService::generate_reply()`. Handle reply-sent-by-tool vs fallback | Manual: end-to-end AI reply |
 
-**Deliverable:** `jyc monitor` processes emails with AI-generated replies via OpenCode SSE streaming.
+**Deliverable:** `jyc monitor` processes emails with AI-generated replies via in-process agent SSE streaming.
 
 ---
 
@@ -105,10 +105,10 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 5.1 | Reply context serialization | `src/mcp/context.rs` | `ReplyContext` struct. Saved to `.jyc/reply-context.json` on disk before prompt. Loaded by MCP reply tool from cwd. Validation + integrity checks | Unit test: round-trip, tamper detection |
 | 5.2 | MCP reply tool (rmcp) | `src/mcp/reply_tool.rs` | `rmcp` stdio server with `reply_message` tool. Load reply-context.json from cwd → load config → write reply to .jyc/reply.md → write signal file. Monitor reads reply and sends via outbound adapter. Log to `reply-tool.log` | Manual: invoke via MCP client |
 | 5.3 | Hidden subcommand | `src/cli/mcp_reply.rs` | `jyc mcp-reply-tool` starts the rmcp stdio server. Reads `JYC_ROOT` env var | Manual: `echo '...' \| jyc mcp-reply-tool` |
-| 5.4 | Reply tool command resolution | `src/services/opencode/session.rs` | `get_reply_tool_command()`: find `jyc` binary path → `["/path/to/jyc", "mcp-reply-tool"]`. Write into `opencode.json` MCP config | Unit test: path resolution |
+| 5.4 | Reply tool command resolution | `src/services/agent/session.rs` | `get_reply_tool_command()`: find `jyc` binary path → `["/path/to/jyc", "mcp-reply-tool"]`. Write into `agent config` MCP config | Unit test: path resolution |
 | 5.5 | Unified command processing | `src/core/command/registry.rs`, `src/core/command/handler.rs` | `CommandRegistry::process_commands(body, ctx)`: single-pass parse, execute, and strip commands from body. Returns `CommandOutput { results, cleaned_body, body_empty }`. Defines `CommandHandler` trait, `CommandContext`, `CommandResult`, `CommandOutput` types. Unlike jiny-m's split design (parseCommands + separate stripping in thread-manager), all command logic lives here | Unit test: parse various formats, body stripping, empty body detection |
-| 5.6 | /model command | `src/core/command/model_handler.rs` | Write `.jyc/model-override`, delete `opencode-session.json`, return result. `/model reset` removes override | Unit test: file operations |
-| 5.7 | /plan and /build commands | `src/core/command/mode_handler.rs` | Write/remove `.jyc/mode-override`. Pass `agent: "plan"` to OpenCode prompt when active | Unit test: mode switching |
+| 5.6 | /model command | `src/core/command/model_handler.rs` | Write `.jyc/model-override`, delete `agent-session.json`, return result. `/model reset` removes override | Unit test: file operations |
+| 5.7 | /plan and /build commands | `src/core/command/mode_handler.rs` | Write/remove `.jyc/mode-override`. Pass `agent: "plan"` to in-process agent prompt when active | Unit test: mode switching |
 | 5.8 | Wire commands into workers | `src/core/thread_manager.rs` | After store, before prompt: call `command_registry.process_commands()`. Check `body_empty` + results → direct reply or continue with `cleaned_body`. ThreadManager has no knowledge of command syntax | Manual: send email with /model command |
 
 **Deliverable:** Full MCP reply tool pipeline. Email commands change AI model and mode per-thread.
@@ -116,7 +116,7 @@ This document outlines the phased implementation plan for building JYC, the Rust
 **Additional changes implemented during Phase 5:**
 - `AgentService` trait (`src/services/agent.rs`) — ThreadManager dispatches via `Arc<dyn AgentService>` instead of `match` on mode
 - `StaticAgentService` (`src/services/static_agent.rs`) — implements `AgentService` for static reply mode
-- `OpenCodeService` implements `AgentService` — owns full reply lifecycle (building, sending, storing)
+- `AgentService` implements `AgentService` — owns full reply lifecycle (building, sending, storing)
 - File attachment support in SMTP client (`MultiPart::mixed` + `Attachment` parts)
 - `message.channel` set to config channel **name** (e.g., "jiny283"), not type ("email")
 - HTML→Markdown body extraction (prefers HTML over raw plain text for proper line breaks)
@@ -139,7 +139,7 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 6.4 | Startup health check | `src/cli/monitor.rs` | Send one-time startup notification email with version and timestamp | Manual: startup email received |
 | 6.5 | `patterns list` command | `src/cli/patterns.rs` | Load config, display all patterns with their rules in formatted output | Manual: `jyc patterns list` shows patterns |
 | 6.6 | `state` command | `src/cli/state.rs` | Load per-channel state files, display last sequence number, last processed UID, timestamp | Manual: `jyc state` shows state |
-| 6.7 | Graceful shutdown | `src/main.rs`, all components | `tokio::signal::ctrl_c()` → `CancellationToken::cancel()`. Await all worker join handles. Alert service final flush. OpenCode session cleanup. SMTP disconnect | Manual: Ctrl+C exits cleanly, no orphan processes |
+| 6.7 | Graceful shutdown | `src/main.rs`, all components | `tokio::signal::ctrl_c()` → `CancellationToken::cancel()`. Await all worker join handles. Alert service final flush. in-process agent session cleanup. SMTP disconnect | Manual: Ctrl+C exits cleanly, no orphan processes |
 | 6.8 | Comprehensive error handling | All files | Audit all `unwrap()` calls → replace with `?` or proper error handling. Ensure all errors have context via `anyhow::Context` | Code review pass |
 | 6.9 | Logging audit | All files | Ensure structured fields (`thread`, `channel`, `message_id`) on all log lines. Consistent log levels. Sensitive data redacted | Code review pass |
 
@@ -204,7 +204,7 @@ JYC uses a fresh TOML config format. Users migrating from jiny-m need to:
 1. Convert `.jyc/config.json` → `config.toml` (manual, one-time)
 2. Existing workspace data (`messages/`, `.jyc/` state) is compatible — same directory structure
 3. Per-channel state files (`.state.json`, `.processed-uids.txt`) are compatible
-4. `opencode.json` per-thread is regenerated automatically
+4. `agent config` per-thread is regenerated automatically
 
 A future `jyc migrate` command could automate config conversion.
 
@@ -398,9 +398,9 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 | # | Task | Files | Description |
 |---|------|-------|-------------|
 | 10.1 | Deployment script | `deploy.sh` | Automated deployment with systemd service or nohup fallback |
-| 10.2 | Bare metal setup | `deploy-bare-metal.sh` | Full server provisioning (Rust, OpenCode, GitHub CLI, Node.js) |
+| 10.2 | Bare metal setup | `deploy-bare-metal.sh` | Full server provisioning (Rust, in-process agent, GitHub CLI, Node.js) |
 | 10.3 | Template deployment | `deploy-templates.sh` | Sync templates to deployment target |
-| 10.4 | Environment config | `dotfiles/` | zsh config, OpenCode settings for server environments |
+| 10.4 | Environment config | `dotfiles/` | zsh config, in-process agent settings for server environments |
 
 ### Status
 

@@ -235,7 +235,8 @@ impl FeishuClient {
     /// Get the display name of a group chat (cached).
     ///
     /// Calls `GET /open-apis/im/v1/chats/:chat_id` on cache miss.
-    /// Requires scope: `im:chat:readonly`.
+    /// Requires scope: `im:chat:readonly`. Degrades to `Ok(None)` on any
+    /// API error (logged) so callers can fall back to the raw chat id.
     pub async fn get_chat_name(&self, chat_id: &str) -> Result<Option<String>> {
         // Check cache first
         {
@@ -246,25 +247,44 @@ impl FeishuClient {
         }
 
         // Cache miss — call Feishu API
-        let token = self.get_token().await?;
+        let token = match self.get_token().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to get chat name, using fallback");
+                return Ok(None);
+            }
+        };
         let url = format!(
             "{}/open-apis/im/v1/chats/{}",
             self.config.base_url.trim_end_matches('/'),
             chat_id
         );
 
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .context("Failed to get Feishu chat info")?;
+        let resp = match self.http.get(&url).bearer_auth(token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to get chat name, using fallback");
+                return Ok(None);
+            }
+        };
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to parse chat info, using fallback");
+                return Ok(None);
+            }
+        };
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .context("Failed to parse Feishu chat info response")?;
+        let code = body["code"].as_i64().unwrap_or(0);
+        if code != 0 {
+            tracing::warn!(
+                chat_id = %chat_id,
+                code,
+                msg = %body["msg"].as_str().unwrap_or("unknown"),
+                "Failed to get chat name, using fallback"
+            );
+            return Ok(None);
+        }
 
         let name = body["data"]["name"].as_str().map(|s| s.to_string());
 
@@ -282,7 +302,8 @@ impl FeishuClient {
     /// Get the display name of a user (cached).
     ///
     /// Calls `GET /open-apis/contact/v3/users/:user_id` on cache miss.
-    /// Requires scope: `contact:user.base:readonly`.
+    /// Requires scope: `contact:user.base:readonly`. Degrades to `Ok(None)`
+    /// on any API error (logged) so callers can fall back to the raw open_id.
     pub async fn get_user_name(&self, open_id: &str) -> Result<Option<String>> {
         // Check cache first
         {
@@ -293,25 +314,44 @@ impl FeishuClient {
         }
 
         // Cache miss — call Feishu API
-        let token = self.get_token().await?;
+        let token = match self.get_token().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to get user name (check contact:user.base:readonly scope)");
+                return Ok(None);
+            }
+        };
         let url = format!(
             "{}/open-apis/contact/v3/users/{}?user_id_type=open_id",
             self.config.base_url.trim_end_matches('/'),
             open_id
         );
 
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .context("Failed to get Feishu user info")?;
+        let resp = match self.http.get(&url).bearer_auth(token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to get user name (check contact:user.base:readonly scope)");
+                return Ok(None);
+            }
+        };
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to parse user info, using fallback");
+                return Ok(None);
+            }
+        };
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .context("Failed to parse Feishu user info response")?;
+        let code = body["code"].as_i64().unwrap_or(0);
+        if code != 0 {
+            tracing::warn!(
+                open_id = %open_id,
+                code,
+                msg = %body["msg"].as_str().unwrap_or("unknown"),
+                "Failed to get user name (check contact:user.base:readonly scope)"
+            );
+            return Ok(None);
+        }
 
         let name = body["data"]["user"]["name"].as_str().map(|s| s.to_string());
 

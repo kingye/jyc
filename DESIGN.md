@@ -2,7 +2,7 @@
 
 ## Overview
 
-JYC is a channel-agnostic AI agent that operates through messaging channels. Users interact with the agent by sending messages (email, FeiShu, Slack, etc.), and the agent responds autonomously using OpenCode AI. The agent maintains conversation context per thread, enabling coherent multi-turn interactions.
+JYC is a channel-agnostic AI agent that operates through messaging channels. Users interact with the agent by sending messages (email, FeiShu, Slack, etc.), and the agent responds autonomously using an in-process agent. The agent maintains conversation context per thread, enabling coherent multi-turn interactions.
 
 **Core Concept:** Messaging channels are the interface; AI is the brain. The architecture is channel-agnostic — adding a new channel requires only implementing an inbound and outbound adapter trait.
 
@@ -85,7 +85,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  Thread Event System (per thread):                                       │
 │  ┌─────────────────────────────────────────────────────┐                │
 │  │  • Thread-isolated event bus                        │                │
-│  │  • SSE → ThreadEvent conversion (OpenCode Client)   │                │
+│  │  • SSE → ThreadEvent conversion (agent client)   │                │
 │  │  • Processing state tracking                        │                │
 │  └─────────────────────────────────────────────────────┘                │
 │                                                                          │
@@ -107,7 +107,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  4. If body empty after commands → direct reply with results, return     │
 │  5. Dispatch to agent mode:                                              │
 │     - "static" → send configured text via OutboundAdapter                │
-│     - "opencode" → OpenCodeService::generate_reply(msg)                  │
+│     - "agent" → AgentService::generate_reply(msg)                  │
 │     - "agent" → JycAgentService::process(msg) [in-process, no ext. deps] │
 │  6. If agent returns fallback text → send via OutboundAdapter            │
 │  7. Worker picks next message from thread queue                          │
@@ -115,10 +115,10 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│             OpenCodeService::generate_reply() (agent-specific)           │
+│             AgentService::generate_reply() (agent-specific)           │
 │                                                                          │
-│  1. Ensure OpenCode server is running (auto-start)                       │
-│  2. Setup per-thread opencode.json (model, MCP tools, permissions)       │
+│  1. Ensure agent service is running (auto-start)                       │
+│  2. Setup per-thread agent config (model, MCP tools, permissions)       │
 │  3. Resolve effective model: .jyc/model-override > pattern > channel >   │
 │     global                                                               │
 │  4. Build system prompt:                                                 │
@@ -141,9 +141,9 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │     e. If reply_message tool called → signal file written → done         │
 │  7. Return AgentResult                                                   │
 │                                                                          │
-│  Advantages over OpenCode mode:                                          │
+│  Advantages over the external-server agent mode:                                          │
 │  - No external process (no SSE fragility, no version coupling)           │
-│  - ~10MB per session vs ~300MB (OpenCode per-session overhead)           │
+│  - ~10MB per session vs ~300MB (external-server per-session overhead)           │
 │  - Instant startup (no server boot)                                      │
 │  - Direct tool execution (no MCP subprocess spawning)                    │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -213,7 +213,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Builds the user prompt from the incoming message
 - Strips quoted history from body and truncates to fit AI token budget
 - Note: Reply context is saved to disk (.jyc/reply-context.json), NOT embedded in the prompt
-- Does NOT include conversation history in the prompt (OpenCode session memory handles multi-turn context)
+- Does NOT include conversation history in the prompt (in-process agent session memory handles multi-turn context)
 
 **Reply Tool** (MCP `reply_message`)
 
@@ -240,7 +240,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - **Event Types**:
   - `ProcessingStarted`, `ProcessingProgress`, `ProcessingCompleted`
   - `ToolStarted`, `ToolCompleted`
-- **Event Flow**: SSE events → OpenCode Client conversion → Thread Event Bus → subscribers (inspect dashboard)
+- **Event Flow**: SSE events → agent client conversion → Thread Event Bus → subscribers (inspect dashboard)
 
 **Reply context** saved to `.jyc/reply-context.json` — the AI never sees it
 
@@ -297,7 +297,7 @@ Email arrives
 
 ```
 ┌──────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ IMAP │  │ Inbound  │  │ Message  │  │  Thread  │  │ Prompt   │  │ OpenCode │  │  Reply   │  │  SMTP    │
+│ IMAP │  │ Inbound  │  │ Message  │  │  Thread  │  │ Prompt   │  │ in-process agent │  │  Reply   │  │  SMTP    │
 │Server│  │ Adapter  │  │ Storage  │  │ Manager  │  │ Builder  │  │  (AI)    │  │  Tool    │  │ Client   │
 └──┬───┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
    │           │             │             │             │             │             │             │
@@ -372,7 +372,7 @@ Email arrives
 
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is (with full frontmatter metadata) — the authoritative source of message data
-- **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (OpenCode session memory handles that)
+- **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (the agent session memory handles that)
 - **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or ThreadManager
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
@@ -852,7 +852,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
 | `config.toml` (L3) | Restricted `[agent]` subset (`ThreadConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
 | Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
-| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/opencode/skills`, `~/.claude/skills` → L1 → L2 → thread repo → L3. |
+| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → thread repo → L3. |
 | `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_thread`); first match wins. |
 | Custom `thread_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any thread directory, including ad-hoc threads (`jyc open <path>`). |
 
@@ -1304,7 +1304,7 @@ impl ThreadManager {
                 let _ = current_message_tx.send(Some(item.message.clone()));
 
                 if let Err(e) = process_message(
-                    &item, &thread_name, &opencode, &storage, /* ... */
+                    &item, &thread_name, &agent, &storage, /* ... */
                 ).await {
                     tracing::error!(
                         thread = %thread_name,
@@ -1387,11 +1387,11 @@ impl ThreadManager {
 └──────────────────────────────────────────────────────────┘
 ```
 
-### SSE Streaming: OpenCode AI Processing
+### SSE Streaming: Agent Processing
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│              OpenCode SSE Stream Processing                          │
+│              agent SSE stream processing                          │
 │                                                                      │
 │  reqwest-eventsource                                                 │
 │       │                                                              │
@@ -1452,7 +1452,7 @@ impl ThreadManager {
 
 **Thread Event Integration with SSE:**
 
-- **SSE Event Conversion**: OpenCode Client converts SSE events to ThreadEvents
+- **SSE Event Conversion**: agent client converts SSE events to ThreadEvents
 - **Event Types Converted**:
   - `ProcessingStarted` → `ThreadEvent::ProcessingStarted`
   - `ProcessingProgress` → `ThreadEvent::ProcessingProgress`
@@ -1479,21 +1479,21 @@ Signal (SIGINT/SIGTERM)
         ├──> ThreadManager workers: finish current message → exit
         │    (in-queue messages are lost — IMAP re-fetch on restart)
         │
-        ├──> OpenCode Server: explicitly stopped via server.stop()
+        ├──> agent server: explicitly stopped via server.stop()
         │
         └──> SMTP connections: disconnect
 
  All JoinHandles awaited → process exits cleanly
 ```
 
-### OpenCode Server Process Lifecycle on Shutdown
+### Agent Server Process Lifecycle on Shutdown
 
 | Scenario                 | Server killed?  | How?                                                                                                                   |
 | ------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Ctrl+C (graceful)        | Yes             | `opencode_server.stop()` explicitly kills it during shutdown sequence                                                  |
+| Ctrl+C (graceful)        | Yes             | `agent_server.stop()` explicitly kills it during shutdown sequence                                                  |
 | jyc panics               | Yes             | `kill_on_drop(true)` on the child process — Rust drop runs during unwind                                               |
 | SIGTERM to jyc           | Yes             | Same as panic — drop destructors run                                                                                   |
-| SIGKILL (kill -9) to jyc | **No** — orphan | Destructors don't run. Opencode process stays alive on its ephemeral port. Harmless — next jyc start picks a new port. |
+| SIGKILL (kill -9) to jyc | **No** — orphan | Destructors don't run. agent process stays alive on its ephemeral port. Harmless — next jyc start picks a new port. |
 
 ### Cancellation Token Hierarchy
 
@@ -1506,7 +1506,7 @@ root_cancel (top-level)
     ├── thread_manager_cancel
     │       └── all worker tasks check this
     │
-    └── opencode_service_cancel
+    └── agent_service_cancel
             └── aborts SSE streams
 ```
 
@@ -1548,15 +1548,15 @@ When a user sends a follow-up message while the AI is still processing the first
    - Send the body as a follow-up prompt via `POST /session/:id/prompt_async`
 5. The AI receives the follow-up in the same conversation context and adjusts its work
 
-**Injection format:** Raw body only — no framing, no instructions. This matches how the OpenCode TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation.
+**Injection format:** Raw body only — no framing, no instructions. This matches how the agent TUI handles messages sent during AI processing. The AI treats it as a natural follow-up in the conversation.
 
 ```
 Please also add a chart to the PPT.
 ```
 
-**OpenCode API support:** `POST /session/:id/prompt_async` can be called while a session is busy. OpenCode queues the message internally — this is the same mechanism the OpenCode TUI uses.
+**Agent API support:** `POST /session/:id/prompt_async` can be called while a session is busy. The agent queues the message internally — this is the same mechanism the agent TUI uses.
 
-## Worker (OpenCode Service)
+## Worker (Agent Service)
 
 ### Responsibility Separation: ThreadManager vs AgentService vs OutboundAdapter
 
@@ -1598,10 +1598,10 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 - Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
-**OpenCodeService** (`src/services/opencode/service.rs`) implements `AgentService`:
+**AgentService** (`src/services/agent/service.rs`) implements `AgentService`:
 
-- Server lifecycle: ensure OpenCode server is running, health check, auto-restart
-- Thread setup: write per-thread `opencode.json` with model, MCP tools, permissions
+- Server lifecycle: ensure agent service is running, health check, auto-restart
+- Thread setup: write per-thread `agent config` with model, MCP tools, permissions
 - Session management: reuse/create sessions, staleness detection
 - Prompt building: system prompt + user prompt
 - SSE streaming: activity timeout, tool detection, progress logging
@@ -1634,22 +1634,22 @@ This separation:
 
 ### Session-Based Thread Management
 
-Each thread has a dedicated OpenCode session persisted in `opencode-session.json`. This enables:
+Each thread has a dedicated agent session persisted in `agent-session.json`. This enables:
 
 - **Memory** — AI remembers previous replies in the conversation
 - **Coherence** — Consistent responses across the thread
-- **Context** — Conversation history maintained by OpenCode session memory (not injected into prompt)
-- **Debugging** — Can inspect/replay sessions in OpenCode TUI
+- **Context** — Conversation history maintained by agent session memory (not injected into prompt)
+- **Debugging** — Can inspect/replay sessions in in-process agent TUI
 
-### OpenCode Service Architecture
+### in-process agent Service Architecture
 
 ```rust
-pub struct OpenCodeService {
-    /// HTTP client for OpenCode API
+pub struct AgentService {
+    /// HTTP client for in-process agent API
     client: reqwest::Client,
 
-    /// OpenCode server process
-    server: Mutex<Option<OpenCodeServer>>,
+    /// agent service process
+    server: Mutex<Option<in-process agentServer>>,
 
     /// Configuration
     config: Arc<AppConfig>,
@@ -1658,7 +1658,7 @@ pub struct OpenCodeService {
     reply_tool_command: Vec<String>,
 }
 
-struct OpenCodeServer {
+struct in-process agentServer {
     port: u16,
     process: Child,  // tokio::process::Child
 }
@@ -1666,18 +1666,18 @@ struct OpenCodeServer {
 
 **Server lifecycle:**
 
-- Single shared OpenCode server handles all threads
-- Started via `opencode serve --hostname=127.0.0.1 --port=<port>`
-- Readiness detected by parsing stdout for `"opencode server listening on http://..."`
+- Single shared agent service handles all threads
+- Started via `jyc serve --hostname=127.0.0.1 --port=<port>`
+- Readiness detected by parsing stdout for `"jyc server listening on http://..."`
 - Auto-started on first request, auto-finds free port (49152+)
 - Health check before reuse: `GET /session` with 3s timeout
 - Server lives until CLI exits
 
-### OpenCode Server HTTP API Reference
+### in-process agent Server HTTP API Reference
 
-Full API documentation: **<https://opencode.ai/docs/server/>**
+Full API documentation: **<https://agent.ai/docs/server/>**
 
-JYC uses the following subset of the OpenCode server API:
+JYC uses the following subset of the agent service API:
 
 | Method | Path                        | Purpose                         | Notes                                           |
 | ------ | --------------------------- | ------------------------------- | ----------------------------------------------- |
@@ -1690,7 +1690,7 @@ JYC uses the following subset of the OpenCode server API:
 
 **Key API conventions:**
 
-- **Directory context**: Passed via `x-opencode-directory` HTTP header (URL-encoded path), NOT as a query parameter
+- **Directory context**: Passed via `x-agent-directory` HTTP header (URL-encoded path), NOT as a query parameter
 - **Model selection**: Passed per-prompt via `PromptRequest.model` — session is preserved across model switches
 - **Prompt body**: `{ system: string, model?: string, agent?: "plan", parts: [{ type: "text", text: string }] }`
 - **SSE events**: Event type is in the JSON data field as `{ "type": "...", "properties": {...} }` — NOT in the SSE `event:` field
@@ -1709,16 +1709,16 @@ JYC uses the following subset of the OpenCode server API:
 
 **Per-thread configuration:**
 
-- Each thread gets its own `opencode.json` with model settings, MCP tool config, and permissions
+- Each thread gets its own `agent config` with model settings, MCP tool config, and permissions
 - `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` — headless mode, no interactive terminal, no access outside thread directory
 - Staleness check detects changes → rewrites config → restarts server
 - Model and mode are passed per-prompt via `PromptRequest.model` and `PromptRequest.agent` — no session restart needed for switches
 
-### OpenCode Server Architecture Diagram
+### in-process agent Server Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    OpenCodeService                          │
+│                    AgentService                          │
 │                                                             │
 │  Single Server (auto-port: 49152+)                          │
 │       ↓                                                     │
@@ -1727,9 +1727,9 @@ JYC uses the following subset of the OpenCode server API:
 │  ┌─────────────────────────────────────┐                    │
 │  │ Sessions (per-thread directory)     │                    │
 │  │                                     │                    │
-│  │ Thread A → opencode-session.json + .opencode/│                    │
-│  │ Thread B → opencode-session.json + .opencode/│                    │
-│  │ Thread C → opencode-session.json + .opencode/│                    │
+│  │ Thread A → agent-session.json + .agent/│                    │
+│  │ Thread B → agent-session.json + .agent/│                    │
+│  │ Thread C → agent-session.json + .agent/│                    │
 │  └─────────────────────────────────────┘                    │
 │                                                             │
 │  Server lives until CLI exits                               │
@@ -1798,14 +1798,14 @@ JYC uses the following subset of the OpenCode server API:
 │  Worker picks next message from thread queue                  │      │
 └───────────────────────────────────────────────────────────────┘      │
                                                                        │
-┌─ OpenCodeService (src/services/opencode/service.rs) ─────────────────┘
+┌─ AgentService (src/services/agent/service.rs) ─────────────────┘
 │
-│  1. Ensure OpenCode server is running (auto-start, health check)
-│  2. ensure_thread_opencode_setup(thread_path)
+│  1. Ensure agent service is running (auto-start, health check)
+│  2. ensure_thread_agent_setup(thread_path)
 │     → reads .jyc/model-override (if exists, takes priority over config)
-│     → writes opencode.json with model, MCP config, permissions
+│     → writes agent config with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
-│  3. Get or create session (.jyc/opencode-session.json)
+│  3. Get or create session (.jyc/agent-session.json)
 │     - Check token limit: if context_input_tokens > max_input_tokens → new session
 │     - Update max_input_tokens: detect model context or use configured value
 │     - Record if session reset due to token limit for prompt notification
@@ -1832,7 +1832,7 @@ JYC uses the following subset of the OpenCode server API:
 │    4. Activity-based timeout: 30 min of silence (60 min when tool running)
 │    5. Progress log every 10s (elapsed, parts, model, activity, silence)
 │         ↓
-│  OpenCode calls reply_message MCP tool
+│  in-process agent calls reply_message MCP tool
 │         ↓
 │  MCP Tool (jyc mcp-reply-tool subprocess):
 │    1. Load .jyc/reply-context.json → get channel name + message timestamp
@@ -1862,12 +1862,12 @@ JYC uses the following subset of the OpenCode server API:
 1. **Commands are always processed first** — before any AI interaction
 2. **Command results are always sent** as a direct reply (if commands were found)
 3. **Body emptiness is checked AFTER both command stripping AND quoted history stripping** — leftover quoted history from inline reply formats does not count as real content
-4. **Empty body → stop** — no OpenCode server started, no AI processing, no wasted API calls
-5. **Non-empty body → dispatch to agent mode** — static text or OpenCode AI
+4. **Empty body → stop** — no agent service started, no AI processing, no wasted API calls
+5. **Non-empty body → dispatch to agent mode** — static text or in-process agent
 
 **Session lifecycle:**
 
-- Sessions are created on first use per thread and persisted in `.jyc/opencode-session.json`
+- Sessions are created on first use per thread and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track input tokens (`context_input_tokens`) and maximum threshold (`max_input_tokens`)
 - Sessions are automatically reset when token limit is exceeded
@@ -1876,10 +1876,10 @@ JYC uses the following subset of the OpenCode server API:
 
 ### Context Management Strategy
 
-The agent relies on OpenCode's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
+The agent relies on in-process agent's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
 
-1. **OpenCode Session (Primary)** — Conversation memory maintained by OpenCode
-   - Session is reused across messages in the same thread (`opencode-session.json`)
+1. **in-process agent Session (Primary)** — Conversation memory maintained by in-process agent
+   - Session is reused across messages in the same thread (`agent-session.json`)
    - AI remembers previous messages and replies within the session
    - Session is deleted when token limit is exceeded or on ContextOverflow
    - New session created on server restart
@@ -1891,7 +1891,7 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
      - Old session is deleted and a new session is created
    - **Token tracking**:
      - Real-time token counting from SSE `step-finish` events
-     - Immediate persistence to `opencode-session.json` after each step
+     - Immediate persistence to `agent-session.json` after each step
      - Token usage displayed in reply footer (e.g., `Tokens: 20.7K/122K`)
    - **Intelligent threshold detection**:
      - Automatically detects model context limit (e.g., 128K, 200K, 1M tokens)
@@ -1906,13 +1906,13 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
      - AI can read chat history for context continuity after session reset
      - Session reset notification injected into AI prompt to reference chat history
 
-3. **Session State Data Structure** (`src/services/opencode/session.rs`)
+3. **Session State Data Structure** (`src/services/agent/session.rs`)
 
    ```rust
    /// Default maximum input tokens per session before resetting
    pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
 
-   /// Per-thread session state, persisted in `.jyc/opencode-session.json`.
+   /// Per-thread session state, persisted in `.jyc/agent-session.json`.
    #[derive(Debug, Clone, Serialize, Deserialize)]
    pub struct SessionState {
        #[serde(rename = "sessionId")]
@@ -1933,7 +1933,7 @@ The agent relies on OpenCode's built-in session memory for multi-turn conversati
 4. **Configuration** (`config.toml`):
 
    ```toml
-   [opencode]
+   [agent]
    # Optional: Maximum input tokens per session before resetting
    # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
    # When not set, automatically detects model context limit and uses 95%
@@ -1984,13 +1984,13 @@ Thread files still provide recent conversation context
 
 | Scenario | What Happens |
 |----------|-------------|
-| OpenCode uses `reply_message` tool successfully | Detected via SSE; `reply_sent_by_tool: true`, skips fallback |
+| in-process agent uses `reply_message` tool successfully | Detected via SSE; `reply_sent_by_tool: true`, skips fallback |
 | `reply_message` tool fails (e.g. MCP not implemented, invalid JSON) | AI generates text response instead; ThreadManager passes raw text to OutboundAdapter which formats, sends, and stores |
 | AI returns text without using tool | `session.idle` fires; ThreadManager passes raw text to OutboundAdapter |
 | AI takes very long but keeps working | SSE events keep arriving → no timeout; progress logged every 10s |
 | AI goes silent for 30 minutes | Activity timeout (60 min if tool running) → checks signal file → error |
 | SSE subscription fails | Falls back to blocking prompt with 5-min timeout |
-| OpenCode server dies between messages | Health check detects it, restarts automatically |
+| agent service dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
 | Token limit exceeded | Detected at session creation → new session created → AI notified via prompt |
 | Thread queue full | Message dropped with warning; IMAP re-fetch recovers on restart |
@@ -2002,7 +2002,7 @@ Thread files still provide recent conversation context
 1. **EmailOutboundAdapter::send_reply()** — the outbound adapter calls it internally when formatting replies (both fallback and command results)
 2. **Monitor reply send path** — when the MCP tool writes reply.md and signal file, the monitor reads reply.md and calls `send_reply()` on the pre-warmed outbound adapter (which calls `build_full_reply_text()`)
 
-This ensures all reply emails have the same format regardless of the send path. The MCP reply tool no longer sends messages directly — it only writes reply.md and signal file to disk. The agent (OpenCodeService/StaticAgentService) never calls this function — it's a channel-specific concern owned by the outbound adapter.
+This ensures all reply emails have the same format regardless of the send path. The MCP reply tool no longer sends messages directly — it only writes reply.md and signal file to disk. The agent (AgentService/StaticAgentService) never calls this function — it's a channel-specific concern owned by the outbound adapter.
 
 **Reply format:**
 ```
@@ -2075,7 +2075,7 @@ Cross-process detection mechanism for when the MCP tool sends the reply but tool
 
 1. **Cleanup**: Before starting a new prompt, `cleanup_stale_signal_file()` deletes any leftover file
 2. Written by MCP reply-tool after successful outbound send
-3. Read by `OpenCodeService::check_signal_file()` as fallback detection
+3. Read by `AgentService::check_signal_file()` as fallback detection
 4. Deleted immediately after detection to prevent stale signals
 
 ### SSE Event Logging
@@ -2106,7 +2106,7 @@ jyc binary
 ├── jyc mcp-reply-tool     ← hidden subcommand (MCP stdio server)
 ├── jyc mcp-vision-tool    ← hidden subcommand (vision analysis MCP server)
 └── jyc mcp-question-tool  ← hidden subcommand (ask_user MCP server)
-                              All MCP tools spawned by OpenCode as subprocesses
+                              All MCP tools spawned by in-process agent as subprocesses
 ```
 
 The reply tool shares types with the main binary (same Rust crate), eliminating the type drift risk of the two-binary TypeScript approach.
@@ -2129,7 +2129,7 @@ pub struct ReplyContext {
     pub created_at: String,           // When context was created
 }
 
-/// Save to .jyc/reply-context.json (called by OpenCodeService before prompt)
+/// Save to .jyc/reply-context.json (called by AgentService before prompt)
 pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Result<()>
 
 /// Load from .jyc/reply-context.json (called by MCP reply tool from cwd)
@@ -2141,7 +2141,7 @@ pub async fn cleanup_reply_context(thread_path: &Path)
 
 **Lifecycle:**
 
-1. `OpenCodeService` saves `.jyc/reply-context.json` before sending the prompt
+1. `AgentService` saves `.jyc/reply-context.json` before sending the prompt
 2. AI calls `reply_message(message, attachments)` — no token parameter
 3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= thread directory)
 4. After successful send, context file persists (not deleted) to allow multiple replies in same thread
@@ -2158,7 +2158,7 @@ MCP Server (rmcp, stdio transport, cwd = thread dir):
 
   1. Load .jyc/reply-context.json from cwd → get channel, message timestamp
   2. Load config from JYC_ROOT/config.toml
-  3. Validate attachments (exclude .opencode/, .jyc/)
+  3. Validate attachments (exclude .agent/, .jyc/)
   4. Write reply text to .jyc/reply.md
   5. Write .jyc/reply-sent.flag (signal file)
   6. Return success message
@@ -2241,13 +2241,13 @@ Thread A receives results
 - **Limit**: `MAX_HISTORY_QUOTE = 6` entries for reply email quoted history
 - **Timestamp format**: `YYYY-MM-DD HH:MM` in both quoted history headers and prompt context
 
-### Per-Thread OpenCode Config (`opencode.json`)
+### Per-Thread in-process agent Config (`agent config`)
 
-Written by `ensure_thread_opencode_setup()` in each thread directory:
+Written by `ensure_thread_agent_setup()` in each thread directory:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
+  "$schema": "https://agent.ai/config.json",
   "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
   "small_model": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
   "permission": {
@@ -2273,7 +2273,7 @@ Written by `ensure_thread_opencode_setup()` in each thread directory:
 2. Return `["/path/to/jyc", "mcp-reply-tool"]`
 3. Fallback: check common paths `/usr/local/bin/jyc`, `/usr/bin/jyc`
 
-**Staleness check**: Rewrites `opencode.json` if model, tool path, JYC_ROOT, or permissions changed. Session is NOT deleted — model and mode are passed per-prompt.
+**Staleness check**: Rewrites `agent config` if model, tool path, JYC_ROOT, or permissions changed. Session is NOT deleted — model and mode are passed per-prompt.
 
 ## Configuration (TOML)
 
@@ -2334,9 +2334,9 @@ max_per_message = 10
 
 [agent]
 enabled = true
-mode = "opencode"
+mode = "agent"
 
-[agent.opencode]
+[agent.agent]
 model = "SiliconFlow/Pro/zai-org/GLM-4.7"
 small_model = "SiliconFlow/Qwen/Qwen2.5-7B-Instruct"
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
@@ -2420,19 +2420,19 @@ pub struct MonitorConfig {
 #[derive(Debug, Deserialize)]
 pub struct AgentConfig {
     pub enabled: bool,
-    pub mode: String,                         // "static" | "opencode"
+    pub mode: String,                         // "static" | "agent"
     pub text: Option<String>,
-    pub opencode: Option<OpenCodeConfig>,
+    pub agent: Option<in-process agentConfig>,
     pub attachments: Option<AttachmentConfig>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct OpenCodeConfig {
+pub struct in-process agentConfig {
     pub model: Option<String>,
     pub small_model: Option<String>,
     pub system_prompt: Option<String>,
     // Note: include_thread_history is deprecated — conversation history
-    // is no longer injected into the prompt. OpenCode session memory handles it.
+    // is no longer injected into the prompt. in-process agent session memory handles it.
 }
 ```
 
@@ -2514,20 +2514,20 @@ assignees = ["kingye"]
 │   │   ├── .state.json                  # IMAP monitor state
 │   │   └── .processed-uids.txt         # One UID per line, append-only
 │   └── workspace/                       # Thread workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
-│       ├── <thread-dir-1>/              # OpenCode cwd for this thread
+│       ├── <thread-dir-1>/              # in-process agent cwd for this thread
 │       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
 │       │   ├── chat_history_2026-03-20.jsonl   # Next day's chat log
 │       │   ├── attachments/                 # Saved inbound attachments (if configured)
 │       │   │   └── report.pdf
 │       │   ├── .jyc/
-│       │   │   ├── opencode-session.json         # AI session state
+│       │   │   ├── agent-session.json         # AI session state
 │       │   │   ├── reply-context.json   # Reply routing context (disk-based)
 │       │   │   ├── reply-tool.log       # MCP tool log
 │       │   │   ├── reply-sent.flag      # Signal file (transient)
 │       │   │   ├── model-override       # /model command override
 │       │   │   └── mode-override        # /plan command override
-│       │   ├── .opencode/               # OpenCode internal
-│       │   ├── opencode.json            # Per-thread OpenCode config
+│       │   ├── .agent/               # in-process agent internal
+│       │   ├── agent config            # Per-thread in-process agent config
 │       │   └── system.md                # Optional thread-specific prompt
 │       └── <thread-dir-2>/
 │           └── ...
@@ -2562,7 +2562,7 @@ Template directory structure (in workdir):
 <root-dir>/
 ├── templates/
 │   ├── urgent/
-│   │   ├── agent.md      # OpenCode reads this as thread-specific prompt
+│   │   ├── agent.md      # in-process agent reads this as thread-specific prompt
 │   │   ├── skills/
 │   │   │   └── my_skill/
 │   │   │       └── SKILL.md
@@ -3090,11 +3090,11 @@ jyc/
 │   │   ├── mod.rs
 │   │   ├── agent.rs                   # AgentService trait (process → AgentResult)
 │   │   ├── static_agent.rs            # StaticAgentService (fixed text reply)
-│   │   ├── opencode/
-│   │   │   ├── mod.rs                 # OpenCode server manager (start/stop, port, health)
-│   │   │   ├── service.rs            # OpenCodeService implements AgentService
-│   │   │   ├── client.rs             # OpenCode HTTP + SSE client
-│   │   │   ├── session.rs            # Session + opencode.json + signal file management
+│   │   ├── agent/
+│   │   │   ├── mod.rs                 # agent service manager (start/stop, port, health)
+│   │   │   ├── service.rs            # AgentService implements AgentService
+│   │   │   ├── client.rs             # in-process agent HTTP + SSE client
+│   │   │   ├── session.rs            # Session + agent config + signal file management
 │   │   │   ├── prompt_builder.rs     # Prompt construction
 │   │   │   └── types.rs              # API request/response + SSE event types
 │   │   ├── imap/
@@ -3184,10 +3184,10 @@ Layer 1: component     (always present — identifies the subsystem)
 | `worker`  | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
 | `metrics` | L1       | —                   | `metrics.rs` — background task   | `tokio::spawn().instrument()` |
 
-Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `opencode/service.rs` called from within a `worker` span shows:
+Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `agent/service.rs` called from within a `worker` span shows:
 
 ```
-INFO worker{channel=jiny283, thread=weather}: Sending prompt to OpenCode mode=build
+INFO worker{channel=jiny283, thread=weather}: Sending prompt to in-process agent mode=build
 INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
 INFO worker{channel=jiny283, thread=weather}: Tool running tool=glob
 INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
@@ -3206,8 +3206,8 @@ cli/serve.rs:
     → process_message() — inherits worker{channel, thread}
       → command/registry.rs: process_commands() — inherits worker{channel, thread}
       → agent.process() — inherits worker{channel, thread}
-        → opencode/service.rs: generate_reply() — inherits worker{channel, thread}
-          → opencode/client.rs: prompt_with_sse() — inherits worker{channel, thread}
+        → agent/service.rs: generate_reply() — inherits worker{channel, thread}
+          → agent/client.rs: prompt_with_sse() — inherits worker{channel, thread}
             → handle_sse_event() — inherits (sync, called within instrumented future)
 ```
 
@@ -3219,7 +3219,7 @@ INFO inbound{channel=jiny283}: IMAP connected and authenticated host=imap.163.co
 INFO inbound{channel=jiny283}: Message received uid=123 sender=kingye@petalmail.com
 INFO worker{channel=jiny283, thread=weather}: Worker started
 INFO worker{channel=jiny283, thread=weather}: Message stored sender=kingye@petalmail.com
-INFO worker{channel=jiny283, thread=weather}: Sending prompt to OpenCode mode=build
+INFO worker{channel=jiny283, thread=weather}: Sending prompt to in-process agent mode=build
 INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
 INFO worker{channel=jiny283, thread=weather}: Tool running tool=jiny_reply_reply_message
 INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
@@ -3255,9 +3255,9 @@ INFO worker{channel=jiny283, thread=weather}: Worker finished
 | `/model <id>`  | Switch AI model for this thread                               | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
 | `/model`       | List available models                                         | `/model`                                           |
 | `/model reset` | Reset to default model from config                            | `/model reset`                                     |
-| `/plan`        | Switch to plan mode (read-only, enforced by OpenCode)         | `/plan`                                            |
+| `/plan`        | Switch to plan mode (read-only, enforced by in-process agent)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
-| `/reset`       | Clear the current OpenCode session (start fresh context)      | `/reset`                                           |
+| `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
 | `/close`       | Close the current thread (deletes thread directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
 | `/template`    | Re-apply the pattern's thread template files                  | `/template`                                        |
 
@@ -3282,7 +3282,7 @@ pub struct CommandContext {
 pub struct CommandResult {
     pub success: bool,
     pub message: String,               // User-facing result text
-    pub requires_restart: bool,        // Whether OpenCode server needs restart
+    pub requires_restart: bool,        // Whether agent service needs restart
 }
 ```
 
@@ -3389,7 +3389,7 @@ The `/model` command writes the model ID to `.jyc/model-override` in the thread 
 
 ### Plan/Build Mode
 
-- **Plan mode**: OpenCode enforces read-only at the tool level — the AI cannot edit files or run modifying commands
+- **Plan mode**: in-process agent enforces read-only at the tool level — the AI cannot edit files or run modifying commands
 - **Build mode**: Default. Full execution — AI can edit files, run tests, commit, etc.
 - `.jyc/mode-override` contains `"plan"` when plan mode active; file absent = build mode
 
@@ -3436,7 +3436,7 @@ Configurable per pattern via `attachments` in the pattern config.
 - Path validation for all file operations (`PathValidator`)
 - Attachment security: extension allowlist, size limit, filename sanitization
 - MCP tool: validate context before processing
-- `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` in opencode.json
+- `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` in agent config
 - Rust's ownership model eliminates data races, use-after-free, and buffer overflows
 - `system.md` per-thread customization — file permissions should restrict who can modify thread directories
 
@@ -3477,16 +3477,16 @@ The Thread Event System is a core component for handling inter-thread event comm
 
 #### Core Components
 
-1. **OpenCode Client** - SSE event conversion layer
+1. **in-process agent Client** - SSE event conversion layer
 2. **Thread Event Bus** - Thread-isolated event bus (publish/subscribe)
 3. **Thread Manager** - Event listening and forwarding layer
 
 #### Data Flow
 
 ```
-SSE Events (OpenCode Server)
+SSE Events (in-process agent Server)
     ↓
-OpenCode Client Conversion
+in-process agent Client Conversion
     ├── ProcessingStarted → ThreadEvent::ProcessingStarted
     ├── ProcessingProgress → ThreadEvent::ProcessingProgress
     ├── ToolStarted/Completed → ThreadEvent::ToolStarted/Completed
@@ -3521,7 +3521,7 @@ let mut receiver = event_bus.subscribe().await;
 
 ```rust
 pub enum ThreadEvent {
-    // Processing state events (published by OpenCode Client)
+    // Processing state events (published by in-process agent Client)
     ProcessingStarted { ... },
     ProcessingProgress { ... },
     ProcessingCompleted { ... },
@@ -3536,10 +3536,10 @@ pub enum ThreadEvent {
 
 | Event Type            | Publisher       | Purpose                               |
 | --------------------- | --------------- | ------------------------------------- |
-| ProcessingStarted     | OpenCode Client | Published when processing starts      |
-| ProcessingProgress    | OpenCode Client | Periodic progress updates             |
-| ProcessingCompleted   | OpenCode Client | Published when processing completes   |
-| ToolStarted/Completed | OpenCode Client | Tool start/complete events            |
+| ProcessingStarted     | in-process agent Client | Published when processing starts      |
+| ProcessingProgress    | in-process agent Client | Periodic progress updates             |
+| ProcessingCompleted   | in-process agent Client | Published when processing completes   |
+| ToolStarted/Completed | in-process agent Client | Tool start/complete events            |
 
 ### Configuration
 
@@ -3607,7 +3607,7 @@ download proxy to handle this:
 ```
 Overseas Server (HK)                    Mainland China Server (Shanghai)
 ┌────────────────────┐                  ┌─────────────────────────┐
-│ JYC + OpenCode     │                  │ download_proxy.py :8765 │
+│ JYC + in-process agent     │                  │ download_proxy.py :8765 │
 │                    │  HTTP request    │                         │
 │ proxy_download.py ─┼─────────────────►│  fetch?url=<encoded>    │
 │                    │  file content    │  ↓                      │
@@ -3654,7 +3654,7 @@ templates/                      ← AGENTS.md only (role + instructions)
   github-developer/AGENTS.md
   github-reviewer/AGENTS.md
 
-.opencode/skills/               ← Default in-repo skills (lowest priority per-thread)
+.agent/skills/               ← Default in-repo skills (lowest priority per-thread)
   invoice-processing/           ← Invoice extraction workflow
   dev-workflow/                 ← Branching, commits, releases
   incremental-dev/              ← Small-step development methodology
@@ -3663,7 +3663,7 @@ templates/                      ← AGENTS.md only (role + instructions)
   jyc-deploy-bare/              ← Bare metal deployment
   jyc-deploy-docker/            ← Docker deployment
 
-.claude/skills/                 ← Alternative in-repo skills (overrides .opencode/)
+.claude/skills/                 ← Alternative in-repo skills (overrides .agent/)
 .jyc/skills/                    ← Thread-local override (highest in-repo priority)
 ```
 
@@ -3673,18 +3673,18 @@ When building an agent's system prompt, `discover_skills()` scans 9 paths in
 priority order (lowest first, highest last). Same-named skills from
 higher-priority paths override those from lower-priority paths, so a
 `.jyc/skills/coding-principles/SKILL.md` completely replaces one in
-`.opencode/skills/coding-principles/SKILL.md`.
+`.agent/skills/coding-principles/SKILL.md`.
 
 | Priority | Path | Scope |
 |----------|------|-------|
-| 1 (lowest) | `$HOME/.config/opencode/skills/` | User system |
+| 1 (lowest) | `$HOME/.config/agent/skills/` | User system |
 | 2 | `$HOME/.claude/skills/` | User system |
 | 3 | `{jyc-data}/skills/` | JYC data directory |
 | 4 | `{thread}/repo/.claude/skills/` | Thread repo |
-| 5 | `{thread}/repo/.opencode/skills/` | Thread repo |
+| 5 | `{thread}/repo/.agent/skills/` | Thread repo |
 | 6 | `{thread}/repo/.jyc/skills/` | Thread repo (highest in repo) |
 | 7 | `{thread}/.claude/skills/` | Thread-local |
-| 8 | `{thread}/.opencode/skills/` | Thread-local |
+| 8 | `{thread}/.agent/skills/` | Thread-local |
 | 9 (highest) | `{thread}/.jyc/skills/` | Thread-local override |
 
 Thread-local `.jyc/skills/` is the highest priority path — it provides a
@@ -3717,7 +3717,7 @@ section that lists each discovered skill with name + description + path:
 ```markdown
 ## Available Skills
 
-- **plan-solution** (at /home/jiny/.opencode/skills/plan-solution)
+- **plan-solution** (at /home/jiny/.agent/skills/plan-solution)
   Create structured implementation plans with incremental steps.
 
 - **invoice-processing** (at /home/jiny/projects/jyc-data/feishu_bot/workspace/invoice-processing/.jyc/skills/invoice-processing)

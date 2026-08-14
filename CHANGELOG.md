@@ -1027,10 +1027,10 @@ All notable changes to JYC will be documented in this file.
 - **External editor keybinding moved from `Ctrl+E` to `Ctrl+O`** —
   `Ctrl+E` now toggles the thread explorer pane.
 
-- **In-repo skills moved from `.opencode/skills/` to `skills/`** at the
-  repo root, and `.opencode/` is no longer git-tracked. Runtime skill
+- **In-repo skills moved from `.agent/skills/` to `skills/`** at the
+  repo root, and `.agent/` is no longer git-tracked. Runtime skill
   discovery is unchanged (the `{workdir}/skills/` scan path already
-  covers the new location, and `.opencode/skills/` scan paths are kept
+  covers the new location, and `.agent/skills/` scan paths are kept
   for compatibility).
 
 - **Chat input gutter and header color changed to Catppuccin sapphire.**
@@ -1114,7 +1114,7 @@ All notable changes to JYC will be documented in this file.
 
 - **`jyc templates` command and `templates/templates.toml`.** The old
   `deploy` mechanism (which materialized per-template skill copies under
-  `.opencode/skills/`) is replaced by `jyc agents install` +
+  `.agent/skills/`) is replaced by `jyc agents install` +
   `jyc skills install`; skill scoping is handled by channel/pattern
   `skills` / `disabled_skills` config. The `--model` and `--as` deploy
   flags are gone.
@@ -2408,7 +2408,7 @@ All notable changes to JYC will be documented in this file.
   - Documentation in DESIGN.md, FEISHU.md, README.md
 - **Kept** (unrelated, network-level keepalives):
   - WebSocket `heartbeat_interval_secs` in `feishu_config`
-  - OpenCode SSE `server.heartbeat` ignore-rule (it's a TCP-level keepalive)
+  - in-process agent SSE `server.heartbeat` ignore-rule (it's a TCP-level keepalive)
 
 ### Migration
 
@@ -2470,7 +2470,7 @@ will produce progress replies automatically for long-running tasks.
 
 ### Added
 
-- **In-process AI agent (`jyc-agent` crate)** — replaces external OpenCode server dependency
+- **In-process AI agent (`jyc-agent` crate)** — replaces external agent service dependency
   - Native Anthropic Messages API provider (streaming via SSE)
   - OpenAI-compatible provider (DeepSeek, GPT, Groq, etc.)
   - 7 built-in tools: bash, read, write, edit, glob, grep, webfetch
@@ -2487,22 +2487,22 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
-- Default agent mode changed from `"opencode"` to `"agent"`
-- Config: `model` and `system_prompt` moved from `[agent.opencode]` to `[agent]` directly
+- Default agent mode changed from `"agent"` to `"agent"`
+- Config: `model` and `system_prompt` moved from `[agent.agent]` to `[agent]` directly
 - Config: provider definitions in `[agent.providers.*]` with per-model settings
-- `read_input_tokens()` unified — works for both old OpenCode and new agent session files
+- `read_input_tokens()` unified — works for both old in-process agent and new agent session files
 - Token display: stores latest input_tokens (not accumulated) since full context is sent each turn
 
 ### Removed
 
-- **OpenCode dependency** — no longer requires external OpenCode server process
-  - Removed `crates/jyc-services/src/opencode/` module (6 files)
-  - Removed OpenCode installation from Dockerfile
-  - Removed OpenCode volumes from docker-compose.yml
-  - Removed `model_handler.rs` (queried OpenCode's provider endpoint)
+- **in-process agent dependency** — no longer requires external agent service process
+  - Removed `crates/jyc-services/src/agent/` module (6 files)
+  - Removed in-process agent installation from Dockerfile
+  - Removed in-process agent volumes from docker-compose.yml
+  - Removed `model_handler.rs` (queried in-process agent's provider endpoint)
   - Removed `reqwest-eventsource` dependency from jyc-services
-- Config: `mode = "opencode"` no longer supported (use `mode = "agent"`)
-- Config: `OpenCodeConfig` struct removed (fields moved to `AgentConfig` top level)
+- Config: `mode = "agent"` no longer supported (use `mode = "agent"`)
+- Config: `AgentConfig` struct removed (fields moved to `AgentConfig` top level)
 
 ### Fixed
 
@@ -2530,7 +2530,7 @@ will produce progress replies automatically for long-running tasks.
 - Idle cleanup per-thread skip flag (#113)
 - Docker build fixes — protobuf-compiler, Rust toolchain, unzip dependencies
 - Retry /provider API up to 3 times for model context limit lookup
-- Wait for OpenCode API to be ready after server starts listening
+- Wait for the agent API to be ready after server starts listening
 - Dashboard TUI status bar consolidation and keybinding hints
 - Add mandatory test gate and strengthen current-message priority
 - Remove invalid pub qualifiers from enum variant fields
@@ -2543,7 +2543,7 @@ will produce progress replies automatically for long-running tasks.
 ## [0.3.1] - 2026-05-18
 
 ### Added
-- **Multi-path skill discovery** (#182) — Skills are now loaded from 9 priority paths (`.jyc/skills/` → `.claude/skills/` → `.opencode/skills/` → user home → system), with higher-priority paths overriding same-named skills from lower-priority paths. Supports YAML frontmatter with block scalar descriptions.
+- **Multi-path skill discovery** (#182) — Skills are now loaded from 9 priority paths (`.jyc/skills/` → `.claude/skills/` → `.agent/skills/` → user home → system), with higher-priority paths overriding same-named skills from lower-priority paths. Supports YAML frontmatter with block scalar descriptions.
 - **Dashboard skills display** (#184) — Dashboard TUI detail panel now shows the list of skills loaded for each thread.
 
 ### Fixed
@@ -2681,7 +2681,7 @@ will produce progress replies automatically for long-running tasks.
 **Bare Metal Deployment** — Deploy jyc on Ubuntu/Debian servers without Docker
 - `deploy-bare-metal.sh` script for automated deployment
 - `dotfiles/zsh/` - zsh configuration and environment template
-- `dotfiles/opencode/opencode.jsonc` - OpenCode configuration
+- `dotfiles/agent/agent config` - in-process agent configuration
 - `docs/bare-metal-deploy.md` - Deployment guide
 
 **nohup Fallback** — Run on servers without systemd
@@ -2886,7 +2886,7 @@ will produce progress replies automatically for long-running tasks.
 - Base64 data URI encoding for API transport
 - 300s MCP timeout for large files
 - File-based logging to `.jyc/vision-tool.log`
-- Hidden CLI subcommand `mcp-vision-tool` (spawned by OpenCode)
+- Hidden CLI subcommand `mcp-vision-tool` (spawned by in-process agent)
 
 **Unified Attachment Configuration** — Channel-agnostic attachment handling
 - New `[attachments.inbound]` and `[attachments.outbound]` config sections
@@ -2935,7 +2935,7 @@ will produce progress replies automatically for long-running tasks.
 - Vision tool timeout: 300s (was 120s)
 - `Updated processing state` log reduced from debug to trace
 - Refactored `get_mcp_tool_command()` shared between reply and vision tools
-- Remove `.opencode/package-lock.json` from git tracking
+- Remove `.agent/package-lock.json` from git tracking
 
 ### Removed
 
@@ -2995,14 +2995,14 @@ will produce progress replies automatically for long-running tasks.
 
 ### Technical Details
 
-**Session Persistence** — State saved in `.jyc/opencode-session.json`
+**Session Persistence** — State saved in `.jyc/agent-session.json`
 - Includes current token count and maximum threshold
 - Automatic reset detection at session creation
 - AI prompt includes notification when session resets due to token limit
 
 **Configuration Example**:
 ```toml
-[opencode]
+[agent]
 # Optional: Maximum input tokens per session before resetting
 # Default: 120*1024 = 122,880 tokens (95% of typical 128K model context)
 max_input_tokens = 122880
@@ -3116,7 +3116,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Connection/timeout errors: reconnect + retry (2 attempts)
 
 **Security**
-- `"external_directory": "deny"` in OpenCode permissions — blocks AI from accessing files outside the thread directory
+- `"external_directory": "deny"` in in-process agent permissions — blocks AI from accessing files outside the thread directory
 
 **Build**
 - `protobuf-compiler` added as build prerequisite (required by `lark-websocket-protobuf`)
@@ -3193,11 +3193,11 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Added
 
 **Skill-based bootstrapping (replaces per-prompt system.md)**
-- Migrate bootstrapping instructions from `system.md` (sent every prompt) to OpenCode's native discovery mechanisms
+- Migrate bootstrapping instructions from `system.md` (sent every prompt) to in-process agent's native discovery mechanisms
 - `AGENTS.md` (project-level): project context, tech stack, coding conventions, git rules, dev workflow
 - `agents.example.md`: template for thread-level AGENTS.md with self-bootstrapping context and environment hint
-- `.opencode/skills/jyc-deploy-bare/SKILL.md`: on-demand skill for bare metal deployment (deploy.sh + nohup)
-- `.opencode/skills/jyc-deploy-docker/SKILL.md`: on-demand skill for Docker deployment (s6 process supervisor)
+- `.agent/skills/jyc-deploy-bare/SKILL.md`: on-demand skill for bare metal deployment (deploy.sh + nohup)
+- `.agent/skills/jyc-deploy-docker/SKILL.md`: on-demand skill for Docker deployment (s6 process supervisor)
 - Skills loaded by AI only when needed, reducing prompt size and improving performance
 
 **Model listing with wildcard filtering**
@@ -3225,7 +3225,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Clean up closed senders from thread_queues to prevent unbounded HashMap growth
 - Drain completed worker JoinHandles when spawning new workers
 - Add UID compaction to StateManager (auto-prune when exceeding 5000 entries)
-- Share `reqwest::Client` across OpenCode requests (connection pool reuse)
+- Share `reqwest::Client` across in-process agent requests (connection pool reuse)
 - Move 10 regex compilations to `LazyLock` statics (email_parser and smtp/client)
 
 **Deployment reliability**
@@ -3234,7 +3234,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Add `jyc/` path prefix to deploy skills for proper resolution
 
 ### Changed
-- Send model as `{providerID, modelID}` object in prompt API (breaking API change in OpenCode)
+- Send model as `{providerID, modelID}` object in prompt API (breaking API change in in-process agent)
 - Show model in log span immediately at prompt time instead of waiting for SSE discovery
 - Fix duplicate `m=` field in log span (was recorded twice: upfront + SSE)
 - Remove deprecated `system.md.example` files with migration notice
@@ -3245,21 +3245,21 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 **Live message injection**
 - Follow-up messages sent during AI processing are injected into the ongoing session via `prompt_async`
-- Queue receiver (`rx`) flows through: ThreadManager → AgentService → OpenCodeService → SSE Client
+- Queue receiver (`rx`) flows through: ThreadManager → AgentService → AgentService → SSE Client
 - New `tokio::select!` arm in SSE loop monitors `pending_rx.recv()` for incoming messages
-- Injected messages: stored as `received.md`, reply-context.json updated, body sent as raw prompt (same as OpenCode TUI)
-- OpenCode API `POST /session/:id/prompt_async` supports sending to busy sessions
+- Injected messages: stored as `received.md`, reply-context.json updated, body sent as raw prompt (same as in-process agent TUI)
+- agent API `POST /session/:id/prompt_async` supports sending to busy sessions
 - AgentService trait: added `pending_rx: &mut mpsc::Receiver<QueueItem>` parameter
 - QueueItem made public for cross-module access
 
 **Logging improvements**
-- `<system-reminder>` filtered from `is_prompt_echo()` — prevents OpenCode plan mode reminders from appearing in fallback replies
+- `<system-reminder>` filtered from `is_prompt_echo()` — prevents in-process agent plan mode reminders from appearing in fallback replies
 - `<system-reminder>` filtered from AI response text DEBUG log
 - Session retry logs include `message` field for better debugging
 - `logged_tools` HashSet cleared on retry — retried tool calls are now visible in logs
 
 ### Changed
-- Injection prompt: raw body only (no framing instructions) — matches OpenCode TUI behavior
+- Injection prompt: raw body only (no framing instructions) — matches in-process agent TUI behavior
 - Dev build profile: reduced debug info (debug=1, no debug for deps) for faster builds
 
 ### Fixed
@@ -3269,11 +3269,11 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 ### Added
 
-**/reset command to clear opencode session**
-- New `/reset` command that deletes `.jyc/opencode-session.json`
+**/reset command to clear agent session**
+- New `/reset` command that deletes `.jyc/agent-session.json`
 - Allows users to manually reset the AI conversation session
 - Next AI prompt after reset starts with a fresh session
-- Session state tracked per-thread in `.jyc/opencode-session.json`
+- Session state tracked per-thread in `.jyc/agent-session.json`
 
 ### Changed
 
@@ -3341,7 +3341,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 **Session preservation — keep session whenever possible**
 - Model passed per-prompt (`PromptRequest.model`) — `/model` switch no longer deletes session
 - Mode passed per-prompt (`PromptRequest.agent`) — `/plan` and `/build` switches no longer delete session
-- `opencode.json` config changes no longer delete session — server picks up changes per-directory
+- `agent config` config changes no longer delete session — server picks up changes per-directory
 - Session survives: model switches, mode switches, config changes, container restarts
 - Session only deleted for error recovery: ContextOverflow and stale session detection
 
@@ -3355,11 +3355,11 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Duplicate tool logs deduplicated with HashSet per step
 - Tool input shown in logs (`Tool running tool=bash input="cargo build"`)
 - Duplicate "Reply sent by MCP tool" log removed from thread_manager
-- Session reuse: `get_session` now sends `x-opencode-directory` header
+- Session reuse: `get_session` now sends `x-agent-directory` header
 - Debug logging for `config_changed` and `get_session` response status
 
 ### Fixed
-- Session reuse across container restarts: `get_session()` was missing `x-opencode-directory` header → server couldn't find session → always created new
+- Session reuse across container restarts: `get_session()` was missing `x-agent-directory` header → server couldn't find session → always created new
 - Fallback reply empty when AI produces prompt echo + actual response in separate text parts
 - `/model` and mode commands unnecessarily deleted session (model/mode are per-prompt, not per-session)
 - Cleaned up agent task artifacts: removed model/mode from ReplyContext, AgentResult, build_full_reply_text, EmailOutboundAdapter (these are per-prompt concerns, not per-token/per-adapter)
@@ -3382,7 +3382,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Prompt echo stripping marker updated
 
 **Conversation history removed from AI prompt**
-- OpenCode session memory handles multi-turn conversation context
+- in-process agent session memory handles multi-turn conversation context
 - `build_conversation_history()` function removed (dead code)
 - `include_history` parameter removed from `build_prompt()`
 - System prompt simplified — no "Conversation history" section reference
@@ -3429,7 +3429,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - AI installs Rust on-demand for self-bootstrapping (~30s)
 - `CARGO_TARGET_DIR=/tmp/jyc-target` avoids cross-platform conflict with host macOS builds
 - Cargo registry + git cached in named Docker volumes
-- OpenCode data volume for session persistence across container restarts
+- in-process agent data volume for session persistence across container restarts
 - Builder uses `rust:bookworm` matching runtime's glibc version
 
 **Logging**
@@ -3444,12 +3444,12 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - `AppLogger` — unified logging + alerting handle. Components call `app_logger.info()`, `.error()`, `.message_received()`, `.reply_by_tool()` etc. Each call delegates to `tracing` for console output AND sends structured events to the alert service for stats tracking + error buffering. Replaces separate `tracing` + `AlertHandle` dependencies.
 - Progress tracker (`src/core/progress_tracker.rs`): sends periodic "still working" emails during long AI operations. Configurable initial delay (default 3 min), interval (default 3 min), max messages (default 5). Polling every 5s with `tokio::time::interval`.
 - Startup notification email: sent on monitor start with version, timestamp, channel count, agent mode
-- Graceful shutdown: alert service final flush before exit, OpenCode server stopped, all worker tasks awaited
+- Graceful shutdown: alert service final flush before exit, agent service stopped, all worker tasks awaited
 
 ### Changed
 - `/model` with no args now shows current model (from override or config default) instead of "not yet implemented"
 - `AlertHandle` renamed to `AppLogger` to reflect its dual role as logger + alerter
-- Structured logging: `channel=` and `thread=` fields added consistently to all key log lines across IMAP monitor, message router, thread manager, and OpenCode service. Enables easy filtering by channel or thread in production logs.
+- Structured logging: `channel=` and `thread=` fields added consistently to all key log lines across IMAP monitor, message router, thread manager, and agent service. Enables easy filtering by channel or thread in production logs.
 
 ### Fixed
 - Error handling audit: all production `unwrap()` calls verified safe (static regex, guarded strip_prefix)
@@ -3469,7 +3469,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 **Architecture: AgentService trait**
 - `AgentService` trait (`src/services/agent.rs`): `process(message, thread_name, thread_path, message_dir) → AgentResult`
 - `StaticAgentService` (`src/services/static_agent.rs`): fixed text reply with quoted history
-- `OpenCodeService` implements `AgentService`: owns full reply lifecycle (AI interaction + fallback send + storage)
+- `AgentService` implements `AgentService`: owns full reply lifecycle (AI interaction + fallback send + storage)
 - ThreadManager dispatches via `Arc<dyn AgentService>` — zero mode-specific code
 - Adding new agent modes requires only: implement trait + match arm in `cli/monitor.rs`
 
@@ -3485,7 +3485,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Changed
 - `message.channel` now contains config channel **name** (e.g., "jiny283"), not type ("email") — fixes MCP reply tool config lookup
 - Session reuse restored: `get_or_create_session()` reuses existing session if valid on server, only creates new on config change or server restart — AI maintains conversation memory across messages
-- Session state file renamed: `session.json` → `opencode-session.json` — avoids future naming conflicts with other service sessions
+- Session state file renamed: `session.json` → `agent-session.json` — avoids future naming conflicts with other service sessions
 - Removed unused `emailCount` field from `SessionState`
 - MCP server name: `"rmcp"` → `"jiny_reply"` with `#[tool_handler]` macro — fixes tool discovery (was `toolCount=0`)
 - Noisy IMAP polling logs moved from DEBUG to TRACE level
@@ -3494,7 +3494,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - SSE model_id/provider_id: no longer overwritten with None by subsequent events
 
 ### Fixed
-- MCP tool not discovered by OpenCode: missing `#[tool_handler]` attribute on `ServerHandler` impl
+- MCP tool not discovered by in-process agent: missing `#[tool_handler]` attribute on `ServerHandler` impl
 - Channel lookup in reply tool: `config.channels.get("email")` → `config.channels.get("jiny283")`
 - `strip_quoted_history`: added `发件时间` to Chinese reply header detection
 
@@ -3503,34 +3503,34 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Added
 
 **Phase 4: AI Integration**
-- OpenCode server manager: auto-start `opencode serve`, free port discovery, stdout-based readiness detection, health check, graceful shutdown with `kill_on_drop`
-- OpenCode HTTP client: `create_session`, `get_session`, `prompt_async`, `prompt_blocking` with `x-opencode-directory` header and `?directory=` query param
+- agent service manager: auto-start `jyc serve`, free port discovery, stdout-based readiness detection, health check, graceful shutdown with `kill_on_drop`
+- agent HTTP client: `create_session`, `get_session`, `prompt_async`, `prompt_blocking` with `x-agent-directory` header and `?directory=` query param
 - SSE streaming: subscribe to `/event?directory=`, parse events from JSON `{"type": "...", "properties": {...}}` format, activity-based timeout (30min default, 60min when tool running), progress logging with model info
 - SSE event handling: `server.connected`, `server.heartbeat`, `message.updated` (model/provider capture), `message.part.updated` (tool state tracking), `session.status`, `session.idle`, `session.error`
-- Session management: per-thread `.jyc/session.json`, fresh session per prompt (avoids stale sessions across server restarts), `opencode.json` generation with staleness check
+- Session management: per-thread `.jyc/session.json`, fresh session per prompt (avoids stale sessions across server restarts), `agent config` generation with staleness check
 - Prompt builder: system prompt (config + directory boundaries + reply instructions + system.md), user prompt (conversation history + incoming body + base64 reply_context token)
-- OpenCodeService (`src/services/opencode/service.rs`): encapsulates all AI logic — server lifecycle, sessions, prompts, SSE, error recovery. Returns `GenerateReplyResult` to ThreadManager.
+- AgentService (`src/services/agent/service.rs`): encapsulates all AI logic — server lifecycle, sessions, prompts, SSE, error recovery. Returns `GenerateReplyResult` to ThreadManager.
 - ContextOverflow recovery: delete session, create new, retry with blocking prompt
 - Stale session detection: tool reported success in SSE but signal file missing → delete + retry
 - Fallback reply with quoted history: `build_full_reply_text()` shared function for both fallback and future MCP reply tool
 - Prompt echo stripping: removes `## Incoming Message`, `<reply_context>`, `## Conversation history` markers from AI output when tool fails
 
-**Architecture: ThreadManager ↔ OpenCodeService separation**
+**Architecture: ThreadManager ↔ AgentService separation**
 - ThreadManager: queue management, concurrency control, agent mode dispatch, fallback send
-- OpenCodeService: AI-specific logic isolated from infrastructure. Does NOT send emails.
+- AgentService: AI-specific logic isolated from infrastructure. Does NOT send emails.
 
 ### Changed
 - IMAP ID command: now logs `server_name`, `server_vendor`, `trans_id` as structured fields (no raw map dump)
 - IMAP monitor: backoff on SELECT failure (was tight retry loop)
-- DESIGN.md: added OpenCode Server HTTP API reference (https://opencode.ai/docs/server/), responsibility separation docs, updated Worker Processing Flow diagram, OpenCode server shutdown lifecycle table
+- DESIGN.md: added agent HTTP API reference, responsibility separation docs, updated Worker Processing Flow diagram, agent service shutdown lifecycle table
 
 ### Fixed
 - IMAP `SELECT INBOX` rejected by 163.com with "Unsafe Login" — added RFC 2971 ID command after login
-- OpenCode server command: `opencode server` → `opencode serve` with `--hostname=` / `--port=` syntax
-- OpenCode server readiness: detect by parsing stdout for `"opencode server listening on http://..."` instead of HTTP polling
+- agent service command: `jyc server` → `jyc serve` with `--hostname=` / `--port=` syntax
+- agent service readiness: detect by parsing stdout for `"jyc server listening on http://..."` instead of HTTP polling
 - SSE event parsing: event type is in JSON `data.type` field, not SSE `event:` field
 - SSE subscription: added `?directory=` query param to scope events to thread project context
-- Explicit `opencode_server.stop()` on graceful shutdown
+- Explicit `agent_server.stop()` on graceful shutdown
 
 ## [0.0.1] - 2026-03-27
 
@@ -3565,7 +3565,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Message router: delegates pattern matching to channel adapter, derives thread name, dispatches to thread manager
 - IMAP monitor: connect → SELECT → check_for_new → IDLE/poll → loop; exponential backoff on errors; recovery on message deletion; first-run only processes latest message
 - Full `jyc monitor` wiring: load config → validate → Ctrl+C handler → per-channel SMTP connect → ThreadManager → Router → StateManager → spawn ImapMonitor tasks → await shutdown
-- Placeholder reply in OpenCode mode (sends confirmation email with message metadata until Phase 4 AI integration)
+- Placeholder reply in in-process agent mode (sends confirmation email with message metadata until Phase 4 AI integration)
 
 ### Directory Layout
 
@@ -3582,7 +3582,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 │           │   ├── received.md
 │           │   └── reply.md
 │           ├── .jyc/
-│           ├── .opencode/
-│           ├── opencode.json
+│           ├── .agent/
+│           ├── agent config
 │           └── system.md
 ```

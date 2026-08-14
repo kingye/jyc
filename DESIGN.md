@@ -429,6 +429,14 @@ context_window = 64000
 supports_images = true      # Model-level overrides provider-level
 ```
 
+## Channel Plugin Architecture (规划)
+
+JYC 计划把 channel 从 core 中剥离成独立进程（bridge/plugin）：core 只保留 WebSocket
+channel，其它 channel 通过桥进程把消息 forward 进 WS、把回复 relay 回原生端，从而与
+jyc、甚至与 Rust 解耦。设计提案（wire 协议、routing fields、附件流、配置与发现、
+repo 结构等）见 **`docs/plugin-architecture.md`**。当前 channel（feishu/github/email/
+wecom 等）仍按下文各节编译进 core 实现。
+
 ## Feishu Channel Implementation
 
 The Feishu (飞书) channel implementation provides real-time messaging capabilities through the Lark/Feishu platform. Unlike email which uses IMAP/SMTP, Feishu uses a modern API-based approach with WebSocket for real-time message reception.

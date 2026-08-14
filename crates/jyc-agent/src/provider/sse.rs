@@ -44,68 +44,70 @@ enum SseState {
 pub fn stream_sse(
     request: reqwest::RequestBuilder,
 ) -> impl Stream<Item = Result<Event, anyhow::Error>> + Send {
-    futures::stream::unfold(SseState::Send(request), |state| async move {
-        match state {
-            SseState::Send(request) => {
-                let response = match request.send().await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return Some((
-                            Err(anyhow::anyhow!("SSE connection failed: {e}")),
-                            SseState::Done,
-                        ));
-                    }
-                };
-                let status = response.status();
-                if !status.is_success() {
-                    return Some((Err(non_2xx_error(response).await), SseState::Done));
-                }
-                let stream = Box::pin(response.bytes_stream().map(|r| r.map(|b| b.to_vec())));
-                Some((
-                    Ok(Event::Open),
-                    SseState::Read {
-                        stream,
-                        buf: Vec::new(),
-                    },
-                ))
-            }
-            SseState::Read {
-                mut stream,
-                mut buf,
-            } => loop {
-                // A complete event ends at a blank line.
-                if let Some(data) = take_complete_event(&mut buf) {
-                    return Some((
-                        Ok(Event::Message(Message { data })),
-                        SseState::Read { stream, buf },
-                    ));
-                }
-                match stream.next().await {
-                    Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
-                    Some(Err(e)) => {
-                        return Some((
-                            Err(anyhow::anyhow!("SSE stream error: {e}")),
-                            SseState::Done,
-                        ));
-                    }
-                    None => {
-                        // EOF: surface any trailing `data:` as a final event,
-                        // then signal the clean end (callers match "Stream ended").
-                        if !buf.is_empty() {
-                            let raw = std::mem::take(&mut buf);
-                            if let Some(data) = parse_data(&String::from_utf8_lossy(&raw)) {
-                                return Some((
-                                    Ok(Event::Message(Message { data })),
-                                    SseState::Read { stream, buf },
-                                ));
-                            }
+    futures::stream::unfold(SseState::Send(request), |state| {
+        Box::pin(async move {
+            match state {
+                SseState::Send(request) => {
+                    let response = match request.send().await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Some((
+                                Err(anyhow::anyhow!("SSE connection failed: {e}")),
+                                SseState::Done,
+                            ));
                         }
-                        return Some((Err(anyhow::anyhow!("Stream ended")), SseState::Done));
+                    };
+                    let status = response.status();
+                    if !status.is_success() {
+                        return Some((Err(non_2xx_error(response).await), SseState::Done));
                     }
+                    let stream = Box::pin(response.bytes_stream().map(|r| r.map(|b| b.to_vec())));
+                    Some((
+                        Ok(Event::Open),
+                        SseState::Read {
+                            stream,
+                            buf: Vec::new(),
+                        },
+                    ))
                 }
-            },
-            SseState::Done => None,
-        }
+                SseState::Read {
+                    mut stream,
+                    mut buf,
+                } => loop {
+                    // A complete event ends at a blank line.
+                    if let Some(data) = take_complete_event(&mut buf) {
+                        return Some((
+                            Ok(Event::Message(Message { data })),
+                            SseState::Read { stream, buf },
+                        ));
+                    }
+                    match stream.next().await {
+                        Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+                        Some(Err(e)) => {
+                            return Some((
+                                Err(anyhow::anyhow!("SSE stream error: {e}")),
+                                SseState::Done,
+                            ));
+                        }
+                        None => {
+                            // EOF: surface any trailing `data:` as a final event,
+                            // then signal the clean end (callers match "Stream ended").
+                            if !buf.is_empty() {
+                                let raw = std::mem::take(&mut buf);
+                                if let Some(data) = parse_data(&String::from_utf8_lossy(&raw)) {
+                                    return Some((
+                                        Ok(Event::Message(Message { data })),
+                                        SseState::Read { stream, buf },
+                                    ));
+                                }
+                            }
+                            return Some((Err(anyhow::anyhow!("Stream ended")), SseState::Done));
+                        }
+                    }
+                },
+                SseState::Done => None,
+            }
+        })
     })
 }
 

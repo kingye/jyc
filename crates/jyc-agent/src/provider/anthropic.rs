@@ -790,18 +790,17 @@ mod tests {
         assert_eq!(result, schema, "clean object should pass through unchanged");
     }
 
-    /// When Anthropic rejects the request with 400, the diagnostic POST
-    /// must recover the response body and include it in the error message
-    /// surfaced to the agent loop.
+    /// When Anthropic rejects the request with 400, the SSE client must
+    /// surface the response body in the error message seen by the agent
+    /// loop.
     ///
     /// This is the exact failure pattern observed in production where the
     /// agent saw `SSE error: Invalid status code: 400 Bad Request` with
     /// no body, hiding the real cause (an unsupported `thinking.type`
-    /// param sent via the provider's `params` config merge). With this
-    /// fix in place the error becomes:
+    /// param sent via the provider's `params` config merge). The SSE
+    /// client now embeds the body directly:
     ///
-    ///   `SSE error: Invalid status code: 400 Bad Request
-    ///    (HTTP 400 body: {"type":"error","error":{...}})`
+    ///   `SSE error: Invalid status code: 400 Bad Request body: {...}`
     #[tokio::test]
     async fn complete_error_includes_response_body_on_4xx() {
         let server = MockServer::start().await;
@@ -861,8 +860,8 @@ mod tests {
             "expected status code in error, got: {msg}"
         );
         assert!(
-            msg.contains("HTTP 400 body:"),
-            "expected captured-body suffix in error, got: {msg}"
+            msg.contains("body:"),
+            "expected embedded response body in error, got: {msg}"
         );
         assert!(
             msg.contains("thinking.type.enabled"),

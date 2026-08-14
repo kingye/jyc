@@ -927,7 +927,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn diagnostic_post_sends_custom_user_agent_on_error() {
+    async fn sse_error_embeds_response_body_on_4xx() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -936,7 +936,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
                 "error": { "message": "bad request", "type": "invalid_request_error" }
             })))
-            .expect(2)
+            .expect(1) // only the SSE POST — the diagnostic re-POST is gone
             .mount(&server)
             .await;
 
@@ -956,9 +956,24 @@ mod tests {
             .await
             .expect("complete_raw should return a stream");
 
-        while stream.next().await.is_some() {}
+        let mut found: Option<anyhow::Error> = None;
+        while let Some(item) = stream.next().await {
+            if let Some(Err(e)) = item {
+                found = Some(e);
+                break;
+            }
+        }
 
-        // wiremock will panic at drop if the request count expectation is not met.
+        let err = found.expect("expected an error from the SSE stream after 4xx");
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("400"), "expected status code, got: {msg}");
+        assert!(
+            msg.contains("bad request"),
+            "expected embedded response body, got: {msg}"
+        );
+
+        // wiremock verifies at drop that exactly 1 request was made — no
+        // diagnostic re-POST (the SSE client embeds the body directly).
     }
 
     #[test]

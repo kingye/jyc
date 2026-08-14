@@ -358,6 +358,7 @@ fn derive_agent_config_applies_channel_overrides() {
     // they appear in a real config.
     let channel_cfg = jyc_types::ChannelConfig {
         channel_type: "websocket".to_string(),
+        pipe: None,
         model: Some("override/main".to_string()),
         small_model: Some("override/small".to_string()),
         inbound: None,

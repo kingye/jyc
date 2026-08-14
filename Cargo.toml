@@ -11,3 +11,10 @@ debug = 1
 opt-level = 1
 split-debuginfo = "packed"
 lto = false
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = "symbols"
+# NOTE: panic stays "unwind" — jyc-inspect/src/server.rs uses
+# AssertUnwindSafe(catch_unwind) for dashboard event-forwarding tasks.

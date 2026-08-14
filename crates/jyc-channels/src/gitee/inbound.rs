@@ -58,7 +58,7 @@ impl ChannelMatcher for GiteeMatcher {
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
         let mut ordered: Vec<&ChannelPattern> = patterns.iter().collect();
-        ordered.sort_by_key(|p| pattern_priority(p.role.as_deref()));
+        ordered.sort_by_key(|p| crate::git_host::pattern_priority(p.role.as_deref()));
 
         for pattern in ordered {
             if !pattern.enabled {
@@ -97,87 +97,10 @@ impl ChannelMatcher for GiteeMatcher {
     }
 }
 
-fn pattern_priority(role: Option<&str>) -> u8 {
-    match role {
-        Some(r) if r.eq_ignore_ascii_case("Reviewer") => 0,
-        _ => 255,
-    }
-}
-
 impl GiteeMatcher {
     fn rules_match(&self, rules: &PatternRules, message: &InboundMessage) -> bool {
-        if let Some(ref allowed_types) = rules.github_type {
-            let msg_type = message
-                .metadata
-                .get("gitee_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !allowed_types
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(msg_type))
-            {
-                return false;
-            }
-        }
-
-        let msg_labels: Vec<String> = message
-            .metadata
-            .get("gitee_labels")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if let Some(ref label_rule) = rules.labels
-            && !label_rule.matches(&msg_labels)
-        {
-            return false;
-        }
-
-        if let Some(ref exclude_labels) = rules.exclude_labels {
-            let has_excluded = exclude_labels
-                .iter()
-                .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if has_excluded {
-                return false;
-            }
-        }
-
-        if let Some(ref allowed_assignees) = rules.assignees {
-            let msg_assignees: Vec<String> = message
-                .metadata
-                .get("gitee_assignees")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let has_match = allowed_assignees
-                .iter()
-                .any(|a| msg_assignees.contains(&a.to_lowercase()));
-            if !has_match {
-                return false;
-            }
-        }
-
-        true
+        crate::git_host::rules_match(rules, message, "gitee_")
     }
-}
-
-/// Extract [Role] prefix from comment body for self-loop prevention.
-fn extract_comment_role(body: &str) -> Option<String> {
-    let trimmed = body.trim_start();
-    if trimmed.starts_with('[')
-        && let Some(end) = trimmed.find("] ")
-    {
-        return Some(trimmed[1..end].to_string());
-    }
-    None
 }
 
 /// Gitee inbound adapter — polls Gitee API for events.
@@ -618,7 +541,7 @@ impl GiteeInboundAdapter {
             }
 
             let body_trimmed = comment.body.trim();
-            let comment_role = extract_comment_role(body_trimmed);
+            let comment_role = crate::git_host::extract_comment_role(body_trimmed, None);
             let issue_number = comment.issue_number().unwrap_or_default();
 
             if !current_open_numbers.contains(&issue_number) {
@@ -700,7 +623,8 @@ impl GiteeInboundAdapter {
                         }
 
                         let body_trimmed = comment.body.trim();
-                        let comment_role = extract_comment_role(body_trimmed);
+                        let comment_role =
+                            crate::git_host::extract_comment_role(body_trimmed, None);
                         // Gitee PR comments have target=null; use the known PR number from the loop
                         let pr_number = pr.number.to_string();
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use open_lark::ws_client::{EventDispatcherHandler, LarkWsClient};
+use openlark_client::ws_client::{EventDispatcherHandler, LarkWsClient};
 
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
@@ -79,7 +79,7 @@ impl FeishuWebSocket {
         cancel: &CancellationToken,
     ) -> Result<()> {
         // 1. Build openlark client Config from FeishuConfig
-        let ws_config = open_lark::Config::builder()
+        let ws_config = openlark_client::CoreConfig::builder()
             .app_id(&self.config.app_id)
             .app_secret(&self.config.app_secret)
             .base_url(&self.config.base_url)

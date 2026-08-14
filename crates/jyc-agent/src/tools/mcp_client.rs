@@ -548,4 +548,51 @@ mod tests {
             .expect_err("must fail when endpoint is unreachable");
         assert!(err.to_string().contains("OAuth token request"));
     }
+
+    /// Round-trip test against jyc-mcp's own reply server over an in-process
+    /// duplex pipe. Validates the rmcp client API (`serve_client`,
+    /// `list_all_tools`, `call_tool`) against the current rmcp major — fails
+    /// if an rmcp upgrade breaks the client handshake or tool-call path.
+    #[tokio::test]
+    async fn rmcp_client_round_trip_with_inprocess_server() {
+        use rmcp::ServiceExt;
+
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+
+        let server_handle = tokio::spawn(async move {
+            let service = jyc_mcp::reply_tool::ReplyToolHandler
+                .serve((ar, aw))
+                .await
+                .expect("server init failed");
+            service.waiting().await.ok();
+        });
+
+        let service = serve_client((), (br, bw))
+            .await
+            .expect("client connect failed");
+
+        let tools = service.list_all_tools().await.expect("list tools failed");
+        assert!(
+            tools.iter().any(|t| t.name.as_ref() == "reply_message"),
+            "reply_message must be listed, got: {tools:?}"
+        );
+
+        // Empty message -> clean error response; no reply files are written.
+        let mut params = CallToolRequestParams::new("reply_message");
+        params.arguments = Some(
+            serde_json::json!({ "message": "" })
+                .as_object()
+                .expect("static object")
+                .clone(),
+        );
+        let result = service.call_tool(params).await.expect("call tool failed");
+        assert!(
+            result.is_error == Some(true) || !result.content.is_empty(),
+            "expected an error/content response, got: {result:?}"
+        );
+
+        server_handle.abort();
+    }
 }

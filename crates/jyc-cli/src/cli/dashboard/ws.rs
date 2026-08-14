@@ -94,7 +94,7 @@ pub(super) async fn ws_client_task(
                 msg = read.next() => {
                     match msg {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                            let _ = event_tx.send(WsEvent::Message(text));
+                            let _ = event_tx.send(WsEvent::Message(text.to_string()));
                         }
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {
                             break true;
@@ -113,7 +113,7 @@ pub(super) async fn ws_client_task(
                     match cmd {
                         Some(text) => {
                             if let Err(e) = write.send(
-                                tokio_tungstenite::tungstenite::Message::Text(text)
+                                tokio_tungstenite::tungstenite::Message::Text(text.into())
                             ).await {
                                 let _ = event_tx.send(WsEvent::Error(format!("Send error: {e}")));
                                 break true;

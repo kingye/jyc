@@ -93,7 +93,7 @@ impl FeishuClient {
     }
 
     /// Get the openlark core config (for use with IM APIs and AuthService).
-    async fn get_core_config(&self) -> Result<open_lark::core::config::Config> {
+    async fn get_core_config(&self) -> Result<open_lark::Config> {
         let client = self.get_client().await?;
         Ok(client.api_config().clone())
     }
@@ -150,10 +150,10 @@ impl FeishuClient {
     ) -> Result<FeishuMessageResult> {
         let core_config = self.get_core_config().await?;
 
-        use open_lark::communication::im::im::v1::message::create::{
+        use open_lark::communication::im::v1::message::create::{
             CreateMessageBody, CreateMessageRequest,
         };
-        use open_lark::communication::im::im::v1::message::models::ReceiveIdType;
+        use open_lark::communication::im::v1::message::models::ReceiveIdType;
 
         // Build interactive card with markdown element
         let card_content = serde_json::json!({
@@ -212,7 +212,7 @@ impl FeishuClient {
         // Cache miss — call Feishu API
         let core_config = self.get_core_config().await?;
 
-        use open_lark::communication::im::im::v1::chat::get::GetChatRequest;
+        use open_lark::communication::im::v1::chat::get::GetChatRequest;
 
         let resp = GetChatRequest::new(core_config)
             .chat_id(chat_id)
@@ -314,9 +314,7 @@ impl FeishuClient {
             .await
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
-        use open_lark::communication::im::im::v1::file::create::{
-            CreateFileBody, CreateFileRequest,
-        };
+        use open_lark::communication::im::v1::file::create::{CreateFileBody, CreateFileRequest};
 
         let body = CreateFileBody::new(file_type, filename);
         let resp = CreateFileRequest::new(core_config)
@@ -344,8 +342,8 @@ impl FeishuClient {
             .await
             .with_context(|| format!("Failed to read image: {}", path.display()))?;
 
-        use open_lark::communication::im::im::v1::image::create::CreateImageRequest;
-        use open_lark::communication::im::im::v1::image::models::ImageType;
+        use open_lark::communication::im::v1::image::create::CreateImageRequest;
+        use open_lark::communication::im::v1::image::models::ImageType;
 
         let resp = CreateImageRequest::new(core_config)
             .image_type(ImageType::Message)
@@ -371,10 +369,10 @@ impl FeishuClient {
     ) -> Result<FeishuMessageResult> {
         let core_config = self.get_core_config().await?;
 
-        use open_lark::communication::im::im::v1::message::create::{
+        use open_lark::communication::im::v1::message::create::{
             CreateMessageBody, CreateMessageRequest,
         };
-        use open_lark::communication::im::im::v1::message::models::ReceiveIdType;
+        use open_lark::communication::im::v1::message::models::ReceiveIdType;
 
         let body = CreateMessageBody {
             receive_id: chat_id.to_string(),
@@ -407,10 +405,10 @@ impl FeishuClient {
     ) -> Result<FeishuMessageResult> {
         let core_config = self.get_core_config().await?;
 
-        use open_lark::communication::im::im::v1::message::create::{
+        use open_lark::communication::im::v1::message::create::{
             CreateMessageBody, CreateMessageRequest,
         };
-        use open_lark::communication::im::im::v1::message::models::ReceiveIdType;
+        use open_lark::communication::im::v1::message::models::ReceiveIdType;
 
         let body = CreateMessageBody {
             receive_id: chat_id.to_string(),
@@ -449,7 +447,7 @@ impl FeishuClient {
     pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>> {
         let core_config = self.get_core_config().await?;
 
-        use open_lark::communication::im::im::v1::file::get::GetFileRequest;
+        use open_lark::communication::im::v1::file::get::GetFileRequest;
 
         let request = GetFileRequest::new(core_config).file_key(file_key);
 

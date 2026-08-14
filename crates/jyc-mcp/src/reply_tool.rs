@@ -2,7 +2,7 @@ use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
 };
 use std::path::{Path, PathBuf};
@@ -88,12 +88,12 @@ impl ReplyToolHandler {
         {
             Ok(text) => {
                 logger.log("INFO", &format!("reply_message completed: {text}"));
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
             Err(e) => {
                 let err_msg = format!("Error: {e}");
                 logger.log("ERROR", &format!("reply_message FAILED: {e}"));
-                Ok(CallToolResult::error(vec![Content::text(err_msg)]))
+                Ok(CallToolResult::error(vec![ContentBlock::text(err_msg)]))
             }
         }
     }

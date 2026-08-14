@@ -31,7 +31,7 @@ After=network.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.zshrc.local
-Environment=PATH=%h/.opencode/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=<JYC_BINARY> serve --workdir <JYC_WORKDIR> --debug
 WorkingDirectory=<JYC_WORKDIR>
 Restart=always

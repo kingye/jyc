@@ -109,7 +109,7 @@ GitHub API (polling)
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ Agent (OpenCode + gh CLI)                                       │
+│ Agent (in-process + gh CLI)                                     │
 │   ├─ Reads content: gh issue view, gh pr view, gh pr diff      │
 │   ├─ Writes: gh issue comment, gh pr comment, gh pr review     │
 │   ├─ Labels: gh issue edit --add-label, gh label create        │

@@ -157,7 +157,7 @@ INFO  Feishu WebSocket connected, listening for events
 
 - **Check recent JYC version**: The MCP reply tool now writes to disk and the monitor process sends via pre-warmed client. Old versions had timeout issues with cold-start API calls.
 - **Check Feishu API access**: The server must be able to reach `open.feishu.cn` for sending messages
-- **Delete stale sessions**: Remove `opencode.json` and `.jyc/opencode-session.json` in the thread directory to force a fresh session
+- **Delete stale sessions**: Remove `.jyc/agent-session.json` in the thread directory to force a fresh session
 
 ### Thread directory names
 
@@ -180,7 +180,7 @@ LarkWsClient::open()          ← openlark SDK handles connection, ping/pong, re
 websocket.rs event loop        ← parse JSON → enrich with names → InboundMessage
      │ on_message callback
      ▼
-FeishuMatcher → MessageRouter → ThreadManager → OpenCode AI
+FeishuMatcher → MessageRouter → ThreadManager → in-process agent
      │ reply text (stored to reply.md)
      ▼
 FeishuOutboundAdapter → FeishuClient.send_text_message()

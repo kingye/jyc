@@ -7,7 +7,7 @@ This guide covers deploying jyc on a fresh Ubuntu/Debian server without Docker.
 - **OS**: Ubuntu 20.04+ or Debian 11+
 - **Access**: Root sudo access for package installation
 - **API Keys**:
-  - `ARK_API_KEY` - Anthropic API key for OpenCode
+  - `ARK_API_KEY` - Anthropic API key for in-process agent
 
 ## Quick Start
 
@@ -28,7 +28,6 @@ sudo ./deploy-bare-metal.sh -d /path/to/dotfiles -w /path/to/jyc-data
 The script will:
 - Install system packages (git, curl, build-essential, pkg-config, libssl-dev, protobuf-compiler, zsh, starship)
 - Install runtimes (Rust, Python 3, Node.js LTS)
-- Install OpenCode AI backend
 - Symlink dotfiles
 - Clone and build jyc
 - Install binary to `~/.local/bin/jyc`
@@ -69,7 +68,7 @@ journalctl --user -u jyc -f
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ARK_API_KEY` | Yes | Anthropic API key for OpenCode |
+| `ARK_API_KEY` | Yes | Anthropic API key for in-process agent |
 | `JYC_BINARY` | Yes | Path to jyc binary (auto-set by script) |
 | `JYC_WORKDIR` | Yes | Path to jyc data directory |
 | `RUST_BACKTRACE` | No | Set to "1" for debug logging |
@@ -129,18 +128,6 @@ Common issues:
 - Invalid API key
 - Port 8080 already in use
 
-### OpenCode Connection Failed
-
-Verify OpenCode is installed:
-```bash
-opencode --version
-```
-
-Check OpenCode config:
-```bash
-cat ~/.config/opencode/config.jsonc
-```
-
 ### Rebuild jyc
 
 ```bash
@@ -159,6 +146,5 @@ After deployment:
 ~/.config/systemd/user/jyc.service  # systemd service
 ~/.zshrc                      # zsh config (symlinked)
 ~/.zshrc.local                # environment variables
-~/.config/opencode/opencode.jsonc  # OpenCode config (symlinked)
 /path/to/jyc-data/            # jyc data directory
 ```

@@ -110,6 +110,14 @@ enum ClientMessage {
         #[serde(default)]
         thread: Option<String>,
         text: String,
+        /// Optional sender display name (e.g. a feishu user name). Defaults
+        /// to `"user"`.
+        #[serde(default)]
+        sender: Option<String>,
+        /// Optional canonical sender address (e.g. a feishu open_id).
+        /// Defaults to the connection address.
+        #[serde(default)]
+        sender_address: Option<String>,
     },
     /// Close the connection cleanly. The handler breaks the read loop and
     /// the post-loop helper sends a WS Close frame (`inbound.rs:405-407`).
@@ -300,7 +308,12 @@ async fn handle_connection_impl(
                         };
 
                         match client_msg {
-                            ClientMessage::Message { thread, text } => {
+                            ClientMessage::Message {
+                                thread,
+                                text,
+                                sender,
+                                sender_address,
+                            } => {
                                 // Prefer the payload's `thread` field (an
                                 // explicit override); fall back to the
                                 // URL-scoped thread for `/ws/<channel>/<thread>`
@@ -321,8 +334,9 @@ async fn handle_connection_impl(
                                     id: uuid::Uuid::new_v4().to_string(),
                                     channel: channel_name.clone(),
                                     channel_uid: "websocket".to_string(),
-                                    sender: "user".to_string(),
-                                    sender_address: addr.to_string(),
+                                    sender: sender.unwrap_or_else(|| "user".to_string()),
+                                    sender_address: sender_address
+                                        .unwrap_or_else(|| addr.to_string()),
                                     recipients: vec![],
                                     topic: thread_name,
                                     content: MessageContent {
@@ -666,5 +680,46 @@ mod tests {
     fn should_reject_inspect_malformed_json() {
         assert!(!should_forward_inspect("not json", "ws", None));
         assert!(!should_forward_inspect(r#"{"no":"channel"}"#, "ws", None));
+    }
+
+    #[test]
+    fn test_client_message_parses_sender_fields() {
+        let msg: ClientMessage = serde_json::from_str(
+            r#"{"type":"message","thread":"t1","text":"hi","sender":"张三","sender_address":"ou_abc"}"#,
+        )
+        .unwrap();
+        match msg {
+            ClientMessage::Message {
+                thread,
+                text,
+                sender,
+                sender_address,
+            } => {
+                assert_eq!(thread.as_deref(), Some("t1"));
+                assert_eq!(text, "hi");
+                assert_eq!(sender.as_deref(), Some("张三"));
+                assert_eq!(sender_address.as_deref(), Some("ou_abc"));
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_sender_fields_optional() {
+        // The dashboard chat pane sends the minimal frame — sender fields
+        // must stay optional for backward compatibility.
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"message","thread":"t1","text":"hi"}"#).unwrap();
+        match msg {
+            ClientMessage::Message {
+                sender,
+                sender_address,
+                ..
+            } => {
+                assert!(sender.is_none());
+                assert!(sender_address.is_none());
+            }
+            _ => panic!("expected Message"),
+        }
     }
 }

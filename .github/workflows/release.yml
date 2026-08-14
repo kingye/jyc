@@ -51,19 +51,22 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Build release binary
-        run: cargo build --release -p jyc-cli --target ${{ matrix.target }}
+      - name: Build release binaries
+        run: |
+          cargo build --release -p jyc-cli --target ${{ matrix.target }}
+          cargo build --release -p jyc-bridge-feishu --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Package binaries
         run: |
           mkdir -p dist
           tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc
+          tar -C target/${{ matrix.target }}/release -czf dist/jyc-bridge-feishu-${{ matrix.target }}.tar.gz jyc-bridge-feishu
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: jyc-${{ matrix.target }}
-          path: dist/jyc-${{ matrix.target }}.tar.gz
+          name: binaries-${{ matrix.target }}
+          path: dist/*.tar.gz
 
   release:
     needs: build

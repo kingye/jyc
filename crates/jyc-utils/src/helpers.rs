@@ -57,6 +57,17 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..boundary]
 }
 
+/// Truncate to at most `max_bytes` bytes (UTF-8 char boundary), appending an
+/// ellipsis when the input was actually truncated.
+pub fn truncate_str_ellipsis(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        s.to_string()
+    } else {
+        let boundary = s.floor_char_boundary(max_bytes);
+        format!("{}...", &s[..boundary])
+    }
+}
+
 /// Sanitize a string for use as a filesystem directory name.
 ///
 /// Removes or replaces characters that are unsafe in filenames.

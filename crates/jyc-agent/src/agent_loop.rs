@@ -1229,15 +1229,6 @@ impl Drop for TickerGuard {
     }
 }
 
-/// Truncate a string to a maximum length.
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..s.floor_char_boundary(max_len)])
-    }
-}
-
 /// A collected tool call from the LLM response.
 #[derive(Debug, Clone)]
 struct ToolCall {
@@ -1455,7 +1446,7 @@ async fn complete_with_retry(
             wait_ms / 1000,
             retry_after_note
         );
-        let truncated_err = truncate_str(&err_display, 160);
+        let truncated_err = jyc_utils::helpers::truncate_str_ellipsis(&err_display, 160);
 
         tracing::warn!(
             attempt = next_attempt,

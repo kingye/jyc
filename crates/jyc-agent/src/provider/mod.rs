@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod openai_compat;
+pub mod sse;
 pub mod usage;
 
 use anyhow::Result;
@@ -364,105 +365,6 @@ pub fn create_provider(
     }
 }
 
-/// Issue a one-shot diagnostic POST with the same payload to capture the HTTP
-/// status and response body when an SSE connection failed at the transport
-/// or HTTP layer (typically a pre-stream `4xx` like 400 Bad Request).
-///
-/// `EventSource`'s error string for these cases is just `"Invalid status
-/// code: 400 Bad Request"` and discards the response body. The provider's
-/// actual error message — which is the only thing useful for diagnosis —
-/// lives in that body. This helper recovers it via a single follow-up POST.
-///
-/// Used only on error paths — adds latency exclusively when something is
-/// already broken. Returns `None` on network failure (in which case the
-/// original SSE error is more informative anyway).
-///
-/// `apply_auth` lets each provider attach its own auth headers (OpenAI uses
-/// `Authorization: Bearer <key>`, Anthropic uses `x-api-key: <key>` plus
-/// `anthropic-version`). The closure is invoked once per call.
-///
-/// The captured body is truncated at 2000 bytes — enough for the leading
-/// JSON error message from any sane provider, while bounding memory if the
-/// upstream returns a huge HTML error page.
-/// Diagnostic information captured by [`fetch_error_body`].
-pub struct DiagInfo {
-    /// HTTP status code of the diagnostic response.
-    pub status: u16,
-    /// Value of the `Retry-After` response header in whole seconds, when
-    /// present and parseable as an integer. HTTP-date form is not parsed.
-    pub retry_after: Option<u64>,
-    /// Truncated response body (provider's actual error message).
-    pub body: String,
-}
-
-pub async fn fetch_error_body<F>(
-    client: &reqwest::Client,
-    url: &str,
-    body: &serde_json::Value,
-    apply_auth: F,
-) -> Option<DiagInfo>
-where
-    F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
-{
-    // Force stream=false so the server returns a one-shot JSON error
-    // response instead of an infinite SSE stream. Without this,
-    // resp.text() hangs reading the stream until timeout, and the
-    // diagnostic body is never captured.
-    let mut body = body.clone();
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
-    }
-    let req = client
-        .post(url)
-        .header("content-type", "application/json")
-        .json(&body);
-    let req = apply_auth(req);
-    // Short, explicit timeout — this is a best-effort diagnostic POST on an
-    // already-broken connection. The client-level timeout is 300s, which would
-    // stall the thread for 5 minutes if the upstream hangs.
-    let resp = req
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await
-        .ok()?;
-    let status = resp.status().as_u16();
-    // Capture Retry-After (integer-seconds form only) so throttled retries
-    // can honor the provider's requested wait window (#391).
-    let retry_after = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
-    let text = resp
-        .text()
-        .await
-        .unwrap_or_else(|_| "<unreadable body>".to_string());
-    // Truncate very large bodies — we just need the leading error message.
-    let trimmed = if text.len() > 2000 {
-        format!("{}…(truncated, {} bytes total)", &text[..2000], text.len())
-    } else {
-        text
-    };
-    Some(DiagInfo {
-        status,
-        retry_after,
-        body: trimmed,
-    })
-}
-
-/// Format the diagnostic suffix appended to SSE error messages, e.g.
-/// `(HTTP 429 retry-after: 30s body: {...})` or `(HTTP 400 body: {...})`
-/// when no Retry-After header was captured.
-pub fn format_diag_suffix(diag: &DiagInfo) -> String {
-    match diag.retry_after {
-        Some(secs) => format!(
-            "(HTTP {} retry-after: {}s body: {})",
-            diag.status, secs, diag.body
-        ),
-        None => format!("(HTTP {} body: {})", diag.status, diag.body),
-    }
-}
-
 /// Retry classification for a failed LLM call (#391).
 ///
 /// Used by `agent_loop` to pick a retry policy per failure:
@@ -487,33 +389,27 @@ pub enum RetryClass {
 /// Classify an SSE / network error from `complete_raw` into a [`RetryClass`].
 ///
 /// The classifier is intentionally string-matching the user-visible error
-/// message — `complete_raw` returns `anyhow::Error`, and the underlying
-/// `reqwest_eventsource::Error` and `reqwest::Error` types do not provide a
-/// stable enum we can match through `anyhow::Error::downcast_ref` (the
-/// errors are wrapped via `anyhow!("SSE stream error: {e}")` which loses
-/// the source chain). String matching the well-known patterns is adequate
-/// and easy to extend.
+/// message — `complete_raw` returns `anyhow::Error` with the underlying
+/// SSE / reqwest error folded into its Display, so there is no stable enum
+/// to match through `anyhow::Error::downcast_ref`. String matching the
+/// well-known patterns is adequate and easy to extend.
 ///
-/// ## Diagnostic-suffix awareness
+/// ## Status-code awareness
 ///
-/// `fetch_error_body` may have appended `(HTTP <code> [retry-after: Ns]
-/// body: <body>)` to the error after issuing a one-shot diagnostic POST.
-/// The status code carried in that suffix is authoritative:
+/// The SSE client embeds the upstream HTTP status (and `Retry-After`, when
+/// present) directly in the error, e.g.
+/// `Invalid status code: 429 retry-after: 30s body: {...}`. The code is
+/// authoritative:
 ///
 /// - `429` / `502` / `503` / `504` → rate-limit or overloaded gateway;
 ///   resolves after a wait window. **Throttled.**
 /// - Other `4xx` / `5xx` → the request is structurally rejected (auth, quota,
 ///   schema, model-not-supported). **Terminal.**
-/// - `2xx` → the diagnostic POST succeeded. The original SSE failure was
-///   purely a transport-level glitch (stale connection in pool, NAT idle
-///   reset, partial-write etc.). The diag confirms the upstream is fine
-///   and a fresh attempt will likely succeed. **Transient.**
-/// - `3xx` (rare) → treat as transient; safe re-issue.
+/// - Anything else → transient; safe to re-issue.
 ///
-/// Without the diag suffix, an `"Invalid status code: NNN"` pre-stream
-/// rejection is classified by the embedded code the same way; any other
-/// message falls back to substring matching against the well-known
-/// transient patterns.
+/// An `"Invalid status code: NNN"` rejection is classified by the embedded
+/// code; any other message falls back to substring matching against the
+/// well-known transient patterns.
 ///
 /// ## Transient patterns (substring match, case-insensitive)
 ///
@@ -567,7 +463,7 @@ fn classify_http_status(status: u16) -> RetryClass {
 }
 
 /// Parse the HTTP status code from an `"invalid status code: NNN"` message
-/// (reqwest_eventsource's pre-stream rejection text).
+/// (the SSE client's pre-stream rejection text).
 fn extract_invalid_status(lower_msg: &str) -> Option<u16> {
     let start = lower_msg.find("invalid status code:")? + "invalid status code:".len();
     let rest = lower_msg.get(start..)?.trim_start();
@@ -575,9 +471,8 @@ fn extract_invalid_status(lower_msg: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
-/// Parse the HTTP status code from the `(HTTP <code> ...)` suffix
-/// appended by `fetch_error_body`. Returns `None` when the suffix is not
-/// present or the code is malformed.
+/// Parse the HTTP status code from a `(HTTP <code> ...)` suffix, if any
+/// provider error body happens to carry one. Returns `None` when absent.
 fn extract_diag_status(msg: &str) -> Option<u16> {
     let start = msg.find("(HTTP ")? + "(HTTP ".len();
     let rest = msg.get(start..)?;
@@ -585,9 +480,9 @@ fn extract_diag_status(msg: &str) -> Option<u16> {
     rest.get(..end)?.parse().ok()
 }
 
-/// Parse the `Retry-After` value (whole seconds) from the
-/// `(HTTP <code> retry-after: Ns body: ...)` suffix appended by
-/// `fetch_error_body`. Returns `None` when the header was not captured.
+/// Parse the `Retry-After` value (whole seconds) from an SSE error message
+/// produced by the SSE client (`... retry-after: Ns body: ...`).
+/// Returns `None` when the header was not captured.
 pub fn extract_retry_after(msg: &str) -> Option<u64> {
     let start = msg.find("retry-after: ")? + "retry-after: ".len();
     let rest = msg.get(start..)?;

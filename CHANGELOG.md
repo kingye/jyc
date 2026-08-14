@@ -34,6 +34,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **reqwest 0.13 + in-process SSE client.** `reqwest-eventsource`
+  (which pinned reqwest 0.12) is replaced by a ~150-line SSE parser over
+  `reqwest::bytes_stream()` in `jyc-agent`, deduplicating the tree to a
+  single reqwest 0.13 (openlark already used 0.13). Non-2xx provider
+  errors now embed status/`Retry-After`/body directly in the error, so
+  the per-provider diagnostic re-POST plumbing (~300 lines) was deleted;
+  retry classification is unchanged.
+
 - **Second round of dependency upgrades.** tokio-tungstenite 0.30
   (`Message::Text` now carries `Utf8Bytes`), rmcp 3.1.2 (`Content` →
   `ContentBlock` model rename; protocol stays wire-compatible with

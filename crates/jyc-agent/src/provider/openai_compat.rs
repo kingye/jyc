@@ -958,7 +958,7 @@ mod tests {
 
         let mut found: Option<anyhow::Error> = None;
         while let Some(item) = stream.next().await {
-            if let Some(Err(e)) = item {
+            if let Err(e) = item {
                 found = Some(e);
                 break;
             }

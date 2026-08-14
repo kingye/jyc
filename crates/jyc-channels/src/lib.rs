@@ -1,5 +1,6 @@
 mod crypto;
 pub mod email;
+pub mod feishu;
 mod git_host;
 pub mod gitee;
 pub mod github;

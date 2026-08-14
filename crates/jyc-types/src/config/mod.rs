@@ -218,11 +218,7 @@ pub struct ChannelConfig {
     /// SMTP configuration (for email channels)
     pub outbound: Option<SmtpConfig>,
 
-    /// Feishu configuration (for feishu channels).
-    ///
-    /// Legacy: feishu now runs as a bridge process (see
-    /// `docs/plugin-architecture.md`); this field is kept for config
-    /// compatibility and will be removed in a future release.
+    /// Feishu configuration (for feishu channels)
     pub feishu: Option<FeishuConfig>,
 
     /// Gitee configuration (for gitee channels)

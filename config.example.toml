@@ -200,28 +200,30 @@ allowed_extensions = [
 max_file_size = "25mb"
 max_per_message = 10
 
-# --- Feishu Channel Example (legacy) ---
-# Feishu is no longer compiled into jyc — it runs as a separate bridge
-# process (jyc-bridge-feishu) that connects to a websocket-type channel.
-# See docs/plugin-architecture.md. The old compiled-in configuration below
-# is kept for reference only and will be removed.
-# [channels.feishu_bot]
-# type = "feishu"
-# workspace = "./feishu_workspace"
-# [channels.feishu_bot.feishu]
-# app_id = "cli_xxxxxxxxx"
-# app_secret = "xxxxxxxxxxxx"
-# base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
-# [channels.feishu_bot.feishu.websocket]
-# enabled = true
-# reconnect_delay_secs = 5
-# max_reconnect_attempts = 10
-# heartbeat_interval_secs = 30
-# [[channels.feishu_bot.patterns]]
-# name = "feishu_bot"
-# enabled = true
-# [channels.feishu_bot.patterns.rules]
-# mentions = ["jyc"]
+# --- Feishu Channel Example ---
+# Uncomment and configure for Feishu/Lark integration
+[channels.feishu_bot]
+type = "feishu"
+workspace = "./feishu_workspace"
+#
+[channels.feishu_bot.feishu]
+app_id = "cli_xxxxxxxxx"
+app_secret = "xxxxxxxxxxxx"
+base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
+
+[channels.feishu_bot.feishu.websocket]
+enabled = true
+reconnect_delay_secs = 5
+max_reconnect_attempts = 10
+heartbeat_interval_secs = 30
+
+[[channels.feishu_bot.patterns]]
+name = "feishu_bot"
+enabled = true
+
+# Feishu-specific pattern matching (placeholder - will be implemented)
+[channels.feishu_bot.patterns.rules]
+mentions = ["jyc"]
 
 # --- Agent ---
 

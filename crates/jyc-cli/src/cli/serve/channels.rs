@@ -15,8 +15,6 @@ use anyhow::Result;
 
 use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
-use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
-use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::gitee::inbound::GiteeMatcher;
 use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
@@ -82,17 +80,15 @@ pub(crate) fn build_outbound_adapter(
             ))
         }
         "feishu" => {
-            let feishu_config = channel_config
-                .feishu
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing feishu config"))?
-                .clone();
-            Arc::new(FeishuOutboundAdapter::new_with_attachments(
-                feishu_config,
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            ))
+            // Feishu is no longer compiled into jyc — it runs as a bridge
+            // process (see docs/plugin-architecture.md). A config that still
+            // declares a feishu channel falls through to the unsupported
+            // warning below.
+            tracing::warn!(
+                channel = %channel_name,
+                "Feishu channel requires the jyc-bridge-feishu process; configure a websocket-type channel instead"
+            );
+            return Ok(None);
         }
         "gitee" => {
             let gitee_config = channel_config
@@ -323,81 +319,12 @@ impl InboundSpawner<'_> {
                 tasks.push(task);
             }
             "feishu" => {
-                let feishu_config = channel_config
-                    .feishu
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing feishu config")
-                    })?
-                    .clone();
-
-                let router_for_callback = router.clone();
-
-                let thread_manager_for_task = thread_manager.clone();
-
-                let task = tokio::spawn(async move {
-                // Clone configs before moving into closures
-                let feishu_config_cloned = feishu_config.clone();
-
-                let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
-
-                // Wire on_message to route through FeishuMatcher → MessageRouter
-
-
-                let thread_manager_clone = thread_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-                        tokio::spawn(async move {
-                            // Attachments are saved inside process_message()
-                            // after template initialization, so there's no
-                            // need for a pre-route save here.
-                            router.route(&FeishuMatcher, message).await;
-                        });
-                        Ok(())
-                    }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "Feishu inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "Feishu inbound adapter error"
-                    );
-                }
-
-                // Shutdown thread manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            thread_manager: thread_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
+                // Feishu is no longer compiled into jyc — it runs as a bridge
+                // process (see docs/plugin-architecture.md). Nothing to spawn.
+                tracing::warn!(
+                    channel = %channel_name,
+                    "Feishu channel requires the jyc-bridge-feishu process; configure a websocket-type channel instead"
+                );
             }
             "gitee" => {
                 let gitee_config = channel_config

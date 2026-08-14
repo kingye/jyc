@@ -431,13 +431,6 @@ supports_images = true      # Model-level overrides provider-level
 
 ## Feishu Channel Implementation
 
-> **Status: moved to a bridge.** Feishu is no longer compiled into `jyc`.
-> It runs as a standalone `jyc-bridge-feishu` process that connects to a
-> websocket-type channel per the route table in its own config. The section
-> below documents the historical compiled-in implementation and the
-> underlying feishu API surface (reused by the bridge). See
-> `docs/plugin-architecture.md` for the bridge architecture.
-
 The Feishu (飞书) channel implementation provides real-time messaging capabilities through the Lark/Feishu platform. Unlike email which uses IMAP/SMTP, Feishu uses a modern API-based approach with WebSocket for real-time message reception.
 
 ### Architecture Overview

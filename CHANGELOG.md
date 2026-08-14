@@ -4,22 +4,6 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **Feishu channel bridge (`jyc-bridge-feishu`).** Feishu is no longer
-  compiled into `jyc`; a standalone bridge process connects to a
-  websocket-type channel and relays feishu events per a route table
-  (`chat_name → (channel, thread)` with optional @mention filters) in
-  `~/.config/jyc/bridges/feishu/config.toml`. WebSocket channel inbound
-  frames now accept optional `sender` / `sender_address` fields for
-  channel-native identity. Design: `docs/plugin-architecture.md`.
-
-### Changed
-
-- **Feishu channel removed from `jyc serve`.** Configs declaring
-  `type = "feishu"` are skipped with a warning pointing to the bridge.
-  The legacy `[channels.X.feishu]` config block is no longer used.
-
 ## [0.3.15] - 2026-08-14
 
 ### Added

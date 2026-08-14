@@ -141,7 +141,6 @@ impl FeishuClient {
     ///
     /// Uses Feishu's `"interactive"` message type which supports markdown
     /// formatting (bold, italic, code, lists, links) natively in the card UI.
-    /// Targets a group chat by `chat_id`.
     pub async fn send_text_message(
         &self,
         chat_id: &str,
@@ -155,25 +154,7 @@ impl FeishuClient {
                 }
             ]
         });
-        self.send_message("chat_id", chat_id, "interactive", &card_content.to_string())
-            .await
-    }
-
-    /// Send a text card to a p2p user by `open_id`.
-    pub async fn send_text_message_to_user(
-        &self,
-        open_id: &str,
-        text: &str,
-    ) -> Result<FeishuMessageResult> {
-        let card_content = serde_json::json!({
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": text
-                }
-            ]
-        });
-        self.send_message("open_id", open_id, "interactive", &card_content.to_string())
+        self.send_message(chat_id, "interactive", &card_content.to_string())
             .await
     }
 
@@ -184,8 +165,7 @@ impl FeishuClient {
         file_key: &str,
     ) -> Result<FeishuMessageResult> {
         let content = serde_json::json!({"file_key": file_key}).to_string();
-        self.send_message("chat_id", chat_id, "file", &content)
-            .await
+        self.send_message(chat_id, "file", &content).await
     }
 
     /// Send an image message to a chat (after uploading via `upload_image()`).
@@ -195,26 +175,20 @@ impl FeishuClient {
         image_key: &str,
     ) -> Result<FeishuMessageResult> {
         let content = serde_json::json!({"image_key": image_key}).to_string();
-        self.send_message("chat_id", chat_id, "image", &content)
-            .await
+        self.send_message(chat_id, "image", &content).await
     }
 
     /// Shared implementation for `POST /open-apis/im/v1/messages`.
-    ///
-    /// `receive_id_type` is `"chat_id"` for groups or `"open_id"` for p2p;
-    /// `receive_id` is the chat id or the user's open id respectively.
     async fn send_message(
         &self,
-        receive_id_type: &str,
-        receive_id: &str,
+        chat_id: &str,
         msg_type: &str,
         content: &str,
     ) -> Result<FeishuMessageResult> {
         let token = self.get_token().await?;
         let url = format!(
-            "{}/open-apis/im/v1/messages?receive_id_type={}",
-            self.config.base_url.trim_end_matches('/'),
-            receive_id_type
+            "{}/open-apis/im/v1/messages?receive_id_type=chat_id",
+            self.config.base_url.trim_end_matches('/')
         );
 
         let resp = self
@@ -222,7 +196,7 @@ impl FeishuClient {
             .post(&url)
             .bearer_auth(token)
             .json(&serde_json::json!({
-                "receive_id": receive_id,
+                "receive_id": chat_id,
                 "msg_type": msg_type,
                 "content": content,
             }))
@@ -250,7 +224,7 @@ impl FeishuClient {
             .to_string();
 
         tracing::info!(
-            receive_id = %receive_id,
+            chat_id = %chat_id,
             message_id = %message_id,
             "Feishu {msg_type} message sent"
         );

@@ -176,8 +176,6 @@ impl ThreadManager {
         }
     }
 
-    /// Enqueue a message for processing in the given thread.
-
     pub async fn get_stats(&self) -> QueueStats {
         let queues = self.thread_queues.lock().await;
         let total_threads = queues.len();

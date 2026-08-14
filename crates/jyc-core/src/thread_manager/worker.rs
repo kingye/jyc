@@ -34,6 +34,7 @@ use jyc_types::{InboundMessage, OutboundAdapter, QueueItem};
 
 use super::ThreadManager;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_message(
     item: &mut QueueItem,
     thread_name: &str,
@@ -723,7 +724,6 @@ pub(crate) async fn read_skills(thread_path: &Path) -> Vec<String> {
 /// different template than the one the current message is requesting. The
 /// thread manager surfaces this and drops the message rather than risk
 /// overwriting AGENTS.md / template files in place.
-
 #[cfg(test)]
 mod thread_json_tests {
     use super::*;
@@ -916,7 +916,6 @@ async fn write_wecomkf_thread_json(
 }
 
 #[cfg(test)]
-
 mod has_active_queue_tests {
     use super::*;
     use crate::message_storage::MessageStorage;

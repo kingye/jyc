@@ -35,10 +35,6 @@ pub struct SkillMeta {
 }
 
 /// Parse frontmatter from a SKILL.md file.
-///
-/// Frontmatter is delimited by `---` lines. Supports `name:` and `description:` fields.
-/// Returns `None` if the file has no valid frontmatter or missing required fields.
-
 pub struct JycAgentService {
     /// Live, swappable view of the full application config (shared with
     /// `MessageRouter` and the inspect server). On every config reload, the
@@ -92,6 +88,7 @@ pub struct JycAgentService {
 }
 
 impl JycAgentService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         workdir: PathBuf,

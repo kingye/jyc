@@ -1,9 +1,5 @@
-//! Tests for the GitHub inbound channel.
-//!
-//! Extracted from the monolithic `github/inbound.rs`.
-
 #[cfg(test)]
-mod tests {
+mod inbound_tests {
     use crate::github::inbound::*;
     use jyc_types::{
         ChannelMatcher, ChannelPattern, InboundMessage, LabelRule, MessageContent, PatternMatch,

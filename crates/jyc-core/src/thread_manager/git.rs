@@ -17,7 +17,6 @@ use jyc_types::{ChangeKind, ChangedFileEntry};
 ///
 /// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
 /// `std::fs::read_to_string` follows the `repo/` symlink for us.
-
 pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
     let head_path = if path.join(".git").join("HEAD").is_file() {
         path.join(".git").join("HEAD")
@@ -179,7 +178,6 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFi
 }
 
 #[cfg(test)]
-
 mod branch_resolution_tests {
     use super::branch_for_thread_path;
     use tempfile::tempdir;

@@ -1060,13 +1060,6 @@ async fn generate_summary_from_joined_history(
     Ok((response.text, usage))
 }
 
-/// Render `raw_context` (a list of OpenAI/Anthropic-shaped JSON messages)
-/// as a single plain-text transcript suitable for one-shot summarization.
-///
-/// The output is best-effort and lossy by design — it is consumed only by
-/// the summarization LLM call, never replayed to the main loop. Tool calls,
-/// tool results, and reasoning_content are flattened into readable lines.
-
 pub(crate) async fn publish_event(event_bus: Option<&ThreadEventBusRef>, event: ThreadEvent) {
     if let Some(bus) = event_bus {
         let _ = bus.publish(event).await;

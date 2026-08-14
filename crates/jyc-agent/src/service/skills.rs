@@ -67,10 +67,6 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 }
 
 /// In-process AI agent service.
-///
-/// Implements `AgentService` by running LLM inference and tool execution
-/// directly in-process.
-
 impl JycAgentService {
     ///
     /// Scans paths from lowest to highest priority (later paths override earlier ones

@@ -49,8 +49,6 @@ use jyc_types::MonitorConfig;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
 
-/// Serve command — start the agent, monitor inbound channels, process messages.
-
 pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Result<()> {
     // 1. Resolve config locations, provision default config on first run
     let resolution =

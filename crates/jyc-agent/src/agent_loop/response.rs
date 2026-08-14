@@ -73,10 +73,6 @@ impl CollectedResponse {
     }
 }
 
-/// Maximum attempts for a single LLM call before failing the thread,
-/// for transient (transport-level) failures.
-/// Includes the initial attempt — i.e. up to 2 retries after the first try.
-
 const THINKING_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Collect a streaming response into a complete response.

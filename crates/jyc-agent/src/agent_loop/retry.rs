@@ -194,10 +194,6 @@ pub(crate) async fn complete_with_retry(
     Err(last_err)
 }
 
-/// Minimum interval between published `ThreadEvent::Thinking` events.
-/// Reasoning can arrive in dozens of small deltas; throttling prevents
-/// flooding the event bus and the dashboard.
-
 #[cfg(test)]
 mod retry_tests {
     use super::*;

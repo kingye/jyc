@@ -162,6 +162,44 @@ mode = "agent"
         assert_eq!(config.general.max_queue_size_per_thread, 10);
     }
 
+    #[test]
+    fn test_channel_pipe_defaults_to_none_and_parses() {
+        let config = load_config_from_str(
+            r#"
+[channels.feishu_bot]
+type = "feishu"
+pipe = "local_dev"
+
+[channels.feishu_bot.feishu]
+app_id = "a"
+app_secret = "b"
+
+[channels.plain]
+type = "email"
+[channels.plain.inbound]
+host = "imap.example.com"
+username = "u"
+password = "p"
+[channels.plain.outbound]
+host = "smtp.example.com"
+username = "u"
+password = "p"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        // Set explicitly -> parsed.
+        assert_eq!(
+            config.channels["feishu_bot"].pipe.as_deref(),
+            Some("local_dev")
+        );
+        // Omitted -> default None (unchanged behavior).
+        assert!(config.channels["plain"].pipe.is_none());
+    }
+
     /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML
     /// loader. `${VAR}` expands at load time; the resolved value lands
     /// in the `api_key` field.

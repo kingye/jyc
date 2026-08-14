@@ -4,6 +4,8 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-08-14
+
 ### Added
 
 - **Leader `/` opens the `/` command popup.** New chat-screen leader

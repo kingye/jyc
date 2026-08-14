@@ -39,8 +39,12 @@ pub struct BridgeConfig {
 /// One routing entry: which feishu chat maps to which jyc channel/thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Route {
-    /// Feishu chat name (native identity).
+    /// Feishu chat name (native identity). Matched case-insensitively.
     pub chat_name: String,
+    /// Optional feishu chat_id as a fallback key — matched exactly when the
+    /// chat name is unavailable (e.g. the name API call failed).
+    #[serde(default)]
+    pub chat_id: Option<String>,
     /// Target jyc channel. Falls back to the bridge's default `channel`.
     #[serde(default)]
     pub channel: Option<String>,
@@ -59,13 +63,15 @@ impl BridgeConfig {
         toml::from_str(&text).with_context(|| format!("failed to parse bridge config {}", path))
     }
 
-    /// Resolve the matching route for a chat name (case-insensitive).
+    /// Resolve the matching route for a chat (case-insensitive name match,
+    /// exact `chat_id` fallback).
     ///
     /// Returns `None` when no route matches — the bridge then drops the event.
-    pub fn route(&self, chat_name: &str) -> Option<&Route> {
-        self.routes
-            .iter()
-            .find(|r| r.chat_name.eq_ignore_ascii_case(chat_name))
+    pub fn route(&self, chat_name: &str, chat_id: &str) -> Option<&Route> {
+        self.routes.iter().find(|r| {
+            r.chat_name.eq_ignore_ascii_case(chat_name)
+                || (r.chat_id.is_some() && r.chat_id.as_deref() == Some(chat_id))
+        })
     }
 
     /// Distinct jyc channels this bridge serves (default + route channels).
@@ -115,7 +121,7 @@ mentions = ["jyc"]
     #[test]
     fn route_maps_chat_to_channel_and_thread() {
         let cfg = test_config();
-        let r = cfg.route("greenfield").unwrap();
+        let r = cfg.route("greenfield", "oc_1").unwrap();
         assert_eq!(r.channel.as_deref(), Some("channel-b"));
         assert_eq!(r.thread, "thread-xxx");
     }
@@ -123,7 +129,7 @@ mentions = ["jyc"]
     #[test]
     fn route_falls_back_to_default_channel() {
         let cfg = test_config();
-        let r = cfg.route("invoice").unwrap();
+        let r = cfg.route("invoice", "oc_2").unwrap();
         assert_eq!(r.channel, None); // route has no explicit channel
         assert_eq!(r.thread, "invoice-processing");
         // The default channel is applied at use time, not stored on the route.
@@ -133,13 +139,34 @@ mentions = ["jyc"]
     #[test]
     fn route_is_case_insensitive() {
         let cfg = test_config();
-        assert_eq!(cfg.route("GreenField").unwrap().thread, "thread-xxx");
+        assert_eq!(cfg.route("GreenField", "").unwrap().thread, "thread-xxx");
+    }
+
+    #[test]
+    fn route_matches_by_chat_id_fallback() {
+        let cfg: BridgeConfig = toml::from_str(
+            r#"
+name = "feishu"
+app_id = "a"
+app_secret = "b"
+
+[[routes]]
+chat_name = "greenfield"
+chat_id = "oc_greenfield"
+thread = "thread-xxx"
+"#,
+        )
+        .unwrap();
+        // Name is unknown (API failed) but the chat_id matches.
+        let r = cfg.route("", "oc_greenfield").unwrap();
+        assert_eq!(r.thread, "thread-xxx");
+        assert!(cfg.route("", "oc_other").is_none());
     }
 
     #[test]
     fn route_unknown_chat_returns_none() {
         let cfg = test_config();
-        assert!(cfg.route("some-other-group").is_none());
+        assert!(cfg.route("some-other-group", "oc_x").is_none());
     }
 
     #[test]

@@ -25,7 +25,8 @@ use jyc_types::FeishuConfig;
 /// Manages the lifecycle of a single WebSocket connection:
 /// connect → receive events → parse → convert to InboundMessage → callback.
 ///
-/// Reconnection logic is handled by the caller (`FeishuInboundAdapter::start()`).
+/// Reconnection logic is handled by the caller (the bridge driver in
+/// `bridges/feishu/src/main.rs`).
 pub struct FeishuWebSocket {
     config: FeishuConfig,
     client: Arc<FeishuClient>,
@@ -67,8 +68,8 @@ impl FeishuWebSocket {
     /// and calls `on_message`.
     ///
     /// The `on_thread_close` callback is invoked when a chat is disbanded,
-    /// receiving the thread name derived from the chat_id. Can be None if
-    /// thread close handling is not needed.
+    /// receiving the chat_id. Can be None if thread close handling is not
+    /// needed.
     ///
     /// Returns `Ok(())` on clean cancellation, `Err(...)` on connection failure.
     pub async fn run(
@@ -186,21 +187,12 @@ impl FeishuWebSocket {
                 }
 
                 // Try to get chat name: first from event, then from API/cache
-                let chat_name = json
-                    .get("event")
-                    .and_then(|e| e.get("name"))
-                    .and_then(|n| n.as_str());
-
-                let thread_name = if let Some(chat_name) = chat_name {
-                    helpers::sanitize_for_filesystem(chat_name)
-                } else if let Ok(Some(name)) = self.client.get_chat_name(chat_id).await {
-                    name
-                } else {
-                    derive_thread_name_from_chat_id(channel_name, chat_id)
-                };
-
-                tracing::info!(chat_id = %chat_id, thread = %thread_name, "Chat disbanded, closing thread");
-                callback(thread_name)?;
+                let chat_id = chat_id.to_string();
+                tracing::info!(chat_id = %chat_id, "Chat disbanded, closing thread");
+                // The callback receives the chat_id; the caller (the bridge
+                // driver in main.rs) resolves which jyc threads to close from
+                // its own reverse map.
+                callback(chat_id)?;
             }
             return Ok(());
         }

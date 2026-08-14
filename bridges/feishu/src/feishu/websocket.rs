@@ -313,10 +313,9 @@ impl FeishuWebSocket {
                                 if max_size_bytes == 0
                                     || image_bytes.len() <= max_size_bytes as usize
                                 {
-                                    let safe_filename =
-                                        crate::feishu::sanitize_attachment_filename(
-                                            &format!("image_{}.jpg", content.image_key),
-                                        );
+                                    let safe_filename = crate::feishu::sanitize_attachment_filename(
+                                        &format!("image_{}.jpg", content.image_key),
+                                    );
                                     let image_attachment = MessageAttachment {
                                         filename: safe_filename,
                                         content_type: "image/jpeg".to_string(),
@@ -429,7 +428,8 @@ impl FeishuWebSocket {
                                         };
 
                                         // Sanitize filename at ingestion
-                                        let safe_filename = crate::feishu::sanitize_attachment_filename(name);
+                                        let safe_filename =
+                                            crate::feishu::sanitize_attachment_filename(name);
                                         let file_attachment = MessageAttachment {
                                             filename: safe_filename,
                                             content_type: content_type.to_string(),

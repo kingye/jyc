@@ -15,8 +15,10 @@ pub struct BridgeConfig {
     /// Default jyc channel — fallback for routes without an explicit `channel`.
     #[serde(default)]
     pub channel: String,
-    /// Spawn command (argv). `None` for externally-managed bridges.
+    /// Spawn command (argv). Read by jyc for discovery/spawn; the bridge
+    /// itself never executes it.
     #[serde(default)]
+    #[allow(dead_code)]
     pub command: Option<Vec<String>>,
     /// jyc inspect server URL for externally-managed bridges
     /// (spawned bridges get `JYC_URL` from the environment instead).
@@ -57,30 +59,23 @@ impl BridgeConfig {
         toml::from_str(&text).with_context(|| format!("failed to parse bridge config {}", path))
     }
 
-    /// Resolve the target `(channel, thread)` for a chat name.
+    /// Resolve the matching route for a chat name (case-insensitive).
     ///
-    /// Matches case-insensitively (chat names from feishu are display names).
     /// Returns `None` when no route matches — the bridge then drops the event.
-    pub fn route_for(&self, chat_name: &str) -> Option<(&str, &str)> {
+    pub fn route(&self, chat_name: &str) -> Option<&Route> {
         self.routes
             .iter()
             .find(|r| r.chat_name.eq_ignore_ascii_case(chat_name))
-            .map(|r| {
-                (
-                    r.channel.as_deref().unwrap_or(&self.channel),
-                    r.thread.as_str(),
-                )
-            })
     }
 
     /// Distinct jyc channels this bridge serves (default + route channels).
     pub fn channels(&self) -> Vec<String> {
         let mut set = vec![self.channel.clone()];
         for r in &self.routes {
-            if let Some(c) = &r.channel {
-                if !set.contains(c) {
-                    set.push(c.clone());
-                }
+            if let Some(c) = &r.channel
+                && !set.contains(c)
+            {
+                set.push(c.clone());
             }
         }
         set
@@ -118,31 +113,33 @@ mentions = ["jyc"]
     }
 
     #[test]
-    fn route_for_maps_chat_to_channel_and_thread() {
+    fn route_maps_chat_to_channel_and_thread() {
         let cfg = test_config();
-        let (channel, thread) = cfg.route_for("greenfield").unwrap();
-        assert_eq!(channel, "channel-b");
-        assert_eq!(thread, "thread-xxx");
+        let r = cfg.route("greenfield").unwrap();
+        assert_eq!(r.channel.as_deref(), Some("channel-b"));
+        assert_eq!(r.thread, "thread-xxx");
     }
 
     #[test]
-    fn route_for_falls_back_to_default_channel() {
+    fn route_falls_back_to_default_channel() {
         let cfg = test_config();
-        let (channel, thread) = cfg.route_for("invoice").unwrap();
-        assert_eq!(channel, "feishu_bot"); // route has no explicit channel
-        assert_eq!(thread, "invoice-processing");
+        let r = cfg.route("invoice").unwrap();
+        assert_eq!(r.channel, None); // route has no explicit channel
+        assert_eq!(r.thread, "invoice-processing");
+        // The default channel is applied at use time, not stored on the route.
+        assert_eq!(cfg.channel, "feishu_bot");
     }
 
     #[test]
-    fn route_for_is_case_insensitive() {
+    fn route_is_case_insensitive() {
         let cfg = test_config();
-        assert_eq!(cfg.route_for("GreenField").unwrap().1, "thread-xxx");
+        assert_eq!(cfg.route("GreenField").unwrap().thread, "thread-xxx");
     }
 
     #[test]
-    fn route_for_unknown_chat_returns_none() {
+    fn route_unknown_chat_returns_none() {
         let cfg = test_config();
-        assert!(cfg.route_for("some-other-group").is_none());
+        assert!(cfg.route("some-other-group").is_none());
     }
 
     #[test]

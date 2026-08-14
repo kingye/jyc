@@ -15,7 +15,9 @@ use tokio_tungstenite::tungstenite::http::header;
 /// Outbound frame: a message into a jyc thread.
 #[derive(Debug, Clone, Serialize)]
 pub struct InboundFrame {
+    /// Wire discriminator (`"message"`); consumed by jyc, never read here.
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub frame_type: String,
     pub thread: String,
     pub text: String,
@@ -45,7 +47,9 @@ impl InboundFrame {
 /// Reply frame broadcast by jyc for a thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReplyFrame {
+    /// Wire discriminator (`"reply"`); checked via the loose pre-parse.
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub frame_type: String,
     pub thread: String,
     pub text: String,
@@ -54,81 +58,84 @@ pub struct ReplyFrame {
 /// A live WebSocket connection to one jyc channel (`/ws/<channel>`).
 ///
 /// A background task owns the socket: it sends queued `InboundFrame`s and
-/// forwards reply frames to `rx`. When the connection drops, the task exits
-/// and `recv_reply` returns `None`.
+/// forwards reply frames to the `ChannelReplies` receiver. The send half is
+/// cheap to keep around (the task owns the socket); when the connection
+/// drops, the task exits and `recv_reply` returns `None`.
 pub struct ChannelClient {
-    channel: String,
     tx: mpsc::UnboundedSender<InboundFrame>,
+}
+
+/// Receiver half of a channel connection: reply frames broadcast by jyc.
+pub struct ChannelReplies {
     rx: mpsc::UnboundedReceiver<ReplyFrame>,
 }
 
-impl ChannelClient {
-    /// Connect to `/ws/<channel>` with bearer auth.
-    pub async fn connect(jyc_url: &str, token: &str, channel: &str) -> Result<Self> {
-        let url = format!("{}/ws/{}", jyc_url.trim_end_matches('/'), channel);
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .with_context(|| format!("invalid ws url {url}"))?;
-        request.headers_mut().insert(
-            header::AUTHORIZATION,
-            format!("Bearer {token}")
-                .parse()
-                .context("invalid auth token")?,
-        );
-        let (ws, _resp) = tokio_tungstenite::connect_async(request)
-            .await
-            .with_context(|| format!("failed to connect to {url}"))?;
+/// Connect to `/ws/<channel>` with bearer auth, returning the send and
+/// receive halves.
+pub async fn connect(
+    jyc_url: &str,
+    token: &str,
+    channel: &str,
+) -> Result<(ChannelClient, ChannelReplies)> {
+    let url = format!("{}/ws/{}", jyc_url.trim_end_matches('/'), channel);
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .with_context(|| format!("invalid ws url {url}"))?;
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}")
+            .parse()
+            .context("invalid auth token")?,
+    );
+    let (ws, _resp) = tokio_tungstenite::connect_async(request)
+        .await
+        .with_context(|| format!("failed to connect to {url}"))?;
 
-        let (mut sink, mut stream) = ws.split();
-        let (tx, mut send_rx) = mpsc::unbounded_channel::<InboundFrame>();
-        let (reply_tx, reply_rx) = mpsc::unbounded_channel::<ReplyFrame>();
-        let task_channel = channel.to_string();
+    let (mut sink, mut stream) = ws.split();
+    let (tx, mut send_rx) = mpsc::unbounded_channel::<InboundFrame>();
+    let (reply_tx, reply_rx) = mpsc::unbounded_channel::<ReplyFrame>();
+    let task_channel = channel.to_string();
 
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    frame = send_rx.recv() => {
-                        let Some(frame) = frame else { break };
-                        let Ok(payload) = serde_json::to_string(&frame) else { break };
-                        if sink.send(Message::Text(payload.into())).await.is_err() {
-                            tracing::warn!(channel = %task_channel, "jyc WS send failed");
-                            break;
-                        }
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                frame = send_rx.recv() => {
+                    let Some(frame) = frame else { break };
+                    let Ok(payload) = serde_json::to_string(&frame) else { break };
+                    if sink.send(Message::Text(payload.into())).await.is_err() {
+                        tracing::warn!(channel = %task_channel, "jyc WS send failed");
+                        break;
                     }
-                    msg = stream.next() => {
-                        match msg {
-                            Some(Ok(Message::Text(text))) => {
-                                if let Some(reply) = parse_reply(&text) {
-                                    let _ = reply_tx.send(reply);
-                                }
+                }
+                msg = stream.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Some(reply) = parse_reply(&text) {
+                                let _ = reply_tx.send(reply);
                             }
-                            Some(Ok(_)) => {} // ping/pong/binary — ignore
-                            _ => break,       // closed or error
                         }
+                        Some(Ok(_)) => {} // ping/pong/binary — ignore
+                        _ => break,       // closed or error
                     }
                 }
             }
-            tracing::info!(channel = %task_channel, "jyc WS connection closed");
-        });
+        }
+        tracing::info!(channel = %task_channel, "jyc WS connection closed");
+    });
 
-        tracing::info!(channel = %channel, url = %url, "connected to jyc");
-        Ok(Self {
-            channel: channel.to_string(),
-            tx,
-            rx: reply_rx,
-        })
-    }
+    tracing::info!(channel = %channel, url = %url, "connected to jyc");
+    Ok((ChannelClient { tx }, ChannelReplies { rx: reply_rx }))
+}
 
-    pub fn channel(&self) -> &str {
-        &self.channel
-    }
-
+impl ChannelClient {
     /// Queue a message for the channel.
     pub fn send_message(&self, frame: InboundFrame) -> Result<()> {
         self.tx.send(frame).context("jyc WS send queue closed")
     }
+}
 
+impl ChannelReplies {
     /// Await the next reply frame, or `None` when the connection is closed.
     pub async fn recv_reply(&mut self) -> Option<ReplyFrame> {
         self.rx.recv().await

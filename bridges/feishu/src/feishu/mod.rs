@@ -3,6 +3,12 @@
 //!
 //! Moved from `jyc-channels/src/feishu/` (minus the adapter/matcher layers,
 //! which the route table + jyc WS client replace).
+//!
+//! #![allow(dead_code)]: this is moved code; several event fields are only
+//! deserialized (not read) and the attachment client methods
+//! (`upload_file`/`upload_image`/`download_*`) wait for the attachments
+//! follow-up. All items are exercised by the crate's unit tests.
+#![allow(dead_code)]
 
 pub mod client;
 pub mod formatter;

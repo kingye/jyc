@@ -65,8 +65,8 @@ pub fn decrypt_msg(encoding_aes_key: &str, encrypt: &str) -> Result<String> {
         )
     })?;
 
-    let ciphertext = crate::crypto::base64_decode(encrypt)
-        .context("failed to decode encrypt from base64")?;
+    let ciphertext =
+        crate::crypto::base64_decode(encrypt).context("failed to decode encrypt from base64")?;
 
     let decrypted = crate::crypto::decrypt_aes256_cbc(&aes_key, &iv, &ciphertext)?;
 

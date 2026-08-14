@@ -250,6 +250,21 @@ thread = "invoice-processing"
 mentions = ["jyc"]
 ```
 
+**`command[0]` 解析规则（回退链）**：
+
+```
+1. 绝对路径（含 /）→ 直接用（如 ["/usr/local/bin/feishu-bridge"]）
+2. 否则查 <bridges>/<name>/<command[0]> 是否存在
+   ├─ 存在 → 用它（自包含交付：二进制与 config.toml 同目录）
+   └─ 不存在 → 第 3 步
+3. 交给操作系统按 $PATH 查找（Command::new 默认行为）
+   ├─ 命中（/usr/local/bin、~/.cargo/bin …）→ 用它（系统安装 / cargo install）
+   └─ 未命中 → 报错「bridge 未找到」
+```
+
+三种交付方式都覆盖：tarball 自包含（第 2 步）、系统安装 / `cargo install`（第 3 步）、
+显式绝对路径（第 1 步）。第 2 步优先于第 3 步——想绕开桥目录里的同名二进制，用绝对路径即可。
+
 ## 11. 生命周期、鉴权与日志
 
 - **spawn 桥**：jyc 启动时扫 `~/.config/jyc/bridges/*/config.toml`；桥的 channel 集合

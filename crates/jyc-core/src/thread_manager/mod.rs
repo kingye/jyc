@@ -1,0 +1,221 @@
+use arc_swap::ArcSwap;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::thread_event_bus::ThreadEventBusRef;
+
+use crate::agent::AgentService;
+use crate::message_storage::MessageStorage;
+use crate::metrics::MetricsHandle;
+use jyc_types::{OutboundAdapter, QueueItem};
+
+mod events;
+mod git;
+mod lifecycle;
+mod queue;
+mod template;
+mod threads;
+mod worker;
+
+/// Per-thread queue stats.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct QueueStats {
+    pub active_workers: usize,
+    pub total_threads: usize,
+    pub pending_messages: usize,
+}
+
+/// Manages per-thread message queues with bounded concurrency.
+///
+/// Responsible for:
+/// - Queue management, concurrency control (semaphore + mpsc)
+/// - Storing received messages (via chat log)
+/// - Command processing (parse, execute, strip, reply results)
+/// - Checking body emptiness (after commands + quoted history stripping)
+/// - Dispatching to the agent service (via AgentService trait)
+///
+/// NOT responsible for: AI logic, sessions, prompts, reply building, sending —
+/// those are owned by the AgentService implementation.
+pub struct ThreadManager {
+    thread_queues: Mutex<HashMap<String, mpsc::Sender<QueueItem>>>,
+    semaphore: Arc<Semaphore>,
+    max_queue_size: usize,
+
+    // Shared dependencies
+    storage: Arc<MessageStorage>,
+    outbound: Arc<dyn OutboundAdapter>,
+    agent: Arc<dyn AgentService>,
+
+    // Thread-isolated event buses (optional feature)
+    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    enable_events: bool,
+
+    // Per-thread cancellation tokens (used by close_thread/cancel_thread to
+    // stop workers). Shared via Arc so the per-worker ThreadManager clone
+    // sees the same map — otherwise /cancel and /close look up an empty map
+    // and silently fail to cancel the running worker.
+    pub(crate) thread_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
+
+    // Template directories for thread initialization (layered: L1 global < L2 workdir)
+    template_dirs: crate::template_dirs::TemplateDirs,
+
+    // Channel name this ThreadManager belongs to
+    channel_name: String,
+    // Channel type (e.g., "email", "wecom_bot")
+    channel_type: String,
+
+    // Workdir (data root) for this channel.
+    workdir: PathBuf,
+
+    // Workspace directory for this channel (<workdir>/<channel>/workspace/)
+    workspace_dir: PathBuf,
+
+    // Application config (for command handlers that need channel/pattern info)
+    config: Arc<ArcSwap<jyc_types::AppConfig>>,
+
+    // Path to the config.toml file (for commands that write config, like /pin)
+    pub(crate) config_path: Option<PathBuf>,
+
+    // Metrics handle for reporting events to the inspect server
+    pub(crate) metrics: MetricsHandle,
+
+    cancel: CancellationToken,
+    worker_handles: Mutex<Vec<JoinHandle<()>>>,
+
+    repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+
+    // Custom thread paths (from pattern thread_path override), shared with
+    // worker clones so list_threads() on the main TM sees paths from workers.
+    pub(crate) thread_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
+}
+
+#[allow(dead_code)]
+impl ThreadManager {
+    /// Create a new ThreadManager with event support enabled by default.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        max_concurrent: usize,
+        max_queue_size: usize,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<dyn OutboundAdapter>,
+        agent: Arc<dyn AgentService>,
+        cancel: CancellationToken,
+        template_dirs: impl Into<crate::template_dirs::TemplateDirs>,
+        config: Arc<ArcSwap<jyc_types::AppConfig>>,
+        channel_name: String,
+        channel_type: String,
+        workdir: PathBuf,
+        workspace_dir: PathBuf,
+        metrics: MetricsHandle,
+    ) -> Self {
+        Self::new_with_options(
+            max_concurrent,
+            max_queue_size,
+            storage,
+            outbound,
+            agent,
+            cancel,
+            true,
+            template_dirs,
+            config,
+            channel_name,
+            channel_type,
+            workdir,
+            workspace_dir,
+            metrics,
+            None,
+        )
+    }
+
+    /// Create a new ThreadManager with configurable event support.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_options(
+        max_concurrent: usize,
+        max_queue_size: usize,
+        storage: Arc<MessageStorage>,
+        outbound: Arc<dyn OutboundAdapter>,
+        agent: Arc<dyn AgentService>,
+        cancel: CancellationToken,
+        enable_events: bool,
+        template_dirs: impl Into<crate::template_dirs::TemplateDirs>,
+        config: Arc<ArcSwap<jyc_types::AppConfig>>,
+        channel_name: String,
+        channel_type: String,
+        workdir: PathBuf,
+        workspace_dir: PathBuf,
+        metrics: MetricsHandle,
+        config_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            thread_queues: Mutex::new(HashMap::new()),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            max_queue_size,
+            storage,
+            outbound,
+            agent,
+            event_buses: Mutex::new(HashMap::new()),
+            enable_events,
+            thread_cancels: Arc::new(Mutex::new(HashMap::new())),
+            template_dirs: template_dirs.into(),
+            channel_name,
+            channel_type,
+            workdir,
+            workspace_dir,
+            config,
+            config_path,
+            metrics,
+            cancel: cancel.child_token(),
+            worker_handles: Mutex::new(Vec::new()),
+            repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
+            thread_paths: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub async fn get_stats(&self) -> QueueStats {
+        let queues = self.thread_queues.lock().await;
+        let total_threads = queues.len();
+        let active_workers = self.active_worker_count();
+        QueueStats {
+            active_workers,
+            total_threads,
+            pending_messages: 0,
+        }
+    }
+
+    /// Return the channel name this ThreadManager belongs to.
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    /// Return the channel type (e.g., "email", "wecom_bot").
+    pub fn channel_type(&self) -> &str {
+        &self.channel_type
+    }
+
+    /// Return the workdir (data root) for this channel.
+    pub fn data_root(&self) -> &Path {
+        &self.workdir
+    }
+
+    /// Return the max concurrent threads (semaphore capacity).
+    pub fn max_concurrent(&self) -> usize {
+        self.semaphore.available_permits() + self.active_worker_count()
+    }
+
+    /// Number of active workers (holding semaphore permits).
+    pub fn active_worker_count(&self) -> usize {
+        // This is an approximation: semaphore total - available = active
+        // We stored the capacity in the constructor but Semaphore doesn't expose it.
+        // We use config's max_concurrent_threads as the total.
+        self.config
+            .load()
+            .general
+            .max_concurrent_threads
+            .saturating_sub(self.semaphore.available_permits())
+    }
+}

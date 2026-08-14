@@ -1,60 +1,33 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-use clap::Args;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 /// RAII guard that removes a PID file on drop.
-struct PidFileGuard {
-    path: PathBuf,
-}
-
-impl PidFileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for PidFileGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 use jyc_agent::JycAgentService;
 
 use jyc_services::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
 use jyc_channels::email::inbound::EmailMatcher;
-use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
-use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::gitee::inbound::GiteeMatcher;
-use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
-use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
-use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_channels::wechat::inbound::WechatInboundAdapter;
-use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_channels::wecom::inbound::WecomInboundAdapter;
 use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::kf_cursor::KfCursorStore;
 use jyc_channels::wecom::kf_dedup::KfDedupStore;
 use jyc_channels::wecom::kf_inbound::WecomKfInboundAdapter;
 use jyc_channels::wecom::kf_inbound::WecomKfMatcher;
-use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
-use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
-use jyc_channels::wecom::token_cache::AccessTokenCache;
 use jyc_channels::wecom_bot::client::WecomBotConnectionHandle;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
-use jyc_channels::wecom_bot::outbound::WecomBotOutboundAdapter;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -65,45 +38,6 @@ use jyc_types::InboundAdapter;
 use jyc_types::MonitorConfig;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
-
-/// Serve command — start the agent, monitor inbound channels, process messages.
-#[derive(Debug, Args)]
-pub struct ServeArgs {
-    /// Config file path (default: <config_home>/config.toml, e.g.
-    /// ~/.config/jyc/config.toml; or config.toml in --workdir when given)
-    #[arg(short, long)]
-    pub config: Option<String>,
-
-    /// Use polling instead of IMAP IDLE
-    #[arg(long)]
-    pub no_idle: bool,
-
-    /// Reset monitoring state before starting
-    #[arg(long)]
-    pub reset: bool,
-}
-
-/// Wait for a shutdown signal (Ctrl+C on all platforms, plus SIGTERM on Unix).
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to create SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received Ctrl+C, shutting down...");
-            }
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, shutting down...");
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Received Ctrl+C, shutting down...");
-    }
-}
 
 pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Result<()> {
     // 1. Resolve config locations, provision default config on first run
@@ -264,142 +198,23 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
-        let outbound: Arc<dyn OutboundAdapter> = match channel_type {
-            "email" => {
-                let outbound_config = channel_config.outbound.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("channel '{channel_name}': missing outbound config")
-                })?;
-                Arc::new(EmailOutboundAdapter::new_with_attachments(
-                    outbound_config,
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                ))
-            }
-            "feishu" => {
-                let feishu_config = channel_config
-                    .feishu
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing feishu config")
-                    })?
-                    .clone();
-                Arc::new(FeishuOutboundAdapter::new_with_attachments(
-                    feishu_config,
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                ))
-            }
-            "gitee" => {
-                let gitee_config = channel_config
-                    .gitee
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing gitee config")
-                    })?
-                    .clone();
-                Arc::new(GiteeOutboundAdapter::with_footer_enabled(
-                    gitee_config,
-                    storage.clone(),
-                    footer_enabled,
-                )?)
-            }
-            "github" => {
-                let github_config = channel_config
-                    .github
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing github config")
-                    })?
-                    .clone();
-                Arc::new(GithubOutboundAdapter::with_footer_enabled(
-                    github_config,
-                    storage.clone(),
-                    footer_enabled,
-                )?)
-            }
-            "wechat" => {
-                // WeChat config is validated and cloned in the inbound section.
-                // Outbound only needs sender, storage, and footer config.
-                let adapter = WechatOutboundAdapter::new_with_attachments(
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                );
-                // Store the sender_arc for later use in the inbound section
-                wechat_sender_arc = Some(adapter.sender_arc());
-                Arc::new(adapter)
-            }
-            "wecom_bot" => {
-                let adapter = WecomBotOutboundAdapter::new_with_attachments(
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                );
-                wecom_bot_handle_arc = Some(adapter.handle_arc());
-                Arc::new(adapter)
-            }
-            "wecom" => {
-                let wecom_config = channel_config
-                    .wecom
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wecom config")
-                    })?
-                    .clone();
-                Arc::new(WecomOutboundAdapter::new_with_attachments(
-                    wecom_config.corp_id,
-                    wecom_config.corp_secret,
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                ))
-            }
-            "wecomkf" => {
-                let wecomkf_config = channel_config
-                    .wecom_kf
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config")
-                    })?
-                    .clone();
-
-                let access_token_cache = Arc::new(AccessTokenCache::new(
-                    wecomkf_config.corp_id.clone(),
-                    wecomkf_config.corp_secret.clone(),
-                ));
-                let kf_client = Arc::new(KfApiClient::new(access_token_cache));
-                wecomkf_kf_client = Some(kf_client.clone());
-
-                Arc::new(WecomKfOutboundAdapter::new(
-                    kf_client,
-                    storage.clone(),
-                    outbound_attachment_config,
-                    footer_enabled,
-                ))
-            }
-            "websocket" => {
-                let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
-                let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
-                // Store the inbound adapter for later registration with the inspect server
-                let mut handler =
-                    WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx);
-                handler.set_workspace_dir(workspace_dir.clone());
-                handler.set_inspect_broadcast(inspect_broadcast.clone());
-                let handler = Arc::new(handler);
-                ws_handler_for_channel.insert(channel_name.clone(), handler.clone());
-                websocket_handlers.push(handler);
-                Arc::new(adapter)
-            }
-            other => {
-                tracing::warn!(
-                    channel = %channel_name,
-                    channel_type = %other,
-                    "Unsupported channel type, skipping"
-                );
-                continue;
-            }
+        let Some(outbound) = crate::cli::serve::channels::build_outbound_adapter(
+            channel_type,
+            channel_config,
+            channel_name,
+            storage.clone(),
+            outbound_attachment_config,
+            footer_enabled,
+            &workspace_dir,
+            inspect_broadcast.clone(),
+            &mut wechat_sender_arc,
+            &mut wecom_bot_handle_arc,
+            &mut wecomkf_kf_client,
+            &mut ws_handler_for_channel,
+            &mut websocket_handlers,
+        )?
+        else {
+            continue;
         };
 
         // Connect the outbound adapter
@@ -1369,3 +1184,9 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     tracing::info!("Serve stopped");
     Ok(())
 }
+
+mod channels;
+mod shutdown;
+
+pub use shutdown::ServeArgs;
+use shutdown::{PidFileGuard, shutdown_signal};

@@ -29,6 +29,9 @@ pub struct Message {
     pub data: String,
 }
 
+/// Internal state machine for `stream_sse`. Size differences between
+/// variants are irrelevant — it is only moved between unfold calls.
+#[allow(clippy::large_enum_variant)]
 enum SseState {
     /// Request built but not yet sent.
     Send(reqwest::RequestBuilder),

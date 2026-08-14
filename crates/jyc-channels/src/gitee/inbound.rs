@@ -123,68 +123,27 @@ impl GiteeInboundAdapter {
     }
 
     async fn load_processed_comments(&self) -> HashSet<String> {
-        let file = self.state_dir.join("processed-comments.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => content
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to load processed comments");
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .load()
+            .await
     }
 
     async fn track_comment(&self, key: &str, processed: &mut HashSet<String>) {
-        processed.insert(key.to_string());
-        let file = self.state_dir.join("processed-comments.txt");
-        use tokio::io::AsyncWriteExt;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .await
-        {
-            let _ = f.write_all(format!("{}\n", key).as_bytes()).await;
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .insert(key, processed)
+            .await;
     }
 
     async fn load_seen_issues(&self) -> HashSet<String> {
-        let file = self.state_dir.join("seen-issues.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => content
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to load seen issues");
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .load()
+            .await
     }
 
     async fn track_seen_issue(&self, key: &str, seen: &mut HashSet<String>) {
-        if seen.insert(key.to_string()) {
-            let file = self.state_dir.join("seen-issues.txt");
-            use tokio::io::AsyncWriteExt;
-            if let Ok(mut f) = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file)
-                .await
-            {
-                let _ = f.write_all(format!("{}\n", key).as_bytes()).await;
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .insert(key, seen)
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -1,11 +1,116 @@
 //! Shared git-host logic (GitHub / Gitee).
 //!
 //! Both hosts are GitHub-compatible APIs and share these channel-agnostic
-//! helpers: pattern priority, rule matching, and `[Role]` prefix extraction.
-//! Host-specific differences (metadata key prefixes, allowed roles) are
-//! parameterized.
+//! helpers: pattern priority, rule matching, `[Role]` prefix extraction, and
+//! persistent keyed-set tracking. Host-specific differences (metadata key
+//! prefixes, allowed roles) are parameterized.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use jyc_types::{InboundMessage, PatternRules};
+
+/// Persistent `HashSet<String>` backed by an append-only text file.
+///
+/// Used for processed-comment / seen-issue tracking in both GitHub and
+/// Gitee: `load()` reads the file, `insert()` appends new keys, `compact()`
+/// truncates to the `max` most recent keys (numeric-ID prefix heuristic).
+pub(crate) struct PersistentKeySet {
+    path: PathBuf,
+}
+
+impl PersistentKeySet {
+    pub(crate) fn new(state_dir: &Path, filename: &str) -> Self {
+        Self {
+            path: state_dir.join(filename),
+        }
+    }
+
+    /// Load the set from disk (empty when missing or unreadable).
+    pub(crate) async fn load(&self) -> HashSet<String> {
+        if !self.path.exists() {
+            return HashSet::new();
+        }
+        match tokio::fs::read_to_string(&self.path).await {
+            Ok(content) => content
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %self.path.display(),
+                    "Failed to load persistent key set"
+                );
+                HashSet::new()
+            }
+        }
+    }
+
+    /// Insert a key and append it to the file (only when newly added).
+    pub(crate) async fn insert(&self, key: &str, set: &mut HashSet<String>) {
+        if set.insert(key.to_string()) {
+            use tokio::io::AsyncWriteExt;
+            if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .await
+            {
+                let _ = f.write_all(format!("{key}\n").as_bytes()).await;
+                let _ = f.flush().await;
+                let _ = f.sync_all().await;
+            }
+        }
+    }
+
+    /// Truncate to the `max` most recent keys (by numeric ID prefix), then
+    /// rewrite the file.
+    pub(crate) async fn compact(&self, set: &mut HashSet<String>, max: usize) {
+        if set.len() <= max {
+            return;
+        }
+
+        // Keys are `<numeric-id>:<rest>`; sort by the numeric id to approximate recency.
+        let mut entries: Vec<(u64, String)> = set
+            .iter()
+            .map(|key| {
+                let id = key
+                    .split(':')
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                (id, key.clone())
+            })
+            .collect();
+        entries.sort_unstable_by_key(|(id, _)| *id);
+        let keep_from = entries.len() - max;
+        let keep: HashSet<String> = entries[keep_from..]
+            .iter()
+            .map(|(_, key)| key.clone())
+            .collect();
+
+        let before = set.len();
+        *set = keep;
+
+        let content: String = set.iter().map(|key| format!("{key}\n")).collect();
+        if let Err(e) = tokio::fs::write(&self.path, content).await {
+            tracing::warn!(
+                error = %e,
+                path = %self.path.display(),
+                "Failed to compact persistent key set"
+            );
+        } else {
+            tracing::info!(
+                before = before,
+                after = set.len(),
+                path = %self.path.display(),
+                "Compacted persistent key set"
+            );
+        }
+    }
+}
 
 /// Reviewer patterns get priority 0; everything else 255.
 pub(crate) fn pattern_priority(role: Option<&str>) -> u8 {

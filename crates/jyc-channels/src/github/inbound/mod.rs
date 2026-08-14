@@ -27,6 +27,4 @@ mod state;
 mod tests;
 
 #[cfg(test)]
-pub(crate) use matcher::*;
-#[cfg(test)]
 pub(crate) use poll::*;

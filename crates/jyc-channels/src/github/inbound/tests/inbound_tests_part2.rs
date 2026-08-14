@@ -414,18 +414,33 @@ fn test_review_dedup_key_format() {
 #[test]
 fn test_review_comment_role_extraction() {
     assert_eq!(
-        extract_comment_role("[Developer] Fixed the issue"),
+        crate::git_host::extract_comment_role(
+            "[Developer] Fixed the issue",
+            Some(crate::git_host::GITHUB_COMMENT_ROLES)
+        ),
         Some("Developer".to_string())
     );
     assert_eq!(
-        extract_comment_role("[Reviewer] Looks good"),
+        crate::git_host::extract_comment_role(
+            "[Reviewer] Looks good",
+            Some(crate::git_host::GITHUB_COMMENT_ROLES)
+        ),
         Some("Reviewer".to_string())
     );
     assert_eq!(
-        extract_comment_role("[Planner] Planning phase"),
+        crate::git_host::extract_comment_role(
+            "[Planner] Planning phase",
+            Some(crate::git_host::GITHUB_COMMENT_ROLES)
+        ),
         Some("Planner".to_string())
     );
-    assert_eq!(extract_comment_role("Normal review comment"), None);
+    assert_eq!(
+        crate::git_host::extract_comment_role(
+            "Normal review comment",
+            Some(crate::git_host::GITHUB_COMMENT_ROLES)
+        ),
+        None
+    );
 }
 
 #[test]

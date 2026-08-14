@@ -277,7 +277,10 @@ impl GithubInboundAdapter {
             let body_trimmed = comment.body.trim();
 
             // Extract [Role] prefix for self-loop prevention
-            let comment_role = extract_comment_role(body_trimmed);
+            let comment_role = crate::git_host::extract_comment_role(
+                body_trimmed,
+                Some(crate::git_host::GITHUB_COMMENT_ROLES),
+            );
 
             let issue_number = comment.issue_number().unwrap_or(0);
 
@@ -418,7 +421,10 @@ impl GithubInboundAdapter {
 
                         let body_trimmed = review.body.trim();
 
-                        let comment_role = extract_comment_role(body_trimmed);
+                        let comment_role = crate::git_host::extract_comment_role(
+                            body_trimmed,
+                            Some(crate::git_host::GITHUB_COMMENT_ROLES),
+                        );
 
                         let (title, github_type, labels, assignees) =
                             issue_cache.get(pr_number).cloned().unwrap_or_else(|| {
@@ -527,7 +533,10 @@ impl GithubInboundAdapter {
 
                         let body_trimmed = rc.body.trim();
 
-                        let comment_role = extract_comment_role(body_trimmed);
+                        let comment_role = crate::git_host::extract_comment_role(
+                            body_trimmed,
+                            Some(crate::git_host::GITHUB_COMMENT_ROLES),
+                        );
 
                         let (title, github_type, labels, assignees) =
                             issue_cache.get(pr_number).cloned().unwrap_or_else(|| {
@@ -944,21 +953,6 @@ impl GithubInboundAdapter {
 ///   "[Unknown] something" → None
 ///
 /// Only recognizes known agent roles to avoid false positives.
-pub(crate) fn extract_comment_role(text: &str) -> Option<String> {
-    if text.starts_with('[')
-        && let Some(end) = text.find(']')
-    {
-        let role = &text[1..end];
-        match role {
-            "Planner" | "Developer" | "Reviewer" | "High-Level Planner" => {
-                return Some(role.to_string());
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Check whether a comment should be processed based on whether its
 /// parent issue/PR is still open.
 ///

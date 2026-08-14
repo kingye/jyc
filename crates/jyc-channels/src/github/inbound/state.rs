@@ -58,54 +58,17 @@ impl GithubInboundAdapter {
     /// File format: one key per line (`{comment_id}:{updated_at}`).
     /// Using `id:updated_at` ensures edited comments are re-processed.
     pub(crate) async fn load_processed_comments(&self) -> HashSet<String> {
-        let file = self.state_dir.join("processed-comments.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => {
-                let set: HashSet<String> = content
-                    .lines()
-                    .map(|line| line.trim().to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect();
-                tracing::debug!(
-                    channel = %self.channel_name,
-                    count = set.len(),
-                    "Loaded processed comment keys"
-                );
-                set
-            }
-            Err(e) => {
-                tracing::warn!(
-                    channel = %self.channel_name,
-                    error = %e,
-                    "Failed to load processed comments, starting fresh"
-                );
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .load()
+            .await
     }
 
     /// Persist a comment key as processed (append to file).
     /// Key format: `{comment_id}:{updated_at}`
     pub(crate) async fn track_comment(&self, key: &str, processed: &mut HashSet<String>) {
-        processed.insert(key.to_string());
-
-        let file = self.state_dir.join("processed-comments.txt");
-        use tokio::io::AsyncWriteExt;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .await
-        {
-            let _ = f.write_all(format!("{key}\n").as_bytes()).await;
-            let _ = f.flush().await;
-            let _ = f.sync_all().await;
-        }
-
-        // Compact when >5000 entries: rewrite with only what's in memory
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .insert(key, processed)
+            .await;
         if processed.len() > 5000 {
             self.compact_processed_comments(processed).await;
         }
@@ -113,138 +76,35 @@ impl GithubInboundAdapter {
 
     /// Compact processed comments file by keeping only the latest entries.
     pub(crate) async fn compact_processed_comments(&self, processed: &mut HashSet<String>) {
-        if processed.len() <= 2000 {
-            return;
-        }
-
-        // Keep only the 2000 most recent entries.
-        // Sort by the comment ID prefix (numeric) to determine recency.
-        let mut entries: Vec<(u64, String)> = processed
-            .iter()
-            .map(|key| {
-                let id = key
-                    .split(':')
-                    .next()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (id, key.clone())
-            })
-            .collect();
-        entries.sort_unstable_by_key(|(id, _)| *id);
-        let keep_from = entries.len() - 2000;
-        let keep: HashSet<String> = entries[keep_from..]
-            .iter()
-            .map(|(_, key)| key.clone())
-            .collect();
-
-        let before = processed.len();
-        *processed = keep;
-
-        let file = self.state_dir.join("processed-comments.txt");
-        let content: String = processed.iter().map(|key| format!("{key}\n")).collect();
-        if let Err(e) = tokio::fs::write(&file, content).await {
-            tracing::warn!(error = %e, "Failed to compact processed comments file");
-        } else {
-            tracing::info!(
-                channel = %self.channel_name,
-                before = before,
-                after = processed.len(),
-                "Compacted processed comments"
-            );
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "processed-comments.txt")
+            .compact(processed, 2000)
+            .await;
     }
 
     /// Load seen issues from persistent storage.
     /// File format: one line per issue (`{number}:{labels}:{updated_at}`).
     pub(crate) async fn load_seen_issues(&self) -> HashSet<String> {
-        let file = self.state_dir.join("seen-issues.txt");
-        if !file.exists() {
-            return HashSet::new();
-        }
-        match tokio::fs::read_to_string(&file).await {
-            Ok(content) => {
-                let set: HashSet<String> = content
-                    .lines()
-                    .map(|line| line.trim().to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect();
-                tracing::debug!(
-                    channel = %self.channel_name,
-                    count = set.len(),
-                    "Loaded seen issues"
-                );
-                set
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to load seen issues, starting fresh"
-                );
-                HashSet::new()
-            }
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .load()
+            .await
     }
 
     /// Track a seen issue (append to file).
     /// Key format: `{number}:{labels}:{updated_at}`
     pub(crate) async fn track_seen_issue(&self, key: &str, seen: &mut HashSet<String>) {
-        if seen.insert(key.to_string()) {
-            let file = self.state_dir.join("seen-issues.txt");
-            use tokio::io::AsyncWriteExt;
-            if let Ok(mut f) = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file)
-                .await
-            {
-                let _ = f.write_all(format!("{key}\n").as_bytes()).await;
-            }
-
-            if seen.len() > 5000 {
-                self.compact_seen_issues(seen).await;
-            }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .insert(key, seen)
+            .await;
+        if seen.len() > 5000 {
+            self.compact_seen_issues(seen).await;
         }
     }
 
     /// Compact seen issues file by keeping only the latest entries.
     pub(crate) async fn compact_seen_issues(&self, seen: &mut HashSet<String>) {
-        if seen.len() <= 2000 {
-            return;
-        }
-
-        let mut entries: Vec<(u64, String)> = seen
-            .iter()
-            .map(|key| {
-                let number = key
-                    .split(':')
-                    .next()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (number, key.clone())
-            })
-            .collect();
-        entries.sort_unstable_by_key(|(number, _)| *number);
-        let keep_from = entries.len() - 2000;
-        let keep: HashSet<String> = entries[keep_from..]
-            .iter()
-            .map(|(_, key)| key.clone())
-            .collect();
-
-        let before = seen.len();
-        *seen = keep;
-
-        let file = self.state_dir.join("seen-issues.txt");
-        let content: String = seen.iter().map(|key| format!("{key}\n")).collect();
-        if let Err(e) = tokio::fs::write(&file, content).await {
-            tracing::warn!(error = %e, "Failed to compact seen issues file");
-        } else {
-            tracing::info!(
-                channel = %self.channel_name,
-                before = before,
-                after = seen.len(),
-                "Compacted seen issues"
-            );
-        }
+        crate::git_host::PersistentKeySet::new(&self.state_dir, "seen-issues.txt")
+            .compact(seen, 2000)
+            .await;
     }
 
     /// Load CI status tracking from persistent storage.

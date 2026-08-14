@@ -94,7 +94,7 @@ impl ChannelMatcher for GithubMatcher {
         // Within the reviewer group and within the non-reviewer group,
         // relative TOML order is preserved (stable sort).
         let mut ordered: Vec<&ChannelPattern> = patterns.iter().collect();
-        ordered.sort_by_key(|p| pattern_priority(p.role.as_deref()));
+        ordered.sort_by_key(|p| crate::git_host::pattern_priority(p.role.as_deref()));
 
         for pattern in ordered {
             if !pattern.enabled {
@@ -148,13 +148,6 @@ impl ChannelMatcher for GithubMatcher {
 ///
 /// The bucket spread (0 vs 255) leaves room to introduce intermediate roles
 /// later (e.g. CI bots) without renumbering everything.
-pub(crate) fn pattern_priority(role: Option<&str>) -> u8 {
-    match role {
-        Some(r) if r.eq_ignore_ascii_case("Reviewer") => 0,
-        _ => 255,
-    }
-}
-
 impl GithubMatcher {
     /// Check whether the GitHub-specific rules (github_type, labels, assignees) all match.
     ///
@@ -162,70 +155,6 @@ impl GithubMatcher {
     /// Within each rule, OR logic applies (any value in the list suffices).
     /// Rules that are `None` are considered matched (no constraint).
     fn rules_match(&self, rules: &PatternRules, message: &InboundMessage) -> bool {
-        // Check github_type rule
-        if let Some(ref allowed_types) = rules.github_type {
-            let msg_type = message
-                .metadata
-                .get("github_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !allowed_types
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(msg_type))
-            {
-                return false;
-            }
-        }
-
-        // Extract github_labels once for labels and exclude_labels checks
-        let msg_labels: Vec<String> = message
-            .metadata
-            .get("github_labels")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Check labels rule (delegates to LabelRule::matches for flat OR / nested AND-OR logic)
-        if let Some(ref label_rule) = rules.labels
-            && !label_rule.matches(&msg_labels)
-        {
-            return false;
-        }
-
-        // Check exclude_labels rule (OR logic: if ANY exclude label is present, pattern does not match)
-        if let Some(ref exclude_labels) = rules.exclude_labels {
-            let has_excluded = exclude_labels
-                .iter()
-                .any(|l| msg_labels.contains(&l.to_lowercase()));
-            if has_excluded {
-                return false;
-            }
-        }
-
-        // Check assignees rule (OR logic: match if ANY assignee on the issue/PR is in the rule list)
-        if let Some(ref allowed_assignees) = rules.assignees {
-            let msg_assignees: Vec<String> = message
-                .metadata
-                .get("github_assignees")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let has_match = allowed_assignees
-                .iter()
-                .any(|a| msg_assignees.contains(&a.to_lowercase()));
-            if !has_match {
-                return false;
-            }
-        }
-
-        true
+        crate::git_host::rules_match(rules, message, "github_")
     }
 }

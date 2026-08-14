@@ -46,7 +46,7 @@ and uses OpenCode to generate AI replies.
 > - `cargo clippy --workspace --all-targets -- -D warnings`（静态检查；同时编译所有 target，等价于 `cargo check` / `cargo build`）
 > - `cargo llvm-cov --workspace --all-targets`（运行所有测试并生成覆盖率报告，附带 60% 阈值检查）
 >
-> **提交 PR 前本地运行 `cargo check`**（快速编译信号，开发循环中先跑它确认能编译）。**禁止在本地运行慢速命令** `cargo build`、`cargo test`、`cargo clippy`、`cargo llvm-cov`、`cargo fmt -- --check`——开发机资源受限，本地跑它们既慢又浪费资源。完整验证以 CI 结果为准：push 到 PR 后 CI 自动运行，失败再修复重推。`cargo check` 会顺带刷新 `Cargo.lock`，改依赖时把它一起提交。
+> **提交 PR 前本地运行 `cargo check` 和 `cargo fmt -- --check`**（两者都快、不编译：`cargo check` 是编译信号，`cargo fmt -- --check` 是格式检查，开发循环中先跑它们确认）。**禁止在本地运行慢速命令** `cargo build`、`cargo test`、`cargo clippy`、`cargo llvm-cov`——开发机资源受限，本地跑它们既慢又浪费资源。完整验证以 CI 结果为准：push 到 PR 后 CI 自动运行，失败再修复重推。`cargo check` 会顺带刷新 `Cargo.lock`，改依赖时把它一起提交。
 
 1. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
 

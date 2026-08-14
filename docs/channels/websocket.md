@@ -193,6 +193,11 @@ JSON envelope over WebSocket:
 | Server→Client | `{"type":"patterns","patterns":["general","coding-help"]}` | Pattern list response |
 | Client→Server | `{"type":"subscribe","thread":"general"}` | Subscribe to thread replies |
 | Client→Server | `{"type":"message","thread":"general","text":"hello"}` | Send message |
+
+`message` frames accept two optional fields for channel-native identity:
+`sender` (display name, default `"user"`) and `sender_address` (canonical
+address, default the connection address). Bridge processes use them to
+carry the remote user's identity (e.g. a feishu user name / open_id).
 | Server→Client | `{"type":"reply","thread":"general","text":"AI reply..."}` | Broadcast reply |
 
 ## Architecture

@@ -1,4 +1,4 @@
-pub mod crypto;
+mod crypto;
 pub mod email;
 pub mod feishu;
 pub mod gitee;

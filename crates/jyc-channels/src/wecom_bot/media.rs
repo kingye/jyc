@@ -14,9 +14,7 @@
 
 use std::time::Duration;
 
-use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 use anyhow::{Context, Result};
-use base64::{Engine, alphabet, engine::GeneralPurpose};
 
 use jyc_types::MessageAttachment;
 
@@ -32,19 +30,6 @@ const DOWNLOAD_TIMEOUT_SECS: u64 = 30;
 
 /// AES block size in bytes (used for PKCS#7 padding).
 const AES_BLOCK_SIZE: usize = 16;
-
-// ─── Base64 Engine ────────────────────────────────────────────────
-
-/// Permissive base64 engine that allows non-zero trailing bits.
-///
-/// WeCom's aeskey may have non-zero trailing bits in base64 padding,
-/// which the standard strict decoder rejects.
-static PERMISSIVE_BASE64: GeneralPurpose = GeneralPurpose::new(
-    &alphabet::STANDARD,
-    base64::engine::GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true),
-);
-
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
 // ─── Public API ───────────────────────────────────────────────────
 
@@ -240,41 +225,9 @@ fn url_filename_hint(url: &str) -> Option<String> {
 /// - IV is the first 16 bytes of the decoded key.
 /// - PKCS#7 padding uses AES block size (16 bytes).
 pub fn decrypt_aes256cbc(ciphertext: &[u8], aeskey: &str) -> Result<Vec<u8>> {
-    let aeskey = aeskey.trim();
-    if aeskey.is_empty() {
-        anyhow::bail!("aeskey is empty");
-    }
-
-    // Add base64 padding if missing (WeCom sometimes omits trailing '=')
-    let padded_key = match aeskey.len() % 4 {
-        0 => aeskey.to_string(),
-        n => format!("{}{}", aeskey, "=".repeat(4 - n)),
-    };
-
-    let raw_key = PERMISSIVE_BASE64.decode(&padded_key).with_context(|| {
-        format!(
-            "failed to decode aeskey from base64 (len={}, padded_len={})",
-            aeskey.len(),
-            padded_key.len()
-        )
-    })?;
-
-    if raw_key.len() != 32 {
-        anyhow::bail!(
-            "aeskey decoded length is {}, expected 32 bytes (AES-256)",
-            raw_key.len()
-        );
-    }
-
-    let aes_key = &raw_key[..32];
-
-    let mut buf = ciphertext.to_vec();
-    let decrypted = Aes256CbcDec::new_from_slices(aes_key, &raw_key[..16])
-        .map_err(|e| anyhow::anyhow!("invalid AES key/iv length: {e:?}"))?
-        .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut buf)
-        .map_err(|e| anyhow::anyhow!("AES-256-CBC decryption failed: {e:?}"))?;
-
-    strip_pkcs7_padding(decrypted)
+    let (aes_key, iv) = crate::crypto::decode_aes256_key(aeskey)?;
+    let decrypted = crate::crypto::decrypt_aes256_cbc(&aes_key, &iv, ciphertext)?;
+    strip_pkcs7_padding(&decrypted)
 }
 
 /// Strip PKCS#7 padding from decrypted bytes.

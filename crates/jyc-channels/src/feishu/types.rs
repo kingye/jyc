@@ -98,7 +98,7 @@ pub enum FeishuEvent {
 // --- WebSocket event payload types ---
 //
 // These structs match the JSON payloads delivered by Feishu's WebSocket
-// long-connection (via openlark's LarkWsClient). The structure follows
+// long-connection (via openlark-client LarkWsClient). The structure follows
 // the actual Feishu API format, as seen in the openlark echo_bot example.
 
 /// Top-level envelope for Feishu WebSocket event payloads.

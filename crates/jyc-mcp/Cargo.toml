@@ -14,7 +14,7 @@ anyhow = "1"
 async-trait = "0.1"
 rmcp = { version = "3.1", features = ["server", "transport-io", "schemars"] }
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 base64 = "0.23"
 
 [dev-dependencies]

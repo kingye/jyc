@@ -3,10 +3,10 @@
 //! Supports any endpoint implementing the OpenAI `/chat/completions` API.
 //! Covers: DeepSeek, GPT, Groq, Together AI, etc.
 
+use super::sse::{Event, stream_sse};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest_eventsource::{Event, EventSource};
 use serde_json;
 use std::collections::VecDeque;
 
@@ -164,9 +164,8 @@ impl Provider for OpenAiCompatProvider {
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
 
-        // Use EventSource for proper SSE streaming (same as Anthropic provider)
-        let es =
-            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        // Use the in-process SSE stream (same as Anthropic provider)
+        let es = stream_sse(req);
 
         // Transform SSE events into our StreamEvent type
         let stream = futures::stream::unfold(
@@ -395,45 +394,18 @@ impl Provider for OpenAiCompatProvider {
 
         tracing::debug!(url = %url, model = %self.model, "Sending OpenAI-compatible request");
 
-        // Capture data needed to diagnose 4xx/5xx after the SSE source fails.
-        // EventSource's error string is just "Invalid status code: 400 Bad Request"
-        // and discards the response body. On the first stream error we issue one
-        // diagnostic POST with the same body and surface the body in the error.
-        let diag_url = url.clone();
-        let diag_body = body.clone();
-        let diag_api_key = self.api_key.clone();
-        let diag_user_agent = self.user_agent.clone();
-        let diag_client = self.client.clone();
-
-        let es =
-            EventSource::new(req).map_err(|e| anyhow::anyhow!("SSE connection failed: {e}"))?;
+        let es = stream_sse(req);
 
         let stream = futures::stream::unfold(
-            (
-                es,
-                OpenAiStreamState::default(),
-                Some((
-                    diag_client,
-                    diag_url,
-                    diag_body,
-                    diag_api_key,
-                    diag_user_agent,
-                )),
-            ),
-            |(mut es, mut state, mut diag)| async move {
+            (es, OpenAiStreamState::default()),
+            |(mut es, mut state)| async move {
                 loop {
                     if let Some(event) = state.pending_events.pop_front() {
-                        return Some((Ok(event), (es, state, diag)));
+                        return Some((Ok(event), (es, state)));
                     }
 
                     match es.next().await {
-                        Some(Ok(Event::Open)) => {
-                            // Keep diag alive — mid-stream errors (body decode
-                            // failure, hung connection, TCP reset) still benefit
-                            // from a diagnostic POST to capture the server's
-                            // error body.
-                            continue;
-                        }
+                        Some(Ok(Event::Open)) => continue,
                         Some(Ok(Event::Message(msg))) => {
                             let data = &msg.data;
                             if data.trim() == "[DONE]" {
@@ -442,7 +414,7 @@ impl Provider for OpenAiCompatProvider {
                                 }
                                 state.pending_events.push_back(StreamEvent::Done);
                                 if let Some(event) = state.pending_events.pop_front() {
-                                    return Some((Ok(event), (es, state, diag)));
+                                    return Some((Ok(event), (es, state)));
                                 }
                                 return None;
                             }
@@ -450,7 +422,7 @@ impl Provider for OpenAiCompatProvider {
                                 state.pending_events.extend(events);
                             }
                             if let Some(event) = state.pending_events.pop_front() {
-                                return Some((Ok(event), (es, state, diag)));
+                                return Some((Ok(event), (es, state)));
                             }
                         }
                         Some(Err(e)) => {
@@ -460,48 +432,21 @@ impl Provider for OpenAiCompatProvider {
                                     state.pending_events.push_back(event);
                                 }
                                 if let Some(event) = state.pending_events.pop_front() {
-                                    return Some((Ok(event), (es, state, diag)));
+                                    return Some((Ok(event), (es, state)));
                                 }
                                 return None;
                             }
-                            // First stream error: try to capture the HTTP body via
-                            // a diagnostic POST with the same body so the caller
-                            // sees the provider's actual error (validation message,
-                            // rate limit reason, etc.).
-                            let diagnosed = if let Some((client, url, body, api_key, user_agent)) =
-                                diag.take()
-                            {
-                                super::fetch_error_body(&client, &url, &body, |req| {
-                                    let mut req = req;
-                                    if let Some(key) = api_key.as_deref() {
-                                        req = req.header("authorization", format!("Bearer {key}"));
-                                    }
-                                    if let Some(ua) = user_agent.as_deref() {
-                                        req = req.header("user-agent", ua);
-                                    }
-                                    req
-                                })
-                                .await
-                            } else {
-                                None
-                            };
-                            let final_msg = match diagnosed {
-                                Some(diag) => {
-                                    format!(
-                                        "SSE stream error: {e} {}",
-                                        super::format_diag_suffix(&diag)
-                                    )
-                                }
-                                None => format!("SSE stream error: {e}"),
-                            };
-                            return Some((Err(anyhow::anyhow!(final_msg)), (es, state, diag)));
+                            return Some((
+                                Err(anyhow::anyhow!("SSE stream error: {e}")),
+                                (es, state),
+                            ));
                         }
                         None => {
                             if let Some(event) = flush_think_buffer(&mut state) {
                                 state.pending_events.push_back(event);
                             }
                             if let Some(event) = state.pending_events.pop_front() {
-                                return Some((Ok(event), (es, state, diag)));
+                                return Some((Ok(event), (es, state)));
                             }
                             return None;
                         }
@@ -982,7 +927,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn diagnostic_post_sends_custom_user_agent_on_error() {
+    async fn sse_error_embeds_response_body_on_4xx() {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -991,7 +936,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
                 "error": { "message": "bad request", "type": "invalid_request_error" }
             })))
-            .expect(2)
+            .expect(1) // only the SSE POST — the diagnostic re-POST is gone
             .mount(&server)
             .await;
 
@@ -1011,9 +956,24 @@ mod tests {
             .await
             .expect("complete_raw should return a stream");
 
-        while stream.next().await.is_some() {}
+        let mut found: Option<anyhow::Error> = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                found = Some(e);
+                break;
+            }
+        }
 
-        // wiremock will panic at drop if the request count expectation is not met.
+        let err = found.expect("expected an error from the SSE stream after 4xx");
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("400"), "expected status code, got: {msg}");
+        assert!(
+            msg.contains("bad request"),
+            "expected embedded response body, got: {msg}"
+        );
+
+        // wiremock verifies at drop that exactly 1 request was made — no
+        // diagnostic re-POST (the SSE client embeds the body directly).
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! per the route table in the bridge config. See `docs/plugin-architecture.md`.
 
 mod config;
+mod feishu;
 mod ws;
 
 use anyhow::Result;

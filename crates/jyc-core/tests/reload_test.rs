@@ -102,7 +102,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
         "test_channel".to_string(),
         jyc_types::ChannelConfig {
             channel_type: "email".to_string(),
-        pipe: None,
+            pipe: None,
             inbound: None,
             outbound: None,
             feishu: None,

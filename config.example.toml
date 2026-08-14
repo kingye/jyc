@@ -206,6 +206,12 @@ max_per_message = 10
 type = "feishu"
 workspace = "./feishu_workspace"
 #
+# Optional: pipe this channel into another (websocket) channel. When set,
+# inbound messages are matched by this channel's patterns (rules only),
+# the thread name is the derived chat name, template/model come from the
+# target channel's patterns, and replies are relayed back to feishu.
+# pipe = "local_dev"
+#
 [channels.feishu_bot.feishu]
 app_id = "cli_xxxxxxxxx"
 app_secret = "xxxxxxxxxxxx"

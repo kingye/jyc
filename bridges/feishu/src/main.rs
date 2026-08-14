@@ -5,6 +5,7 @@
 
 mod config;
 mod feishu;
+mod router;
 mod ws;
 
 use anyhow::{Context, Result};
@@ -13,9 +14,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// `(jyc channel, jyc thread) -> feishu chat_id` — the reply direction of
-/// the route table.
-type ReverseMap = Arc<std::sync::Mutex<HashMap<(String, String), String>>>;
+/// `(jyc channel, jyc thread) -> (feishu reply target, receive_id_type)` —
+/// the reply direction of the route table. `receive_id_type` is `"chat_id"`
+/// for groups and `"open_id"` for p2p.
+type ReverseMap = Arc<std::sync::Mutex<HashMap<(String, String), (String, String)>>>;
 /// `jyc channel -> WS sender` used to forward inbound messages.
 type ClientMap = Arc<std::sync::Mutex<HashMap<String, ws::ChannelClient>>>;
 
@@ -75,7 +77,9 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             while let Some(reply) = reply_rx.recv_reply().await {
                 let key = (channel.clone(), reply.thread.clone());
-                let Some(chat_id) = reverse.lock().unwrap().get(&key).cloned() else {
+                let Some((receive_id, receive_id_type)) =
+                    reverse.lock().unwrap().get(&key).cloned()
+                else {
                     tracing::warn!(
                         channel = %channel,
                         thread = %reply.thread,
@@ -83,8 +87,15 @@ async fn main() -> Result<()> {
                     );
                     continue;
                 };
-                if let Err(e) = client.send_text_message(&chat_id, &reply.text).await {
-                    tracing::error!(error = %e, chat_id = %chat_id, "failed to send reply to feishu");
+                let send = if receive_id_type == "open_id" {
+                    client
+                        .send_text_message_to_user(&receive_id, &reply.text)
+                        .await
+                } else {
+                    client.send_text_message(&receive_id, &reply.text).await
+                };
+                if let Err(e) = send {
+                    tracing::error!(error = %e, receive_id = %receive_id, "failed to send reply to feishu");
                 }
             }
             tracing::info!(channel = %channel, "reply task ended");
@@ -105,90 +116,55 @@ async fn main() -> Result<()> {
         let clients = clients.clone();
         let reverse = reverse.clone();
         move |message: InboundMessage| -> Result<()> {
-            let chat_name = message
-                .metadata
-                .get("chat_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let chat_id = message
-                .metadata
-                .get("chat_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let Some(route) = cfg.route(&chat_name) else {
-                tracing::debug!(chat_name = %chat_name, "no route for chat, dropping event");
+            let Some(forward) = router::forward_for(cfg, &message) else {
+                tracing::debug!(chat = %message.topic, "dropped event (no route or respond filter)");
                 return Ok(());
             };
 
-            // Respond filter: when the route declares mentions, forward only
-            // if one of them is @-mentioned (matches id or display name).
-            if let Some(required) = &route.mentions {
-                let mentioned: Vec<String> = message
-                    .metadata
-                    .get("mentions")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|m| {
-                                m.as_str()
-                                    .or_else(|| m.get("name").and_then(|n| n.as_str()))
-                                    .or_else(|| m.get("id").and_then(|i| i.as_str()))
-                            })
-                            .map(|s| s.to_lowercase())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if !required
-                    .iter()
-                    .any(|r| mentioned.contains(&r.to_lowercase()))
-                {
-                    tracing::debug!(chat_name = %chat_name, "not @-mentioned, dropping event");
-                    return Ok(());
-                }
-            }
-
-            let channel = route.channel.as_deref().unwrap_or(&cfg.channel);
-            let thread = &route.thread;
-
             // Remember where to send replies for this thread.
-            reverse
-                .lock()
-                .unwrap()
-                .insert((channel.to_string(), thread.to_string()), chat_id);
+            reverse.lock().unwrap().insert(
+                (forward.channel.clone(), forward.thread.clone()),
+                (forward.receive_id.clone(), forward.receive_id_type.clone()),
+            );
 
             let frame = ws::InboundFrame::message(
-                thread.clone(),
-                message.content.text.unwrap_or_default(),
-                Some(message.sender),
-                Some(message.sender_address),
+                forward.thread,
+                forward.text,
+                forward.sender,
+                forward.sender_address,
             );
             let senders = clients.lock().unwrap();
-            match senders.get(channel) {
+            match senders.get(&forward.channel) {
                 Some(c) => c.send_message(frame)?,
-                None => tracing::warn!(channel = %channel, "no jyc connection for channel"),
+                None => tracing::warn!(
+                    channel = %forward.channel,
+                    "no jyc connection for channel"
+                ),
             }
             Ok(())
         }
     };
 
     let on_thread_close = {
-        let cfg = &cfg;
         let clients = clients.clone();
-        move |derived_thread: String| -> Result<()> {
-            let Some((channel, thread)) = close_route_for(cfg, &derived_thread) else {
-                tracing::warn!(
-                    thread = %derived_thread,
-                    "no route for disbanded chat, skipping close"
-                );
-                return Ok(());
-            };
+        let reverse = reverse.clone();
+        move |chat_id: String| -> Result<()> {
+            // Close every jyc thread that was mapped to this disbanded chat.
+            let targets: Vec<(String, String)> = reverse
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, (cid, _))| *cid == chat_id)
+                .map(|((ch, th), _)| (ch.clone(), th.clone()))
+                .collect();
             let senders = clients.lock().unwrap();
-            if let Some(c) = senders.get(&channel) {
-                let frame = ws::InboundFrame::message(thread, "/close -y", None, None);
-                c.send_message(frame)?;
+            for (channel, thread) in targets {
+                if let Some(c) = senders.get(&channel) {
+                    let frame = ws::InboundFrame::message(thread, "/close -y", None, None);
+                    if let Err(e) = c.send_message(frame) {
+                        tracing::warn!(error = %e, "failed to send /close -y");
+                    }
+                }
             }
             Ok(())
         }
@@ -219,17 +195,4 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Resolve a disbanded chat to `(channel, thread)` by matching the
-/// websocket-derived thread name against the sanitized route chat names.
-fn close_route_for(cfg: &config::BridgeConfig, derived_thread: &str) -> Option<(String, String)> {
-    cfg.routes.iter().find_map(|r| {
-        (jyc_utils::helpers::sanitize_for_filesystem(&r.chat_name) == derived_thread).then(|| {
-            (
-                r.channel.clone().unwrap_or_else(|| cfg.channel.clone()),
-                r.thread.clone(),
-            )
-        })
-    })
 }

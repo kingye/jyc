@@ -302,30 +302,33 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let _tm = thread_manager.clone();
         let _channel_span = tracing::info_span!("in", ch = %channel_name);
 
-        crate::cli::serve::channels::spawn_inbound_monitor(
+        // NOTE: unsupported channel types are skipped inside spawn() (the
+        // original inline `continue`); keep this call the LAST statement of
+        // the loop body so the skip is equivalent.
+        let spawner = crate::cli::serve::channels::InboundSpawner {
             channel_type,
             channel_config,
-            channel_name.clone(),
+            channel_name: channel_name.clone(),
             workdir,
-            workspace_dir.clone(),
+            workspace_dir: workspace_dir.clone(),
             args,
             inbound_attachment_config,
-            thread_manager.clone(),
-            router.clone(),
+            thread_manager: thread_manager.clone(),
+            router: router.clone(),
             state_manager,
-            cancel.clone(),
+            cancel: cancel.clone(),
             cancel_child,
-            &mut tasks,
-            &mut wechat_sender_arc,
-            &mut wecom_bot_handle_arc,
-            &mut wecomkf_kf_client,
-            orchestrator.clone(),
+            tasks: &mut tasks,
+            wechat_sender_arc: &mut wechat_sender_arc,
+            wecom_bot_handle_arc: &mut wecom_bot_handle_arc,
+            wecomkf_kf_client: &mut wecomkf_kf_client,
+            orchestrator: orchestrator.clone(),
             channel_info,
-            config_for_spawn.clone(),
-            wecom_server.clone(),
-            &mut websocket_handlers,
-        )
-        .await?;
+            config_for_spawn: config_for_spawn.clone(),
+            wecom_server: wecom_server.clone(),
+            websocket_handlers: &mut websocket_handlers,
+        };
+        spawner.spawn().await?;
     }
 
     if tasks.is_empty() {

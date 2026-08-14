@@ -16,6 +16,9 @@ WORKDIR /build
 # Copy full source
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# bridges/ is a workspace member — copy it so the manifest resolves.
+# The bridge binaries themselves are NOT installed into the image yet.
+COPY bridges/ bridges/
 COPY config.example.toml ./
 
 # Build with cached cargo registry and target directory

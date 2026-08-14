@@ -158,7 +158,7 @@ impl WechatWebSocket {
 
                 // Outbound message to send
                 Some(outbound_msg) = outbound_rx.recv() => {
-                    if let Err(e) = write.send(Message::Text(outbound_msg)).await {
+                    if let Err(e) = write.send(Message::Text(outbound_msg.into())).await {
                         tracing::error!(error = %format!("{:#}", e), "Failed to send WeChat outbound message");
                         break;
                     }

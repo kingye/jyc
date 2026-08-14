@@ -83,8 +83,7 @@ impl FeishuWebSocket {
             .app_id(&self.config.app_id)
             .app_secret(&self.config.app_secret)
             .base_url(&self.config.base_url)
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build Feishu WebSocket config: {e}"))?;
+            .build();
 
         // 2. Create event payload channel
         let (payload_tx, mut payload_rx) = mpsc::unbounded_channel::<Vec<u8>>();

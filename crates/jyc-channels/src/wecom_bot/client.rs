@@ -271,7 +271,7 @@ impl WecomBotWsClient {
         .to_string();
         tracing::debug!(subscribe_json = %subscribe_json, "Sending WeCom Bot subscribe command");
         write
-            .send(Message::Text(subscribe_json))
+            .send(Message::Text(subscribe_json.into()))
             .await
             .context("Failed to send subscribe command")?;
 
@@ -375,7 +375,7 @@ impl WecomBotWsClient {
                             }
                         }
                         Some(json_str) = outbound_rx.recv() => {
-                            if write_clone.send(Message::Text(json_str)).await.is_err() {
+                            if write_clone.send(Message::Text(json_str.into())).await.is_err() {
                                 break;
                             }
                         }
@@ -394,7 +394,7 @@ impl WecomBotWsClient {
                         "headers": {"req_id": generate_req_id("ping")}
                     }).to_string();
                     tracing::trace!("Sending heartbeat ping");
-                    if heartbeat_tx.send(Message::Text(ping_json)).is_err() {
+                    if heartbeat_tx.send(Message::Text(ping_json.into())).is_err() {
                         tracing::warn!("Heartbeat channel closed");
                         break;
                     }

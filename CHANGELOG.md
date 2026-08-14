@@ -34,6 +34,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Second round of dependency upgrades.** tokio-tungstenite 0.30
+  (`Message::Text` now carries `Utf8Bytes`), rmcp 3.1.2 (`Content` →
+  `ContentBlock` model rename; protocol stays wire-compatible with
+  older rmcp peers via version negotiation), openlark 0.20 (Feishu SDK;
+  `open_lark::Config` path and infallible config build).
+
 - **Dependency upgrades.** Lockfile refreshed to latest compatible
   versions (tokio 1.53, rmcp 1.8, openlark 0.15.0) and major bumps
   applied: axum 0.8 (route syntax `:param` → `{param}`, ws `Message`

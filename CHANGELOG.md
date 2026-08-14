@@ -34,6 +34,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Build: release profile + dependency slimming.** New `[profile.release]`
+  (`opt-level = "s"`, `lto = "thin"`, `strip = "symbols"`; panic stays
+  unwind for the dashboard's `catch_unwind`) shrinks the release binary
+  (~47 MB → ~15 MB expected). `tokio-tungstenite` is pinned back to 0.29
+  to match axum 0.8 and openlark 0.20, collapsing the duplicate
+  `tokio-tungstenite`/`tungstenite` versions to one (`Utf8Bytes` API is
+  identical, so no code changes). `comrak` is built with
+  `default-features = false`, dropping its bundled CLI and
+  `syntect-onig` dependency chain.
+
 - **reqwest 0.13 + in-process SSE client.** `reqwest-eventsource`
   (which pinned reqwest 0.12) is replaced by a ~150-line SSE parser over
   `reqwest::bytes_stream()` in `jyc-agent`, deduplicating the tree to a

@@ -21,7 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 anyhow = "1"
 async-trait = "0.1"
-openlark = { version = "0.20", default-features = false, features = ["auth", "communication", "websocket"] }
+openlark-client = { version = "0.20", default-features = false, features = ["websocket"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 regex = "1"
 base64 = "0.23"

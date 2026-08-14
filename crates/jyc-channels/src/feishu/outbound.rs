@@ -121,7 +121,7 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
     }
 
     async fn connect(&self) -> Result<()> {
-        // Pre-warm: initialize the openlark client.
+        // Pre-warm: obtain the tenant token.
         // The SDK handles token acquisition internally when sending messages,
         // so we don't need to pre-fetch the token here.
         self.client

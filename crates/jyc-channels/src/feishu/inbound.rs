@@ -352,7 +352,6 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
         }
 
         let client = Arc::new(FeishuClient::new(self.config.clone()));
-        client.initialize().await.ok(); // Pre-warm for name lookups
 
         let mut ws = FeishuWebSocket::new_with_attachments(
             &self.config,

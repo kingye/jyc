@@ -1894,7 +1894,7 @@ dependencies = [
  "jyc-utils",
  "mail-parser",
  "md5",
- "openlark",
+ "openlark-client",
  "regex",
  "reqwest",
  "serde",
@@ -2506,44 +2506,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openlark"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "363204ee6274b3870dd2ba14c731b13ff3cd69b51bf8327cfe537f5d28489904"
-dependencies = [
- "chrono",
- "openlark-auth",
- "openlark-client",
- "openlark-communication",
- "openlark-core",
- "serde",
- "serde_json",
- "serde_repr",
-]
-
-[[package]]
-name = "openlark-auth"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb63e1e0367db93892af751a95829535ca811a1b32e3626aec2e84f3fae2fd7e"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "hex",
- "openlark-core",
- "rand 0.8.7",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "urlencoding",
- "uuid",
-]
-
-[[package]]
 name = "openlark-client"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2552,8 +2514,6 @@ dependencies = [
  "futures-util",
  "lark-websocket-protobuf",
  "log",
- "openlark-auth",
- "openlark-communication",
  "openlark-core",
  "prost",
  "serde",
@@ -2563,18 +2523,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "openlark-communication"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfda7aed2858a37f2647646970927d4451f43cfbd138ec00504b9e6cb2cf5a7f"
-dependencies = [
- "openlark-core",
- "serde",
- "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -3813,17 +3761,6 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "serde_repr"
-version = "0.1.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]

@@ -1,13 +1,19 @@
-//! Feishu API client wrapper.
+//! Feishu API client (hand-rolled, no openlark SDK).
 //!
-//! This module provides a high-level client for Feishu API interactions
-//! using the openlark SDK.
+//! Provides a high-level client for the Feishu (Lark) REST APIs that JYC
+//! needs: sending messages, uploading/downloading files & images, and
+//! resolving chat/user display names. Authentication uses the tenant
+//! access token, cached with an expiry.
+//!
+//! The WebSocket long-connection (real-time events) still uses the
+//! `openlark-client` SDK's `ws_client` (see `websocket.rs`).
 
 use anyhow::{Context, Result};
-use open_lark::prelude::*;
+use reqwest::multipart::{Form, Part};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -39,17 +45,18 @@ pub enum FeishuError {
     AuthError(String),
 }
 
-/// Feishu API client wrapper.
+/// Feishu API client.
 ///
-/// Wraps the openlark `Client` and provides high-level methods for
-/// sending messages and managing authentication.
+/// Uses raw `reqwest` calls with a cached tenant access token.
 pub struct FeishuClient {
     config: FeishuConfig,
-    client: Arc<RwLock<Option<Client>>>,
+    http: reqwest::Client,
     /// Cache for chat names (chat_id -> name). Rarely changes, avoids repeated API calls.
     chat_name_cache: Arc<RwLock<HashMap<String, String>>>,
     /// Cache for user display names (open_id -> name).
     user_name_cache: Arc<RwLock<HashMap<String, String>>>,
+    /// Cached tenant access token + expiry instant.
+    token_cache: Arc<RwLock<Option<(String, Instant)>>>,
 }
 
 impl FeishuClient {
@@ -57,59 +64,42 @@ impl FeishuClient {
     pub fn new(config: FeishuConfig) -> Self {
         Self {
             config,
-            client: Arc::new(RwLock::new(None)),
+            http: reqwest::Client::new(),
             chat_name_cache: Arc::new(RwLock::new(HashMap::new())),
             user_name_cache: Arc::new(RwLock::new(HashMap::new())),
+            token_cache: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Initialize the openlark client (lazy — only called on first use).
+    /// Pre-warm hook (kept for API compatibility).
+    ///
+    /// The hand-rolled client has nothing to initialize up front — the HTTP
+    /// client is built eagerly and the tenant token is fetched lazily on the
+    /// first authenticated call. Callers may call this for symmetry; it is a
+    /// no-op.
     pub async fn initialize(&self) -> Result<()> {
-        let mut client = self.client.write().await;
-        if client.is_none() {
-            let openlark_client = Client::builder()
-                .app_id(&self.config.app_id)
-                .app_secret(&self.config.app_secret)
-                .base_url(&self.config.base_url)
-                .build()
-                .map_err(|e| anyhow::anyhow!("Failed to build openlark client: {e}"))?;
-
-            tracing::info!(
-                app_id = %self.config.app_id,
-                "Feishu client initialized"
-            );
-            *client = Some(openlark_client);
-        }
         Ok(())
     }
 
-    /// Get the internal openlark client.
-    async fn get_client(&self) -> Result<Client> {
-        let client_guard = self.client.read().await;
-        client_guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!(FeishuError::NotInitialized))
-    }
-
-    /// Get the openlark core config (for use with IM APIs and AuthService).
-    async fn get_core_config(&self) -> Result<open_lark::Config> {
-        let client = self.get_client().await?;
-        Ok(client.api_config().clone())
-    }
-
-    /// Get the current tenant access token via direct HTTP request.
-    ///
-    /// Calls Feishu's internal app token endpoint directly instead of
-    /// using the openlark SDK (which returns empty responses for tenant tokens).
+    /// Get the current tenant access token (cached, refreshed on expiry).
     pub async fn get_token(&self) -> Result<String> {
-        let http = reqwest::Client::new();
+        // Serve from cache if still valid (with a 60s safety buffer).
+        {
+            let cache = self.token_cache.read().await;
+            if let Some((token, expires_at)) = cache.as_ref()
+                && Instant::now() < *expires_at
+            {
+                return Ok(token.clone());
+            }
+        }
+
         let url = format!(
             "{}/open-apis/auth/v3/tenant_access_token/internal",
             self.config.base_url.trim_end_matches('/')
         );
 
-        let resp = http
+        let resp = self
+            .http
             .post(&url)
             .json(&serde_json::json!({
                 "app_id": self.config.app_id,
@@ -133,10 +123,18 @@ impl FeishuClient {
             );
         }
 
-        body["tenant_access_token"]
+        let token = body["tenant_access_token"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Feishu token response missing tenant_access_token"))
+            .ok_or_else(|| anyhow::anyhow!("Feishu token response missing tenant_access_token"))?;
+
+        // Cache with expiry (default 7200s when absent), minus a safety buffer.
+        let expire_secs = body["expire"].as_u64().unwrap_or(7200);
+        let expires_at =
+            Instant::now() + std::time::Duration::from_secs(expire_secs.saturating_sub(60));
+        *self.token_cache.write().await = Some((token.clone(), expires_at));
+
+        Ok(token)
     }
 
     /// Send a message to a chat as an interactive card with markdown rendering.
@@ -148,14 +146,6 @@ impl FeishuClient {
         chat_id: &str,
         text: &str,
     ) -> Result<FeishuMessageResult> {
-        let core_config = self.get_core_config().await?;
-
-        use open_lark::communication::im::v1::message::create::{
-            CreateMessageBody, CreateMessageRequest,
-        };
-        use open_lark::communication::im::v1::message::models::ReceiveIdType;
-
-        // Build interactive card with markdown element
         let card_content = serde_json::json!({
             "elements": [
                 {
@@ -164,33 +154,79 @@ impl FeishuClient {
                 }
             ]
         });
-
-        let body = CreateMessageBody {
-            receive_id: chat_id.to_string(),
-            msg_type: "interactive".to_string(),
-            content: card_content.to_string(),
-            uuid: None,
-        };
-
-        let resp = CreateMessageRequest::new(core_config)
-            .receive_id_type(ReceiveIdType::ChatId)
-            .execute(body)
+        self.send_message(chat_id, "interactive", &card_content.to_string())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send Feishu message: {e}"))?;
+    }
 
-        // Extract message_id from response JSON
-        let message_id = resp
-            .get("data")
-            .and_then(|d| d.get("message_id"))
-            .and_then(|m| m.as_str())
+    /// Send a file message to a chat (after uploading via `upload_file()`).
+    pub async fn send_file_message(
+        &self,
+        chat_id: &str,
+        file_key: &str,
+    ) -> Result<FeishuMessageResult> {
+        let content = serde_json::json!({"file_key": file_key}).to_string();
+        self.send_message(chat_id, "file", &content).await
+    }
+
+    /// Send an image message to a chat (after uploading via `upload_image()`).
+    pub async fn send_image_message(
+        &self,
+        chat_id: &str,
+        image_key: &str,
+    ) -> Result<FeishuMessageResult> {
+        let content = serde_json::json!({"image_key": image_key}).to_string();
+        self.send_message(chat_id, "image", &content).await
+    }
+
+    /// Shared implementation for `POST /open-apis/im/v1/messages`.
+    async fn send_message(
+        &self,
+        chat_id: &str,
+        msg_type: &str,
+        content: &str,
+    ) -> Result<FeishuMessageResult> {
+        let token = self.get_token().await?;
+        let url = format!(
+            "{}/open-apis/im/v1/messages?receive_id_type=chat_id",
+            self.config.base_url.trim_end_matches('/')
+        );
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "receive_id": chat_id,
+                "msg_type": msg_type,
+                "content": content,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("Failed to send Feishu {msg_type} message"))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse Feishu send-message response")?;
+
+        let code = body["code"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!(
+                "Feishu send message failed: code={}, msg={}",
+                code,
+                body["msg"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        let message_id = body["data"]["message_id"]
+            .as_str()
             .unwrap_or("unknown")
             .to_string();
 
         tracing::info!(
             chat_id = %chat_id,
             message_id = %message_id,
-            text_len = text.len(),
-            "Feishu card message sent"
+            "Feishu {msg_type} message sent"
         );
 
         Ok(FeishuMessageResult { message_id })
@@ -199,7 +235,8 @@ impl FeishuClient {
     /// Get the display name of a group chat (cached).
     ///
     /// Calls `GET /open-apis/im/v1/chats/:chat_id` on cache miss.
-    /// Requires scope: `im:chat:readonly`.
+    /// Requires scope: `im:chat:readonly`. Degrades to `Ok(None)` on any
+    /// API error (logged) so callers can fall back to the raw chat id.
     pub async fn get_chat_name(&self, chat_id: &str) -> Result<Option<String>> {
         // Check cache first
         {
@@ -210,50 +247,63 @@ impl FeishuClient {
         }
 
         // Cache miss — call Feishu API
-        let core_config = self.get_core_config().await?;
-
-        use open_lark::communication::im::v1::chat::get::GetChatRequest;
-
-        let resp = GetChatRequest::new(core_config)
-            .chat_id(chat_id)
-            .execute()
-            .await;
-
-        match resp {
-            Ok(data) => {
-                tracing::debug!(chat_id = %chat_id, response = %data, "Chat info API response");
-                // extract_response_data already unwraps the outer "data" envelope,
-                // so `data` is the inner object directly (e.g., {"name": "...", ...})
-                let name = data
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.to_string());
-
-                if let Some(ref name) = name {
-                    let mut cache = self.chat_name_cache.write().await;
-                    cache.insert(chat_id.to_string(), name.clone());
-                    tracing::debug!(chat_id = %chat_id, name = %name, "Chat name cached");
-                } else {
-                    tracing::warn!(chat_id = %chat_id, "Chat info returned but name field missing");
-                }
-
-                Ok(name)
-            }
+        let token = match self.get_token().await {
+            Ok(t) => t,
             Err(e) => {
-                tracing::warn!(
-                    chat_id = %chat_id,
-                    error = %e,
-                    "Failed to get chat name, using fallback"
-                );
-                Ok(None)
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to get chat name, using fallback");
+                return Ok(None);
             }
+        };
+        let url = format!(
+            "{}/open-apis/im/v1/chats/{}",
+            self.config.base_url.trim_end_matches('/'),
+            chat_id
+        );
+
+        let resp = match self.http.get(&url).bearer_auth(token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to get chat name, using fallback");
+                return Ok(None);
+            }
+        };
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(chat_id = %chat_id, error = %e, "Failed to parse chat info, using fallback");
+                return Ok(None);
+            }
+        };
+
+        let code = body["code"].as_i64().unwrap_or(0);
+        if code != 0 {
+            tracing::warn!(
+                chat_id = %chat_id,
+                code,
+                msg = %body["msg"].as_str().unwrap_or("unknown"),
+                "Failed to get chat name, using fallback"
+            );
+            return Ok(None);
         }
+
+        let name = body["data"]["name"].as_str().map(|s| s.to_string());
+
+        if let Some(ref name) = name {
+            let mut cache = self.chat_name_cache.write().await;
+            cache.insert(chat_id.to_string(), name.clone());
+            tracing::debug!(chat_id = %chat_id, name = %name, "Chat name cached");
+        } else {
+            tracing::warn!(chat_id = %chat_id, "Chat info returned but name field missing");
+        }
+
+        Ok(name)
     }
 
     /// Get the display name of a user (cached).
     ///
     /// Calls `GET /open-apis/contact/v3/users/:user_id` on cache miss.
-    /// Requires scope: `contact:user.base:readonly`.
+    /// Requires scope: `contact:user.base:readonly`. Degrades to `Ok(None)`
+    /// on any API error (logged) so callers can fall back to the raw open_id.
     pub async fn get_user_name(&self, open_id: &str) -> Result<Option<String>> {
         // Check cache first
         {
@@ -264,39 +314,54 @@ impl FeishuClient {
         }
 
         // Cache miss — call Feishu API
-        let core_config = self.get_core_config().await?;
-
-        use open_lark::communication::contact::contact::v3::user::get::GetUserRequest;
-        use open_lark::communication::contact::contact::v3::user::models::UserIdType;
-
-        let resp = GetUserRequest::new(core_config)
-            .user_id(open_id)
-            .user_id_type(UserIdType::OpenId)
-            .execute()
-            .await;
-
-        match resp {
-            Ok(data) => {
-                // UserResponse has a typed `user: User` field with `name: Option<String>`
-                let name = data.user.name;
-
-                if let Some(ref name) = name {
-                    let mut cache = self.user_name_cache.write().await;
-                    cache.insert(open_id.to_string(), name.clone());
-                    tracing::debug!(open_id = %open_id, name = %name, "User name cached");
-                }
-
-                Ok(name)
-            }
+        let token = match self.get_token().await {
+            Ok(t) => t,
             Err(e) => {
-                tracing::warn!(
-                    open_id = %open_id,
-                    error = %e,
-                    "Failed to get user name (check contact:user.base:readonly scope)"
-                );
-                Ok(None)
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to get user name (check contact:user.base:readonly scope)");
+                return Ok(None);
             }
+        };
+        let url = format!(
+            "{}/open-apis/contact/v3/users/{}?user_id_type=open_id",
+            self.config.base_url.trim_end_matches('/'),
+            open_id
+        );
+
+        let resp = match self.http.get(&url).bearer_auth(token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to get user name (check contact:user.base:readonly scope)");
+                return Ok(None);
+            }
+        };
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(open_id = %open_id, error = %e, "Failed to parse user info, using fallback");
+                return Ok(None);
+            }
+        };
+
+        let code = body["code"].as_i64().unwrap_or(0);
+        if code != 0 {
+            tracing::warn!(
+                open_id = %open_id,
+                code,
+                msg = %body["msg"].as_str().unwrap_or("unknown"),
+                "Failed to get user name (check contact:user.base:readonly scope)"
+            );
+            return Ok(None);
         }
+
+        let name = body["data"]["user"]["name"].as_str().map(|s| s.to_string());
+
+        if let Some(ref name) = name {
+            let mut cache = self.user_name_cache.write().await;
+            cache.insert(open_id.to_string(), name.clone());
+            tracing::debug!(open_id = %open_id, name = %name, "User name cached");
+        }
+
+        Ok(name)
     }
 
     /// Upload a file to Feishu servers.
@@ -309,27 +374,55 @@ impl FeishuClient {
         filename: &str,
         file_type: &str,
     ) -> Result<String> {
-        let core_config = self.get_core_config().await?;
+        let token = self.get_token().await?;
         let file_bytes = tokio::fs::read(path)
             .await
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
-        use open_lark::communication::im::v1::file::create::{CreateFileBody, CreateFileRequest};
-
-        let body = CreateFileBody::new(file_type, filename);
-        let resp = CreateFileRequest::new(core_config)
-            .execute(body, file_bytes)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to upload file to Feishu: {e}"))?;
-
-        tracing::info!(
-            filename = %filename,
-            file_type = %file_type,
-            file_key = %resp.file_key,
-            "File uploaded to Feishu"
+        let url = format!(
+            "{}/open-apis/im/v1/files",
+            self.config.base_url.trim_end_matches('/')
         );
 
-        Ok(resp.file_key)
+        let form = Form::new()
+            .text("file_type", file_type.to_string())
+            .text("file_name", filename.to_string())
+            .part(
+                "file",
+                Part::bytes(file_bytes).file_name(filename.to_string()),
+            );
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .multipart(form)
+            .send()
+            .await
+            .context("Failed to upload file to Feishu")?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse Feishu file upload response")?;
+
+        let code = body["code"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!(
+                "Feishu file upload failed: code={}, msg={}",
+                code,
+                body["msg"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        let file_key = body["data"]["file_key"]
+            .as_str()
+            .context("Feishu file upload response missing file_key")?
+            .to_string();
+
+        tracing::info!(filename = %filename, file_type = %file_type, file_key = %file_key, "File uploaded to Feishu");
+
+        Ok(file_key)
     }
 
     /// Upload an image to Feishu servers.
@@ -337,107 +430,52 @@ impl FeishuClient {
     /// Returns the `image_key` for use in image messages.
     /// Requires scope: `im:resource`.
     pub async fn upload_image(&self, path: &Path, filename: &str) -> Result<String> {
-        let core_config = self.get_core_config().await?;
+        let token = self.get_token().await?;
         let image_bytes = tokio::fs::read(path)
             .await
             .with_context(|| format!("Failed to read image: {}", path.display()))?;
 
-        use open_lark::communication::im::v1::image::create::CreateImageRequest;
-        use open_lark::communication::im::v1::image::models::ImageType;
-
-        let resp = CreateImageRequest::new(core_config)
-            .image_type(ImageType::Message)
-            .file_name(filename)
-            .execute(image_bytes)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to upload image to Feishu: {e}"))?;
-
-        tracing::info!(
-            filename = %filename,
-            image_key = %resp.image_key,
-            "Image uploaded to Feishu"
+        let url = format!(
+            "{}/open-apis/im/v1/images",
+            self.config.base_url.trim_end_matches('/')
         );
 
-        Ok(resp.image_key)
-    }
-
-    /// Send a file message to a chat (after uploading via `upload_file()`).
-    pub async fn send_file_message(
-        &self,
-        chat_id: &str,
-        file_key: &str,
-    ) -> Result<FeishuMessageResult> {
-        let core_config = self.get_core_config().await?;
-
-        use open_lark::communication::im::v1::message::create::{
-            CreateMessageBody, CreateMessageRequest,
-        };
-        use open_lark::communication::im::v1::message::models::ReceiveIdType;
-
-        let body = CreateMessageBody {
-            receive_id: chat_id.to_string(),
-            msg_type: "file".to_string(),
-            content: serde_json::json!({"file_key": file_key}).to_string(),
-            uuid: None,
-        };
-
-        let resp = CreateMessageRequest::new(core_config)
-            .receive_id_type(ReceiveIdType::ChatId)
-            .execute(body)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send file message: {e}"))?;
-
-        let message_id = resp
-            .get("data")
-            .and_then(|d| d.get("message_id"))
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        Ok(FeishuMessageResult { message_id })
-    }
-
-    /// Send an image message to a chat (after uploading via `upload_image()`).
-    pub async fn send_image_message(
-        &self,
-        chat_id: &str,
-        image_key: &str,
-    ) -> Result<FeishuMessageResult> {
-        let core_config = self.get_core_config().await?;
-
-        use open_lark::communication::im::v1::message::create::{
-            CreateMessageBody, CreateMessageRequest,
-        };
-        use open_lark::communication::im::v1::message::models::ReceiveIdType;
-
-        let body = CreateMessageBody {
-            receive_id: chat_id.to_string(),
-            msg_type: "image".to_string(),
-            content: serde_json::json!({"image_key": image_key}).to_string(),
-            uuid: None,
-        };
-
-        let resp = CreateMessageRequest::new(core_config)
-            .receive_id_type(ReceiveIdType::ChatId)
-            .execute(body)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send image message: {e}"))?;
-
-        let message_id = resp
-            .get("data")
-            .and_then(|d| d.get("message_id"))
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        tracing::debug!(
-            "Sent image message: chat_id = {}, image_key = {}, message_id = {}",
-            chat_id,
-            image_key,
-            message_id
+        let form = Form::new().text("image_type", "message").part(
+            "file",
+            Part::bytes(image_bytes).file_name(filename.to_string()),
         );
 
-        Ok(FeishuMessageResult { message_id })
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .multipart(form)
+            .send()
+            .await
+            .context("Failed to upload image to Feishu")?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse Feishu image upload response")?;
+
+        let code = body["code"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            anyhow::bail!(
+                "Feishu image upload failed: code={}, msg={}",
+                code,
+                body["msg"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        let image_key = body["data"]["image_key"]
+            .as_str()
+            .context("Feishu image upload response missing image_key")?
+            .to_string();
+
+        tracing::info!(filename = %filename, image_key = %image_key, "Image uploaded to Feishu");
+
+        Ok(image_key)
     }
 
     /// Download a file from Feishu servers.
@@ -445,16 +483,26 @@ impl FeishuClient {
     /// Returns the file content as bytes.
     /// Validates that the response is actual file data, not an API error.
     pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>> {
-        let core_config = self.get_core_config().await?;
+        let token = self.get_token().await?;
+        let url = format!(
+            "{}/open-apis/im/v1/files/{}",
+            self.config.base_url.trim_end_matches('/'),
+            file_key
+        );
 
-        use open_lark::communication::im::v1::file::get::GetFileRequest;
-
-        let request = GetFileRequest::new(core_config).file_key(file_key);
-
-        let file_bytes = request
-            .execute()
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(token)
+            .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to download file from Feishu: {e}"))?;
+            .context("Failed to download file from Feishu")?;
+
+        let file_bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read file response body")?
+            .to_vec();
 
         // Validate response is actual file data, not a JSON error
         if file_bytes.starts_with(b"{\"code\"") || file_bytes.starts_with(b"{\"error\"") {
@@ -508,10 +556,10 @@ impl FeishuClient {
             )
         };
 
-        let http = reqwest::Client::new();
-        let resp = http
+        let resp = self
+            .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
+            .bearer_auth(token)
             .send()
             .await
             .context("Failed to download image from Feishu")?;

@@ -162,10 +162,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
+    /// Per-delivery attachment filename lists, as recorded by `MockOutbound`.
+    type AttachmentLog = Arc<Mutex<Vec<Vec<String>>>>;
+
     /// Mock outbound adapter that records delivered messages.
     struct MockOutbound {
         delivered: Arc<Mutex<Vec<String>>>,
-        delivered_attachments: Arc<Mutex<Vec<Vec<String>>>>,
+        delivered_attachments: AttachmentLog,
     }
 
     impl MockOutbound {
@@ -174,7 +177,7 @@ mod tests {
             (mock, delivered)
         }
 
-        fn new_with_attachments() -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<Vec<String>>>>) {
+        fn new_with_attachments() -> (Self, Arc<Mutex<Vec<String>>>, AttachmentLog) {
             let delivered = Arc::new(Mutex::new(Vec::new()));
             let delivered_attachments = Arc::new(Mutex::new(Vec::new()));
             (

@@ -52,6 +52,15 @@ pub(super) fn history_fingerprint(messages: &[ChatMessage], width: usize) -> Ren
     }
 }
 
+/// Whether a chat message belongs to the human side of the conversation.
+///
+/// The agent's replies carry `sender == "ai"`; every other sender — the chat
+/// pane's `"user"`, or a remote user's display name from a piped channel
+/// (e.g. feishu via `pipe`) — is the human side.
+fn is_user_message(sender: &str) -> bool {
+    sender != "ai"
+}
+
 /// Render the full message history to wrapped, styled lines: per-round
 /// top/bottom rules (time / duration), user→AI separators, and each
 /// message's markdown body word-wrapped to `width`. Pure in
@@ -65,7 +74,7 @@ pub(super) fn render_history_lines(messages: &[ChatMessage], width: usize) -> Ve
     let mut group_start_ts: Option<String> = None;
 
     for (idx, msg) in messages.iter().enumerate() {
-        let is_user = msg.sender == "user";
+        let is_user = is_user_message(&msg.sender);
         let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
         let prev_sender = if idx > 0 {
@@ -555,5 +564,28 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // ── Leader-key popup overlay (TUI-local commands) ──
     if let Some(ref leader) = app.chat.leader {
         leader.render(frame, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_pane_user_is_human_side() {
+        assert!(is_user_message("user"));
+    }
+
+    #[test]
+    fn piped_channel_sender_is_human_side() {
+        // A feishu-piped message carries the remote user's display name (or
+        // open_id), not "user" — it must still be the human side, not "AI:".
+        assert!(is_user_message("金晔"));
+        assert!(is_user_message("ou_c36ae8bf58a1d727fffd2289467fefce"));
+    }
+
+    #[test]
+    fn agent_reply_is_ai_side() {
+        assert!(!is_user_message("ai"));
     }
 }

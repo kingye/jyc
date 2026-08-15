@@ -4,6 +4,23 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Topic file download endpoint.** `GET /api/topics/{channel}/{topic}/files/{file...}`
+  serves topic-local files in place under the bearer middleware — unlike
+  `/exchange/...`, which stays reserved for agent-published files
+  (`jyc_publish_file`). Paths under `.jyc/` are rejected, including via
+  symlink escapes.
+
+- **Websocket replies broadcast attachments.** `reply` payloads gain an
+  optional `attachments` array (`filename`, `content_type`, `path`) whose
+  entries point at the new files endpoint.
+
+- **Feishu pipe relays reply attachments.** The pipe reply forwarder
+  downloads each broadcast attachment from the files endpoint, applies
+  `[attachments.outbound]` policy, and re-uploads it to the feishu chat
+  (image vs. file by content type).
+
 ### Changed
 
 - **Terminology: "thread" → "topic".** The conversation-workspace concept

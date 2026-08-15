@@ -28,6 +28,10 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
             get(api::get_topic_chat),
         )
         .route("/api/channels/{channel}/patterns", get(api::get_patterns))
+        .route(
+            "/api/topics/{channel}/{topic}/files/{*file_path}",
+            get(api::get_topic_file),
+        )
         .route("/api/topics", post(api::post_topic))
         .route("/api/config/reload", post(api::post_reload_config))
         .route("/ws", get(ws_bare))

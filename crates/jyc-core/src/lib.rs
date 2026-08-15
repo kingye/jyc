@@ -49,7 +49,7 @@ pub fn exchange_url(base: &str, channel: &str, topic: &str, name: &str, token: &
 /// Percent-encode a single URL path segment (RFC 3986 unreserved set kept,
 /// everything else %-encoded) so names with spaces, `#`, `%`, etc. produce
 /// working links. The axum `Path` extractor decodes it on serve.
-fn url_encode_segment(s: &str) -> String {
+pub fn url_encode_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

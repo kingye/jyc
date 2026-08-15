@@ -121,6 +121,7 @@ users who have no dashboard token.
 | GET    | `/api/topics/{channel}/{topic}/activity`    | Recent activity entries for a topic.              |
 | GET    | `/api/topics/{channel}/{topic}/chat`        | Recent chat messages for a topic.                 |
 | GET    | `/api/channels/{channel}/patterns`            | Pattern names configured for a channel.            |
+| GET    | `/api/topics/{channel}/{topic}/files/{file...}` | Topic-local file (bearer-gated; see §2.4.9).     |
 | POST   | `/api/topics`                                | Register a new ad-hoc topic.                      |
 | POST   | `/api/config/reload`                          | Reload the layered config (global + workdir).      |
 | GET    | `/exchange/{channel}/{topic}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
@@ -325,6 +326,36 @@ the `?token=` query parameter is the access control.
 | `403`  | Missing/wrong `token`, or no `exchange-token` for the topic. |
 | `400`  | Path contains non-normal components (`..`, `.`, absolute). |
 | `404`  | Unknown channel/topic, missing file, or path is a directory (no listing). |
+
+#### 2.4.9 `GET /api/topics/{channel}/{topic}/files/{file...}`
+
+Serves a file from the topic directory **in place** — no copy, no token
+file. Unlike `/exchange/...` (reserved for agent-published files via
+`jyc_publish_file`), this route IS gated by the bearer middleware (§2.2)
+and is meant for dashboard clients and pipe reply forwarders downloading
+reply attachments.
+
+Websocket reply broadcasts reference these files via
+`attachments[].path` (relative URL, already percent-encoded); prepend the
+inspect base URL to download.
+
+**Request:**
+
+```bash
+curl -H 'Authorization: Bearer <token>' \
+  'http://127.0.0.1:9876/api/topics/local_dev/jyc/files/report.pdf'
+```
+
+**Response (200):** raw file bytes with an extension-based `Content-Type`
+(same mapping as `/exchange/...`).
+
+**Errors:**
+
+| Status | Trigger |
+|--------|---------|
+| `403`  | Path under `.jyc/` (holds config, tokens, session state). |
+| `400`  | Path contains non-normal components (`..`, `.`, absolute). |
+| `404`  | Unknown channel/topic, missing file, directory, or a symlink resolving into `.jyc/`. |
 
 ### 2.5 Example session (curl + Python)
 

@@ -15,6 +15,52 @@ use jyc_types::{InboundMessage, OutboundAdapter};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Read attachment filenames from the reply-sent.flag signal file.
+/// Returns OutboundAttachment list, or None if no attachments.
+pub(crate) async fn read_signal_attachments(
+    signal_path: &Path,
+    topic_path: &Path,
+) -> Option<Vec<jyc_types::OutboundAttachment>> {
+    let content = tokio::fs::read_to_string(signal_path).await.ok()?;
+    let signal: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let filenames = signal.get("attachments")?.as_array()?;
+    if filenames.is_empty() {
+        return None;
+    }
+
+    let attachments: Vec<jyc_types::OutboundAttachment> = filenames
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|filename| {
+            let path = topic_path.join(filename);
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let content_type = match ext.as_str() {
+                "pdf" => "application/pdf",
+                "pptx" => {
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                }
+                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "txt" | "md" => "text/plain",
+                _ => "application/octet-stream",
+            };
+            jyc_types::OutboundAttachment {
+                filename: filename.to_string(),
+                path,
+                content_type: content_type.to_string(),
+            }
+        })
+        .collect();
+
+    Some(attachments)
+}
+
 /// Watch for pending message deliveries during SSE processing.
 ///
 /// MCP tools (like the question tool) write `reply.md` + `reply-sent.flag`
@@ -62,9 +108,17 @@ pub async fn watch_pending_deliveries(
             "Delivering pending message from MCP tool (background watcher)"
         );
 
-        // Deliver via outbound adapter (channel-agnostic)
+        // Deliver via outbound adapter (channel-agnostic), carrying any
+        // attachments the reply tool recorded in the signal file.
+        let attachments = read_signal_attachments(&signal_path, topic_path).await;
         if let Err(e) = outbound
-            .send_reply(message, &reply_text, topic_path, message_dir, None)
+            .send_reply(
+                message,
+                &reply_text,
+                topic_path,
+                message_dir,
+                attachments.as_deref(),
+            )
             .await
         {
             tracing::error!(error = %e, "Failed to deliver pending message");
@@ -111,16 +165,25 @@ mod tests {
     /// Mock outbound adapter that records delivered messages.
     struct MockOutbound {
         delivered: Arc<Mutex<Vec<String>>>,
+        delivered_attachments: Arc<Mutex<Vec<Vec<String>>>>,
     }
 
     impl MockOutbound {
         fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+            let (mock, delivered, _) = Self::new_with_attachments();
+            (mock, delivered)
+        }
+
+        fn new_with_attachments() -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<Vec<String>>>>) {
             let delivered = Arc::new(Mutex::new(Vec::new()));
+            let delivered_attachments = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     delivered: delivered.clone(),
+                    delivered_attachments: delivered_attachments.clone(),
                 },
                 delivered,
+                delivered_attachments,
             )
         }
     }
@@ -149,9 +212,16 @@ mod tests {
             reply_text: &str,
             _topic_path: &Path,
             _message_dir: &str,
-            _attachments: Option<&[OutboundAttachment]>,
+            attachments: Option<&[OutboundAttachment]>,
         ) -> anyhow::Result<SendResult> {
             self.delivered.lock().unwrap().push(reply_text.to_string());
+            self.delivered_attachments.lock().unwrap().push(
+                attachments
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|a| a.filename.clone())
+                    .collect(),
+            );
             Ok(SendResult {
                 message_id: "mock-id".to_string(),
             })
@@ -238,6 +308,57 @@ mod tests {
         // Verify cleanup
         assert!(!jyc_dir.join("reply-sent.flag").exists());
         assert!(!jyc_dir.join("reply.md").exists());
+    }
+
+    /// Attachments recorded in the signal file must reach the outbound
+    /// adapter — previously the watcher hardcoded `None` and dropped them.
+    #[tokio::test]
+    async fn test_delivers_attachments_from_signal() {
+        let tmp = tempdir().unwrap();
+        let topic_path = tmp.path().to_path_buf();
+        let message_dir = "2026-01-01_00-00-00";
+
+        let jyc_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(topic_path.join("report.pdf"), b"%PDF")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            jyc_dir.join("reply-sent.flag"),
+            r#"{"attachments": ["report.pdf"]}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(jyc_dir.join("reply.md"), "here you go")
+            .await
+            .unwrap();
+
+        let (outbound, delivered, delivered_atts) = MockOutbound::new_with_attachments();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let tp = topic_path.clone();
+        let handle = tokio::spawn(async move {
+            watch_pending_deliveries(
+                &tp,
+                message_dir,
+                &test_message(),
+                &outbound,
+                cancel_clone,
+                None,
+                "test",
+            )
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        cancel.cancel();
+        let _ = handle.await;
+
+        assert_eq!(delivered.lock().unwrap().len(), 1);
+        let atts = delivered_atts.lock().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0], vec!["report.pdf".to_string()]);
     }
 
     #[tokio::test]

@@ -28,7 +28,7 @@ use crate::command::template_handler::TemplateCommandHandler;
 use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
-use crate::pending_delivery::watch_pending_deliveries;
+use crate::pending_delivery::{read_signal_attachments, watch_pending_deliveries};
 use crate::topic_json::TopicJson;
 use jyc_types::{InboundMessage, OutboundAdapter, QueueItem};
 
@@ -653,52 +653,6 @@ async fn update_progress_indicator(
             _ = cancel.cancelled() => break,
         }
     }
-}
-
-/// Read attachment filenames from the reply-sent.flag signal file.
-/// Returns OutboundAttachment list, or None if no attachments.
-async fn read_signal_attachments(
-    signal_path: &std::path::Path,
-    topic_path: &std::path::Path,
-) -> Option<Vec<jyc_types::OutboundAttachment>> {
-    let content = tokio::fs::read_to_string(signal_path).await.ok()?;
-    let signal: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-    let filenames = signal.get("attachments")?.as_array()?;
-    if filenames.is_empty() {
-        return None;
-    }
-
-    let attachments: Vec<jyc_types::OutboundAttachment> = filenames
-        .iter()
-        .filter_map(|v| v.as_str())
-        .map(|filename| {
-            let path = topic_path.join(filename);
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let content_type = match ext.as_str() {
-                "pdf" => "application/pdf",
-                "pptx" => {
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                }
-                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "txt" | "md" => "text/plain",
-                _ => "application/octet-stream",
-            };
-            jyc_types::OutboundAttachment {
-                filename: filename.to_string(),
-                path,
-                content_type: content_type.to_string(),
-            }
-        })
-        .collect();
-
-    Some(attachments)
 }
 
 /// Read skills from topic's .jyc/skills.json file.

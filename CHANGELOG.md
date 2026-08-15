@@ -4,6 +4,16 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Terminology: "topic" → "topic".** The conversation-workspace concept
+  (formerly "topic") is now "topic" everywhere — `TopicManager`,
+  `topic_name`/`topic_path`/`topic_prefix`, the WebSocket `topic` field,
+  the `pipe = { channel, topic }` mapping, `.jyc/topic-name`, and all docs —
+  to avoid confusion with OS topics. The email `topic_refs` field became
+  `references` (it maps to the `References` header). A one-time migration
+  renames existing `.jyc/topic-name` files to `.jyc/topic-name`.
+
 ### Fixed
 
 - **Chat pane renders piped-channel messages on the human side.** The chat
@@ -15,11 +25,11 @@ All notable changes to JYC will be documented in this file.
 ### Changed
 
 - **Channel pattern `pipe` now takes an explicit mapping**
-  (`pipe = { channel = "local_dev", thread = "jyc" }` instead of a bare
+  (`pipe = { channel = "local_dev", topic = "jyc" }` instead of a bare
   target channel). Matching messages are re-targeted to the target
-  channel/thread and routed through the target's own `MessageRouter` —
+  channel/topic and routed through the target's own `MessageRouter` —
   the exact same path as a chat-pane message — so the target pattern's
-  `thread_path`, template, skills and model apply identically; replies
+  `topic_path`, template, skills and model apply identically; replies
   are relayed back to this channel's users. Patterns without `pipe`
   keep routing normally, so a channel can mix both. The former
   `pipe = "<channel>"` string form is replaced by this mapping.
@@ -41,18 +51,18 @@ All notable changes to JYC will be documented in this file.
 
 - **Independent chat-pane visibility toggles.** New leader-key actions
   in the dashboard chat screen: `Ctrl+P s` toggles the bottom status
-  bar, `Ctrl+P i` toggles the thread info pane. Zen mode (`Ctrl+P z`)
-  now snapshots all aux panes (activity, thread info, status bar,
+  bar, `Ctrl+P i` toggles the topic info pane. Zen mode (`Ctrl+P z`)
+  now snapshots all aux panes (activity, topic info, status bar,
   explorer) on entry and restores the exact pre-zen state on exit,
   instead of only restoring the info pane.
 
 - **`/exchange` command.** Shows the shareable URLs of files already
-  published in the current thread, one plain-text `filename: url` line per
+  published in the current topic, one plain-text `filename: url` line per
   file (no header, no markdown, so links copy-paste cleanly). `/exchange
   <filename>` narrows the output to a single file. The token is read, never
-  created, so listing a thread that published nothing cannot grant access.
-  Links use the thread's registered name, which differs from its directory
-  basename for shared-repo and custom-`thread_path` threads. (#520)
+  created, so listing a topic that published nothing cannot grant access.
+  Links use the topic's registered name, which differs from its directory
+  basename for shared-repo and custom-`topic_path` topics. (#520)
 
 ### Changed
 
@@ -111,38 +121,38 @@ All notable changes to JYC will be documented in this file.
   `wrap_styled_lines` helper instead of inside the renderer. (#384)
 
 - **Keypress refocus works from every chat pane, consuming the key.**
-  Pressing a key while a chat pane (message area, thread info,
+  Pressing a key while a chat pane (message area, topic info,
   activity, explorer) is focused returns focus to the input; the key is
   consumed, so no stray characters (e.g. `i` in Insert mode) land in
   the input field. Pane-local keys (`j`/`k`/`g`/`G`/arrows/`Enter`)
   are unchanged. Esc still does not leave the info/activity panes (use
   Tab or the leader). (#527, #528)
 
-- **Per-thread exchange file publishing.** A new built-in agent tool
-  `jyc_publish_file` copies (or moves, with `move: true`) a thread-local
-  file into `<thread>/.jyc/exchange/` and returns a shareable URL served by
-  the inspect server at `GET /exchange/<channel>/<thread>/<name>?token=...`.
-  Links are guarded by a per-thread 256-bit token
-  (`<thread>/.jyc/exchange-token`) created on first publish — the `/exchange/*`
+- **Per-topic exchange file publishing.** A new built-in agent tool
+  `jyc_publish_file` copies (or moves, with `move: true`) a topic-local
+  file into `<topic>/.jyc/exchange/` and returns a shareable URL served by
+  the inspect server at `GET /exchange/<channel>/<topic>/<name>?token=...`.
+  Links are guarded by a per-topic 256-bit token
+  (`<topic>/.jyc/exchange-token`) created on first publish — the `/exchange/*`
   route is deliberately not gated by the dashboard bearer middleware so
   links work for end users. `/reset` and `/new` remove the published files and the
   token, invalidating previously shared links. The link base URL is
   configurable via the new `[inspect] base_url` setting
   (fallback: `http://<inspect.bind>`). (#519)
 
-- **Show the selected thread's git branch in the TUI.** The dashboard
-  thread info pane, chat thread info pane, and chat input header line
+- **Show the selected topic's git branch in the TUI.** The dashboard
+  topic info pane, chat topic info pane, and chat input header line
   (`╭─ build · local_dev · pattern`) now include the current branch of
-  the thread's working directory when it is a git repo. The branch is
-  resolved by the inspect server by reading `<thread_path>/.git/HEAD`
-  (or `<thread_path>/repo/.git/HEAD` for the shared-repo layout) and
-  included on `ThreadSummary.branch` and `ThreadInfo.branch`. Threads
-  whose `thread_path` is not a git repo (most chat-channel threads)
+  the topic's working directory when it is a git repo. The branch is
+  resolved by the inspect server by reading `<topic_path>/.git/HEAD`
+  (or `<topic_path>/repo/.git/HEAD` for the shared-repo layout) and
+  included on `TopicSummary.branch` and `TopicInfo.branch`. Topics
+  whose `topic_path` is not a git repo (most chat-channel topics)
   simply omit the branch segment. (#512)
 
 - **Show files changed on the selected branch in the chat info pane.**
-  When the selected thread's working directory is a git repo, the chat
-  thread info pane now renders a separated `Files (N):` section at the
+  When the selected topic's working directory is a git repo, the chat
+  topic info pane now renders a separated `Files (N):` section at the
   end (after `Cost:` and any transient `⏳ AI thinking...` line). The
   section lists every changed file one per line; when the list is
   taller than the pane, the pane scrolls (Tab cycles focus to it,
@@ -154,7 +164,7 @@ All notable changes to JYC will be documented in this file.
   tree (modified or staged but not committed) are rendered in
   **yellow** — orthogonal to the kind, so e.g. an added-then-edited
   file shows as `+ path (yellow)`. Backed by
-  `ThreadSummary.changed_files` and `ThreadInfo.changed_files` — now
+  `TopicSummary.changed_files` and `TopicInfo.changed_files` — now
   `Vec<{path, uncommitted: bool, change: ChangeKind}>` resolved
   server-side from two `git diff` invocations (`--name-status
   main...HEAD` ∪ `--name-only HEAD`), unioned and sorted
@@ -167,14 +177,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **Chat screen shows thread info + status bar by default.** The
-  dashboard chat screen no longer starts in zen mode: the thread info
+- **Chat screen shows topic info + status bar by default.** The
+  dashboard chat screen no longer starts in zen mode: the topic info
   pane and status bar are visible on entry. Zen mode is now opt-in via
   `Ctrl+P z`.
 
 - **Branch resolution moved server-side.** The CLI no longer reads
   `.git/HEAD` directly — the inspect server resolves it on every
-  `list_threads` call and ships it on the wire. This enables the
+  `list_topics` call and ships it on the wire. This enables the
   dashboard to connect to a remote inspect server and still display
   the branch. Old clients/servers (pre-this-field) continue to work:
   `branch` is `#[serde(default)]` so absent values become `None` and
@@ -194,17 +204,17 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
-- **`jyc_send_to_thread` erased the target thread's pattern identity.**
-  Injected messages carried an empty `pattern_name`, and the thread worker
+- **`jyc_send_to_topic` erased the target topic's pattern identity.**
+  Injected messages carried an empty `pattern_name`, and the topic worker
   wrote it to `.jyc/pattern` unconditionally — the dashboard chat header
-  lost the pattern segment and Thread Info showed `Pattern: -` (and
+  lost the pattern segment and Topic Info showed `Pattern: -` (and
   pattern-level model overrides were skipped) until a manual message
   re-matched the pattern. The worker now only writes `.jyc/pattern` for
-  non-empty pattern names, and `jyc_send_to_thread` resolves the pattern
-  named after the target thread so injected messages carry the real
+  non-empty pattern names, and `jyc_send_to_topic` resolves the pattern
+  named after the target topic so injected messages carry the real
   `pattern_name`, template/role metadata, attachment config and
-  `live_injection` flag, and the pattern's custom `thread_path` — newly
-  auto-created threads now land in the configured directory instead of
+  `live_injection` flag, and the pattern's custom `topic_path` — newly
+  auto-created topics now land in the configured directory instead of
   the default workspace. (#542)
 
 - **Periodic input freeze from the inline overview poll.** The dashboard
@@ -251,8 +261,8 @@ All notable changes to JYC will be documented in this file.
 - **`/cancel` left the dashboard stuck at "AI thinking..." forever.** A
   cancel that landed while an LLM call was in flight returned an error out
   of the agent loop, skipping the post-loop `ProcessingCompleted` event —
-  the only signal the inspect server uses to clear its per-thread
-  `is_processing` flag. The thread kept reporting `Processing`, the chat
+  the only signal the inspect server uses to clear its per-topic
+  `is_processing` flag. The topic kept reporting `Processing`, the chat
   progress line kept ticking, and the last activity entry read
   `ERROR: cancelled during LLM call`. A cancel during an LLM call is now a
   normal loop exit (not an error), and the worker publishes
@@ -288,7 +298,7 @@ All notable changes to JYC will be documented in this file.
   - §2.4.7: documented the missing 422 `failed to load config` error
     raised when the layered config fails to load.
   - §3.3: split the `message` row to show the asymmetry — the
-    dashboard-side `ThreadProxyHandler` ignores a payload `thread`
+    dashboard-side `TopicProxyHandler` ignores a payload `topic`
     field (URL is the only source); the WS channel adapter accepts
     it and lets it override the URL.
   - §3.4.1: corrected the `is_internal` filtering claim — internal
@@ -296,11 +306,11 @@ All notable changes to JYC will be documented in this file.
     and the WebSocket `activity` event, not just REST.
   - §3.4: added the missing `loop_tick` event (1 Hz wall-clock tick
     for the dashboard's live-duration ticker).
-  - §4.3: `ThreadInfo` / `ThreadSummary` table now lists the actual
+  - §4.3: `TopicInfo` / `TopicSummary` table now lists the actual
     fields (`context_input_tokens`, `total_input_tokens`,
     `total_cache_hit_tokens`, `total_cache_creation_tokens`,
     `branch`, `changed_files`, `cost`) instead of the stale subset.
-  - §4.4: added `ThreadCost`.
+  - §4.4: added `TopicCost`.
 
 - **Chat input header regains model and context-window percentage.**
   Removing the `jyc ai v{}` chip in #512 also dropped the model name
@@ -336,9 +346,9 @@ All notable changes to JYC will be documented in this file.
     only on Anthropic sessions and the new "Cache create" row shows
     writes; non-Anthropic sessions show a single "Cache hits" row
     as before.
-  - `ThreadSummary` / `ThreadInfo` / the inspect protocol gain
+  - `TopicSummary` / `TopicInfo` / the inspect protocol gain
     `total_cache_creation_tokens: Option<u64>`, surfaced in the chat
-    info pane and dashboard thread info area as a new
+    info pane and dashboard topic info area as a new
     "Cache create: N" row that only renders when the running total
     is non-zero (= only for Anthropic).
   - Per-provider wiring: the Anthropic provider emits
@@ -355,7 +365,7 @@ All notable changes to JYC will be documented in this file.
   inflate the read-bucket display.
 
 - **OAuth2 client_credentials for remote MCP.** Remote MCP servers in
-  `[[mcps]]` (global, workdir, or thread overlay) now accept an optional
+  `[[mcps]]` (global, workdir, or topic overlay) now accept an optional
   `oauth = { client_id, client_secret, token_endpoint, scopes? }` block.
   When set, the agent POSTs `grant_type=client_credentials` to
   `token_endpoint` at MCP connect time and uses the returned
@@ -391,12 +401,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
-- **Chat pane for non-WebSocket threads no longer drops typed messages.**
-  Opening a github/email/etc. thread in the dashboard chat pane used the
+- **Chat pane for non-WebSocket topics no longer drops typed messages.**
+  Opening a github/email/etc. topic in the dashboard chat pane used the
   legacy detail mode, which never opened a WebSocket connection — typed
   input (including `/reset` and other slash commands) was echoed locally
-  and silently dropped, never reaching the server. All threads now open
-  over the unified `/ws/<channel>/<thread>` endpoint, and the dead
+  and silently dropped, never reaching the server. All topics now open
+  over the unified `/ws/<channel>/<topic>` endpoint, and the dead
   detail-mode code is removed.
 
 - **WeCom progress updater no longer leaks on agent errors.** The agent
@@ -432,15 +442,15 @@ All notable changes to JYC will be documented in this file.
   and inspect-broadcast events were dropped silently (debug-only). Both
   paths now log a warning so dropped live messages can be diagnosed. (#508)
 
-- **Thread-level `${VAR}` expansion.** `<thread>/.jyc/config.toml` now
+- **Topic-level `${VAR}` expansion.** `<topic>/.jyc/config.toml` now
   expands `${ENV_VAR}` references in `[agent]` model overrides and
   `[[mcps]]` fields, matching the behavior of L1 (global) and L2 (workdir)
-  configs. Previously, the thread-level loader bypassed `expand_env_vars`
+  configs. Previously, the topic-level loader bypassed `expand_env_vars`
   and stored `${VAR}` as a literal string in the deserialized
-  `ThreadConfig`, causing confusing runtime errors when env-driven model
+  `TopicConfig`, causing confusing runtime errors when env-driven model
   or MCP overrides failed to resolve. The shared `parse_and_deserialize`
   helper now backs all three config loaders (L1, L2, L3), eliminating
-  duplication and closing the thread-level gap.
+  duplication and closing the topic-level gap.
 
 ### Added
 
@@ -451,7 +461,7 @@ All notable changes to JYC will be documented in this file.
   slow LLM stream, retry backoff) when no iteration has produced a
   `ProcessingProgress` event yet. The ticker appears in three places:
 
-  - The dashboard's per-thread Details panel (Status chip in
+  - The dashboard's per-topic Details panel (Status chip in
     `crates/jyc-cli/src/cli/dashboard/mod.rs`).
   - The chat-mode info pane (`⏳ AI thinking...` line).
   - The chat progress line (in-flight activity entry / "⏳ AI is
@@ -461,7 +471,7 @@ All notable changes to JYC will be documented in this file.
     during silent work); the right is the live ticker (1 Hz, fresh). When
     they diverge, the loop is in a long silent stretch.
 
-  Implementation: new `ThreadEvent::LoopTick { elapsed_ms }` variant emitted
+  Implementation: new `TopicEvent::LoopTick { elapsed_ms }` variant emitted
   by a background `tokio` task spawned at loop start; routed by the inspect
   server as `is_internal` (no activity.jsonl pollution) and broadcast over
   WebSocket as `{"type":"loop_tick",...}`; consumed by the dashboard into
@@ -474,7 +484,7 @@ All notable changes to JYC will be documented in this file.
 - **System temp dir always within the tool boundary.** `std::env::temp_dir()` is
   now accepted by both the read and the write path check, so tools have scratch
   space without per-pattern `access` configuration. Previously every pattern had
-  to repeat the same `access.write` entry, and threads with no matched pattern
+  to repeat the same `access.write` entry, and topics with no matched pattern
   could not be granted access at all.
 
   Note the system temp dir is shared and world-writable, so other processes' temp
@@ -496,9 +506,9 @@ All notable changes to JYC will be documented in this file.
   object (the API rejects the latter).
 
   Tools and the system prompt keep separate breakpoints rather than sharing
-  one: the tools array is identical across every thread, while the system
-  prompt varies per thread (working directory, skills, `AGENTS.md`), so a
-  tools-only prefix stays reusable between threads.
+  one: the tools array is identical across every topic, while the system
+  prompt varies per topic (working directory, skills, `AGENTS.md`), so a
+  tools-only prefix stays reusable between topics.
 
   Caching is always on and needs no configuration. Prompts below the model's
   minimum cacheable length (1024 tokens for Opus/Sonnet, 2048 for Haiku) are
@@ -512,9 +522,9 @@ All notable changes to JYC will be documented in this file.
 - **User-defined slash commands.** `config.toml` accepts `[[commands]]`
   entries, each declaring a `name`, `description`, an optional `mode`
   (`plan`/`build`), an optional `skills` list, and a `user_prompt`.
-  Invoking `/<name>` switches the thread mode, names the skills the agent
+  Invoking `/<name>` switches the topic mode, names the skills the agent
   should use, and appends `user_prompt` to the message body — so a single
-  command can put the thread in plan mode, point the agent at
+  command can put the topic in plan mode, point the agent at
   `pr-review`, and hand it the review instructions.
 
   Custom commands appear in `/?` and the dashboard command popup
@@ -549,12 +559,12 @@ All notable changes to JYC will be documented in this file.
   or errors out, and bills each call at its own rate when the model
   changes mid-round.
 
-  Two figures appear in the dashboard and chat **Thread Info** panes as
+  Two figures appear in the dashboard and chat **Topic Info** panes as
   `Cost: ¥0.0521 session · ¥1.3057 today`:
   - **session** — accumulated in `session_cost` in
     `.jyc/agent-session.json`; resets with the session (context
     auto-reset, `/reset`, or switching to a smaller-context model).
-  - **today** — durable UTC-day total from the new per-thread ledger at
+  - **today** — durable UTC-day total from the new per-topic ledger at
     `.jyc/bill-YYYY-MM-DD.jsonl`, one line per call, never reset,
     rotated, or truncated. Each line stores the token counts alongside
     the cost, so entries stay auditable and a corrected rate can be
@@ -594,11 +604,11 @@ All notable changes to JYC will be documented in this file.
   accumulates per-call input tokens and passes the running total
   into `persist_tokens`; on auto-reset the counter zeros out alongside
   `context_input_tokens` and `total_output_tokens`. Visible in the
-  thread info pane (chat) and the dashboard thread info area as a
+  topic info pane (chat) and the dashboard topic info area as a
   new `Total input: N` row. (#490)
 
 - **Prompt-cache hit tracking (`total_cache_hit_tokens`).** New
-  accumulated field on `SessionState`, `ThreadInfo`, and `ThreadSummary`
+  accumulated field on `SessionState`, `TopicInfo`, and `TopicSummary`
   that sums every LLM call's prompt-cache-hit tokens across the
   session — the portion of input the provider served from its prompt
   cache rather than re-billing as fresh input. Each provider's
@@ -608,53 +618,53 @@ All notable changes to JYC will be documented in this file.
   root (Kimi) or under `prompt_tokens_details` (OpenAI / 火山引擎 /
   MiniMax), or `cache_read_input_tokens + cache_creation_input_tokens`
   at root (Anthropic). New `provider::usage::extract_cache_hit_tokens`
-  helper centralizes the lookup. Visible in the chat thread info pane
-  and the dashboard thread info area as a new `Cache hits: N` row.
+  helper centralizes the lookup. Visible in the chat topic info pane
+  and the dashboard topic info area as a new `Cache hits: N` row.
   Not shown in the dashboard overview list (the `Context` column is
   already tight and this is a session-level analytic). Zeros on
   auto-reset alongside the other `total_*` counters.
 
-- **Per-thread MCP overrides.** `<thread>/.jyc/config.toml` now accepts
+- **Per-topic MCP overrides.** `<topic>/.jyc/config.toml` now accepts
   an optional `[[mcps]]` block in addition to the existing `[agent]`
-  model overrides. Default merge is **additive** — thread MCPs are
-  unioned with the pattern → channel → global MCPs and a thread MCP with
+  model overrides. Default merge is **additive** — topic MCPs are
+  unioned with the pattern → channel → global MCPs and a topic MCP with
   the same `name` wins. Set `mcps_replace = true` to fully replace the
   inherited set (mirrors how `ChannelPattern.mcps` already overrides
   channel-level MCPs). Useful for one-off MCPs (local-only servers,
-  per-thread remote endpoints) without polluting the global config.
-  Implementation: `jyc_types::apply_thread_mcp_overlay` (pure helper,
+  per-topic remote endpoints) without polluting the global config.
+  Implementation: `jyc_types::apply_topic_mcp_overlay` (pure helper,
   unit-tested) wired into `JycAgentService::build_tool_registry`. The
   `mcps_replace` field is a `bool` rather than an extensible enum to
   keep the schema minimal; if a second merge mode (e.g. prepend) is
   added later, the field will need to be renamed rather than gain a
   new variant.
 
-- **Per-thread MCP load log.** Every `process()` invocation now emits a
-  structured `INFO Resolved MCP servers for thread` line with the
-  channel/thread/pattern, the resolved name list in `name:layer` form,
+- **Per-topic MCP load log.** Every `process()` invocation now emits a
+  structured `INFO Resolved MCP servers for topic` line with the
+  channel/topic/pattern, the resolved name list in `name:layer` form,
   and per-layer counts (`from_global`, `from_channel`, `from_pattern`,
-  `from_thread`, `from_thread_replace`). Replaces the previous count-only
+  `from_topic`, `from_topic_replace`). Replaces the previous count-only
   `Loading external MCP tools` debug line so operators can directly
-  answer "which MCPs is this thread actually using and where did they
+  answer "which MCPs is this topic actually using and where did they
   come from" from a single log line — useful for diagnosing remote
-  deployments where the L3 thread-local overlay appears to be ignored.
+  deployments where the L3 topic-local overlay appears to be ignored.
 
-- **L3 thread-config load heartbeat.** A dedicated `debug!` / `info!`
+- **L3 topic-config load heartbeat.** A dedicated `debug!` / `info!`
   line is emitted on every `process()` invocation that resolves the
-  `<thread>/.jyc/config.toml` overlay. Three outcomes are
+  `<topic>/.jyc/config.toml` overlay. Three outcomes are
   distinguished: file absent (DEBUG), file parsed but no `[[mcps]]`
   block (DEBUG no-op), and overlay applied (INFO with `configured_mcps`,
-  `mcps_replace`, `thread_mcp_names`). Remote deployments can now
+  `mcps_replace`, `topic_mcp_names`). Remote deployments can now
   distinguish "no file at all" from "file present but unreadable" from
   "file applied" without instrumenting the agent.
 
 ### Fixed
 
-- **Silent `load_thread_config` I/O failures.** A failed read (e.g.
+- **Silent `load_topic_config` I/O failures.** A failed read (e.g.
   `EACCES` in remote deployments where the agent user can't read the
-  thread-config file) was swallowed by `read_to_string(&path).ok()?`
+  topic-config file) was swallowed by `read_to_string(&path).ok()?`
   and the L3 overlay dropped with no log. The function now emits a
-  `WARN Failed to read thread config; ...` log carrying the path and
+  `WARN Failed to read topic config; ...` log carrying the path and
   underlying error before returning `None`, so the failure mode is
   visible in production logs.
 
@@ -680,17 +690,17 @@ All notable changes to JYC will be documented in this file.
   as passed in (matching the same contract as `total_input_tokens`),
   with the caller doing the accumulation. (#490)
 
-- **`jyc open` no longer times out on a brand-new ad-hoc thread.**
-  `set_thread_path` now creates `.jyc/` and `.jyc/thread-name` for the
+- **`jyc open` no longer times out on a brand-new ad-hoc topic.**
+  `set_topic_path` now creates `.jyc/` and `.jyc/topic-name` for the
   registered path. Previously only the bare folder was created, and
-  `list_threads` filtered the entry out (the `path.join(".jyc").is_dir()`
-  guard dropped it), so `wait_for_thread` polled the inspect overview for
-  5 seconds and never saw the new thread — `jyc open` aborted with
-  `Timeout waiting for thread <name> to be created`.
+  `list_topics` filtered the entry out (the `path.join(".jyc").is_dir()`
+  guard dropped it), so `wait_for_topic` polled the inspect overview for
+  5 seconds and never saw the new topic — `jyc open` aborted with
+  `Timeout waiting for topic <name> to be created`.
 
-- **Selective borders for chat-pane side panels.** The thread info pane
+- **Selective borders for chat-pane side panels.** The topic info pane
   now draws only its `LEFT` edge (against the chat conversation), the
-  thread explorer pane draws only its `RIGHT` edge, and the activity
+  topic explorer pane draws only its `RIGHT` edge, and the activity
   pane draws only its `TOP` edge. The outer / screen-edge borders and
   the redundant inner borders are gone, so the borderless chat area
   reads as a single flat surface with three thin separators.
@@ -698,7 +708,7 @@ All notable changes to JYC will be documented in this file.
 - **No-reply state surfaced in activity pane.** When the agent loop
   exits with no text and no tool call, neither the `reply_message` tool
   path nor the raw-text fallback path would deliver anything to the
-  user — `ThreadManager` only logged `WARN: No reply text from AI` and
+  user — `TopicManager` only logged `WARN: No reply text from AI` and
   the activity pane showed `ProcessingCompleted (success=true)` with no
   signal of failure. The activity pane now renders a `NO REPLY`
   warning entry (severity `Warning`) so operators can see the silent
@@ -721,12 +731,12 @@ All notable changes to JYC will be documented in this file.
   now shows only `context_input_tokens / max_input_tokens` (e.g.
   `47K/128K`), dropping the previous `·XK out` suffix. The
   `total_input_tokens` and `output_tokens` fields are unchanged on
-  `ThreadSummary` and continue to render as separate rows in the chat
-  info pane and the dashboard thread info area. (#490)
+  `TopicSummary` and continue to render as separate rows in the chat
+  info pane and the dashboard topic info area. (#490)
 
-- **Pane title separators with `──` prefix.** The activity, thread info,
-  and thread explorer pane titles now start with `── ` so the title row
-  reads as a continuous `─` stripe against the top border. The thread
+- **Pane title separators with `──` prefix.** The activity, topic info,
+  and topic explorer pane titles now start with `── ` so the title row
+  reads as a continuous `─` stripe against the top border. The topic
   info and explorer panes additionally gain a `TOP` border, giving them
   a clear separator between the title and the content below. Visual
   style matches the existing `LINE_DRAWING` palette used elsewhere in
@@ -764,7 +774,7 @@ All notable changes to JYC will be documented in this file.
   field in `SessionState` is renamed accordingly; behavior is
   unchanged. On-disk session files written by older versions will see
   the input counter reset to 0 on next load — sessions auto-reset when
-  full so this is a one-time cost per existing thread. (#490)
+  full so this is a one-time cost per existing topic. (#490)
 
 ## [0.3.13] - 2026-08-01
 
@@ -774,7 +784,7 @@ All notable changes to JYC will be documented in this file.
   enables crossterm mouse capture and translates `ScrollUp` /
   `ScrollDown` events into chat-pane scroll commands when the cursor
   is over the scrollable message area (above the input editor). The
-  input field, activity pane, thread explorer, and info pane silently
+  input field, activity pane, topic explorer, and info pane silently
   absorb wheel events, so scrolling never steals focus from the
   editor. Hit-testing uses the message-area `Rect` cached during
   `render_chat_conversation` so the boundary stays correct as the
@@ -782,8 +792,8 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
-- **Token dashboard is visible immediately on new threads.** A brand-new
-  thread — or one whose session was just deleted by `/reset` or `/new`
+- **Token dashboard is visible immediately on new topics.** A brand-new
+  topic — or one whose session was just deleted by `/reset` or `/new`
   — now has `.jyc/agent-session.json` pre-created at the start of
   agent processing via the new `session::ensure_session_file`. The file
   is seeded with the active model's `max_input_tokens`, zeroed
@@ -820,7 +830,7 @@ All notable changes to JYC will be documented in this file.
   (the command handler had no access to the matched pattern). It now
   reads `.jyc/pattern` and resolves against the actual matched pattern,
   falling back to the first pattern only when the pattern file is
-  missing. Threads that span multiple patterns with different
+  missing. Topics that span multiple patterns with different
   `reset_compression` configs will now use the correct one.
 
 ### Added
@@ -833,8 +843,8 @@ All notable changes to JYC will be documented in this file.
   finishes. The post-loop `update_tokens` still owns the between-message
   auto-reset.
 
-- **Output token count in the dashboard thread info pane.** The chat
-  info pane, dashboard threads table cell, and dashboard status line
+- **Output token count in the dashboard topic info pane.** The chat
+  info pane, dashboard topics table cell, and dashboard status line
   now show the accumulated output token count alongside the input
   token usage. The session file already stored `total_output_tokens`;
   the reader just discarded it. New `session_state::read_token_state`
@@ -848,16 +858,16 @@ All notable changes to JYC will be documented in this file.
   commands. Navigation between screens goes through the palette:
   `open dashboard` / `open chat` / `new chat`.
 
-- **Bare `jyc` opens an ad-hoc websocket thread and launches chat.**
+- **Bare `jyc` opens an ad-hoc websocket topic and launches chat.**
   Clap's "missing subcommand" error is caught and `open` is injected,
   so `jyc` is now equivalent to `jyc open`.
 
-- **Thread explorer pane.** `Ctrl+E` (or `toggle explorer` in the
+- **Topic explorer pane.** `Ctrl+E` (or `toggle explorer` in the
   command palette) opens a left-side pane (20% width, default hidden)
-  listing all threads with a live status dot (processing / queued /
-  waiting / idle / error); the current thread is highlighted. `Tab`
+  listing all topics with a live status dot (processing / queued /
+  waiting / idle / error); the current topic is highlighted. `Tab`
   cycles focus into it, `↑↓/jk` navigate, `Enter` switches the chat
-  (websocket threads) or opens the legacy detail view. Zen mode hides
+  (websocket topics) or opens the legacy detail view. Zen mode hides
   it; exiting zen does not restore it.
 - **User/AI turn separator.** A light dashed rule now separates the user
   message from the AI response within a chat round.
@@ -887,36 +897,36 @@ All notable changes to JYC will be documented in this file.
   header. The server rejects mismatches.
 
 - **Slim `/state_overview` REST endpoint.** New `get_state_overview` method
-  returns `InspectOverview` with `ThreadSummary` rows (no per-thread
+  returns `InspectOverview` with `TopicSummary` rows (no per-topic
   `activity` / `recent_messages` / `thinking_text`), keeping the dashboard's
   per-poll payload small. The dashboard now polls this instead of
   `get_state`. The full `get_state` endpoint is retained for backward
   compatibility with any external clients.
-- **Per-thread REST endpoints for cold-start hydration.** New
-  `get_thread_activity {channel, thread, since?, limit?}` and
-  `get_thread_chat {channel, thread, since?, limit?}` methods read from
+- **Per-topic REST endpoints for cold-start hydration.** New
+  `get_topic_activity {channel, topic, since?, limit?}` and
+  `get_topic_chat {channel, topic, since?, limit?}` methods read from
   `.jyc/activity.jsonl` and `chat_history_*.jsonl` respectively. The
-  dashboard calls these once when a thread is selected to seed the live
+  dashboard calls these once when a topic is selected to seed the live
   buffers before the WebSocket connection delivers subsequent events.
-- **Unified `/ws/<channel>/<thread>` WebSocket endpoint.** The dashboard
+- **Unified `/ws/<channel>/<topic>` WebSocket endpoint.** The dashboard
   always connects to this URL regardless of channel type. The inspect
   server dispatches to `ScopedWsHandler` (wraps the existing
   `WebsocketInboundAdapter` for websocket-type channels) or
-  `ThreadProxyHandler` (new, proxies through `ThreadManager::enqueue` for
-  any other channel). The handler binds `(channel, thread)` from the URL
+  `TopicProxyHandler` (new, proxies through `TopicManager::enqueue` for
+  any other channel). The handler binds `(channel, topic)` from the URL
   so the WebSocket payload no longer needs to carry them.
 - **Live activity / chat / thinking events over WebSocket.** All four
   event types are published by the `ActivityTracker` to a shared
   per-channel broadcast bus (`InspectContext.inspect_broadcast`,
   capacity 256) and forwarded to subscribed WebSocket clients filtered
-  by `(channel, thread)`. Replaces the dashboard's 500ms polling for
+  by `(channel, topic)`. Replaces the dashboard's 500ms polling for
   live data.
 - **`resync` event on broadcast backpressure.** When a WebSocket
   subscriber falls behind and `Lagged(n)` is observed, the server emits
-  a `{"type":"resync", "channel":..., "thread":..., "dropped":N}` event;
-  the client clears its live buffer for that thread and re-hydrates via
+  a `{"type":"resync", "channel":..., "topic":..., "dropped":N}` event;
+  the client clears its live buffer for that topic and re-hydrates via
   REST. Restores correctness after long disconnects.
-- **Monotonic per-thread sequence id.** `ActivityEntry` and
+- **Monotonic per-topic sequence id.** `ActivityEntry` and
   `ChatMessageEntry` gain an `id: u64` field (`#[serde(default)]` for
   backward compatibility with old `.jyc/activity.jsonl` entries). Used
   by WebSocket clients to drop duplicate / older events after a
@@ -926,7 +936,7 @@ All notable changes to JYC will be documented in this file.
   the chat pane (any focus) sends `/cancel` without modifying the input
   buffer, matching the behaviour advertised in CHANGELOG v0.3.12. The
   local echo goes through the same `/cancel` interception path the
-  worker already uses for typed `/cancel` messages, so the per-thread
+  worker already uses for typed `/cancel` messages, so the per-topic
   `CancellationToken` fires immediately. The shortcut is also
   advertised in the chat-pane help bar.
 
@@ -951,7 +961,7 @@ All notable changes to JYC will be documented in this file.
   refinement before sending. The popup stays open. (#416)
 - **Chat input history with Up/Down.** When the chat input is empty, Up arrow
   recalls the last sent message. Repeated Up cycles older, Down cycles newer;
-  Down at the newest clears back to empty. History is scoped per thread. (#416)
+  Down at the newest clears back to empty. History is scoped per topic. (#416)
 - **Live LLM thinking preview in chat pane.** When a reasoning model (e.g.,
   DeepSeek thinking mode) produces `reasoning_content`, the agent now publishes
   throttled `Thinking` events (at most once per 500ms, preview truncated to
@@ -978,33 +988,33 @@ All notable changes to JYC will be documented in this file.
   the new model becomes visible (with its per-model `context_window`)
   immediately after a config swap. (#478)
 
-- **Thread list not globally sorted across channels.** The dashboard
-  Threads table and chat explorer pane showed threads sorted within each
+- **Topic list not globally sorted across channels.** The dashboard
+  Topics table and chat explorer pane showed topics sorted within each
   channel but grouped by channel iteration order, not one alphabetical
-  list. `build_overview_state` now sorts the combined thread summaries by
+  list. `build_overview_state` now sorts the combined topic summaries by
   `(name, channel)`. (#476)
 
 - **Slash command results not shown live in chat.** Command replies
   (`/model`, `/close`, `/help`, etc.) were persisted to chat history
-  (visible after re-entering the thread) but never appeared live in the
+  (visible after re-entering the topic) but never appeared live in the
   chat pane. The command-result path called `send_reply` but not
   `publish_reply_sent`, so no `chat_message` event reached the dashboard
   WebSocket. Both command-result paths (main and during-AI-processing)
   now publish the `ReplySent` event, matching the AI-reply flow.
 
-- **Chat progress stale after switching threads.** `live_processing` /
-  `live_thinking` are only updated by WS events received while a thread is
-  watched, so entries went stale for unwatched threads: a missed completion
+- **Chat progress stale after switching topics.** `live_processing` /
+  `live_thinking` are only updated by WS events received while a topic is
+  watched, so entries went stale for unwatched topics: a missed completion
   left phantom progress (last 2 activity events) and a missed start hid the
-  progress of a busy thread. Both are now cleared on the REST hydrate when
-  switching threads, falling back to the polled overview status until fresh
+  progress of a busy topic. Both are now cleared on the REST hydrate when
+  switching topics, falling back to the polled overview status until fresh
   WS events arrive.
 
 - **`[agent].plan_model` and `[agent].build_model` now take effect at
   runtime.** Previously the slim `jyc_agent::types::AgentConfig` view
   hardcoded these to `None` when deriving the per-request config, so the
   top-level config fields were silently ignored (per-pattern and
-  thread-level overrides still worked). The duplicate-type cleanup fixed
+  topic-level overrides still worked). The duplicate-type cleanup fixed
   this as a side effect — `derive_agent_config` now returns
   `jyc_types::AgentConfig` directly with these fields intact. (#477)
 
@@ -1047,7 +1057,7 @@ All notable changes to JYC will be documented in this file.
   shortcut lists were removed; shortcuts are discoverable in the palette.
 
 - **External editor keybinding moved from `Ctrl+E` to `Ctrl+O`** —
-  `Ctrl+E` now toggles the thread explorer pane.
+  `Ctrl+E` now toggles the topic explorer pane.
 
 - **In-repo skills moved from `.agent/skills/` to `skills/`** at the
   repo root, and `.agent/` is no longer git-tracked. Runtime skill
@@ -1083,45 +1093,45 @@ All notable changes to JYC will be documented in this file.
   gutter is 4 columns wide and the input area reserves one extra row
   for the header.
 
-- **`/close` now requires `-y` (or `--confirm`) to actually delete a thread.**
-  Sending plain `/close` returns a warning message listing the thread name
+- **`/close` now requires `-y` (or `--confirm`) to actually delete a topic.**
+  Sending plain `/close` returns a warning message listing the topic name
   and the correct confirm syntax, and performs no destructive action. This
-  protects against accidental thread deletion (chat history, AI session,
-  attachments) via typo or wrong command. The 8 external `on_thread_close`
+  protects against accidental topic deletion (chat history, AI session,
+  attachments) via typo or wrong command. The 8 external `on_topic_close`
   callbacks (Feishu chat disbanded, GitHub/Gitee issue/PR closed, etc.)
   remain unchanged — they are not user-initiated and do not need a gate.
 
 - **Unified dashboard chat transport.** All channels (email, github,
   feishu, websocket, etc.) are now reached via the single
-  `/ws/<channel>/<thread>` WebSocket endpoint. Non-websocket channels
+  `/ws/<channel>/<topic>` WebSocket endpoint. Non-websocket channels
   previously had to fall back to REST `inject_message` plus a 500ms
-  poll; the new `ThreadProxyHandler` does the same job in real time
+  poll; the new `TopicProxyHandler` does the same job in real time
   over WebSocket using the per-channel `InspectContext.broadcast` bus.
   The websocket-channel handler (`WebsocketInboundAdapter`) is preserved
   for external clients connecting directly to that channel.
 - **Dashboard activity pane + chat progress read from a single source.**
   Both panes now read exclusively from the WS-fed
-  `ChatState::live_activity` buffer (keyed by `(channel, thread)`),
-  populated by REST hydrate on selection and by `ThreadEvent` fanout
+  `ChatState::live_activity` buffer (keyed by `(channel, topic)`),
+  populated by REST hydrate on selection and by `TopicEvent` fanout
   thereafter. The per-activity / per-chat rendering logic is unchanged
   — only the data source moved.
-- **Activity `ThreadEvent` fanout.** `ActivityTracker` now publishes
+- **Activity `TopicEvent` fanout.** `ActivityTracker` now publishes
   `activity` / `chat_message` / `thinking` / `processing` events to the
   inspect-broadcast bus on every push, in addition to the existing
-  in-memory buffer. The bus is consumed by `ThreadProxyHandler` and
+  in-memory buffer. The bus is consumed by `TopicProxyHandler` and
   (via `ScopedWsHandler` for websocket channels) the dashboard.
 
 ### Fixed
 
-- **Thread explorer opens on a stale row.** Opening the explorer
-  (`Ctrl+E` / palette) now snaps the selection to the thread currently
+- **Topic explorer opens on a stale row.** Opening the explorer
+  (`Ctrl+E` / palette) now snaps the selection to the topic currently
   open in the chat pane. `sync_explorer_selection` only followed the
-  chat thread while the explorer was unfocused — and opening focuses
+  chat topic while the explorer was unfocused — and opening focuses
   it, so the follow-up never ran.
-- **Thread explorer selection fills the full row width.** When the
+- **Topic explorer selection fills the full row width.** When the
   explorer pane has focus, the highlighted row now paints the entire
   row's width with the selection background instead of stopping at the
-  end of the thread-name text. The status dot, separator, and trailing
+  end of the topic-name text. The status dot, separator, and trailing
   padding all carry the highlight so the selection visually represents
   the complete selectable row.
 
@@ -1182,9 +1192,9 @@ All notable changes to JYC will be documented in this file.
   borderless; each conversation round is delimited only by a horizontal
   top rule with the timestamp on the left and a horizontal bottom rule
   with the duration on the right (no side borders, no middle divider).
-  The compact one-line info bar has been replaced by a bordered Thread
+  The compact one-line info bar has been replaced by a bordered Topic
   Info pane fixed at 20% of the screen width on the right. By default
-  the Thread Info pane, status bar, and bottom activity pane are all
+  the Topic Info pane, status bar, and bottom activity pane are all
   hidden (zen mode). New shortcuts: `Ctrl+A` cycles the activity pane
   through hidden → bottom 20% → bottom 80% → activity-only → hidden
   (replaces the previous `Ctrl+W`); `Ctrl+Z` toggles zen mode and also
@@ -1212,17 +1222,17 @@ All notable changes to JYC will be documented in this file.
 
 - **Explorer pane: switch is functional.** Opening the explorer now
   moves focus into it (so `j`/`k`/`Enter` work immediately); after a
-  successful switch the new thread's chat history is hydrated (was
+  successful switch the new topic's chat history is hydrated (was
   blank) and the explorer auto-hides so you land in the new chat. The
   explorer also spans the full chat-screen height as a left column.
 - **Explorer pane: detail-mode state no longer leaks.** `open()` now
-  clears `detail_channel`/`detail_thread_path`, so switching from a
+  clears `detail_channel`/`detail_topic_path`, so switching from a
   detail view back to a websocket chat exits detail mode.
 
 ### Fixed
 
 - **`/cancel` now aborts tool execution immediately.** Previously the
-  per-thread `CancellationToken` was honored at LLM-call boundaries
+  per-topic `CancellationToken` was honored at LLM-call boundaries
   and between tool iterations, but a long-running tool call (e.g.
   `bash` running `sleep 60`, a `webfetch` HTTP request) ran to
   completion before the loop noticed. The agent loop now races
@@ -1236,7 +1246,7 @@ All notable changes to JYC will be documented in this file.
 
 - **WebSocket dashboard disconnect rejected on websocket-type channels.**
   The CLI dashboard sends `{"type":"disconnect"}` to close the WebSocket
-  connection cleanly on every thread navigation, chat open/close, and
+  connection cleanly on every topic navigation, chat open/close, and
   overview-WS swap. The server-side `ClientMessage` enum for
   `WebsocketInboundAdapter` only defined the `Message` variant despite
   its doc comment advertising `disconnect`, `reset_session`, and `ping`,
@@ -1245,13 +1255,13 @@ All notable changes to JYC will be documented in this file.
   connection eventually RST'd from the client side, and the dashboard
   reconnected on the next poll — producing a ~1s connect/reset flap with
   `Connection reset without closing handshake` warnings and missed
-  inspect-broadcast events. Mirrors `ThreadProxyHandler::ClientMessage`
+  inspect-broadcast events. Mirrors `TopicProxyHandler::ClientMessage`
   so the protocol contract matches the doc comment. `Disconnect` breaks
   the loop and the existing post-loop helper sends a WS Close frame;
   `reset_session` and `ping` are accepted as no-ops.
 
-- **`get_thread_activity` returns 0 entries despite data in JSONL.**
-  Server-side filter at `handle_get_thread_activity` was inverted —
+- **`get_topic_activity` returns 0 entries despite data in JSONL.**
+  Server-side filter at `handle_get_topic_activity` was inverted —
   `.filter(|e| !is_user_visible_activity(e))` dropped the user-visible
   entries and kept internal heartbeats. Since the JSONL contains only
   user-visible entries (internals are skipped at write time, see
@@ -1263,11 +1273,11 @@ All notable changes to JYC will be documented in this file.
   log the request and the served entry count, so a non-zero count in
   the log confirms the fix.
 
-- **`get_thread_activity` hydration is now traceable.** The inspect
-  server's `handle_get_thread_activity` handler emitted nothing on
+- **`get_topic_activity` hydration is now traceable.** The inspect
+  server's `handle_get_topic_activity` handler emitted nothing on
   entry or exit, so the dashboard's empty-activity-pane issue could
   not be diagnosed from existing logs. Two `tracing::debug!` lines at
-  the server (entry: channel/thread/limit/since; exit: count of entries
+  the server (entry: channel/topic/limit/since; exit: count of entries
   served) let the operator distinguish the three failure modes — never
   fired, fired but returned 0 entries, fired and returned data — from
   the log alone.
@@ -1311,23 +1321,23 @@ All notable changes to JYC will be documented in this file.
   (the cryptographic signature at the end of each thinking block) is
   correctly ignored.
 
-- **Dashboard: Esc from chat pane returns to thread overview instead of pattern select.**
-  When chatting in a WebSocket thread, pressing Esc now consistently returns to the
-  thread overview table rather than the pattern selection screen. The pattern select
+- **Dashboard: Esc from chat pane returns to topic overview instead of pattern select.**
+  When chatting in a WebSocket topic, pressing Esc now consistently returns to the
+  topic overview table rather than the pattern selection screen. The pattern select
   view is now only reachable via the `c` (new chat) shortcut from the overview.
 
 - **Dashboard message injection loses routing metadata for non-websocket channels.**
   When injecting a message via dashboard into a GitHub/Gitee/WeCom/Feishu/Email
-  thread, the synthetic `InboundMessage` had empty metadata, causing reply
+  topic, the synthetic `InboundMessage` had empty metadata, causing reply
   delivery failures (e.g., GitHub 404 — `github_number` missing). Now routing
-  metadata is persisted to `.jyc/thread-meta.json` on first message and restored
+  metadata is persisted to `.jyc/topic-meta.json` on first message and restored
   during injection. (#408)
 
-- **Dashboard injection poisons `thread-meta.json` with empty metadata.**
-  When the first message for a thread was a dashboard injection
+- **Dashboard injection poisons `topic-meta.json` with empty metadata.**
+  When the first message for a topic was a dashboard injection
   (`channel_uid == "dashboard"`), the empty metadata was persisted to
-  `thread-meta.json`, causing subsequent injections to lose routing data
-  (e.g., `github_number` missing → 404). Now `thread-meta.json` is only
+  `topic-meta.json`, causing subsequent injections to lose routing data
+  (e.g., `github_number` missing → 404). Now `topic-meta.json` is only
   written for messages with real routing data. (#410)
 
 - **Nightly release sync to Gitee.** Reordered `sync-gitee` job steps in
@@ -1343,7 +1353,7 @@ All notable changes to JYC will be documented in this file.
   permanently lost. Now events are buffered and replayed to late subscribers. (#411)
 
 - **Event bus not shared with worker clone, silencing all ReplySent events.**
-  `create_and_enqueue` creates a cloned `ThreadManager` for each worker with an
+  `create_and_enqueue` creates a cloned `TopicManager` for each worker with an
   empty `event_buses` HashMap. `publish_reply_sent()` called `get_event_bus()` on
   this clone, which always returned `None` — events never reached the bus and
   were silently dropped. Now the event bus reference is also inserted into the
@@ -1356,19 +1366,19 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Dashboard cross-channel thread chat.** Pressing `Enter` on a non-websocket
-  thread (email, feishu, github) opens a detail/chat mode. Shows live incoming
-  messages and AI replies via `ThreadEvent::IncomingMessage`/`ReplySent` events
-  forwarded through `ThreadInfo.recent_messages`. Message injection uses the
+- **Dashboard cross-channel topic chat.** Pressing `Enter` on a non-websocket
+  topic (email, feishu, github) opens a detail/chat mode. Shows live incoming
+  messages and AI replies via `TopicEvent::IncomingMessage`/`ReplySent` events
+  forwarded through `TopicInfo.recent_messages`. Message injection uses the
   new `inject_message` inspect protocol method, following the same
-  `ThreadManager::enqueue()` path as the `send_to_thread` tool. (#406)
+  `TopicManager::enqueue()` path as the `send_to_topic` tool. (#406)
 
-- **`/pin` command.** Persist an ad-hoc websocket thread's configuration to
+- **`/pin` command.** Persist an ad-hoc websocket topic's configuration to
   `config.toml`. If a websocket channel already exists, adds a pattern with
-  `thread_path` pointing to the adhoc directory; otherwise creates a new
+  `topic_path` pointing to the adhoc directory; otherwise creates a new
   websocket channel. (#405)
 
-- **`/unpin` command.** Remove a pinned thread's pattern entry from
+- **`/unpin` command.** Remove a pinned topic's pattern entry from
   `config.toml`, reversing `/pin`. (#405)
 
 - **Nightly release binaries for macOS (aarch64) and Linux (x86_64)**, built by
@@ -1397,16 +1407,16 @@ All notable changes to JYC will be documented in this file.
 - **Multi-level configuration with platform-conventional paths.** JYC now
   separates user-edited config from generated data: `config.toml`, `skills/`,
   and `templates/` live in the platform config dir (Linux: `~/.config/jyc`),
-  while threads, channel state, and chat history live in the platform data
+  while topics, channel state, and chat history live in the platform data
   dir (Linux: `~/.local/share/jyc`). Three-level layering: L1 global
-  (config dir) → L2 workdir (`--workdir`/`--config`) → L3 thread (`.jyc/`).
+  (config dir) → L2 workdir (`--workdir`/`--config`) → L3 topic (`.jyc/`).
   `config.toml` is deep-merged L2-over-L1; skills are merged with
   higher-level-wins; templates are looked up L3 → L2 → L1. (#393)
 - **First-run provisioning.** `jyc serve` without flags and without an
   existing config creates `~/.config/jyc/config.toml` (from
   `config.example.toml`) plus empty `skills/` and `templates/` directories,
   prints edit instructions, and exits. (#393)
-- **Thread-level `.jyc/config.toml`.** Supports a restricted `[agent]`
+- **Topic-level `.jyc/config.toml`.** Supports a restricted `[agent]`
   subset (`model`, `plan_model`, `build_model`, `small_model`). Precedence:
   `.jyc/<mode>-model-override` file > `.jyc/config.toml` > pattern > config.
   Invalid files are ignored with a warning. (#393)
@@ -1424,7 +1434,7 @@ All notable changes to JYC will be documented in this file.
   (Linux: `~/.local/share/jyc`); the default config is
   `~/.config/jyc/config.toml`. `jyc config init` now writes to the platform
   config dir by default. (#393)
-- **Relative pattern `thread_path`** now resolves against the data root
+- **Relative pattern `topic_path`** now resolves against the data root
   (workdir) instead of the process current directory. Absolute and `~`
   paths are unchanged. (#393)
 
@@ -1460,28 +1470,28 @@ All notable changes to JYC will be documented in this file.
   with a real editor (vim, nvim, etc.). (#381)
 
 - **Top-level `jyc open` shortcut for `jyc dashboard open`.** Open a directory
-  as an ad-hoc websocket thread and launch chat mode directly from the top
-  level CLI. Accepts the same flags (`-t/--thread`, `-p/--path`,
+  as an ad-hoc websocket topic and launch chat mode directly from the top
+  level CLI. Accepts the same flags (`-t/--topic`, `-p/--path`,
   `-c/--channel`) plus `--addr`. The `jyc dashboard open` form continues to
   work unchanged.
 
-- **`jyc dashboard open` command for ad-hoc websocket threads.** Open a directory
-  as a websocket thread directly from the CLI and launch dashboard chat mode.
+- **`jyc dashboard open` command for ad-hoc websocket topics.** Open a directory
+  as a websocket topic directly from the CLI and launch dashboard chat mode.
   Works for brand new directories and for directories that already contain a
-  `.jyc` subdir. Supports `-t/--thread` (defaults to the folder name of `-p` or
+  `.jyc` subdir. Supports `-t/--topic` (defaults to the folder name of `-p` or
   CWD), `-p/--path` (defaults to CWD), and `-c/--channel` (auto-detected when
-  only one websocket channel exists). The server creates the thread via a new
-  `create_thread` WebSocket message, honoring the custom `thread_path` for file
+  only one websocket channel exists). The server creates the topic via a new
+  `create_topic` WebSocket message, honoring the custom `topic_path` for file
   storage. Raises an error when the target directory already contains a
-  `.jyc/thread-name` file with a different name than the one requested via
-  `-t`, preventing accidental thread-name divergence.
+  `.jyc/topic-name` file with a different name than the one requested via
+  `-t`, preventing accidental topic-name divergence.
 
-- **`require_reply` flag for `jyc_send_to_thread`.** New optional boolean
-  parameter `require_reply` (default: `false`) on the `jyc_send_to_thread`
+- **`require_reply` flag for `jyc_send_to_topic`.** New optional boolean
+  parameter `require_reply` (default: `false`) on the `jyc_send_to_topic`
   tool. When `true`, the target agent is instructed to send results back to
-  the source channel/thread. The source metadata (`source_channel`,
-  `source_thread`, `require_reply`) is now displayed in the target agent's
-  incoming message prompt, enabling cross-thread request-response patterns.
+  the source channel/topic. The source metadata (`source_channel`,
+  `source_topic`, `require_reply`) is now displayed in the target agent's
+  incoming message prompt, enabling cross-topic request-response patterns.
   System prompt updated with reply guidance. (#361)
 
 - **Per-pattern `mode` config for initial agent mode.** New optional field
@@ -1505,12 +1515,12 @@ All notable changes to JYC will be documented in this file.
   between SSE events before the stream is considered stalled. Useful for models
   with long thinking phases that exceed the previous hardcoded timeout. (#341)
 
-- **Per-pattern `thread_path` config for custom thread directories.** Patterns
-  can now declare `thread_path = "~/my-project"` to override the thread's
+- **Per-pattern `topic_path` config for custom topic directories.** Patterns
+  can now declare `topic_path = "~/my-project"` to override the topic's
   working directory location on disk. Supports `~` expansion to `$HOME`.
-  Absolute paths are used as-is. The logical routing key (`thread_name` /
-  `thread_prefix`) is unaffected — this field only changes where files are
-  stored on disk. `ThreadManager` tracks custom paths and resolves them
+  Absolute paths are used as-is. The logical routing key (`topic_name` /
+  `topic_prefix`) is unaffected — this field only changes where files are
+  stored on disk. `TopicManager` tracks custom paths and resolves them
   correctly for chat history, activity logs, close/cleanup, and the
   `JobScheduler`. (#348)
 
@@ -1532,7 +1542,7 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
-- **Threads failing on LLM rate-limit / overload errors (429/502/503/504).**
+- **Topics failing on LLM rate-limit / overload errors (429/502/503/504).**
   LLM call failures are now classified as Transient / Throttled / Terminal.
   429 previously burned through the fast transient budget (3 attempts,
   1s/2s backoff) and 503 was not retried at all; both now use a patient
@@ -1564,12 +1574,12 @@ All notable changes to JYC will be documented in this file.
   `aeskey` are present). Changed to `Option<String>` with `#[serde(default)]`
   and updated both consumers (`extract_content` and `process_bot_attachments`)
   to handle `None` gracefully. (#374)
-  websocket message arrived for a thread whose name did not match any configured
+  websocket message arrived for a topic whose name did not match any configured
   pattern, the websocket matcher fell back to the first enabled pattern and wrote
-  that name to `.jyc/pattern`. This caused ad-hoc threads (e.g., `adhoc`) to
-  display the pattern of an unrelated thread in the chat pane. The matcher now
-  uses the thread name itself as the pattern name when no configured pattern
-  matches, so ad-hoc threads keep their own identity.
+  that name to `.jyc/pattern`. This caused ad-hoc topics (e.g., `adhoc`) to
+  display the pattern of an unrelated topic in the chat pane. The matcher now
+  uses the topic name itself as the pattern name when no configured pattern
+  matches, so ad-hoc topics keep their own identity.
 
 - **WeCom bot file attachments saved as `.bin` when MIME type is unknown.** When
   WeCom omits `filename` in a `msgtype: "file"` message or the file's magic bytes
@@ -1591,24 +1601,24 @@ All notable changes to JYC will be documented in this file.
   journal line instead of splitting "Hello future GitHubber" across many entries.
   (#377)
 
-- **Cross-thread reply not sent back despite `require_reply=true`.** The
+- **Cross-topic reply not sent back despite `require_reply=true`.** The
   in-message prompt instruction told the agent to call both
-  `jyc_reply_message` and `jyc_send_to_thread` but did not specify the
+  `jyc_reply_message` and `jyc_send_to_topic` but did not specify the
   execution order. LLMs called `jyc_reply_message` (with `stop_after=true`)
-  first, ending the agent loop before `jyc_send_to_thread` was invoked.
-  Fixed by making the order explicit: step 1 calls `jyc_send_to_thread`,
+  first, ending the agent loop before `jyc_send_to_topic` was invoked.
+  Fixed by making the order explicit: step 1 calls `jyc_send_to_topic`,
   step 2 calls `jyc_reply_message`. (#367)
 
-- **Cross-thread reply not sent back despite `require_reply=true`.** The system
-  prompt instruction to use `jyc_send_to_thread` was placed in the general
-  Cross-Thread Communication system prompt section, far from the actual
+- **Cross-topic reply not sent back despite `require_reply=true`.** The system
+  prompt instruction to use `jyc_send_to_topic` was placed in the general
+  Cross-Topic Communication system prompt section, far from the actual
   incoming message. LLMs often missed it due to position bias. Moved the
   actionable instruction (`⚠️ ACTION REQUIRED`) directly into the incoming
   message prompt, immediately after the Source header and next to the message
   body — at the same recency level as the body and close to where the agent
   decides its response. (#366)
 
-- **Cross-thread reply loses prior context with Anthropic provider.** The
+- **Cross-topic reply loses prior context with Anthropic provider.** The
   `raw_context_to_messages` function only handled OpenAI's string content format
   (`"content": "text"`) but not Anthropic's array block format
   (`"content": [{"type": "text", "text": "..."}]`). When using Anthropic models,
@@ -1620,20 +1630,20 @@ All notable changes to JYC will be documented in this file.
   new` implementation changed the top-level `dashboard` command to require a
   subcommand (`jyc dashboard dashboard` to open the dashboard). Fixed by making
   the `new` subcommand optional, so `jyc dashboard` behaves exactly as before
-  and `jyc dashboard new` creates an ad-hoc thread. Also fixed ad-hoc threads
-  sharing `agent-session.json` with unrelated threads: `ThreadManager::enqueue`
-  now prefers the registered per-thread custom `thread_path` over the pattern
-  fallback, so messages sent after `create_thread` remain in the same thread
+  and `jyc dashboard new` creates an ad-hoc topic. Also fixed ad-hoc topics
+  sharing `agent-session.json` with unrelated topics: `TopicManager::enqueue`
+  now prefers the registered per-topic custom `topic_path` over the pattern
+  fallback, so messages sent after `create_topic` remain in the same topic
   directory.
   check for Anthropic `tool_use` blocks in content arrays. (#365)
 
-- **Cross-thread reply not visible after new fix.** The system prompt instructed
-  agents receiving cross-thread messages with `"⚠️ Reply requested"` to reply
-  via `jyc_send_to_thread` but omitted the standard `jyc_reply_message` call
-  for the current thread. Agents processed cross-thread results but never
-  displayed them in the current thread's chat pane. Fixed by telling agents to
-  always use `jyc_reply_message` for cross-thread messages, and additionally
-  use `jyc_send_to_thread` for the ⚠️ case. (#364)
+- **Cross-topic reply not visible after new fix.** The system prompt instructed
+  agents receiving cross-topic messages with `"⚠️ Reply requested"` to reply
+  via `jyc_send_to_topic` but omitted the standard `jyc_reply_message` call
+  for the current topic. Agents processed cross-topic results but never
+  displayed them in the current topic's chat pane. Fixed by telling agents to
+  always use `jyc_reply_message` for cross-topic messages, and additionally
+  use `jyc_send_to_topic` for the ⚠️ case. (#364)
 
 - **Session context deleted after auto-reset summarization.** The
   `summarize_context` function wrote the LLM-generated summary as a `"user"`
@@ -1645,37 +1655,37 @@ All notable changes to JYC will be documented in this file.
   diagnostic details (message count, role list) for future troubleshooting.
   (#363)
 
-- **Cross-thread reply not visible in WebSocket chat pane.** The
-  `jyc_send_to_thread` tool set `InboundMessage.topic` to a hardcoded string
-  `"Message from cross-thread tool"` instead of the target thread name. The
+- **Cross-topic reply not visible in WebSocket chat pane.** The
+  `jyc_send_to_topic` tool set `InboundMessage.topic` to a hardcoded string
+  `"Message from cross-topic tool"` instead of the target topic name. The
   WebSocket outbound adapter uses `topic` as the broadcast key, so replies
-  from cross-thread sessions were broadcast to the wrong topic and never
-  appeared in the chat pane. Fixed by setting `topic` to the target thread
+  from cross-topic sessions were broadcast to the wrong topic and never
+  appeared in the chat pane. Fixed by setting `topic` to the target topic
   name. (#362)
 
-- **Stale custom `thread_path` threads linger in dashboard after close.** When a
-  thread directory was deleted (e.g. GitHub issue closed), the in-memory
-  `thread_paths` mapping was never cleaned up. `list_threads()` now prunes
-  entries whose `.jyc/` directory no longer exists, so closed threads disappear
+- **Stale custom `topic_path` topics linger in dashboard after close.** When a
+  topic directory was deleted (e.g. GitHub issue closed), the in-memory
+  `topic_paths` mapping was never cleaned up. `list_topics()` now prunes
+  entries whose `.jyc/` directory no longer exists, so closed topics disappear
   from the dashboard immediately. (#354)
 
-- **Custom `thread_path` threads lost after restart.** Threads with a custom
-  `thread_path` override disappeared from the thread list after process restart
-  (e.g. Docker container restart). The in-memory `thread_paths` map was only
-  populated on `enqueue()` and never restored from disk. Now, when a thread is
-  first processed, its logical name is persisted to `.jyc/thread-name`. On
-  startup, `restore_custom_thread_paths()` scans **only this TM's channel**
-  patterns for `thread_path` overrides and reads `.jyc/thread-name` to rebuild
+- **Custom `topic_path` topics lost after restart.** Topics with a custom
+  `topic_path` override disappeared from the topic list after process restart
+  (e.g. Docker container restart). The in-memory `topic_paths` map was only
+  populated on `enqueue()` and never restored from disk. Now, when a topic is
+  first processed, its logical name is persisted to `.jyc/topic-name`. On
+  startup, `restore_custom_topic_paths()` scans **only this TM's channel**
+  patterns for `topic_path` overrides and reads `.jyc/topic-name` to rebuild
   the mapping before `ActivityTracker` loads historical activity. Restored
-  threads also get a pre-created event bus so the first message's activity
+  topics also get a pre-created event bus so the first message's activity
   events are not lost to the ActivityTracker's 2-second subscription delay.
   (#350, #352, #353)
 
-- **Dashboard chat pane shows stale content when switching threads.** When
-  switching from thread A to thread B, if thread B had no chat history the
-  server skipped sending a `history` message, leaving thread A's messages
+- **Dashboard chat pane shows stale content when switching topics.** When
+  switching from topic A to topic B, if topic B had no chat history the
+  server skipped sending a `history` message, leaving topic A's messages
   visible in the chat pane. `select_pattern()` now clears `chat_messages`
-  before subscribing to the new thread. (#349)
+  before subscribing to the new topic. (#349)
 
 - **Dashboard chat pane input not wrapping.** When typing in the chat pane
   input area, text exceeding the pane width was not automatically wrapped to
@@ -1690,10 +1700,10 @@ All notable changes to JYC will be documented in this file.
 - **Inspect REST API.** The inspect server now exposes a real HTTP/1.1
   REST surface in addition to the WebSocket routes. New endpoints:
   `GET /api/state`, `GET /api/state/overview`,
-  `GET /api/threads/{channel}/{thread}/activity`,
-  `GET /api/threads/{channel}/{thread}/chat`,
+  `GET /api/topics/{channel}/{topic}/activity`,
+  `GET /api/topics/{channel}/{topic}/chat`,
   `GET /api/channels/{channel}/patterns`,
-  `POST /api/threads`, `POST /api/config/reload`. All endpoints and
+  `POST /api/topics`, `POST /api/config/reload`. All endpoints and
   WebSocket upgrades share one Bearer token (`[inspect].auth_token`)
   via a single `require_bearer` middleware — the
   `Authorization: Bearer <token>` header (case-insensitive scheme per
@@ -1727,12 +1737,12 @@ All notable changes to JYC will be documented in this file.
 ### Fixed
 
 - **WebSocket chat to a websocket-type channel now works from the
-  dashboard chat pane.** Connecting to `/ws/<channel>/<thread>` now
-  propagates the URL thread name to the channel's WebSocket handler as
-  `scoped_thread`. Previously the inspect server always passed `None`,
+  dashboard chat pane.** Connecting to `/ws/<channel>/<topic>` now
+  propagates the URL topic name to the channel's WebSocket handler as
+  `scoped_topic`. Previously the inspect server always passed `None`,
   so messages sent from the chat pane — which rely on the URL scope and
-  omit `thread` from the payload — were dropped with "WebSocket Message
-  without thread; ignoring".
+  omit `topic` from the payload — were dropped with "WebSocket Message
+  without topic; ignoring".
 
 ## [0.3.12] - 2026-06-28
 
@@ -1740,9 +1750,9 @@ All notable changes to JYC will be documented in this file.
 
 - **Anthropic provider: strip `oneOf`/`allOf`/`anyOf` from tool `input_schema`.** Claude Opus 4.6 rejects these JSON Schema composition keywords with a 400 error. External MCP tools may include them, so the Anthropic provider now defensively strips them at the provider layer via `sanitize_input_schema()`. Both `complete()` and `complete_raw()` paths are covered. (#294, #300)
 
-- **jyc_send_to_thread attachments not delivered to target thread.** Fixed the
+- **jyc_send_to_topic attachments not delivered to target topic.** Fixed the
   tool creating `MessageAttachment` with `content: None`, causing
-  `save_attachments_to_dir` to skip cross-thread files. Also surfaced attachment
+  `save_attachments_to_dir` to skip cross-topic files. Also surfaced attachment
   file paths in the target agent's prompt. (#267)
 
 - **WeCom Bot `enter_chat` event parse error.** Added custom serde deserializer
@@ -1752,13 +1762,13 @@ All notable changes to JYC will be documented in this file.
 
 - **WeCom Bot scheduled task proactive message `req_id` error.** When `req_id`
   is missing (scheduled tasks), `send_reply` now derives `chatid` from
-  `thread_path`, generates a fresh `req_id`, and uses `aibot_send_msg`
+  `topic_path`, generates a fresh `req_id`, and uses `aibot_send_msg`
   (proactive) instead of `aibot_respond_msg` (passive reply). (#264, #266)
 
 ### Added
 
 - **`/cancel` command and `Ctrl+C` dashboard shortcut.** New `/cancel` command
-  cancels the current AI processing by triggering the per-thread
+  cancels the current AI processing by triggering the per-topic
   `CancellationToken`. In the dashboard chat pane, `Ctrl+C` sends `/cancel`
   without modifying the input buffer. The worker's `select!` loop intercepts
   `/cancel` messages arriving during AI processing — the cancellation token fires
@@ -1775,7 +1785,7 @@ All notable changes to JYC will be documented in this file.
   color that was difficult to notice.
 
 - **Per-pattern filesystem access whitelist (`access.read` / `access.write`).**
-  Patterns can now declare additional paths outside the thread working directory
+  Patterns can now declare additional paths outside the topic working directory
   that the agent may read from or write to. Write paths are automatically
   readable. Tilde (`~`) expands to `$HOME`. Prevents repeated "Access denied"
   failures when the agent needs to read dependency source (e.g.,
@@ -1788,20 +1798,20 @@ All notable changes to JYC will be documented in this file.
   attachments (supported by email, Feishu, and WeCom Bot channels). Existing
   usage without these parameters is fully backward compatible. (#267, #270)
 
-- **Cross-thread/channel communication tool (`jyc_send_to_thread`).** New
-  builtin tool that enables AI agents to inject messages into threads in other
-  channels. The tool is backed by `ThreadManager::enqueue()` (same mechanism as
-  the JobScheduler). ToolContext carries a cross-channel `thread_managers` map
+- **Cross-topic/channel communication tool (`jyc_send_to_topic`).** New
+  builtin tool that enables AI agents to inject messages into topics in other
+  channels. The tool is backed by `TopicManager::enqueue()` (same mechanism as
+  the JobScheduler). ToolContext carries a cross-channel `topic_managers` map
   (keyed by channel name) wired from Monitor → JycAgentService → AgentLoopConfig
   → ToolContext. System prompt lists available channels. Attachment validation
   mirrors `ReplyMessageTool`. (#268)
 
 - **Channel-agnostic scheduled job system.** Background JobScheduler runs
-  alongside the monitor, scans all threads for due jobs (per-thread
+  alongside the monitor, scans all topics for due jobs (per-topic
   `.jyc/jobs/<id>.json` storage), fires recurring (cron) or one-time jobs by
-  injecting InboundMessage into the originating thread. Agent tools (`job_list`,
+  injecting InboundMessage into the originating topic. Agent tools (`job_list`,
   `job_create`, `job_delete`, `job_toggle`) let users manage jobs from any
-  thread. Configurable max jobs per thread (default: 10). (#262, #263)
+  topic. Configurable max jobs per topic (default: 10). (#262, #263)
 
 - **WebSocket channel with dashboard chat pane.** Replaces the standalone
   `jyc local` command. The `websocket` channel type runs inside `jyc monitor`
@@ -1812,16 +1822,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **Unified config hot-reload for patterns and channel lifecycle.** `MessageRouter` now reads patterns dynamically from live `ArcSwap<AppConfig>` on every `route()` call instead of caching a static snapshot at startup. New `ChannelOrchestrator` component manages channel lifecycle: deleted channels are gracefully cancelled on reload, new channels are detected with a warning. Pattern additions/modifications take effect immediately without restart. `InspectContext` fields (`thread_managers`, `channels`, `workspace_dirs`) use `ArcSwap` for dynamic updates. (#338, #339)
+- **Unified config hot-reload for patterns and channel lifecycle.** `MessageRouter` now reads patterns dynamically from live `ArcSwap<AppConfig>` on every `route()` call instead of caching a static snapshot at startup. New `ChannelOrchestrator` component manages channel lifecycle: deleted channels are gracefully cancelled on reload, new channels are detected with a warning. Pattern additions/modifications take effect immediately without restart. `InspectContext` fields (`topic_managers`, `channels`, `workspace_dirs`) use `ArcSwap` for dynamic updates. (#338, #339)
 
 - **Chat pane edit diff coloring and write tool multi-line display.** Edit diffs in the AI progress area now use distinct colors: old string lines in gray (`Color::Gray`), new string lines in yellow with italic. Write tool output renders as multi-line content (with `+` prefix, capped at 20 lines) for better readability. Activity pane display remains unchanged. (#340)
 
-- **WebSocket channel now supports multiple threads per channel.** Thread names
-  are derived from the client's `thread` field in WebSocket messages (e.g.,
-  `{"type":"message","thread":"general","text":"hello"}`). When `thread` is
-  non-empty, it is used as the thread name; when empty, it falls back to the
+- **WebSocket channel now supports multiple topics per channel.** Topic names
+  are derived from the client's `topic` field in WebSocket messages (e.g.,
+  `{"type":"message","topic":"general","text":"hello"}`). When `topic` is
+  non-empty, it is used as the topic name; when empty, it falls back to the
   channel name for backward compatibility. This enables separate conversation
-  contexts and workspace directories for different threads within the same
+  contexts and workspace directories for different topics within the same
   websocket channel.
 
 ### Removed
@@ -1849,7 +1859,7 @@ All notable changes to JYC will be documented in this file.
 ### Added
 
 - **MCP SendMessage Tool (`jyc_send_message`).** New MCP tool for sending
-  proactive out-of-thread messages via the pre-warmed outbound adapter.
+  proactive out-of-topic messages via the pre-warmed outbound adapter.
   Accepts `recipient`, `subject` (optional), and `message` parameters.
   Recipient format is channel-specific (e.g. `wecomkf:{open_kfid}:{external_userid}`).
   ToolContext carries an optional `outbound` adapter reference injected at
@@ -1912,7 +1922,7 @@ All notable changes to JYC will be documented in this file.
   API pull, outbound messages via `kf/send_msg` API. Includes cursor-based
   incremental sync with optional file persistence, in-memory message dedup
   (10K-entry FIFO cap), and shared token/wehbook infrastructure with the
-  existing wecom channel. One thread per customer per KF account.
+  existing wecom channel. One topic per customer per KF account.
   (#229, #230)
 
 - **WeCom (企业微信) Bot channel.** New channel type `wecom` supporting inbound
@@ -1944,17 +1954,17 @@ All notable changes to JYC will be documented in this file.
 
 - **Feishu channel: removed pre-route attachment save that prevented template
   initialization.** The `on_message` callback was saving attachments before
-  message routing, which created the thread directory via `create_dir_all`
-  before the worker could run `initialize_thread_from_template`. The guard
-  condition `thread_path.exists()` returned true (directory existed from
+  message routing, which created the topic directory via `create_dir_all`
+  before the worker could run `initialize_topic_from_template`. The guard
+  condition `topic_path.exists()` returned true (directory existed from
   attachment save), but no `.jyc/template` marker existed, so template files
   (AGENTS.md, domain-knowledge.md) were silently skipped. Also eliminated
   duplicate attachment saves (pre-route + post-route). (#250)
 
-- **`initialize_thread_from_template` guard changed from `thread_path.exists()`
+- **`initialize_topic_from_template` guard changed from `topic_path.exists()`
   to `.jyc/` directory existence.** The previous check was too broad: any
   pre-existing directory (e.g., from attachment storage) was interpreted as
-  "thread already initialized". Now only the `.jyc/` metadata directory is
+  "topic already initialized". Now only the `.jyc/` metadata directory is
   used as the initialization sentinel, making template init resilient to
   out-of-band directory creation. (#250)
 
@@ -1970,7 +1980,7 @@ All notable changes to JYC will be documented in this file.
 ### Fixed
 
 - **`MessageAttachment.saved_path` now propagates from the post-route
-  attachment saver back to the agent.** `thread_manager::process_message`
+  attachment saver back to the agent.** `topic_manager::process_message`
   was calling `save_attachments_to_dir(&mut message.clone(), ...)`,
   mutating a temporary clone that was immediately dropped. The original
   `item.message` kept `saved_path: None`, so when
@@ -1984,7 +1994,7 @@ All notable changes to JYC will be documented in this file.
   on every attachment.
 
 - **Attachment-only messages no longer drop silently before reaching the
-  agent.** The thread-manager body-empty short-circuit
+  agent.** The topic-manager body-empty short-circuit
   (`No message body, stopping (no AI)`) bypasses when
   `message.attachments` is non-empty. This was masking image-only WeChat
   messages where OpenILink delivers `[image]` as a placeholder body that
@@ -2000,8 +2010,8 @@ All notable changes to JYC will be documented in this file.
   variant) instead of an opaque `[no text content]`, so it has explicit
   context for what the multimodal blocks downstream represent.
 
-- **Dashboard `list_threads()` now resolves the effective model.**
-  Previously the inspect API only read `.jyc/model-override`, so threads
+- **Dashboard `list_topics()` now resolves the effective model.**
+  Previously the inspect API only read `.jyc/model-override`, so topics
   with a pattern-level or channel-level model showed `null` / "(default)".
   It now mirrors the inference priority chain: override file > pattern
   model > channel model > global model.
@@ -2030,31 +2040,31 @@ All notable changes to JYC will be documented in this file.
 
 - **Agent retry logic.**
   - Retry on `diag-success` transport errors (connection pool staleness).
-  - Retry transient SSE stream errors instead of failing the thread.
+  - Retry transient SSE stream errors instead of failing the topic.
   - Capture and log upstream response body on Anthropic 4xx errors for
     easier debugging.
 
-- **Inspect activity map scoped by `(channel, thread_name)`.**
-  Previously two channels with identically-named threads collided in the
-  global activity map. The key is now a tuple so each channel's thread
+- **Inspect activity map scoped by `(channel, topic_name)`.**
+  Previously two channels with identically-named topics collided in the
+  global activity map. The key is now a tuple so each channel's topic
   has independent activity tracking.
 
 - **WeChat fixes.**
   - Parse OpenILink Bridge nested envelope schema correctly.
   - Enable `native-tls` feature on `tokio-tungstenite` for `wss://` support.
   - Include `to` field in outbound WebSocket send frames.
-  - Align attachment thread name with router; skip agent for placeholder
+  - Align attachment topic name with router; skip agent for placeholder
     bodies (`[image]`, `[file]`, etc.).
   - Remove duplicate pre-route attachment save.
 
 ### Added
 
 - **WeChat channel support.** New `wechat` channel type connects via OpenILink
-  Bridge WebSocket. Supports single-bot, single-thread model with auto-reconnect
+  Bridge WebSocket. Supports single-bot, single-topic model with auto-reconnect
   and exponential backoff. Outbound sends via the same WebSocket connection.
 
 - **WeChat inbound attachments.** Images, files, voice, and video attachments
-  are received via OpenILink Bridge, saved to the thread directory, and
+  are received via OpenILink Bridge, saved to the topic directory, and
   forwarded to the agent with `MessageAttachment.saved_path` populated.
   Placeholder bodies (`[image]`, `[file]`, etc.) are stripped so the agent
   processes attachment-only messages correctly.
@@ -2064,11 +2074,11 @@ All notable changes to JYC will be documented in this file.
   `.jyc/model-override` file > pattern config > channel config > global
   `[agent]` config. The inference engine (`JycAgentService::process`) resolves
   the effective model using this priority chain; the inspect dashboard now
-  mirrors the same resolution in `list_threads()`.
+  mirrors the same resolution in `list_topics()`.
 
 - **Per-pattern MCP server configuration.** `[[channels.<name>.patterns]]` entries
   can declare `mcps = ["server-a", "server-b"]` to load only those MCP servers
-  for matching threads. Set `mcps = []` to disable all MCP tools for a pattern.
+  for matching topics. Set `mcps = []` to disable all MCP tools for a pattern.
   Falls back to global `[[mcps]]` when omitted.
 
 - **Per-pattern built-in tool disable.** `disabled_builtin_tools = ["bash",
@@ -2157,7 +2167,7 @@ All notable changes to JYC will be documented in this file.
 - **Refactored**
   `jyc_core::attachment_storage::resolve_attachment_save_dir`. Extracted
   the previously duplicated path-resolution logic from
-  `save_attachments_to_dir` and `save_attachments_to_thread_directory`
+  `save_attachments_to_dir` and `save_attachments_to_topic_directory`
   into one public helper. Both call sites now share it; the agent code
   reuses it to keep its boundary rule in lockstep with the channel
   adapters' save-location rule.
@@ -2347,16 +2357,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Per-pattern `thread_prefix` configuration** for GitHub channels. Each
+- **Per-pattern `topic_prefix` configuration** for GitHub channels. Each
   `[[channels.<ch>.patterns]]` entry can now declare an explicit
-  `thread_prefix`, which is combined with the GitHub number as
-  `{prefix}-{N}` to derive the thread name. This lets two patterns that match
+  `topic_prefix`, which is combined with the GitHub number as
+  `{prefix}-{N}` to derive the topic name. This lets two patterns that match
   the same issue/PR (e.g., split by labels) live in distinct workspace
   directories so each can carry its own template / `AGENTS.md` without
-  collision. Omit `thread_prefix` to keep the default behavior (`issue-{N}`
+  collision. Omit `topic_prefix` to keep the default behavior (`issue-{N}`
   for issue events, `pr-{N}` for PR events).
 
-- **Template-mismatch guard.** When a message is routed to an existing thread
+- **Template-mismatch guard.** When a message is routed to an existing topic
   whose recorded template differs from the matched pattern's template, jyc
   now refuses to dispatch the message and logs a `TemplateMismatch` error
   along with a `template_mismatch` processing-error metric, instead of
@@ -2365,24 +2375,24 @@ All notable changes to JYC will be documented in this file.
 ### Changed
 
 - GitHub close-event handling now enumerates the workspace and closes every
-  thread directory whose name matches `{anything}-{N}` for the closed
+  topic directory whose name matches `{anything}-{N}` for the closed
   GitHub identity, rather than hardcoding the `pr-{N}` and `review-pr-{N}`
-  prefixes. This makes cleanup correct for any user-defined `thread_prefix`.
+  prefixes. This makes cleanup correct for any user-defined `topic_prefix`.
 
 ### Deprecated
 
 - The implicit fallback that routes a pattern named `reviewer` (with no
-  `thread_prefix`) to `review-pr-{N}` is deprecated. Existing deployments
+  `topic_prefix`) to `review-pr-{N}` is deprecated. Existing deployments
   continue to work but log a deprecation warning. New configs should declare
-  `thread_prefix = "review-pr"` explicitly. The implicit fallback will be
+  `topic_prefix = "review-pr"` explicitly. The implicit fallback will be
   removed in a future release.
 
 ### Breaking
 
-- None in this release. The hardcoded `pattern_name == "reviewer"` thread-name
-  special case has been replaced with a configurable `thread_prefix` mechanism,
+- None in this release. The hardcoded `pattern_name == "reviewer"` topic-name
+  special case has been replaced with a configurable `topic_prefix` mechanism,
   but a backwards-compatible deprecation fallback preserves the legacy
-  `review-pr-{N}` thread name for unmigrated configs.
+  `review-pr-{N}` topic name for unmigrated configs.
 
   Recommended migration:
 
@@ -2390,7 +2400,7 @@ All notable changes to JYC will be documented in this file.
   [[channels.my_repo.patterns]]
   name = "reviewer"
   template = "github-reviewer"
-  thread_prefix = "review-pr"   # ← add this line to silence the warning
+  topic_prefix = "review-pr"   # ← add this line to silence the warning
   ```
 
 ## [0.3.4] - 2026-05-20
@@ -2422,9 +2432,9 @@ All notable changes to JYC will be documented in this file.
   - `ChannelConfig.heartbeat_template` per-channel field
   - `OutboundAdapter::send_heartbeat()` trait method and all impls
     (email, feishu, github, plus the test mock)
-  - `ThreadManager::event_listener_with_heartbeat` (~170 LOC) and the
+  - `TopicManager::event_listener_with_heartbeat` (~170 LOC) and the
     per-worker `tokio::sync::watch` channel that fed it
-  - `ThreadEvent::Heartbeat` enum variant and its handlers in `jyc-inspect`
+  - `TopicEvent::Heartbeat` enum variant and its handlers in `jyc-inspect`
   - Dead heartbeat constants in `jyc-utils::constants`
   - Heartbeat validation block in `jyc-types::validation`
   - Documentation in DESIGN.md, FEISHU.md, README.md
@@ -2480,8 +2490,8 @@ will produce progress replies automatically for long-running tasks.
 ### Added
 
 - Multi-path skill discovery for `jyc-agent` (#182) — 9-path priority order
-  (system → repo → thread-local), with thread-local `.jyc/skills/` overriding all others
-- Dashboard displays loaded skills per thread (#184)
+  (system → repo → topic-local), with topic-local `.jyc/skills/` overriding all others
+- Dashboard displays loaded skills per topic (#184)
 
 ### Fixed
 
@@ -2540,16 +2550,16 @@ will produce progress replies automatically for long-running tasks.
 - High-level planner with feature-plan label routing (#102)
 - Template-driven MCP configuration with `--mcps` override (#104)
 - OAuth2-forwarder integration for browser-based OAuth2 in Docker/Podman containers (#107)
-- Idle thread directory auto-cleanup (#110)
+- Idle topic directory auto-cleanup (#110)
 - Live config reload via dashboard TUI — ArcSwap, reload_config protocol, R keybinding (#103)
-- `repo_group` for shared repo among GitHub threads (#122)
+- `repo_group` for shared repo among GitHub topics (#122)
 - Replace NodeSource with fnm, pre-install Node 22
 
 ### Fixed
 
 - Worker idle permit release and remove idle_cleanup (#125)
-- Interrupt SSE stream when thread is closed (#118)
-- Idle cleanup per-thread skip flag (#113)
+- Interrupt SSE stream when topic is closed (#118)
+- Idle cleanup per-topic skip flag (#113)
 - Docker build fixes — protobuf-compiler, Rust toolchain, unzip dependencies
 - Retry /provider API up to 3 times for model context limit lookup
 - Wait for the agent API to be ready after server starts listening
@@ -2566,7 +2576,7 @@ will produce progress replies automatically for long-running tasks.
 
 ### Added
 - **Multi-path skill discovery** (#182) — Skills are now loaded from 9 priority paths (`.jyc/skills/` → `.claude/skills/` → `.agent/skills/` → user home → system), with higher-priority paths overriding same-named skills from lower-priority paths. Supports YAML frontmatter with block scalar descriptions.
-- **Dashboard skills display** (#184) — Dashboard TUI detail panel now shows the list of skills loaded for each thread.
+- **Dashboard skills display** (#184) — Dashboard TUI detail panel now shows the list of skills loaded for each topic.
 
 ### Fixed
 - **Read tool symlink support** — `read` tool now follows symlinks within the working directory (previously rejected symlinks as "outside working directory").
@@ -2581,7 +2591,7 @@ will produce progress replies automatically for long-running tasks.
 - **Multi-agent workflow refactor** — Developer agent is now a persistent reactive agent (#59), label-based reviewer trigger (#74), removed trigger_mode (#76), unconditional hand-off (#78, #85)
 - **Pattern mode triggers issue/PR directly** — No longer relies solely on comments (#69)
 - **AND/OR label logic** — LabelRule supports CNF nested array boolean combinations (#83)
-- **Dashboard TUI shows thread last active time** (#81)
+- **Dashboard TUI shows topic last active time** (#81)
 - **deploy-templates supports --as flag** (#87), integrated into jyc CLI (#94)
 - **Comment filtering for closed issues/PRs** (#89)
 - **Main branch protection** (#65)
@@ -2599,7 +2609,7 @@ will produce progress replies automatically for long-running tasks.
 
 - **README documentation updates** (#96, #98)
 - **Developer agent template simplification** (#59)
-- **Removed config-level model-override** (#67) — per-thread `.jyc/model-override` still supported via `/model` command
+- **Removed config-level model-override** (#67) — per-topic `.jyc/model-override` still supported via `/model` command
 - **Removed @j:role mentions, use label-based handover instead** (#76)
 - **Dockerfile optimization for dummy main caching** (#57)
 
@@ -2615,14 +2625,14 @@ will produce progress replies automatically for long-running tasks.
 - `[inspect]` config section: `enabled`, `bind` (default `127.0.0.1:9876`)
 - TCP-based JSON line protocol for querying runtime state
 - `jyc dashboard` CLI command with ratatui TUI
-- Panels: channels bar, threads table (selectable), detail panel, status bar
-- Shows: thread name, channel, pattern, status, model, mode, token usage, uptime, version
+- Panels: channels bar, topics table (selectable), detail panel, status bar
+- Shows: topic name, channel, pattern, status, model, mode, token usage, uptime, version
 - Key bindings: q/Esc quit, Up/Down/j/k select, r refresh
 - Auto-polls every 500ms, handles disconnected state gracefully
 - Works across Docker (via `network_mode: host`) and bare metal
 
 **MetricsCollector** — Lightweight replacement for AlertService
-- Accumulates health stats (messages received/processed, errors, per-thread) in `Arc<Mutex<>>`
+- Accumulates health stats (messages received/processed, errors, per-topic) in `Arc<Mutex<>>`
 - Queryable by the inspect server — no email dependency
 - `MetricsHandle` for components to report events (same API as old `AppLogger`)
 
@@ -2637,9 +2647,9 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
-**ThreadManager** — Added introspection for dashboard
+**TopicManager** — Added introspection for dashboard
 - `channel_name` and `workspace_dir` fields for identifying channel ownership
-- `list_threads()` method: returns thread info by reading `.jyc/` state files
+- `list_topics()` method: returns topic info by reading `.jyc/` state files
 - `channel_name()`, `max_concurrent()` accessor methods
 
 ## [0.1.10] - 2026-04-20
@@ -2712,8 +2722,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Fixed
 
-**Worker Semaphore Permit Release** — Fix resource leak on thread close
-- Workers now properly release semaphore permits when closing threads
+**Worker Semaphore Permit Release** — Fix resource leak on topic close
+- Workers now properly release semaphore permits when closing topics
 - Prevents thread pool exhaustion
 
 **GitHub Self-Loop Prevention** — Replaces global `[Role]` prefix filter
@@ -2798,18 +2808,18 @@ will produce progress replies automatically for long-running tasks.
 - pypdf fallback for text-based PDF extraction
 - Zip export of monthly invoice folders
 - QR code image detection and filtering (skip small images, prefer download URLs)
-- `agents.invoice.example.md` template for invoice processing threads
+- `agents.invoice.example.md` template for invoice processing topics
 
-**Thread Name Override** — Fixed thread routing from config
-- `thread_name` field on `ChannelPattern` for routing all matching messages to a fixed thread
+**Topic Name Override** — Fixed topic routing from config
+- `topic_name` field on `ChannelPattern` for routing all matching messages to a fixed topic
 - Channel-agnostic: works for email, Feishu, and any future channel
-- Example: all invoice emails → `invoice-processing` thread regardless of subject
+- Example: all invoice emails → `invoice-processing` topic regardless of subject
 
 **MCP Question Tool** — Ask users questions and wait for answers
 - `ask_user` tool with self-delivery (writes reply.md + signal file)
 - Background delivery watcher (`pending_delivery.rs`) delivers messages during SSE stream
 - 5-minute polling timeout for user response
-- Thread manager routes next message as answer via `question-sent.flag`
+- Topic manager routes next message as answer via `question-sent.flag`
 
 **Skills**
 - `invoice-processing` — complete invoice workflow with templates
@@ -2818,11 +2828,11 @@ will produce progress replies automatically for long-running tasks.
 - `pr-review` — read-only PR analysis via gh CLI
 - `github-dev` — GitHub issue/PR development workflow (removed with GitHub channel)
 
-**Thread Close** — `/close` command and Feishu disband event
-- `/close` command to delete thread directory and clean up state
-- Feishu `im.chat.disbanded_v1` event detection for automatic thread cleanup
+**Topic Close** — `/close` command and Feishu disband event
+- `/close` command to delete topic directory and clean up state
+- Feishu `im.chat.disbanded_v1` event detection for automatic topic cleanup
 
-**Central Path Resolution** — `thread_path.rs` module
+**Central Path Resolution** — `topic_path.rs` module
 - `resolve_workspace()` function for consistent path construction
 - 10 end-to-end tests covering email, Feishu, config override, and attachment paths
 
@@ -2835,7 +2845,7 @@ will produce progress replies automatically for long-running tasks.
 
 **Attachment Handling**
 - Fixed double-nested attachment directory path (`workspace/channel/workspace/` → `workspace/`)
-- Moved attachment saving to after thread routing (correct directory with `thread_name` override)
+- Moved attachment saving to after topic routing (correct directory with `topic_name` override)
 - Reply delivery moved from `messages/<dir>/reply.md` to `.jyc/reply.md`
 
 **Question Tool Delivery**
@@ -2844,7 +2854,7 @@ will produce progress replies automatically for long-running tasks.
 - SSE handler detects `ask_user` tool completion alongside `reply_message`
 
 **Permissions**
-- `external_directory: allow` for threads with symlinks (prevents plan mode sub-agent deadlock)
+- `external_directory: allow` for topics with symlinks (prevents plan mode sub-agent deadlock)
 - Auto-detect symlinks up to 3 levels deep for permission configuration
 
 **Activity Timeouts**
@@ -2865,17 +2875,17 @@ will produce progress replies automatically for long-running tasks.
 - GitHub channel (`src/channels/github/`, `GITHUB_CHANNEL.md`, `agents.github-dev.example.md`)
 - `labels` field from `PatternRules`
 - Dead quoted history functions and tests (600 lines)
-- Dead `thread_path` functions (unused resolve helpers)
+- Dead `topic_path` functions (unused resolve helpers)
 - `messages/` directory references (replaced by `.jyc/` and chat log)
 
 ## [0.1.7] - 2026-04-11
 
 ### Added
 
-- **Thread Template** — Initialize threads with predefined files and directories
+- **Topic Template** — Initialize topics with predefined files and directories
   - Pattern-level template configuration (`template = "name"` in config.toml)
-  - Template files copied to thread directory on first message
-  - `/template` command to re-apply template to existing thread
+  - Template files copied to topic directory on first message
+  - `/template` command to re-apply template to existing topic
   - `copy_template_files` shared utility function
 
 - **chat_name prefix matching** — Feishu chat_name pattern now uses prefix match instead of exact match
@@ -3057,11 +3067,11 @@ max_input_tokens = 122880
 - Removed timestamped directory creation logic from `MessageStorage::store_with_match()`
 - All messages and replies now append to daily chat log files
 - `store_reply()` no longer creates separate `reply.md` files
-- **Backward compatibility**: `email_parser::build_thread_trail()` reads from logs first, falls back to directory storage if needed
+- **Backward compatibility**: `email_parser::build_topic_trail()` reads from logs first, falls back to directory storage if needed
 
 **Email Parser Enhancements** — Log-aware history building
 - New `parse_chat_log_entry()` function for parsing log entries
-- `build_thread_trail_from_logs()` reads conversation history from chat logs
+- `build_topic_trail_from_logs()` reads conversation history from chat logs
 - Maintains compatibility with existing directory-based storage during transition
 
 ### Fixed
@@ -3109,17 +3119,17 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Real-time WebSocket connection via openlark SDK (`LarkWsClient`)
 - Message receiving: text, image, file, and interactive (card) message types
 - Message sending via Feishu IM API (`CreateMessageRequest`)
-- Chat/user name lookup with in-memory caching (readable thread directories)
+- Chat/user name lookup with in-memory caching (readable topic directories)
 - @mention placeholder stripping (replaces `@_user_1` with `@displayname`)
 - WebSocket reconnection with configurable backoff
 - `FEISHU.md` onboarding guide with required scopes, setup steps, troubleshooting
 
 **Channel-Agnostic Architecture**
-- `ChannelMatcher` trait: split from `InboundAdapter` for pure-logic pattern matching and thread name derivation
+- `ChannelMatcher` trait: split from `InboundAdapter` for pure-logic pattern matching and topic name derivation
 - `EmailMatcher` and `FeishuMatcher` stateless implementations
 - `MessageRouter.route()`: channel-agnostic, delegates to `&dyn ChannelMatcher`
 - `OutboundAdapter` trait: `clean_body()` for channel-specific body cleaning, `send_reply()` with full lifecycle (format + send + store)
-- `ThreadManager`, `AlertService`, `process_message`: all use `Arc<dyn OutboundAdapter>` instead of `Arc<EmailOutboundAdapter>`
+- `TopicManager`, `AlertService`, `process_message`: all use `Arc<dyn OutboundAdapter>` instead of `Arc<EmailOutboundAdapter>`
 
 **Pattern Matching**
 - `mentions`: match Feishu messages by @-mentioned bot/user names or IDs (OR logic)
@@ -3138,7 +3148,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Connection/timeout errors: reconnect + retry (2 attempts)
 
 **Security**
-- `"external_directory": "deny"` in in-process agent permissions — blocks AI from accessing files outside the thread directory
+- `"external_directory": "deny"` in in-process agent permissions — blocks AI from accessing files outside the topic directory
 
 **Build**
 - `protobuf-compiler` added as build prerequisite (required by `lark-websocket-protobuf`)
@@ -3148,7 +3158,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - **MCP Reply Tool**: no longer sends messages directly. Writes `reply.md` + signal file; monitor process delivers via pre-warmed outbound adapter. Eliminates cold-start timeouts for Feishu API calls.
 - **BUILD MODE Prompt**: categorizes messages — information questions (→ use `curl`), coding tasks (→ use tools), general conversation (→ reply directly). Prevents AI from exploring the filesystem for simple questions.
 - **Email Quoted History**: truncated to 1024 characters per entry (`MAX_QUOTED_BODY_CHARS`) with `...[truncated]` suffix
-- **ThreadManager**: uses `cancel.child_token()` — one channel shutting down no longer kills other channels
+- **TopicManager**: uses `cancel.child_token()` — one channel shutting down no longer kills other channels
 - **Heartbeat Interval**: default changed from 2 minutes to 10 minutes (avoids SMTP rate limits)
 - **MCP Tool Timeout**: increased from 60s to 180s
 - **System Prompt**: updated default to instruct AI to use tools for real-time information lookup
@@ -3164,9 +3174,9 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Removed
 
 - Dead `[agent.progress]` / `ProgressConfig` config and `DEFAULT_PROGRESS_*` constants
-- Dead `include_thread_history` config field
+- Dead `include_topic_history` config field
 - Dead `workspace` field on `ChannelConfig`
-- `feishu_` prefix from thread directory names (now consistent with email: just the chat/subject name)
+- `feishu_` prefix from topic directory names (now consistent with email: just the chat/subject name)
 
 ## [0.0.13] - 2026-04-05
 
@@ -3193,7 +3203,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 - **OutboundAdapter trait**: Added `send_heartbeat()` method for progress updates
 - **Channel registry**: Extended to support Feishu channel type
-- **Thread naming**: Enhanced to support Feishu chat metadata
+- **Topic naming**: Enhanced to support Feishu chat metadata
 - **Test suite**: Expanded to 115 tests with Feishu component tests
 
 ### Fixed
@@ -3208,7 +3218,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - **WebSocket Protocol**: Implements Feishu's custom WebSocket protocol
 - **Authentication**: App token management with automatic refresh
 - **Message Formatting**: Support for Feishu's rich message formats
-- **Thread Compatibility**: Seamless integration with existing thread management
+- **Topic Compatibility**: Seamless integration with existing topic management
 
 ## [0.0.12] - 2026-04-02
 
@@ -3217,7 +3227,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 **Skill-based bootstrapping (replaces per-prompt system.md)**
 - Migrate bootstrapping instructions from `system.md` (sent every prompt) to in-process agent's native discovery mechanisms
 - `AGENTS.md` (project-level): project context, tech stack, coding conventions, git rules, dev workflow
-- `agents.example.md`: template for thread-level AGENTS.md with self-bootstrapping context and environment hint
+- `agents.example.md`: template for topic-level AGENTS.md with self-bootstrapping context and environment hint
 - `.agent/skills/jyc-deploy-bare/SKILL.md`: on-demand skill for bare metal deployment (deploy.sh + nohup)
 - `.agent/skills/jyc-deploy-docker/SKILL.md`: on-demand skill for Docker deployment (s6 process supervisor)
 - Skills loaded by AI only when needed, reducing prompt size and improving performance
@@ -3234,7 +3244,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 **Multiple reply support**
 - Reply context file (`.jyc/reply-context.json`) now persists between replies instead of being deleted after each send
-- Allows AI models to send multiple replies in the same thread without file-not-found errors
+- Allows AI models to send multiple replies in the same topic without file-not-found errors
 - Context file is overwritten on each new incoming message; cleanup only for tests and manual operations
 - Updated documentation in `DESIGN.md` to reflect new lifecycle
 
@@ -3244,7 +3254,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Add 5s timeout to IMAP logout to prevent 15-min hang on dead connections (TCP retransmission timeout)
 - Remove fatal retry limit — monitor retries indefinitely at max backoff instead of giving up after 5 failures
 - Force disconnect after `check_for_new()` failure to avoid entering IDLE on a dead connection
-- Clean up closed senders from thread_queues to prevent unbounded HashMap growth
+- Clean up closed senders from topic_queues to prevent unbounded HashMap growth
 - Drain completed worker JoinHandles when spawning new workers
 - Add UID compaction to StateManager (auto-prune when exceeding 5000 entries)
 - Share `reqwest::Client` across in-process agent requests (connection pool reuse)
@@ -3267,7 +3277,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 **Live message injection**
 - Follow-up messages sent during AI processing are injected into the ongoing session via `prompt_async`
-- Queue receiver (`rx`) flows through: ThreadManager → AgentService → AgentService → SSE Client
+- Queue receiver (`rx`) flows through: TopicManager → AgentService → AgentService → SSE Client
 - New `tokio::select!` arm in SSE loop monitors `pending_rx.recv()` for incoming messages
 - Injected messages: stored as `received.md`, reply-context.json updated, body sent as raw prompt (same as in-process agent TUI)
 - agent API `POST /session/:id/prompt_async` supports sending to busy sessions
@@ -3295,7 +3305,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - New `/reset` command that deletes `.jyc/agent-session.json`
 - Allows users to manually reset the AI conversation session
 - Next AI prompt after reset starts with a fresh session
-- Session state tracked per-thread in `.jyc/agent-session.json`
+- Session state tracked per-topic in `.jyc/agent-session.json`
 
 ### Changed
 
@@ -3339,7 +3349,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Changed
 
 **Disk-based reply context (replaces REPLY_TOKEN)**
-- Reply context saved to `.jyc/reply-context.json` per-thread before AI prompt
+- Reply context saved to `.jyc/reply-context.json` per-topic before AI prompt
 - MCP reply tool reads context from disk (cwd) instead of decoding a base64 token
 - AI never sees or touches the context — zero corruption risk
 - `token` parameter removed from `reply_message` tool schema — only `message` and `attachments`
@@ -3376,7 +3386,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Duplicate `m` field in `ai` span fixed — recorded once when model discovered
 - Duplicate tool logs deduplicated with HashSet per step
 - Tool input shown in logs (`Tool running tool=bash input="cargo build"`)
-- Duplicate "Reply sent by MCP tool" log removed from thread_manager
+- Duplicate "Reply sent by MCP tool" log removed from topic_manager
 - Session reuse: `get_session` now sends `x-agent-directory` header
 - Debug logging for `config_changed` and `get_session` response status
 
@@ -3408,7 +3418,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - `build_conversation_history()` function removed (dead code)
 - `include_history` parameter removed from `build_prompt()`
 - System prompt simplified — no "Conversation history" section reference
-- `include_thread_history` config field deprecated (kept for backward compat but ignored)
+- `include_topic_history` config field deprecated (kept for backward compat but ignored)
 
 **DESIGN.md comprehensive update**
 - Removed all jiny-m references (moved to IMPLEMENTATION.md)
@@ -3419,7 +3429,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Data Flow Summary, sequence diagram, block diagrams: all updated
 - MCP Tool section: reads from disk, not token
 - Stripping Strategy table: removed AI Prompt Context row
-- Config example: removed `include_thread_history`
+- Config example: removed `include_topic_history`
 
 **Cargo.toml description**
 - Removed "Rust rewrite of jiny-m" — JYC is its own project
@@ -3429,8 +3439,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Changed
 
 **Minimal reply context token (corruption-proof)**
-- Token slimmed from 12 fields to 5: `channel`, `threadName`, `incomingMessageDir`, `uid`, `_nonce`
-- All message metadata (sender, recipient, topic, threading headers) now read from stored `received.md` frontmatter — NOT from the AI-passed token
+- Token slimmed from 12 fields to 5: `channel`, `topicName`, `incomingMessageDir`, `uid`, `_nonce`
+- All message metadata (sender, recipient, topic, References headers) now read from stored `received.md` frontmatter — NOT from the AI-passed token
 - Prevents AI model corruption (e.g., `petalmail.com` → `petailmail.com` causing bounced emails)
 - Token is now ~120 bytes base64 instead of ~400 bytes — shorter = less corruption risk
 - Switched to standard base64 (with padding) matching jiny-m's format
@@ -3441,7 +3451,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - All token logic (struct, serialize, deserialize, validate) in one place
 
 **Enriched received.md frontmatter**
-- Added `sender`, `sender_address`, `external_id`, `reply_to_id`, `thread_refs`, `matched_pattern` to YAML frontmatter
+- Added `sender`, `sender_address`, `external_id`, `reply_to_id`, `references`, `matched_pattern` to YAML frontmatter
 - Reply tool reads all metadata from disk (authoritative source) instead of trusting token
 - `parse_stored_message()` extracts all new frontmatter fields
 
@@ -3462,7 +3472,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Added
 
 **Phase 6: Resilience + Polish**
-- Alert service (`src/core/alert_service.rs`): background task buffers ERROR events, flushes as digest emails at configured intervals. Health check reports with per-thread stats at configured intervals. Self-protection via `eprintln` for send failures (no feedback loop).
+- Alert service (`src/core/alert_service.rs`): background task buffers ERROR events, flushes as digest emails at configured intervals. Health check reports with per-topic stats at configured intervals. Self-protection via `eprintln` for send failures (no feedback loop).
 - `AppLogger` — unified logging + alerting handle. Components call `app_logger.info()`, `.error()`, `.message_received()`, `.reply_by_tool()` etc. Each call delegates to `tracing` for console output AND sends structured events to the alert service for stats tracking + error buffering. Replaces separate `tracing` + `AlertHandle` dependencies.
 - Progress tracker (`src/core/progress_tracker.rs`): sends periodic "still working" emails during long AI operations. Configurable initial delay (default 3 min), interval (default 3 min), max messages (default 5). Polling every 5s with `tokio::time::interval`.
 - Startup notification email: sent on monitor start with version, timestamp, channel count, agent mode
@@ -3471,7 +3481,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ### Changed
 - `/model` with no args now shows current model (from override or config default) instead of "not yet implemented"
 - `AlertHandle` renamed to `AppLogger` to reflect its dual role as logger + alerter
-- Structured logging: `channel=` and `thread=` fields added consistently to all key log lines across IMAP monitor, message router, thread manager, and agent service. Enables easy filtering by channel or thread in production logs.
+- Structured logging: `channel=` and `topic=` fields added consistently to all key log lines across IMAP monitor, message router, topic manager, and agent service. Enables easy filtering by channel or topic in production logs.
 
 ### Fixed
 - Error handling audit: all production `unwrap()` calls verified safe (static regex, guarded strip_prefix)
@@ -3486,13 +3496,13 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Reply context deserialization (`src/mcp/context.rs`): base64 → JSON → validation with tamper detection
 - `/model <id>`, `/model reset` command handler — writes `.jyc/model-override`, forces new session
 - `/plan`, `/build` command handlers — writes/removes `.jyc/mode-override`
-- Commands wired into thread_manager: parse → execute → reply results → strip → check body → dispatch to agent
+- Commands wired into topic_manager: parse → execute → reply results → strip → check body → dispatch to agent
 
 **Architecture: AgentService trait**
-- `AgentService` trait (`src/services/agent.rs`): `process(message, thread_name, thread_path, message_dir) → AgentResult`
+- `AgentService` trait (`src/services/agent.rs`): `process(message, topic_name, topic_path, message_dir) → AgentResult`
 - `StaticAgentService` (`src/services/static_agent.rs`): fixed text reply with quoted history
 - `AgentService` implements `AgentService`: owns full reply lifecycle (AI interaction + fallback send + storage)
-- ThreadManager dispatches via `Arc<dyn AgentService>` — zero mode-specific code
+- TopicManager dispatches via `Arc<dyn AgentService>` — zero mode-specific code
 - Adding new agent modes requires only: implement trait + match arm in `cli/monitor.rs`
 
 **File attachment support**
@@ -3529,16 +3539,16 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - agent HTTP client: `create_session`, `get_session`, `prompt_async`, `prompt_blocking` with `x-agent-directory` header and `?directory=` query param
 - SSE streaming: subscribe to `/event?directory=`, parse events from JSON `{"type": "...", "properties": {...}}` format, activity-based timeout (30min default, 60min when tool running), progress logging with model info
 - SSE event handling: `server.connected`, `server.heartbeat`, `message.updated` (model/provider capture), `message.part.updated` (tool state tracking), `session.status`, `session.idle`, `session.error`
-- Session management: per-thread `.jyc/session.json`, fresh session per prompt (avoids stale sessions across server restarts), `agent config` generation with staleness check
+- Session management: per-topic `.jyc/session.json`, fresh session per prompt (avoids stale sessions across server restarts), `agent config` generation with staleness check
 - Prompt builder: system prompt (config + directory boundaries + reply instructions + system.md), user prompt (conversation history + incoming body + base64 reply_context token)
-- AgentService (`src/services/agent/service.rs`): encapsulates all AI logic — server lifecycle, sessions, prompts, SSE, error recovery. Returns `GenerateReplyResult` to ThreadManager.
+- AgentService (`src/services/agent/service.rs`): encapsulates all AI logic — server lifecycle, sessions, prompts, SSE, error recovery. Returns `GenerateReplyResult` to TopicManager.
 - ContextOverflow recovery: delete session, create new, retry with blocking prompt
 - Stale session detection: tool reported success in SSE but signal file missing → delete + retry
 - Fallback reply with quoted history: `build_full_reply_text()` shared function for both fallback and future MCP reply tool
 - Prompt echo stripping: removes `## Incoming Message`, `<reply_context>`, `## Conversation history` markers from AI output when tool fails
 
-**Architecture: ThreadManager ↔ AgentService separation**
-- ThreadManager: queue management, concurrency control, agent mode dispatch, fallback send
+**Architecture: TopicManager ↔ AgentService separation**
+- TopicManager: queue management, concurrency control, agent mode dispatch, fallback send
 - AgentService: AI-specific logic isolated from infrastructure. Does NOT send emails.
 
 ### Changed
@@ -3551,7 +3561,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - agent service command: `jyc server` → `jyc serve` with `--hostname=` / `--port=` syntax
 - agent service readiness: detect by parsing stdout for `"jyc server listening on http://..."` instead of HTTP polling
 - SSE event parsing: event type is in JSON `data.type` field, not SSE `event:` field
-- SSE subscription: added `?directory=` query param to scope events to thread project context
+- SSE subscription: added `?directory=` query param to scope events to topic project context
 - Explicit `agent_server.stop()` on graceful shutdown
 
 ## [0.0.1] - 2026-03-27
@@ -3574,19 +3584,19 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 **Phase 2: Email I/O Layer**
 - IMAP client wrapper (`async-imap` + `async-native-tls`) with TLS, login, SELECT, FETCH by UID/range, IDLE support, and disconnect
 - IMAP ID command (RFC 2971) sent after login — required by 163.com (NetEase) to avoid "Unsafe Login" rejection
-- Email parser: `strip_reply_prefix` (Re:/Fwd:/回复:/转发:), `derive_thread_name`, `strip_quoted_history`, `clean_email_body`, `truncate_text`, `parse_stored_message`, `parse_stored_reply`, `format_quoted_reply`
+- Email parser: `strip_reply_prefix` (Re:/Fwd:/回复:/转发:), `derive_topic_name`, `strip_quoted_history`, `clean_email_body`, `truncate_text`, `parse_stored_message`, `parse_stored_reply`, `format_quoted_reply`
 - Email inbound adapter: `mail-parser` raw bytes → `InboundMessage` with boundary cleaning; pattern matching (sender exact/domain/regex + subject prefix/regex, AND logic, first match wins)
-- SMTP client (`lettre`) with TLS, threading headers (`In-Reply-To`, `References`), markdown→HTML via `comrak` (GFM), auto-reconnect on connection errors
+- SMTP client (`lettre`) with TLS, References headers (`In-Reply-To`, `References`), markdown→HTML via `comrak` (GFM), auto-reconnect on connection errors
 - HTML→Markdown conversion via `htmd`
 - Email outbound adapter: `send_reply`, `send_alert`, `send_progress_update` — thread-safe via `Arc<Mutex<SmtpClient>>`
 - Per-channel state manager: `.imap/.state.json` + `.processed-uids.txt` for IMAP sequence tracking and UID deduplication
 
 **Phase 3: Core Processing Pipeline**
 - Message storage: `received.md` with YAML frontmatter, `reply.md`, attachment saving with extension allowlist, size limits, collision resolution
-- Thread manager: per-thread `tokio::sync::mpsc` channels with `Semaphore`-bounded concurrency (configurable `max_concurrent_threads`)
-- Message router: delegates pattern matching to channel adapter, derives thread name, dispatches to thread manager
+- Topic manager: per-topic `tokio::sync::mpsc` channels with `Semaphore`-bounded concurrency (configurable `max_concurrent_topics`)
+- Message router: delegates pattern matching to channel adapter, derives topic name, dispatches to topic manager
 - IMAP monitor: connect → SELECT → check_for_new → IDLE/poll → loop; exponential backoff on errors; recovery on message deletion; first-run only processes latest message
-- Full `jyc monitor` wiring: load config → validate → Ctrl+C handler → per-channel SMTP connect → ThreadManager → Router → StateManager → spawn ImapMonitor tasks → await shutdown
+- Full `jyc monitor` wiring: load config → validate → Ctrl+C handler → per-channel SMTP connect → TopicManager → Router → StateManager → spawn ImapMonitor tasks → await shutdown
 - Placeholder reply in in-process agent mode (sends confirmation email with message metadata until Phase 4 AI integration)
 
 ### Directory Layout
@@ -3599,7 +3609,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 │   │   ├── .state.json
 │   │   └── .processed-uids.txt
 │   └── workspace/
-│       └── <thread>/
+│       └── <topic>/
 │           ├── messages/<timestamp>/
 │           │   ├── received.md
 │           │   └── reply.md

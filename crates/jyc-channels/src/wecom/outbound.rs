@@ -144,7 +144,7 @@ impl OutboundAdapter for WecomOutboundAdapter {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
@@ -194,7 +194,7 @@ impl OutboundAdapter for WecomOutboundAdapter {
 
         // Store the reply
         self.storage
-            .store_reply(thread_path, reply_text, message_dir)
+            .store_reply(topic_path, reply_text, message_dir)
             .await
             .context("failed to store WeCom reply")?;
 
@@ -268,7 +268,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],

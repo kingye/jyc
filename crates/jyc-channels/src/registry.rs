@@ -61,7 +61,7 @@ mod tests {
         fn channel_type(&self) -> &str {
             "test"
         }
-        fn derive_thread_name(
+        fn derive_topic_name(
             &self,
             _message: &InboundMessage,
             _patterns: &[ChannelPattern],
@@ -107,7 +107,7 @@ mod tests {
             &self,
             _original: &jyc_types::InboundMessage,
             _reply_text: &str,
-            _thread_path: &std::path::Path,
+            _topic_path: &std::path::Path,
             _message_dir: &str,
             _attachments: Option<&[jyc_types::OutboundAttachment]>,
         ) -> anyhow::Result<jyc_types::SendResult> {

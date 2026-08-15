@@ -77,7 +77,7 @@ impl JycAgentService {
     /// - `exclude`: if set, skills whose names appear in this list are removed
     pub fn discover_skills(
         &self,
-        thread_path: &Path,
+        topic_path: &Path,
         include: Option<&[String]>,
         exclude: Option<&[String]>,
     ) -> Vec<SkillMeta> {
@@ -102,19 +102,19 @@ impl JycAgentService {
             // L2: {workdir}/skills/
             paths.push(self.workdir.join("skills"));
 
-            // {thread_path}/repo/.claude/skills/
-            paths.push(thread_path.join("repo/.claude/skills"));
-            // {thread_path}/repo/.opencode/skills/
-            paths.push(thread_path.join("repo/.opencode/skills"));
-            // {thread_path}/repo/.jyc/skills/
-            paths.push(thread_path.join("repo/.jyc/skills"));
+            // {topic_path}/repo/.claude/skills/
+            paths.push(topic_path.join("repo/.claude/skills"));
+            // {topic_path}/repo/.opencode/skills/
+            paths.push(topic_path.join("repo/.opencode/skills"));
+            // {topic_path}/repo/.jyc/skills/
+            paths.push(topic_path.join("repo/.jyc/skills"));
 
-            // {thread_path}/.claude/skills/
-            paths.push(thread_path.join(".claude/skills"));
-            // {thread_path}/.opencode/skills/
-            paths.push(thread_path.join(".opencode/skills"));
-            // {thread_path}/.jyc/skills/
-            paths.push(thread_path.join(".jyc/skills"));
+            // {topic_path}/.claude/skills/
+            paths.push(topic_path.join(".claude/skills"));
+            // {topic_path}/.opencode/skills/
+            paths.push(topic_path.join(".opencode/skills"));
+            // {topic_path}/.jyc/skills/
+            paths.push(topic_path.join(".jyc/skills"));
 
             paths
         };
@@ -172,7 +172,7 @@ impl JycAgentService {
         result.sort_by(|a, b| a.name.cmp(&b.name));
 
         tracing::info!(
-            thread_path = %thread_path.display(),
+            topic_path = %topic_path.display(),
             skills = ?result.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             "Discovered {} skill(s)", result.len()
         );
@@ -181,11 +181,11 @@ impl JycAgentService {
     }
 }
 
-/// Persist skill names to the thread's .jyc/skills.json file.
+/// Persist skill names to the topic's .jyc/skills.json file.
 ///
 /// This allows the dashboard to read the skills list without re-scanning directories.
-pub(crate) fn persist_skill_names(thread_path: &Path, skill_names: &[&str]) -> Result<()> {
-    let jyc_dir = thread_path.join(".jyc");
+pub(crate) fn persist_skill_names(topic_path: &Path, skill_names: &[&str]) -> Result<()> {
+    let jyc_dir = topic_path.join(".jyc");
     std::fs::create_dir_all(&jyc_dir)
         .with_context(|| format!("Failed to create .jyc dir: {}", jyc_dir.display()))?;
     let skills_path = jyc_dir.join("skills.json");

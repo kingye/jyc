@@ -18,11 +18,11 @@ impl jyc_core::agent::AgentService for MockAgent {
     async fn process(
         &self,
         _message: &jyc_types::InboundMessage,
-        _thread_name: &str,
-        _thread_path: &Path,
+        _topic_name: &str,
+        _topic_path: &Path,
         _message_dir: &str,
         _pending_rx: &mut tokio::sync::mpsc::Receiver<jyc_types::QueueItem>,
-        _thread_cancel: CancellationToken,
+        _topic_cancel: CancellationToken,
     ) -> anyhow::Result<jyc_core::agent::AgentResult> {
         Ok(jyc_core::agent::AgentResult {
             reply_sent_by_tool: false,
@@ -32,8 +32,8 @@ impl jyc_core::agent::AgentService for MockAgent {
 
     async fn reset_session(
         &self,
-        _thread_path: &Path,
-        _thread_name: &str,
+        _topic_path: &Path,
+        _topic_name: &str,
         _config: &jyc_types::channel::ResetCompressionConfig,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -65,7 +65,7 @@ impl jyc_types::OutboundAdapter for MockOutbound {
         &self,
         _original: &jyc_types::InboundMessage,
         _reply_text: &str,
-        _thread_path: &Path,
+        _topic_path: &Path,
         _message_dir: &str,
         _attachments: Option<&[jyc_types::OutboundAttachment]>,
     ) -> anyhow::Result<jyc_types::SendResult> {
@@ -172,8 +172,8 @@ async fn test_dynamic_pattern_reload() {
         tmpdir.path(),
     ));
 
-    // Create ThreadManager with mocks
-    let thread_manager = Arc::new(jyc_core::thread_manager::ThreadManager::new(
+    // Create TopicManager with mocks
+    let topic_manager = Arc::new(jyc_core::topic_manager::TopicManager::new(
         1,
         10,
         storage.clone(),
@@ -191,7 +191,7 @@ async fn test_dynamic_pattern_reload() {
 
     // Create MessageRouter
     let router = jyc_core::message_router::MessageRouter::new(
-        thread_manager,
+        topic_manager,
         storage,
         config_swap.clone(),
         "test_channel".to_string(),
@@ -226,7 +226,7 @@ async fn test_channel_orchestrator_reload() {
     );
 
     // Initially empty
-    let tms = orchestrator.thread_managers().load();
+    let tms = orchestrator.topic_managers().load();
     assert!(tms.is_empty());
 
     // Update config: remove the channel
@@ -240,7 +240,7 @@ async fn test_channel_orchestrator_reload() {
     orchestrator.reload().await.unwrap();
 
     // Still empty (no channels registered, so nothing to remove)
-    let tms = orchestrator.thread_managers().load();
+    let tms = orchestrator.topic_managers().load();
     assert!(tms.is_empty());
 }
 
@@ -256,7 +256,7 @@ async fn test_channel_orchestrator_register_and_remove() {
         tmpdir.path(),
     );
 
-    // Create a mock thread manager
+    // Create a mock topic manager
     let cancel = CancellationToken::new();
     let metrics_collector = jyc_core::metrics::MetricsCollector::new(cancel.clone());
     let (metrics_handle, _shared_stats, _metrics_task) = metrics_collector.start();
@@ -264,7 +264,7 @@ async fn test_channel_orchestrator_register_and_remove() {
     let storage = Arc::new(jyc_core::message_storage::MessageStorage::new(
         tmpdir.path(),
     ));
-    let thread_manager = Arc::new(jyc_core::thread_manager::ThreadManager::new(
+    let topic_manager = Arc::new(jyc_core::topic_manager::TopicManager::new(
         1,
         10,
         storage,
@@ -293,7 +293,7 @@ async fn test_channel_orchestrator_register_and_remove() {
             "test_channel".to_string(),
             jyc_core::channel_orchestrator::ChannelHandle {
                 cancel: cancel.clone(),
-                thread_manager,
+                topic_manager,
                 channel_info,
                 workspace_dir: tmpdir.path().to_path_buf(),
             },
@@ -301,7 +301,7 @@ async fn test_channel_orchestrator_register_and_remove() {
         .await;
 
     // Verify the channel is registered
-    let tms = orchestrator.thread_managers().load();
+    let tms = orchestrator.topic_managers().load();
     assert_eq!(tms.len(), 1);
     assert_eq!(tms[0].channel_name(), "test_channel");
 
@@ -320,7 +320,7 @@ async fn test_channel_orchestrator_register_and_remove() {
     orchestrator.reload().await.unwrap();
 
     // Verify the channel is removed from shared state
-    let tms = orchestrator.thread_managers().load();
+    let tms = orchestrator.topic_managers().load();
     assert!(tms.is_empty());
 
     let infos = orchestrator.channel_infos().load();

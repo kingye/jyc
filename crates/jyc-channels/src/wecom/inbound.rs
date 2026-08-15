@@ -4,8 +4,8 @@
 //! Unlike WeChat's WebSocket or Feishu's WebSocket, WeCom uses HTTP callbacks:
 //! WeCom sends POST requests to the shared axum HTTP server at `/webhook/{channel_name}`.
 //!
-//! Thread name is derived from the `chat_id` field in the WeCom message metadata,
-//! following the pattern `{channel_name}_{sanitized_chat_id}` — one thread per chat group.
+//! Topic name is derived from the `chat_id` field in the WeCom message metadata,
+//! following the pattern `{channel_name}_{sanitized_chat_id}` — one topic per chat group.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use jyc_types::WecomConfig;
 /// - `sender`: match sender by exact address (shared with email/feishu/wechat)
 ///
 /// All present rules use AND logic. Empty rules match all messages.
-/// Thread name is derived from `metadata["chat_id"]`: `{channel_name}_{sanitized_chat_id}`.
+/// Topic name is derived from `metadata["chat_id"]`: `{channel_name}_{sanitized_chat_id}`.
 pub struct WecomMatcher;
 
 impl ChannelMatcher for WecomMatcher {
@@ -37,15 +37,15 @@ impl ChannelMatcher for WecomMatcher {
         "wecom"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Thread name is derived from chat_id + channel_name in metadata:
+        // Topic name is derived from chat_id + channel_name in metadata:
         // {channel_name}_{sanitized_chat_id} (e.g. "my_bot_wrOgQhDgA...")
-        // This ensures one thread per channel+group pair.
+        // This ensures one topic per channel+group pair.
         if let Some(chat_id) = message
             .metadata
             .get("chat_id")
@@ -163,7 +163,7 @@ pub fn wecom_match_message(
 /// 2. Runs until cancellation (the actual work is done by the server)
 pub struct WecomInboundAdapter {
     channel_name: String,
-    thread_name: String,
+    topic_name: String,
     config: WecomConfig,
     server: Arc<WecomWebhookServer>,
 }
@@ -173,7 +173,7 @@ impl WecomInboundAdapter {
     pub fn new(config: &WecomConfig, channel_name: &str, server: Arc<WecomWebhookServer>) -> Self {
         Self {
             channel_name: channel_name.to_string(),
-            thread_name: sanitize_for_filesystem(channel_name),
+            topic_name: sanitize_for_filesystem(channel_name),
             config: config.clone(),
             server,
         }
@@ -183,7 +183,7 @@ impl WecomInboundAdapter {
 async fn register_handler(
     config: &WecomConfig,
     channel_name: &str,
-    thread_name: &str,
+    topic_name: &str,
     on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
     server: Arc<WecomWebhookServer>,
 ) -> Result<()> {
@@ -214,7 +214,7 @@ async fn register_handler(
                     markdown: None,
                 },
                 timestamp: chrono::Utc::now(),
-                thread_refs: None,
+                references: None,
                 reply_to_id: None,
                 external_id: Some(parsed.msg_id.clone()),
                 attachments: vec![],
@@ -265,7 +265,7 @@ async fn register_handler(
 
     tracing::info!(
         channel = %channel_name,
-        thread = %thread_name,
+        topic = %topic_name,
         "WeCom inbound adapter registered webhook handler"
     );
 
@@ -277,17 +277,17 @@ impl ChannelMatcher for WecomInboundAdapter {
         "wecom"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
         // Delegate to `WecomMatcher` so the saver and the router agree
-        // on the thread name. They MUST agree — when they don't, the
+        // on the topic name. They MUST agree — when they don't, the
         // attachment saver writes to a different directory than where
-        // the agent thread actually runs.
-        WecomMatcher.derive_thread_name(message, patterns, pattern_match)
+        // the agent topic actually runs.
+        WecomMatcher.derive_topic_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -308,7 +308,7 @@ impl InboundAdapter for WecomInboundAdapter {
         register_handler(
             &self.config,
             &channel_name,
-            &self.thread_name,
+            &self.topic_name,
             options.on_message,
             self.server.clone(),
         )
@@ -355,7 +355,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name_from_chat_id() {
+    fn test_derive_topic_name_from_chat_id() {
         let matcher = WecomMatcher;
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -517,12 +517,12 @@ mod tests {
             serde_json::Value::String("my_bot".to_string()),
         );
         let msg = make_wecom_message("user1", "Hello", metadata);
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "my_bot_wr9876543210");
     }
 
     #[test]
-    fn test_derive_thread_name_from_chat_id_without_channel_name() {
+    fn test_derive_topic_name_from_chat_id_without_channel_name() {
         // If channel_name is missing from metadata, falls back to "wecom" prefix
         let matcher = WecomMatcher;
         let mut metadata = HashMap::new();
@@ -531,21 +531,21 @@ mod tests {
             serde_json::Value::String("wr9876543210".to_string()),
         );
         let msg = make_wecom_message("user1", "Hello", metadata);
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "wecom_wr9876543210");
     }
 
     #[test]
-    fn test_derive_thread_name_fallback() {
+    fn test_derive_topic_name_fallback() {
         let matcher = WecomMatcher;
         // No chat_id in metadata — falls back to sender_address
         let msg = make_wecom_message("wecom:my_bot", "Hello", HashMap::new());
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "my_bot");
     }
 
     #[test]
-    fn test_derive_thread_name_empty_chat_id_fallback() {
+    fn test_derive_topic_name_empty_chat_id_fallback() {
         let matcher = WecomMatcher;
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -557,12 +557,12 @@ mod tests {
             serde_json::Value::String("my_bot".to_string()),
         );
         let msg = make_wecom_message("wecom:fallback_bot", "Hello", metadata);
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "fallback_bot");
     }
 
     #[test]
-    fn test_adapter_derive_thread_name_matches_matcher() {
+    fn test_adapter_derive_topic_name_matches_matcher() {
         use crate::wecom::server::WecomWebhookServer;
         use std::sync::Arc;
 
@@ -588,8 +588,8 @@ mod tests {
         let mut msg = make_wecom_message("wecom:user1", "Hello", metadata);
         msg.sender_address = "wecom:user1".to_string();
 
-        let adapter_name = adapter.derive_thread_name(&msg, &[], None);
-        let matcher_name = WecomMatcher.derive_thread_name(&msg, &[], None);
+        let adapter_name = adapter.derive_topic_name(&msg, &[], None);
+        let matcher_name = WecomMatcher.derive_topic_name(&msg, &[], None);
         assert_eq!(adapter_name, matcher_name);
         assert_eq!(adapter_name, "my_bot_wr12345");
     }

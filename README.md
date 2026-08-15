@@ -92,15 +92,15 @@ JYC separates **user-edited configuration** from **generated data**, following p
 Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
 - **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`
-- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<thread>/`)
-- **L3 (thread)** — `<thread_path>/.jyc/`: `config.toml` (restricted `[agent]` model overrides), `skills/`, `templates/`, sessions, chat history
+- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`)
+- **L3 (topic)** — `<topic_path>/.jyc/`: `config.toml` (restricted `[agent]` model overrides), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:
 
 - **config.toml**: L2 is deep-merged over L1 (tables merge recursively, arrays/scalars are replaced). L3 only supports `[agent]` model overrides. Model precedence: `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config.
 - **skills**: all levels are scanned; higher levels override same-named skills.
 - **templates**: looked up L3 → L2 → L1; first match wins.
-- A pattern's custom `thread_path` (absolute or `~`) lives outside the data root; relative paths resolve against the data root. L3 applies to any thread directory, including ad-hoc ones (`jyc open <path>`).
+- A pattern's custom `topic_path` (absolute or `~`) lives outside the data root; relative paths resolve against the data root. L3 applies to any topic directory, including ad-hoc ones (`jyc open <path>`).
 
 ## Deployment
 
@@ -119,7 +119,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ Email (IMAP/SMTP)
 - **Status:** Production ready
-- **Features:** Full email support with threading, attachments, and HTML formatting
+- **Features:** Full email support with References, attachments, and HTML formatting
 - **Protocols:** IMAP for inbound, SMTP for outbound
 - **Authentication:** TLS/SSL with username/password or OAuth2
 
@@ -139,7 +139,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ WeChat
 - **Status:** Implemented in v0.3.9
-- **Features:** Single-bot, single-thread messaging via OpenILink Bridge WebSocket
+- **Features:** Single-bot, single-topic messaging via OpenILink Bridge WebSocket
 - **Protocols:** WebSocket for inbound and outbound
 - **Attachments:** Images, files, voice, and video
 
@@ -153,7 +153,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Status:** Implemented in v0.3.10
 - **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull
 - **Protocols:** Webhook events (inbound), REST API (outbound)
-- **Model:** One thread per customer per KF account
+- **Model:** One topic per customer per KF account
 
 ### ✅ WeCom Smart Robot (wecom_bot)
 - **Status:** Implemented in v0.3.11
@@ -190,16 +190,16 @@ Send commands at the top of an email body. These commands work across all channe
 
 | Command | Description |
 |---------|-------------|
-| `/model <id>` | Switch AI model for this thread |
+| `/model <id>` | Switch AI model for this topic |
 | `/model` | List available models |
 | `/model reset` | Reset to default model |
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (start fresh conversation) |
-| `/exchange` | Show shareable URLs for this thread's published files |
+| `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
-| `/close` | Close thread and delete directory (requires `--confirm` or `-y`) |
-| `/template` | Apply template files to thread (skip existing) |
+| `/close` | Close topic and delete directory (requires `--confirm` or `-y`) |
+| `/template` | Apply template files to topic (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
 
 ### Custom Commands
@@ -221,7 +221,7 @@ Report findings grouped by severity. Do not modify any code.
 
 Typing `/review` then:
 
-1. switches the thread to `mode` (when set),
+1. switches the topic to `mode` (when set),
 2. names the `skills` to use — the agent already receives every discovered
    skill's path and description, so naming them is enough for it to read the
    right `SKILL.md`,
@@ -243,9 +243,9 @@ focus on error handling
 shadow a built-in command from the table above. Invalid names are rejected at
 startup, not silently ignored.
 
-### Thread-Specific Customization
+### Topic-Specific Customization
 
-Place a `system.md` file in a thread's workspace directory to customize the AI's behavior for that thread. See `system.md.example` for a reference.
+Place a `system.md` file in a topic's workspace directory to customize the AI's behavior for that topic. See `system.md.example` for a reference.
 
 ## CLI Commands
 
@@ -271,11 +271,11 @@ jyc dashboard            # Live TUI dashboard (connects via inspect server)
                          #                     Also used for WebSocket chat on /ws
 #   --token <TOKEN>   Auth token. Falls back to $JYC_DASHBOARD_TOKEN,
 #                     then to <workdir>/auth.token
-                         #   Keyboard: q=quit, ↑/↓=select thread, r=refresh, c=chat pane
-jyc open                 # Create a new ad-hoc websocket thread and open chat
+                         #   Keyboard: q=quit, ↑/↓=select topic, r=refresh, c=chat pane
+jyc open                 # Create a new ad-hoc websocket topic and open chat
                          #   (shortcut for `jyc dashboard open`)
-                         #   -t, --thread <NAME>   Thread name (default: folder name of -p or CWD)
-                         #   -p, --path <PATH>     Thread working directory (default: CWD)
+                         #   -t, --topic <NAME>   Topic name (default: folder name of -p or CWD)
+                         #   -p, --path <PATH>     Topic working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
                          #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
 jyc config init        # Generate config template (in <config dir>, or --workdir)
@@ -305,7 +305,7 @@ JYC provides several MCP (Model Context Protocol) tools that the AI agent uses i
 | Tool | Description |
 |------|-------------|
 | `reply_message` | Send reply via the channel's outbound adapter. Reads routing info from `reply-context.json`, appends to chat log, writes signal file for delivery. |
-| `jyc_send_message` | Send proactive out-of-thread messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-thread replies. |
+| `jyc_send_message` | Send proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-topic replies. |
 | `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[[mcps]]` in `config.toml` (see `config.example.toml`). |
 | `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. |
 
@@ -317,7 +317,7 @@ JYC uses TOML configuration with environment variable substitution (`${VAR}`).
 
 Key sections:
 
-- **`[general]`** -- Concurrency settings (max threads, queue size)
+- **`[general]`** -- Concurrency settings (max topics, queue size)
 - **`[channels.<name>]`** -- Per-channel config (type, patterns)
 - **`[channels.<name>.email]`** -- IMAP/SMTP settings (host, port, credentials)
 - **`[channels.<name>.feishu]`** -- Feishu app credentials (app_id, app_secret, websocket)
@@ -332,7 +332,7 @@ Key sections:
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 
-Per-pattern options such as `thread_path` (custom thread directory), `model`
+Per-pattern options such as `topic_path` (custom topic directory), `model`
 (per-pattern model override), `access` (filesystem whitelist), and `mcps`
 (per-pattern MCP tools) are configured under `[[channels.<name>.patterns]]`.
 See `config.example.toml` for annotated examples.
@@ -387,20 +387,20 @@ from reads — its `cache_creation_input_tokens` bills at ~1.25× the input
 rate. Set this field only for Anthropic providers; non-Anthropic providers
 that surface a single cache bucket ignore it.
 
-For Anthropic sessions the chat info pane and dashboard thread info
+For Anthropic sessions the chat info pane and dashboard topic info
 area show two cache rows: `Cache hits: N` (reads only) followed by
 `Cache create: N` (writes). Non-Anthropic providers show a single
 `Cache hits: N` row as before. The two rows map directly to
 `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.
 
-The dashboard and chat **Thread Info** panes then show
+The dashboard and chat **Topic Info** panes then show
 `Cost: ¥0.0521 session · ¥1.3057 today`:
 
 - **session** -- resets when the agent session resets (context auto-reset,
   `/reset`, or switching to a model with a smaller context window).
 - **today** -- durable UTC-day total, appended per call to
-  `<thread>/.jyc/bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
+  `<topic>/.jyc/bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
   line records the token counts alongside the cost, so the ledger stays
   auditable and a corrected rate can be replayed over past usage.
 
@@ -455,10 +455,10 @@ RUST_LOG=jyc=debug,async_imap=warn jyc serve --workdir /path/to/data
 
 ### Checking MCP Reply Tool Logs
 
-The MCP reply tool (subprocess spawned by the agent) logs to a per-thread file:
+The MCP reply tool (subprocess spawned by the agent) logs to a per-topic file:
 
 ```
-<workdir>/<channel>/workspace/<thread>/.jyc/reply-tool.log
+<workdir>/<channel>/workspace/<topic>/.jyc/reply-tool.log
 ```
 
 This is useful for diagnosing reply delivery failures.
@@ -472,12 +472,12 @@ This is useful for diagnosing reply delivery failures.
 
 **AI replies are not sent:**
 - Check JYC logs for AI provider/API errors
-- Check the MCP reply tool log (`.jyc/reply-tool.log` in the thread directory)
+- Check the MCP reply tool log (`.jyc/reply-tool.log` in the topic directory)
 - Verify the `[agent]` section in `config.toml` has valid API credentials
 
 **Session/context issues:**
-- Send `/reset` in an email to clear the AI session for that thread
-- Or manually delete `.jyc/agent-session.json` in the thread directory
+- Send `/reset` in an email to clear the AI session for that topic
+- Or manually delete `.jyc/agent-session.json` in the topic directory
 
 **Container-specific issues:**
 - See [docker/README.md](docker/README.md) troubleshooting section

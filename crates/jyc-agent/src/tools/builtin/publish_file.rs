@@ -1,9 +1,9 @@
-//! Builtin tool: `jyc_publish_file` — publish a thread-local file over HTTP.
+//! Builtin tool: `jyc_publish_file` — publish a topic-local file over HTTP.
 //!
-//! Copies (or moves) a file into `<thread>/.jyc/exchange/` and returns a
+//! Copies (or moves) a file into `<topic>/.jyc/exchange/` and returns a
 //! shareable URL served by the inspect server at
-//! `/exchange/<channel>/<thread>/<name>?token=<per-thread-token>`.
-//! The token lives in `<thread>/.jyc/exchange-token`, is created on first
+//! `/exchange/<channel>/<topic>/<name>?token=<per-topic-token>`.
+//! The token lives in `<topic>/.jyc/exchange-token`, is created on first
 //! publish, and is deleted by `/reset` (killing previously shared links).
 
 use anyhow::{Context, Result};
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Tool for publishing files from the thread directory to an exchange URL.
+/// Tool for publishing files from the topic directory to an exchange URL.
 pub struct PublishFileTool {
     /// Base URL prepended to `/exchange/...` links (from
     /// `[inspect] base_url`, falling back to `http://<bind>`).
@@ -33,7 +33,7 @@ impl Tool for PublishFileTool {
     }
 
     fn description(&self) -> &str {
-        "Publish a file from the thread directory to make it accessible via an \
+        "Publish a file from the topic directory to make it accessible via an \
          exchange HTTP link. Copies the file by default; set move=true to move \
          it (the source file disappears). Returns a shareable URL protected \
          by an access token. Use when the user needs to download or view a \
@@ -46,7 +46,7 @@ impl Tool for PublishFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the file to publish, relative to the thread directory"
+                    "description": "Path of the file to publish, relative to the topic directory"
                 },
                 "name": {
                     "type": "string",
@@ -70,7 +70,7 @@ impl Tool for PublishFileTool {
         let do_move = input.get("move").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Resolve and validate the source file (same boundary check as
-        // send_to_thread attachments): must exist, be a file, and lie
+        // send_to_topic attachments): must exist, be a file, and lie
         // inside the working directory.
         let src = ctx.working_dir.join(path);
         let src_canonical = match src.canonicalize() {
@@ -109,11 +109,11 @@ impl Tool for PublishFileTool {
             )));
         }
 
-        let (channel, thread) = match (&ctx.current_channel, &ctx.current_thread) {
+        let (channel, topic) = match (&ctx.current_channel, &ctx.current_topic) {
             (Some(c), Some(t)) => (c.clone(), t.clone()),
             _ => {
                 return Ok(ToolOutput::error(
-                    "Channel/thread context unavailable; cannot build exchange URL",
+                    "Channel/topic context unavailable; cannot build exchange URL",
                 ));
             }
         };
@@ -136,11 +136,11 @@ impl Tool for PublishFileTool {
         }
 
         let token = load_or_create_token(&jyc_dir)?;
-        let url = jyc_core::exchange_url(&self.base_url, &channel, &thread, name, &token);
+        let url = jyc_core::exchange_url(&self.base_url, &channel, &topic, name, &token);
 
         tracing::info!(
             channel = %channel,
-            thread = %thread,
+            topic = %topic,
             name = %name,
             moved = do_move,
             "File published to exchange URL"
@@ -152,7 +152,7 @@ impl Tool for PublishFileTool {
     }
 }
 
-/// Read the per-thread exchange-access token, generating and persisting it
+/// Read the per-topic exchange-access token, generating and persisting it
 /// (owner-only permissions) on first use.
 fn load_or_create_token(jyc_dir: &Path) -> Result<String> {
     let token_path: PathBuf = jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME);
@@ -172,7 +172,7 @@ mod tests {
     fn test_ctx(working_dir: &Path) -> ToolContext<'_> {
         let mut ctx = ToolContext::new(working_dir);
         ctx.current_channel = Some("email".into());
-        ctx.current_thread = Some("weather".into());
+        ctx.current_topic = Some("weather".into());
         ctx
     }
 

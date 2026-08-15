@@ -7,7 +7,7 @@ use jyc_types::{ModelInfo, ProviderDef};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::session_state;
 
-/// /model command — switch AI model for this thread.
+/// /model command — switch AI model for this topic.
 ///
 /// Usage:
 ///   /model              List all available models
@@ -48,13 +48,13 @@ impl CommandHandler for ModelCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.thread_path.join(".jyc");
+        let jyc_dir = context.topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await?;
 
         let providers = &context.config.agent.providers;
 
         // Read current mode to determine which override file to use.
-        let current_mode = crate::session_state::read_mode_override(&context.thread_path).await;
+        let current_mode = crate::session_state::read_mode_override(&context.topic_path).await;
 
         if context.args.is_empty() {
             // /model — list all available models
@@ -157,14 +157,14 @@ impl CommandHandler for ModelCommandHandler {
 
                     // Update `max_input_tokens` for the newly-active model.
                     if let Some(new_max) = session_state::resolve_active_context_window(
-                        &context.thread_path,
+                        &context.topic_path,
                         &context.config,
                         &context.channel,
                         context.config.agent.auto_reset_threshold,
                     )
                     .await
                     {
-                        session_state::write_max_input_tokens(&context.thread_path, new_max).await;
+                        session_state::write_max_input_tokens(&context.topic_path, new_max).await;
                     }
 
                     Ok(CommandResult {
@@ -193,10 +193,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(thread_path: &Path) -> CommandContext {
+    fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"
@@ -266,7 +266,7 @@ context_window = 200000
         let tmp = tempfile::tempdir().unwrap();
         let ctx = CommandContext {
             args: vec![],
-            thread_path: tmp.path().to_path_buf(),
+            topic_path: tmp.path().to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

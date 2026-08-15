@@ -59,7 +59,7 @@ fn command_popup_send_on_empty_editor_stays_empty() {
 
 #[test]
 fn opens_with_info_and_status_visible() {
-    // Thread info pane and status bar default to visible; activity,
+    // Topic info pane and status bar default to visible; activity,
     // explorer and zen mode stay opt-in.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let app = App::new(rx, None);
@@ -96,12 +96,12 @@ fn explorer_move_clamps_and_saturates() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.state = Some(jyc_types::InspectOverview {
-        threads: (0..5)
-            .map(|i| jyc_types::ThreadSummary {
+        topics: (0..5)
+            .map(|i| jyc_types::TopicSummary {
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 pattern: None,
-                status: jyc_types::ThreadStatus::Idle,
+                status: jyc_types::TopicStatus::Idle,
                 model: None,
                 mode: None,
                 branch: None,
@@ -114,7 +114,7 @@ fn explorer_move_clamps_and_saturates() {
                 output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
-                thread_path: None,
+                topic_path: None,
                 cost: None,
             })
             .collect(),
@@ -132,19 +132,19 @@ fn explorer_move_clamps_and_saturates() {
 }
 
 #[test]
-fn opening_explorer_snaps_selection_to_chat_thread() {
+fn opening_explorer_snaps_selection_to_chat_topic() {
     // Regression: the explorer opened on a stale row because
-    // sync_explorer_selection only follows the chat thread while
+    // sync_explorer_selection only follows the chat topic while
     // the explorer is unfocused — and opening focuses it.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.state = Some(jyc_types::InspectOverview {
-        threads: (0..5)
-            .map(|i| jyc_types::ThreadSummary {
+        topics: (0..5)
+            .map(|i| jyc_types::TopicSummary {
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 pattern: None,
-                status: jyc_types::ThreadStatus::Idle,
+                status: jyc_types::TopicStatus::Idle,
                 model: None,
                 mode: None,
                 branch: None,
@@ -157,13 +157,13 @@ fn opening_explorer_snaps_selection_to_chat_thread() {
                 output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
-                thread_path: None,
+                topic_path: None,
                 cost: None,
             })
             .collect(),
         ..Default::default()
     });
-    app.chat.thread = Some("t2".to_string());
+    app.chat.topic = Some("t2".to_string());
     app.chat.channel = Some("test".to_string());
     app.chat.explorer_selected = 0; // stale row
 
@@ -178,15 +178,15 @@ fn opening_explorer_snaps_selection_to_chat_thread() {
 }
 
 #[test]
-fn opening_explorer_keeps_selection_when_chat_thread_not_in_list() {
+fn opening_explorer_keeps_selection_when_chat_topic_not_in_list() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.state = Some(jyc_types::InspectOverview {
-        threads: vec![jyc_types::ThreadSummary {
+        topics: vec![jyc_types::TopicSummary {
             name: "t0".to_string(),
             channel: "test".to_string(),
             pattern: None,
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -199,14 +199,14 @@ fn opening_explorer_keeps_selection_when_chat_thread_not_in_list() {
             output_tokens: None,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }],
         ..Default::default()
     });
-    // Chat is bound to a thread absent from the overview (e.g. a
-    // fresh adhoc thread not yet polled).
-    app.chat.thread = Some("missing".to_string());
+    // Chat is bound to a topic absent from the overview (e.g. a
+    // fresh adhoc topic not yet polled).
+    app.chat.topic = Some("missing".to_string());
     app.chat.channel = Some("test".to_string());
     app.chat.explorer_selected = 0;
 
@@ -268,12 +268,12 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
             active_workers: 0,
             max_concurrent: 0,
         }],
-        threads: vec![
-            jyc_types::ThreadSummary {
+        topics: vec![
+            jyc_types::TopicSummary {
                 name: "current".to_string(),
                 channel: "local_dev".to_string(),
                 pattern: None,
-                status: jyc_types::ThreadStatus::Idle,
+                status: jyc_types::TopicStatus::Idle,
                 model: None,
                 mode: None,
                 branch: None,
@@ -286,14 +286,14 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
-                thread_path: None,
+                topic_path: None,
                 cost: None,
             },
-            jyc_types::ThreadSummary {
+            jyc_types::TopicSummary {
                 name: "other".to_string(),
                 channel: "local_dev".to_string(),
                 pattern: None,
-                status: jyc_types::ThreadStatus::Idle,
+                status: jyc_types::TopicStatus::Idle,
                 model: None,
                 mode: None,
                 branch: None,
@@ -306,7 +306,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 output_tokens: None,
                 last_active_at: None,
                 skills: vec![],
-                thread_path: None,
+                topic_path: None,
                 cost: None,
             },
         ],
@@ -318,7 +318,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
     explorer_open_selected(&mut app);
 
     assert!(!app.chat.explorer_visible);
-    assert_eq!(app.chat.thread.as_deref(), Some("other"));
+    assert_eq!(app.chat.topic.as_deref(), Some("other"));
     assert_eq!(app.chat.focus, ChatFocus::ChatPane);
     assert_eq!(
         app.pending_hydrate.as_ref(),
@@ -435,19 +435,19 @@ fn explorer_selected_row_fills_full_width() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    // Short thread name so the missing highlight (the bug) would leave
+    // Short topic name so the missing highlight (the bug) would leave
     // most of the row uncolored. The selection background must extend
-    // to the pane's right edge, not just under the thread-name text.
+    // to the pane's right edge, not just under the topic-name text.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.explorer_visible = true;
     app.chat.focus = ChatFocus::ExplorerPane;
     app.state = Some(jyc_types::InspectOverview {
-        threads: vec![jyc_types::ThreadSummary {
+        topics: vec![jyc_types::TopicSummary {
             name: "x".to_string(),
             channel: "test".to_string(),
             pattern: None,
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -460,7 +460,7 @@ fn explorer_selected_row_fills_full_width() {
             output_tokens: None,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }],
         ..Default::default()
@@ -495,8 +495,8 @@ fn explorer_selected_row_fills_full_width() {
         .map(|x| buffer[(x, 0)].symbol().to_string())
         .collect();
     assert!(
-        title_row.starts_with("── Threads"),
-        "explorer title row should start with `── Threads`, got: {title_row:?}"
+        title_row.starts_with("── Topics"),
+        "explorer title row should start with `── Topics`, got: {title_row:?}"
     );
 }
 
@@ -511,7 +511,7 @@ fn activity_pane_title_has_double_dash_prefix() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.focus = ChatFocus::ActivityPane;
 
@@ -533,11 +533,11 @@ fn activity_pane_title_has_double_dash_prefix() {
     );
 }
 
-/// Regression: the thread info pane title row must start with the `──`
+/// Regression: the topic info pane title row must start with the `──`
 /// prefix and the inner content area must start at y=1 (the top border
 /// row acts as a separator).
 #[test]
-fn thread_info_pane_title_has_double_dash_prefix() {
+fn topic_info_pane_title_has_double_dash_prefix() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -545,15 +545,15 @@ fn thread_info_pane_title_has_double_dash_prefix() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
-        threads: vec![jyc_types::ThreadSummary {
+        topics: vec![jyc_types::TopicSummary {
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             pattern: Some("jyc".to_string()),
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -566,7 +566,7 @@ fn thread_info_pane_title_has_double_dash_prefix() {
             output_tokens: None,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }],
         ..Default::default()
@@ -578,7 +578,7 @@ fn thread_info_pane_title_has_double_dash_prefix() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
-        .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
         .expect("draw");
 
     let buffer = terminal.backend().buffer().clone();
@@ -586,8 +586,8 @@ fn thread_info_pane_title_has_double_dash_prefix() {
         .map(|x| buffer[(x, 0)].symbol().to_string())
         .collect();
     assert!(
-        title_row.contains("── Thread Info"),
-        "thread info title row should contain `── Thread Info`, got: {title_row:?}"
+        title_row.contains("── Topic Info"),
+        "topic info title row should contain `── Topic Info`, got: {title_row:?}"
     );
 }
 
@@ -608,15 +608,15 @@ fn files_section_colors_uncommitted_paths_yellow() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
-        threads: vec![jyc_types::ThreadSummary {
+        topics: vec![jyc_types::TopicSummary {
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             pattern: Some("jyc".to_string()),
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -661,7 +661,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
             output_tokens: None,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }],
         ..Default::default()
@@ -674,7 +674,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
-        .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
         .expect("draw");
 
     let buffer = terminal.backend().buffer().clone();
@@ -790,15 +790,15 @@ fn info_scroll_is_clamped_after_render() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
-        threads: vec![jyc_types::ThreadSummary {
+        topics: vec![jyc_types::TopicSummary {
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             pattern: Some("jyc".to_string()),
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -828,7 +828,7 @@ fn info_scroll_is_clamped_after_render() {
             output_tokens: None,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }],
         ..Default::default()
@@ -842,7 +842,7 @@ fn info_scroll_is_clamped_after_render() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
-        .draw(|frame| render_thread_info_pane(frame, frame.area(), &mut app))
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), &mut app))
         .expect("draw");
 
     // The pane is 10 rows tall, 1 row consumed by the border, so the

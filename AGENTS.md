@@ -1,7 +1,7 @@
 # JYC Project
 
 JYC is a channel-agnostic AI agent framework written in Rust.
-It monitors inbound channels (email via IMAP), routes messages to threads,
+It monitors inbound channels (email via IMAP), routes messages to topics,
 and uses an in-process AI agent to generate replies.
 
 ## Tech Stack
@@ -98,7 +98,7 @@ and uses an in-process AI agent to generate replies.
 ## Agent Behavior Rules
 
 ### Reply vs. SendMessage
-- Agent must use `reply_message` for in-thread responses; `jyc_send_message` only for out-of-thread proactive messages.
+- Agent must use `reply_message` for in-topic responses; `jyc_send_message` only for out-of-topic proactive messages.
 - Agent must not use `jyc_send_message` to spam users; limit to alerts and notifications.
 
 ## References

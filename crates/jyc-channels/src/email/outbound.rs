@@ -16,11 +16,11 @@ use jyc_utils::attachment_validator;
 ///
 /// Responsibilities:
 /// - Build email-formatted reply with quoted history (channel-specific)
-/// - Send via SMTP with threading headers and attachments
+/// - Send via SMTP with References headers and attachments
 /// - Store reply to chat log
 ///
 /// This is the channel-specific component. The agent (JycAgentService) and
-/// ThreadManager are channel-agnostic — they pass raw AI text to this adapter.
+/// TopicManager are channel-agnostic — they pass raw AI text to this adapter.
 pub struct EmailOutboundAdapter {
     smtp: Arc<Mutex<SmtpClient>>,
     storage: Arc<MessageStorage>,
@@ -58,7 +58,7 @@ impl EmailOutboundAdapter {
         }
     }
 
-    /// Internal: send via SMTP with threading headers and attachments.
+    /// Internal: send via SMTP with References headers and attachments.
     async fn smtp_send(
         &self,
         original: &InboundMessage,
@@ -67,7 +67,7 @@ impl EmailOutboundAdapter {
     ) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
 
-        let mut refs: Vec<String> = original.thread_refs.clone().unwrap_or_default();
+        let mut refs: Vec<String> = original.references.clone().unwrap_or_default();
         if let Some(ref ext_id) = original.external_id {
             refs.push(ext_id.clone());
         }
@@ -132,24 +132,24 @@ impl OutboundAdapter for EmailOutboundAdapter {
     ///
     /// Owns the full reply lifecycle:
     /// 1. Build email-formatted reply with quoted history
-    /// 2. Send via SMTP with threading headers + attachments
+    /// 2. Send via SMTP with References headers + attachments
     /// 3. Store reply to chat log
     async fn send_reply(
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // 1. Read model/mode from reply context file (if available)
-        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(topic_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state
         let (input_tokens, max_tokens) =
-            jyc_core::session_state::read_input_tokens(thread_path).await;
+            jyc_core::session_state::read_input_tokens(topic_path).await;
 
         // 2. Build full reply with email-specific quoted history + model/mode footer
         let body_text = original
@@ -161,7 +161,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
 
         let full_reply = email_parser::build_full_reply_text(
             reply_text,
-            thread_path,
+            topic_path,
             &original.sender,
             &original.timestamp.to_rfc3339(),
             &original.topic,
@@ -199,7 +199,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
 
         // 4. Store reply to chat log
         self.storage
-            .store_reply(thread_path, &full_reply, message_dir)
+            .store_reply(topic_path, &full_reply, message_dir)
             .await?;
 
         tracing::debug!(
@@ -210,7 +210,7 @@ impl OutboundAdapter for EmailOutboundAdapter {
         Ok(send_result)
     }
 
-    /// Send a fresh message email (not a reply, no formatting/threading/storage).
+    /// Send a fresh message email (not a reply, no formatting/References/storage).
     async fn send_message(&self, recipient: &str, subject: &str, body: &str) -> Result<SendResult> {
         let mut smtp = self.smtp.lock().await;
         let message_id = smtp

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
-/// /reset command — reset agent session for this thread.
+/// /reset command — reset agent session for this topic.
 ///
 /// Usage:
 ///   /reset    Reset agent session with configurable compression
@@ -16,14 +16,14 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Reset agent session for this thread"
+        "Reset agent session for this topic"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
-        let jyc_dir = context.thread_path.join(".jyc");
+        let jyc_dir = context.topic_path.join(".jyc");
         tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
@@ -33,10 +33,10 @@ impl CommandHandler for ResetCommandHandler {
 
         // Resolve ResetCompressionConfig. Best signal we have at command time:
         // read the matched pattern from disk (written by the message router
-        // when the thread was created). Falls back to first pattern if the
+        // when the topic was created). Falls back to first pattern if the
         // pattern file is missing, then to global [agent].reset_compression,
         // then to the default (Heuristic).
-        let matched_pattern = crate::session_state::read_pattern(&context.thread_path).await;
+        let matched_pattern = crate::session_state::read_pattern(&context.topic_path).await;
         let reset_config = crate::session_state::resolve_reset_compression(
             &context.config,
             &context.channel,
@@ -44,13 +44,13 @@ impl CommandHandler for ResetCommandHandler {
         );
 
         if let Some(ref agent) = context.agent {
-            let thread_name = context
-                .thread_path
+            let topic_name = context
+                .topic_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
             agent
-                .reset_session(&context.thread_path, thread_name, &reset_config)
+                .reset_session(&context.topic_path, topic_name, &reset_config)
                 .await?;
             Ok(CommandResult {
                 success: true,
@@ -82,10 +82,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(thread_path: &Path) -> CommandContext {
+    fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

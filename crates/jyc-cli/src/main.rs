@@ -35,7 +35,7 @@ enum Commands {
     /// Live TUI dashboard — connects to a running jyc serve
     Dashboard(cli::dashboard::DashboardArgs),
 
-    /// Open a directory as an ad-hoc thread and launch chat (shortcut for `dashboard open`)
+    /// Open a directory as an ad-hoc topic and launch chat (shortcut for `dashboard open`)
     Open {
         /// Inspect server address (also used for WebSocket chat)
         #[arg(long, default_value = "127.0.0.1:9876")]
@@ -81,7 +81,7 @@ enum Commands {
 }
 
 /// Parse `Cli` so that bare `jyc` behaves like `jyc open` (creates an
-/// ad-hoc websocket thread and opens the chat pane). When no
+/// ad-hoc websocket topic and opens the chat pane). When no
 /// subcommand is given, we inject `open` and re-parse. With clap's
 /// default `subcommand_required(true)`, a bare invocation emits
 /// `DisplayHelp` (we also catch `MissingSubcommand` for safety); we
@@ -162,7 +162,7 @@ async fn main() -> Result<()> {
                 cli::dashboard::run_open(
                     &args.addr,
                     &workdir,
-                    open.thread.as_deref(),
+                    open.topic.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
                     args.token.as_deref(),
@@ -175,7 +175,7 @@ async fn main() -> Result<()> {
             cli::dashboard::run_open(
                 addr,
                 &workdir,
-                args.thread.as_deref(),
+                args.topic.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
                 None,

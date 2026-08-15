@@ -1,9 +1,9 @@
 //! Job management tools for the agent — create, list, delete, and toggle
-//! scheduled jobs from within any thread.
+//! scheduled jobs from within any topic.
 //!
-//! Jobs are stored per-thread in `<thread>/.jyc/jobs/<id>.json`. Each tool
+//! Jobs are stored per-topic in `<topic>/.jyc/jobs/<id>.json`. Each tool
 //! creates a scoped `JobStore` from the `ToolContext.working_dir` (which is
-//! the thread's directory) at execution time.
+//! the topic's directory) at execution time.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -14,15 +14,15 @@ use serde_json::{Value, json};
 
 use super::super::{Tool, ToolContext, ToolOutput};
 
-/// Default max jobs per thread for agent tools (matches config default).
+/// Default max jobs per topic for agent tools (matches config default).
 const DEFAULT_MAX_JOBS: usize = 10;
 
-/// Helper to create a per-thread JobStore from the working directory.
+/// Helper to create a per-topic JobStore from the working directory.
 async fn store_from_ctx(ctx: &ToolContext<'_>) -> Result<JobStore> {
     JobStore::new(ctx.working_dir, DEFAULT_MAX_JOBS).await
 }
 
-/// List all scheduled jobs in the current thread.
+/// List all scheduled jobs in the current topic.
 pub struct JobListTool;
 
 #[async_trait]
@@ -32,7 +32,7 @@ impl Tool for JobListTool {
     }
 
     fn description(&self) -> &str {
-        "List all scheduled jobs in this thread. Returns a JSON array of job \
+        "List all scheduled jobs in this topic. Returns a JSON array of job \
          configurations including id, cron/at schedule, enabled status, prompt, \
          and next fire time. Use this to see what jobs exist before creating or \
          modifying them."
@@ -57,7 +57,7 @@ impl Tool for JobListTool {
                     "cron": j.cron,
                     "at": j.at.map(|t| t.to_rfc3339()),
                     "enabled": j.enabled,
-                    "thread_name": j.thread_name,
+                    "topic_name": j.topic_name,
                     "channel_name": j.channel_name,
                     "channel": j.channel,
                     "prompt": j.prompt.chars().take(100).collect::<String>(),
@@ -74,7 +74,7 @@ impl Tool for JobListTool {
     }
 }
 
-/// Create a new scheduled job in the current thread.
+/// Create a new scheduled job in the current topic.
 pub struct JobCreateTool;
 
 #[async_trait]
@@ -88,7 +88,7 @@ impl Tool for JobCreateTool {
          recurring jobs (7-field format: 'sec min hour dom mon dow year', e.g. \
          '0 0 8 * * * *' for daily at 8 AM) or an 'at' timestamp for one-time \
          jobs (ISO 8601 format). The job fires by injecting the provided prompt \
-         into the originating thread. Returns the created job ID."
+         into the originating topic. Returns the created job ID."
     }
 
     fn input_schema(&self) -> Value {
@@ -122,9 +122,9 @@ impl Tool for JobCreateTool {
         let cron = input.get("cron").and_then(|c| c.as_str());
         let at_str = input.get("at").and_then(|a| a.as_str());
 
-        // Extract thread/channel info from working directory path.
-        // Directory structure: <workdir>/<channel_name>/workspace/<thread_name>/
-        let thread_name = ctx
+        // Extract topic/channel info from working directory path.
+        // Directory structure: <workdir>/<channel_name>/workspace/<topic_name>/
+        let topic_name = ctx
             .working_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -143,7 +143,7 @@ impl Tool for JobCreateTool {
         // The channel type (e.g. "email", "github") is not directly derivable
         // from the directory path — only the channel config name is. Use the
         // channel_name as the channel value; the channel_name is the key field
-        // for ThreadManager lookup when the job fires.
+        // for TopicManager lookup when the job fires.
         let channel = channel_name.clone();
 
         let job = if let Some(cron_expr) = cron {
@@ -156,7 +156,7 @@ impl Tool for JobCreateTool {
                     cron_expr
                 )));
             }
-            JobConfig::new_recurring(cron_expr, thread_name, channel, channel_name, prompt)
+            JobConfig::new_recurring(cron_expr, topic_name, channel, channel_name, prompt)
         } else if let Some(at_str) = at_str {
             let at = match DateTime::parse_from_rfc3339(at_str) {
                 Ok(dt) => dt.with_timezone(&Utc),
@@ -170,7 +170,7 @@ impl Tool for JobCreateTool {
                     }
                 },
             };
-            JobConfig::new_one_time(at, thread_name, channel, channel_name, prompt)
+            JobConfig::new_one_time(at, topic_name, channel, channel_name, prompt)
         } else {
             return Ok(ToolOutput::error(
                 "Must provide either 'cron' (recurring) or 'at' (one-time) parameter".to_string(),
@@ -197,7 +197,7 @@ impl Tool for JobCreateTool {
     }
 }
 
-/// Delete a scheduled job by ID from the current thread.
+/// Delete a scheduled job by ID from the current topic.
 pub struct JobDeleteTool;
 
 #[async_trait]
@@ -207,7 +207,7 @@ impl Tool for JobDeleteTool {
     }
 
     fn description(&self) -> &str {
-        "Delete a scheduled job by ID from this thread. The job will no longer \
+        "Delete a scheduled job by ID from this topic. The job will no longer \
          fire. Returns success or an error if the job doesn't exist. \
          Use 'job_list' to find job IDs."
     }

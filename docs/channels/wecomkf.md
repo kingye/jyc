@@ -10,7 +10,7 @@ messages via webhook and sends through the external contact API), the KF channel
 - Receives `kf_msg_or_event` event **notifications** via the shared webhook server
 - Pulls actual message content via `kf/sync_msg` API (cursor-based incremental sync)
 - Sends replies via `kf/send_msg` API
-- One thread per customer per KF account
+- One topic per customer per KF account
 
 ## Architecture
 
@@ -67,8 +67,8 @@ messages via webhook and sends through the external contact API), the KF channel
   restart, but dedup prevents double-processing).
 - **Message Dedup**: In-memory `HashSet` capped at 10,000 entries prevents
   duplicate processing of overlapping sync results.
-- **One Customer Per Thread**: Thread name is `{channel_name}_{open_kfid}_{external_userid}`,
-  ensuring each customer conversation maps to a dedicated agent thread.
+- **One Customer Per Topic**: Topic name is `{channel_name}_{open_kfid}_{external_userid}`,
+  ensuring each customer conversation maps to a dedicated agent topic.
 - **Shared Token Cache**: Uses the same `AccessTokenCache` as the regular WeCom
   channel, shared between inbound and outbound adapters.
 - **Pattern Reuse**: Pattern matching delegates to `wecom_match_message` —
@@ -253,7 +253,7 @@ are sent as text with the subject prefixed by `## `:
 
 The `send_message` method (renamed from `send_alert`) sends proactive messages
 to any WeCom KF customer. It is used by the `jyc_send_message` MCP tool for
-out-of-thread notifications.
+out-of-topic notifications.
 
 **Recipient format**: `wecomkf:{open_kfid}:{external_userid}`
 
@@ -266,9 +266,9 @@ The adapter parses this format, extracts `open_kfid` and `external_userid`,
 and sends via the `kf/send_msg` API. Subject is optional for WeCom KF (ignored
 since KF messages have no subject line).
 
-## Thread Naming
+## Topic Naming
 
-Threads are named using the `open_kfid` and `external_userid` fields from
+Topics are named using the `open_kfid` and `external_userid` fields from
 the synced message metadata:
 
 ```
@@ -276,18 +276,18 @@ the synced message metadata:
 ```
 
 For example, a channel named `my_kf_bot` receiving a message from customer
-`user123` through KF account `kf001` will produce thread name
+`user123` through KF account `kf001` will produce topic name
 `my_kf_bot_kf001_user123`.
 
 This ensures:
-- One thread per customer per KF account
+- One topic per customer per KF account
 - Clean isolation between different customers
 - Consistent naming with the rest of the JYC channel ecosystem
 
-## Thread Persistence (`thread.json`)
+## Topic Persistence (`topic.json`)
 
-WeCom KF threads persist customer metadata in `.jyc/thread.json` within each
-thread directory:
+WeCom KF topics persist customer metadata in `.jyc/topic.json` within each
+topic directory:
 
 ```json
 {
@@ -309,12 +309,12 @@ thread directory:
 | `external_userid` | WeCom external user ID (unique per customer) |
 | `user_name` | Display name fetched from `externalcontact/get` API (may be empty if 48002 permission error) |
 | `open_kfid` | KF account ID that received the message |
-| `first_message_at` | ISO 8601 timestamp of the first message in this thread |
+| `first_message_at` | ISO 8601 timestamp of the first message in this topic |
 
 **Usage:**
-- Written on first message to a new thread
+- Written on first message to a new topic
 - Read by `chat_log_store.rs` for `user_name` fallback when building chat history
-- Enables human-readable thread names even when `externalcontact/get` fails (48002)
+- Enables human-readable topic names even when `externalcontact/get` fails (48002)
 
 ## Cursor and Dedup
 
@@ -346,7 +346,7 @@ cargo test -p jyc-channels wecom::kf_cursor
 # Test KF dedup store (dedup, eviction)
 cargo test -p jyc-channels wecom::kf_dedup
 
-# Test KF inbound adapter (thread name derivation)
+# Test KF inbound adapter (topic name derivation)
 cargo test -p jyc-channels wecom::kf_inbound
 
 # Test KF outbound adapter (payload building, channel type)

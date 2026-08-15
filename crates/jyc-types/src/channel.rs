@@ -36,8 +36,8 @@ pub struct InboundMessage {
     pub content: MessageContent,
     /// When the message was sent/received
     pub timestamp: DateTime<Utc>,
-    /// Email: References header values; FeiShu: thread ID
-    pub thread_refs: Option<Vec<String>>,
+    /// Email: References header values; FeiShu: topic ID
+    pub references: Option<Vec<String>>,
     /// Email: In-Reply-To header; FeiShu: parent msg ID
     pub reply_to_id: Option<String>,
     /// Email: Message-ID header; FeiShu: message ID
@@ -111,8 +111,8 @@ pub struct SendResult {
 pub struct InboundAdapterOptions {
     /// Callback for each received message (fire-and-forget)
     pub on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
-    /// Callback for thread close events (e.g., chat disbanded)
-    pub on_thread_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
+    /// Callback for topic close events (e.g., chat disbanded)
+    pub on_topic_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
     /// Callback for errors
     #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,
@@ -120,23 +120,23 @@ pub struct InboundAdapterOptions {
     pub attachment_config: Option<InboundAttachmentConfig>,
 }
 
-/// Channel-specific message matching and thread name derivation.
+/// Channel-specific message matching and topic name derivation.
 ///
 /// Pure-logic trait used by MessageRouter. Every channel type implements this.
 /// Separated from InboundAdapter to allow use without the lifecycle (start/stop) —
 /// e.g., email uses ImapMonitor for the connection lifecycle but EmailMatcher
-/// for pattern matching and thread name derivation.
+/// for pattern matching and topic name derivation.
 pub trait ChannelMatcher: Send + Sync {
     /// The channel type this matcher handles (e.g., "email", "feishu")
     #[allow(dead_code)]
     fn channel_type(&self) -> &str;
 
-    /// Derive a thread name from the message and patterns.
+    /// Derive a topic name from the message and patterns.
     ///
-    /// Each channel type has its own thread naming strategy:
+    /// Each channel type has its own topic naming strategy:
     /// - Email: strips Re:/Fwd: prefixes and subject pattern prefixes, sanitizes
     /// - Feishu: uses chat_id or user_id from metadata
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
@@ -180,7 +180,7 @@ pub trait InboundAdapter: ChannelMatcher {
 /// Responsible for:
 /// - Sending replies through the channel (including full-lifecycle: format + send + store)
 /// - Format conversion (e.g., markdown → HTML for email, markdown for feishu)
-/// - Adding channel-specific headers (threading, etc.)
+/// - Adding channel-specific headers (References, etc.)
 /// - Channel-specific body cleaning (e.g., stripping quoted email history)
 #[async_trait]
 pub trait OutboundAdapter: Send + Sync {
@@ -203,7 +203,7 @@ pub trait OutboundAdapter: Send + Sync {
 
     /// Send a reply with full lifecycle management.
     ///
-    /// This is the primary method called by ThreadManager and process_message.
+    /// This is the primary method called by TopicManager and process_message.
     /// Each channel implementation handles:
     /// - Channel-specific formatting (quoted history for email, etc.)
     /// - Sending via the channel's transport (SMTP, HTTP API, etc.)
@@ -212,7 +212,7 @@ pub trait OutboundAdapter: Send + Sync {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
@@ -277,15 +277,15 @@ pub trait OutboundAdapter: Send + Sync {
 
 // --- Pattern Types ---
 
-/// Target of a `ChannelPattern.pipe`: which (channel, thread) to forward
-/// matching messages into. `thread` is the target channel's thread name,
+/// Target of a `ChannelPattern.pipe`: which (channel, topic) to forward
+/// matching messages into. `topic` is the target channel's topic name,
 /// which equals its pattern name for websocket-type channels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipeTarget {
     /// Target channel name (typically a websocket-type channel).
     pub channel: String,
-    /// Target thread name (= target channel's pattern name).
-    pub thread: String,
+    /// Target topic name (= target channel's pattern name).
+    pub topic: String,
 }
 
 /// A channel pattern defines matching rules for a specific channel.
@@ -300,15 +300,15 @@ pub struct ChannelPattern {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Pipe messages matching this pattern into another (websocket) channel's
-    /// thread.
+    /// topic.
     ///
     /// When set, matching messages act as a client of the target channel:
-    /// they are re-targeted to `channel`/`thread` and routed through the
+    /// they are re-targeted to `channel`/`topic` and routed through the
     /// target channel's own MessageRouter (identical to a chat-pane message),
-    /// so the target thread's pattern — `thread_path`, template, skills,
+    /// so the target topic's pattern — `topic_path`, template, skills,
     /// model — applies. Replies come back via the target channel's broadcast
     /// and are relayed to this channel's users. When `None` (default), the
-    /// message is routed normally through this channel's own ThreadManager.
+    /// message is routed normally through this channel's own TopicManager.
     #[serde(default)]
     pub pipe: Option<PipeTarget>,
     /// Matching rules (channel-specific)
@@ -316,41 +316,41 @@ pub struct ChannelPattern {
     pub rules: PatternRules,
     /// Attachment download configuration for messages matching this pattern
     pub attachments: Option<InboundAttachmentConfig>,
-    /// Template name to initialize thread (from workdir/templates/)
+    /// Template name to initialize topic (from workdir/templates/)
     /// If not specified, no template is applied
     #[serde(default)]
     pub template: Option<String>,
-    /// Fixed thread name override.
-    /// If set, all messages matching this pattern are routed to this thread
-    /// instead of deriving the thread name from the message content.
+    /// Fixed topic name override.
+    /// If set, all messages matching this pattern are routed to this topic
+    /// instead of deriving the topic name from the message content.
     /// Channel-agnostic: works for email, Feishu, or any channel.
     #[serde(default)]
-    pub thread_name: Option<String>,
-    /// Thread name prefix for channels that derive thread names from message
+    pub topic_name: Option<String>,
+    /// Topic name prefix for channels that derive topic names from message
     /// identity (e.g. GitHub issue/PR number). Combined as `{prefix}-{id}`.
     ///
     /// When two patterns can match the same identity (e.g. distinguished by
-    /// labels on the same issue), they MUST declare distinct `thread_prefix`
-    /// values, otherwise both patterns route to the same thread directory and
+    /// labels on the same issue), they MUST declare distinct `topic_prefix`
+    /// values, otherwise both patterns route to the same topic directory and
     /// the second pattern's template / AGENTS.md is silently dropped.
     ///
     /// If unset, the channel's default derivation is used (e.g. GitHub uses
     /// `issue-{N}` or `pr-{N}` based on event type).
     ///
-    /// Distinct from `thread_name`, which forces a single fixed thread name
+    /// Distinct from `topic_name`, which forces a single fixed topic name
     /// regardless of message identity.
     #[serde(default)]
-    pub thread_prefix: Option<String>,
-    /// Custom filesystem path for the thread directory.
+    pub topic_prefix: Option<String>,
+    /// Custom filesystem path for the topic directory.
     ///
-    /// When set, the thread's working directory is this path instead of the
-    /// default `<workspace>/<thread_name>/`. Supports `~` expansion to
+    /// When set, the topic's working directory is this path instead of the
+    /// default `<workspace>/<topic_name>/`. Supports `~` expansion to
     /// `$HOME`. Absolute paths are used as-is.
     ///
-    /// The `thread_name` (or `thread_prefix`) still controls the logical
+    /// The `topic_name` (or `topic_prefix`) still controls the logical
     /// routing key — this field only changes where files are stored on disk.
     #[serde(default)]
-    pub thread_path: Option<String>,
+    pub topic_path: Option<String>,
     /// Agent role name for this pattern (e.g., "Planner", "Developer", "Reviewer").
     /// Used by GitHub OutboundAdapter to prefix comments with `[Role]`.
     /// Also used to filter out the agent's own comments during polling.
@@ -362,8 +362,8 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
-    /// Repo group key for shared repo directories among GitHub threads.
-    /// When set, threads matching this pattern share a single repo clone
+    /// Repo group key for shared repo directories among GitHub topics.
+    /// When set, topics matching this pattern share a single repo clone
     /// via symlinks, saving disk space. The group key is `"{repo_group}-{github_number}"`.
     /// Patterns without `repo_group` keep existing behavior (no symlink, no sharing).
     #[serde(default)]
@@ -376,7 +376,7 @@ pub struct ChannelPattern {
     /// must use the `read_image` built-in tool to load them on demand.
     #[serde(default)]
     pub inject_inbound_images: bool,
-    /// Override model for this pattern's thread (e.g., "anthropic/claude-opus-4-6").
+    /// Override model for this pattern's topic (e.g., "anthropic/claude-opus-4-6").
     /// Takes priority over channel-level model and global [agent].model,
     /// but below the runtime `.jyc/model-override` file.
     #[serde(default)]
@@ -387,12 +387,12 @@ pub struct ChannelPattern {
     /// Override model for build (full execution) mode. Falls back to `model` if unset.
     #[serde(default)]
     pub build_model: Option<String>,
-    /// Override small_model for this pattern's thread.
+    /// Override small_model for this pattern's topic.
     /// Takes priority over channel-level small_model and global [agent].small_model,
     /// but below the runtime `.jyc/model-override` file.
     #[serde(default)]
     pub small_model: Option<String>,
-    /// Initial agent mode for threads matching this pattern.
+    /// Initial agent mode for topics matching this pattern.
     /// Valid values: "plan" or "build".
     /// Takes priority over the default "build" but below the runtime
     /// `.jyc/mode-override` file.
@@ -400,7 +400,7 @@ pub struct ChannelPattern {
     pub mode: Option<String>,
     /// Per-pattern MCP server configurations.
     ///
-    /// When set to `Some(list)`, only these MCP servers are loaded for threads
+    /// When set to `Some(list)`, only these MCP servers are loaded for topics
     /// matching this pattern. When `None` (default), the global `[[mcps]]` list
     /// is used for backward compatibility.
     ///
@@ -442,7 +442,7 @@ pub struct ChannelPattern {
     /// Per-pattern skills whitelist.
     ///
     /// When set, only skills whose names appear in this list are loaded
-    /// for threads matching this pattern. Takes priority over channel-level
+    /// for topics matching this pattern. Takes priority over channel-level
     /// `skills`. When both are unset, all discovered skills are loaded.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
@@ -470,11 +470,11 @@ pub struct ChannelPattern {
 
     /// Per-pattern filesystem access whitelist.
     ///
-    /// Extends the agent's read/write boundary beyond the thread working
+    /// Extends the agent's read/write boundary beyond the topic working
     /// directory. Paths listed in `write` are also readable automatically.
     ///
     /// Tilde (`~`) expands to `$HOME`. Relative paths resolve against the
-    /// thread working directory and are ignored (already accessible).
+    /// topic working directory and are ignored (already accessible).
     ///
     /// ```toml
     /// [channels.jyc_repo.patterns.access]
@@ -556,9 +556,9 @@ impl Default for ChannelPattern {
             pipe: None,
             attachments: None,
             template: None,
-            thread_name: None,
-            thread_prefix: None,
-            thread_path: None,
+            topic_name: None,
+            topic_prefix: None,
+            topic_path: None,
             role: None,
             live_injection: true,
             repo_group: None,
@@ -644,7 +644,7 @@ pub struct SenderRule {
 /// Rules for matching the subject of a message.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubjectRule {
-    /// Subject prefixes to match (also stripped from thread name)
+    /// Subject prefixes to match (also stripped from topic name)
     pub prefix: Option<Vec<String>>,
     /// Regex pattern to match against subject
     pub regex: Option<String>,
@@ -689,18 +689,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_thread_path_deserialization() {
+    fn test_topic_path_deserialization() {
         let toml_str = r#"
 name = "jyc"
 enabled = true
-thread_path = "~/projects/jyc"
+topic_path = "~/projects/jyc"
 [rules]
 "#;
         let p: ChannelPattern = toml::from_str(toml_str).unwrap();
         assert_eq!(
-            p.thread_path.as_deref(),
+            p.topic_path.as_deref(),
             Some("~/projects/jyc"),
-            "thread_path should deserialize correctly"
+            "topic_path should deserialize correctly"
         );
     }
 }

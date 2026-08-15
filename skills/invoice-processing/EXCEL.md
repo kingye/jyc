@@ -242,7 +242,7 @@ When the user asks to download or export all invoices for a month:
    - **With `invoice_close`:** ZIP archive is auto-generated — send `invoice_${MONTH}.zip`
    - **With `invoice_export`:** Send individual xlsx files, or manually zip:
      ```bash
-     cd <thread_dir>
+     cd <topic_dir>
      zip -r "invoice_${MONTH}.zip" "invoice_${MONTH}/" "invoice_list_${MONTH}.xlsx" "invoice_summary_${MONTH}.xlsx"
      ```
 7. Send the zip file as an attachment in the reply

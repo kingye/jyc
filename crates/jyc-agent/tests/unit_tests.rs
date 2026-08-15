@@ -849,7 +849,7 @@ mod session {
     }
 
     /// `ensure_session_file` must create `agent-session.json` for a brand-new
-    /// thread that has none, with `max_input_tokens = context_window *
+    /// topic that has none, with `max_input_tokens = context_window *
     /// auto_reset_threshold`, zeroed counters, and a populated `created_at`.
     #[tokio::test]
     async fn ensure_session_file_creates_file_when_missing() {
@@ -937,7 +937,7 @@ mod tool_registry {
         assert!(registry.has_tool("job_create"));
         assert!(registry.has_tool("job_delete"));
         assert!(registry.has_tool("job_toggle"));
-        assert!(registry.has_tool("jyc_send_to_thread"));
+        assert!(registry.has_tool("jyc_send_to_topic"));
         assert_eq!(registry.len(), 12);
     }
 
@@ -1125,13 +1125,13 @@ mod tools {
     }
 
     #[tokio::test]
-    async fn send_to_thread_attachment_has_content() {
-        // Verify that MessageAttachment produced by the send_to_thread
+    async fn send_to_topic_attachment_has_content() {
+        // Verify that MessageAttachment produced by the send_to_topic
         // pattern (std::fs::read → content: Some(bytes)) has non-None
         // content, so save_attachments_to_dir will not skip it.
         let tmp = tempfile::tempdir().unwrap();
 
-        // Write a test file the same way send_to_thread's execute() does
+        // Write a test file the same way send_to_topic's execute() does
         let test_data = b"hello attachment world";
         let file_path = tmp.path().join("test.pdf");
         std::fs::write(&file_path, test_data).unwrap();
@@ -1157,8 +1157,8 @@ mod tools {
     }
 
     #[test]
-    fn send_to_thread_schema_includes_require_reply() {
-        let tool = builtin::send_to_thread::SendToThreadTool;
+    fn send_to_topic_schema_includes_require_reply() {
+        let tool = builtin::send_to_topic::SendToThreadTool;
         let schema = tool.input_schema();
         let props = schema["properties"].as_object().unwrap();
         assert!(
@@ -1169,8 +1169,8 @@ mod tools {
     }
 
     #[test]
-    fn send_to_thread_description_mentions_require_reply() {
-        let tool = builtin::send_to_thread::SendToThreadTool;
+    fn send_to_topic_description_mentions_require_reply() {
+        let tool = builtin::send_to_topic::SendToThreadTool;
         assert!(
             tool.description().contains("require_reply"),
             "description should mention require_reply"
@@ -1271,7 +1271,7 @@ mod mcp_bridge {
             &self,
             _original: &InboundMessage,
             _reply_text: &str,
-            _thread_path: &Path,
+            _topic_path: &Path,
             _message_dir: &str,
             _attachments: Option<&[OutboundAttachment]>,
         ) -> anyhow::Result<SendResult> {
@@ -1906,7 +1906,7 @@ mod billing_integration {
 
     /// Simulate one LLM call the way `agent_loop` does.
     async fn bank_one_call(
-        thread_path: &std::path::Path,
+        topic_path: &std::path::Path,
         input: u64,
         output: u64,
         cache_hit: u64,
@@ -1914,7 +1914,7 @@ mod billing_integration {
         let p = pricing();
         let cost = compute_cost(&p, input, output, cache_hit);
         BillingLogStore::append(
-            thread_path,
+            topic_path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: "anthropic/claude-opus-4-7".to_string(),
@@ -1929,7 +1929,7 @@ mod billing_integration {
         )
         .unwrap();
         jyc_agent::session::persist_tokens(
-            thread_path,
+            topic_path,
             input,
             input,
             output,

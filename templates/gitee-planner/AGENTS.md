@@ -306,7 +306,7 @@ curl -s -X POST "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}/co
 ```
 
 **How to reply on the issue:**
-After submitting the review, use the `jyc_reply` tool (NOT API issue comment) to summarize the review outcome on the issue thread. (See Rules section — `jyc_reply` is always used for user-facing replies.) Include:
+After submitting the review, use the `jyc_reply` tool (NOT API issue comment) to summarize the review outcome on the issue topic. (See Rules section — `jyc_reply` is always used for user-facing replies.) Include:
 - Overall verdict (approved / changes requested)
 - Key findings from each relevant dimension
 - Link to the PR for full details
@@ -314,7 +314,7 @@ After submitting the review, use the `jyc_reply` tool (NOT API issue comment) to
 **Three-channel feedback summary:**
 1. Formal review — **Not available on Gitee.** Gitee does not have an approve/request-changes API. Use PR comments instead.
 2. API comment (POST /pulls/{number}/comments) — **Mandatory** PR comment. This is the core channel for developer feedback. Always executed.
-3. `jyc_reply` — **Mandatory** issue reply for user-facing summary. Keeps the issue thread in sync.
+3. `jyc_reply` — **Mandatory** issue reply for user-facing summary. Keeps the issue topic in sync.
 
 **Important:** Do NOT delegate PR review to the `gitee-reviewer` agent. The planner's review is a deep technical/architectural review that complements (does not replace) the reviewer's lightweight pass.
 

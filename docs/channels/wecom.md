@@ -37,9 +37,9 @@ WeCom (WeChat Work / 企业微信) channel implementation for JYC, using the
 - **Shared HTTP Server**: All WeCom channels share a single axum HTTP server (方案B).
   Configured via `[wecom].bind_addr` (default: `127.0.0.1:10001`).
 - **Path-based Routing**: Each channel registers at `/webhook/{channel_name}`.
-- **One Group = One Thread**: Thread name is derived from `chat_id`
+- **One Group = One Topic**: Topic name is derived from `chat_id`
   (`{channel_name}_{sanitized_chat_id}`), ensuring each WeCom chat group maps to a dedicated
-  agent thread.
+  agent topic.
 - **Token-based Outbound**: Uses `corp_id` + `corp_secret` to obtain an access_token
   from the WeCom API, then sends messages via the external contact API.
 - **Token Caching**: Access tokens are cached in memory with automatic refresh
@@ -166,18 +166,18 @@ Outbound messages are sent via the WeCom External Contact API:
 The adapter auto-detects markdown content by checking for code blocks (` ``` `),
 bold (`**`), headings (`##`), tables (`|`), task lists (`- [`), and images (`![`).
 
-## Thread Naming
+## Topic Naming
 
-Threads are named using the `chat_id` field combined with the `channel_name` from the inbound message metadata:
+Topics are named using the `chat_id` field combined with the `channel_name` from the inbound message metadata:
 
 ```
 {channel_name}_{sanitized_chat_id}
 ```
 
-For example, a channel named `my_bot` receiving a message from chat group `wrOgQhDgA...` will produce thread name `my_bot_wrOgQhDgA...`.
+For example, a channel named `my_bot` receiving a message from chat group `wrOgQhDgA...` will produce topic name `my_bot_wrOgQhDgA...`.
 
 This ensures:
-- One thread per channel+group pair (consistent with the "通道 + 群" design)
+- One topic per channel+group pair (consistent with the "通道 + 群" design)
 - Consistency with Feishu's `{channel_name}_{chat_id}` naming pattern
 - Proper isolation between different channels and group conversations
 

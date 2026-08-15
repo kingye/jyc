@@ -18,7 +18,7 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
     parse_and_deserialize(&content, &path.display().to_string())
 }
 
-/// Thread-level configuration (L3), loaded from `<thread_path>/.jyc/config.toml`.
+/// Topic-level configuration (L3), loaded from `<topic_path>/.jyc/config.toml`.
 ///
 /// Restricted subset of the app config:
 /// - `[agent]`: model overrides. Precedence: `.jyc/<mode>-model-override` >
@@ -27,14 +27,14 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ThreadConfig {
-    /// Agent overrides for this thread.
-    pub agent: Option<ThreadAgentConfig>,
+pub struct TopicConfig {
+    /// Agent overrides for this topic.
+    pub agent: Option<TopicAgentConfig>,
 
-    /// MCPs added for this thread.
+    /// MCPs added for this topic.
     ///
-    /// Default merge = additive: thread MCPs union with pattern/channel/global
-    /// MCPs, and a thread MCP with the same `name` as an inherited one wins.
+    /// Default merge = additive: topic MCPs union with pattern/channel/global
+    /// MCPs, and a topic MCP with the same `name` as an inherited one wins.
     /// Set `mcps_replace = true` to fully replace the inherited set (mirror of
     /// how `ChannelPattern.mcps` overrides channel-level MCPs).
     #[serde(default)]
@@ -46,9 +46,9 @@ pub struct ThreadConfig {
     pub mcps_replace: bool,
 }
 
-/// Agent model overrides for a single thread.
+/// Agent model overrides for a single topic.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ThreadAgentConfig {
+pub struct TopicAgentConfig {
     /// Model override for all modes.
     pub model: Option<String>,
     /// Model override for plan mode.
@@ -59,19 +59,19 @@ pub struct ThreadAgentConfig {
     pub small_model: Option<String>,
 }
 
-/// Load thread-level overrides from `<thread_path>/.jyc/config.toml`.
+/// Load topic-level overrides from `<topic_path>/.jyc/config.toml`.
 ///
 /// Returns `None` when the file does not exist, when it cannot be read
 /// (e.g. EACCES in remote deployments — the agent runs under a different
 /// user than the config owner), or when it fails to parse. All non-`Ok`
 /// outcomes are logged at `warn` so the failure mode is visible in
-/// production logs; a broken thread config must not crash the agent.
+/// production logs; a broken topic config must not crash the agent.
 ///
 /// Structurally mirrors [`load_config_from_str`] but returns
-/// `Option<ThreadConfig>` and swallows errors. `${VAR}` expansion runs
+/// `Option<TopicConfig>` and swallows errors. `${VAR}` expansion runs
 /// on every string field (via [`parse_and_deserialize`]).
-pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
-    let path = thread_path.join(".jyc").join("config.toml");
+pub fn load_topic_config(topic_path: &Path) -> Option<TopicConfig> {
+    let path = topic_path.join(".jyc").join("config.toml");
     let path_label = path.display().to_string();
     if !path.exists() {
         return None;
@@ -82,7 +82,7 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
             tracing::warn!(
                 path = %path_label,
                 error = %e,
-                "Failed to read thread config; thread-local MCP overlay will be skipped"
+                "Failed to read topic config; topic-local MCP overlay will be skipped"
             );
             return None;
         }
@@ -91,11 +91,11 @@ pub fn load_thread_config(thread_path: &Path) -> Option<ThreadConfig> {
     // load_config_from_str / load_config_layered (all four public
     // loaders now share [`parse_and_deserialize`] for the parse+expand
     // step). Errors are swallowed (warn + None) per the docstring
-    // above: a broken thread config must not crash the agent.
-    match parse_and_deserialize::<ThreadConfig>(&content, &path_label) {
+    // above: a broken topic config must not crash the agent.
+    match parse_and_deserialize::<TopicConfig>(&content, &path_label) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            tracing::warn!(path = %path_label, error = %e, "Ignoring invalid thread config");
+            tracing::warn!(path = %path_label, error = %e, "Ignoring invalid topic config");
             None
         }
     }
@@ -108,27 +108,27 @@ pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
     parse_and_deserialize(content, "<inline>")
 }
 
-/// Apply the thread-level (L3) MCP overlay onto a base list.
+/// Apply the topic-level (L3) MCP overlay onto a base list.
 ///
-/// - When `thread_cfg` is `None` or its `mcps` is `None`, returns `base` unchanged.
-/// - When `thread_cfg.mcps_replace` is `true`, returns the thread's MCPs only.
-/// - Otherwise (additive default): union of `base` + thread MCPs; on name
-///   conflict, the thread version wins (last-writer-wins).
-pub fn apply_thread_mcp_overlay(
+/// - When `topic_cfg` is `None` or its `mcps` is `None`, returns `base` unchanged.
+/// - When `topic_cfg.mcps_replace` is `true`, returns the topic's MCPs only.
+/// - Otherwise (additive default): union of `base` + topic MCPs; on name
+///   conflict, the topic version wins (last-writer-wins).
+pub fn apply_topic_mcp_overlay(
     base: &[McpServerConfig],
-    thread_cfg: Option<&ThreadConfig>,
+    topic_cfg: Option<&TopicConfig>,
 ) -> Vec<McpServerConfig> {
-    let Some(t) = thread_cfg else {
+    let Some(t) = topic_cfg else {
         return base.to_vec();
     };
-    let Some(thread_mcps) = t.mcps.as_ref() else {
+    let Some(topic_mcps) = t.mcps.as_ref() else {
         return base.to_vec();
     };
     if t.mcps_replace {
-        return thread_mcps.clone();
+        return topic_mcps.clone();
     }
     let mut out: Vec<McpServerConfig> = base.to_vec();
-    for tm in thread_mcps {
+    for tm in topic_mcps {
         if let Some(slot) = out.iter_mut().find(|c| c.name == tm.name) {
             *slot = tm.clone();
         } else {

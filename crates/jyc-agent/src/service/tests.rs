@@ -431,7 +431,7 @@ async fn disabled_tools_removes_builtin_and_bridge() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -464,7 +464,7 @@ async fn disabled_builtin_tools_alias_works() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -492,7 +492,7 @@ async fn channel_and_pattern_disabled_tools_merged() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -527,7 +527,7 @@ async fn disabled_mcp_servers_skips_matching_server() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -544,7 +544,7 @@ async fn channel_disabled_tools_works_without_pattern_match() {
     // channel-level disabled_tools should apply even when no pattern is matched
     let svc = service_with_exclusion(vec![], Some(vec!["bash".to_string()]), None);
     let registry = svc
-        .build_tool_registry("test", Path::new("/tmp/test-thread"), None, false, None)
+        .build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
         .await;
 
     assert!(
@@ -566,7 +566,7 @@ async fn empty_disabled_tools_disables_nothing() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -590,7 +590,7 @@ async fn disabled_tools_deduplicates_between_channel_and_pattern() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -622,7 +622,7 @@ async fn disabled_mcp_servers_filters_channel_configs() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -648,7 +648,7 @@ async fn disabled_tools_server_prefix_does_not_affect_builtin() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -680,7 +680,7 @@ async fn disabled_tools_mixed_plain_and_server_prefix() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -718,7 +718,7 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
     let registry = svc
         .build_tool_registry(
             "test",
-            Path::new("/tmp/test-thread"),
+            Path::new("/tmp/test-topic"),
             None,
             false,
             Some("test"),
@@ -730,11 +730,11 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
     assert!(registry.has_tool("read"), "read should still be available");
 }
 
-/// Verifies that a `<thread_path>/.jyc/config.toml` with `[mcps]` does not
+/// Verifies that a `<topic_path>/.jyc/config.toml` with `[mcps]` does not
 /// panic during registry build. Pure resolution correctness is covered by
-/// `apply_thread_mcp_overlay` unit tests in jyc-types.
+/// `apply_topic_mcp_overlay` unit tests in jyc-types.
 #[tokio::test]
-async fn thread_config_with_mcps_does_not_panic() {
+async fn topic_config_with_mcps_does_not_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let jyc_dir = tmp.path().join(".jyc");
     std::fs::create_dir_all(&jyc_dir).unwrap();
@@ -744,9 +744,9 @@ async fn thread_config_with_mcps_does_not_panic() {
 mcps_replace = true
 
 [[mcps]]
-name = "thread-only-mcp"
+name = "topic-only-mcp"
 type = "local"
-command = ["./thread-mcp"]
+command = ["./topic-mcp"]
 "#,
     )
     .unwrap();
@@ -756,12 +756,12 @@ command = ["./thread-mcp"]
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, None, None);
-    let thread_cfg = jyc_types::load_thread_config(tmp.path());
+    let topic_cfg = jyc_types::load_topic_config(tmp.path());
     let registry = svc
-        .build_tool_registry("test", tmp.path(), thread_cfg.as_ref(), false, Some("test"))
+        .build_tool_registry("test", tmp.path(), topic_cfg.as_ref(), false, Some("test"))
         .await;
 
-    // Built-in tools still present — confirms the thread config didn't
+    // Built-in tools still present — confirms the topic config didn't
     // accidentally break the rest of the registry.
     assert!(registry.has_tool("bash"));
     assert!(registry.has_tool("read"));
@@ -1012,7 +1012,7 @@ fn build_user_prompt_injects_build_mode_tag() {
             ..Default::default()
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],
@@ -1044,7 +1044,7 @@ fn build_user_prompt_shows_source_with_require_reply() {
         serde_json::Value::String("feishu_bot".into()),
     );
     metadata.insert(
-        "source_thread".to_string(),
+        "source_topic".to_string(),
         serde_json::Value::String("greenfield".into()),
     );
     metadata.insert("require_reply".to_string(), serde_json::Value::Bool(true));
@@ -1055,13 +1055,13 @@ fn build_user_prompt_shows_source_with_require_reply() {
         sender: "Agent".into(),
         sender_address: "agent@jyc".into(),
         recipients: vec![],
-        topic: "cross-thread".into(),
+        topic: "cross-topic".into(),
         content: jyc_types::MessageContent {
             text: Some("do work".into()),
             ..Default::default()
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],
@@ -1071,7 +1071,7 @@ fn build_user_prompt_shows_source_with_require_reply() {
 
     let prompt = svc.build_user_prompt_text(&message, None);
     assert!(
-        prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+        prompt.contains("**Source:** channel \"feishu_bot\", topic \"greenfield\""),
         "prompt should contain Source header, got: {prompt}"
     );
     assert!(
@@ -1089,7 +1089,7 @@ fn build_user_prompt_shows_source_without_require_reply() {
         serde_json::Value::String("feishu_bot".into()),
     );
     metadata.insert(
-        "source_thread".to_string(),
+        "source_topic".to_string(),
         serde_json::Value::String("greenfield".into()),
     );
     metadata.insert("require_reply".to_string(), serde_json::Value::Bool(false));
@@ -1100,13 +1100,13 @@ fn build_user_prompt_shows_source_without_require_reply() {
         sender: "Agent".into(),
         sender_address: "agent@jyc".into(),
         recipients: vec![],
-        topic: "cross-thread".into(),
+        topic: "cross-topic".into(),
         content: jyc_types::MessageContent {
             text: Some("do work".into()),
             ..Default::default()
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],
@@ -1116,7 +1116,7 @@ fn build_user_prompt_shows_source_without_require_reply() {
 
     let prompt = svc.build_user_prompt_text(&message, None);
     assert!(
-        prompt.contains("**Source:** channel \"feishu_bot\", thread \"greenfield\""),
+        prompt.contains("**Source:** channel \"feishu_bot\", topic \"greenfield\""),
         "prompt should contain Source header, got: {prompt}"
     );
     assert!(
@@ -1141,7 +1141,7 @@ fn build_user_prompt_no_source_without_metadata() {
             ..Default::default()
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],
@@ -1233,7 +1233,7 @@ fn pattern_mode_plan_injects_plan_tag_in_user_prompt() {
             ..Default::default()
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],

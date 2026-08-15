@@ -21,7 +21,7 @@ use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
 use jyc_core::state_manager::StateManager;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
 
@@ -80,7 +80,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
     // 5. Process each configured channel
     let mut tasks = Vec::new();
-    // Collect JycAgentService instances for wiring cross-channel thread managers
+    // Collect JycAgentService instances for wiring cross-channel topic managers
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
     // Collect outbound adapters keyed by channel name for cross-channel messaging
     let mut all_outbounds: Vec<(String, Arc<dyn OutboundAdapter>)> = Vec::new();
@@ -144,7 +144,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
     // Collect websocket inbound adapters to register with the inspect server later
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
-    // Map for setting ThreadManager on websocket handlers after creation
+    // Map for setting TopicManager on websocket handlers after creation
     let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
     // Per-channel websocket broadcast senders, keyed by channel name. Used by
     // piped channels (e.g. feishu with `pipe = "local_dev"`) to receive the
@@ -167,7 +167,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let channel_type = channel_config.channel_type.as_str();
 
         // Workspace directory: always <workdir>/<channel>/workspace/
-        let workspace_dir = jyc_core::thread_path::resolve_workspace(workdir, channel_name);
+        let workspace_dir = jyc_core::topic_path::resolve_workspace(workdir, channel_name);
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
 
         let patterns = channel_config.patterns.clone().unwrap_or_default();
@@ -243,7 +243,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let agent = agent_result.agent;
 
         // Layered template dirs (low → high priority): L1 global < L2 workdir.
-        // Thread-level (L3) .jyc/templates/ is checked first at lookup time.
+        // Topic-level (L3) .jyc/templates/ is checked first at lookup time.
         let template_dirs = jyc_core::template_dirs::TemplateDirs::new(
             [
                 jyc_utils::paths::global_templates_dir(),
@@ -254,14 +254,14 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             .collect(),
         );
 
-        let thread_manager = Arc::new(ThreadManager::new_with_options(
-            config_snapshot.general.max_concurrent_threads,
-            config_snapshot.general.max_queue_size_per_thread,
+        let topic_manager = Arc::new(TopicManager::new_with_options(
+            config_snapshot.general.max_concurrent_topics,
+            config_snapshot.general.max_queue_size_per_topic,
             storage.clone(),
             outbound.clone(),
             agent,
             cancel.clone(),
-            true, // enable_events: true for Thread Event system
+            true, // enable_events: true for Topic Event system
             template_dirs,
             config.clone(),
             channel_name.clone(),
@@ -272,9 +272,9 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             Some(config_path.clone()),
         ));
 
-        // Wire thread_manager to websocket handler for custom thread_path resolution
+        // Wire topic_manager to websocket handler for custom topic_path resolution
         if let Some(ws_handler) = ws_handler_for_channel.get(channel_name) {
-            ws_handler.set_thread_manager(thread_manager.clone());
+            ws_handler.set_topic_manager(topic_manager.clone());
         }
 
         // Collect for inspect server
@@ -286,7 +286,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         };
 
         let router = Arc::new(MessageRouter::new(
-            thread_manager.clone(),
+            topic_manager.clone(),
             storage.clone(),
             config.clone(),
             channel_name.clone(),
@@ -317,7 +317,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         // Spawn the inbound monitor as a task (channel-type-specific)
         let cancel_child = cancel.clone();
         let _channel_name_owned = channel_name.clone();
-        let _tm = thread_manager.clone();
+        let _tm = topic_manager.clone();
         let _channel_span = tracing::info_span!("in", ch = %channel_name);
 
         // NOTE: unsupported channel types are skipped inside spawn() (the
@@ -331,7 +331,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             workspace_dir: workspace_dir.clone(),
             args,
             inbound_attachment_config,
-            thread_manager: thread_manager.clone(),
+            topic_manager: topic_manager.clone(),
             router: router.clone(),
             state_manager,
             cancel: cancel.clone(),
@@ -355,19 +355,19 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         anyhow::bail!("No channels configured");
     }
 
-    // 5.5. Wire cross-channel thread managers and outbound adapters into agent services
+    // 5.5. Wire cross-channel topic managers and outbound adapters into agent services
     {
-        let tms = orchestrator.thread_managers().load();
-        let tm_map: HashMap<String, Arc<ThreadManager>> = tms
+        let tms = orchestrator.topic_managers().load();
+        let tm_map: HashMap<String, Arc<TopicManager>> = tms
             .iter()
             .map(|tm| (tm.channel_name().to_string(), tm.clone()))
             .collect();
         let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
         for svc in &all_agent_services {
-            svc.set_thread_managers(tm_map.clone());
+            svc.set_topic_managers(tm_map.clone());
         }
         tracing::info!(
-            "Wired thread managers into {} agent service(s)",
+            "Wired topic managers into {} agent service(s)",
             all_agent_services.len()
         );
 
@@ -392,7 +392,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 tm_map,
                 workspace_dirs,
                 scheduler_config.scan_interval_secs,
-                scheduler_config.max_jobs_per_thread,
+                scheduler_config.max_jobs_per_topic,
                 true,
             );
 
@@ -432,7 +432,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         );
 
         let context = Arc::new(jyc_inspect::server::InspectContext {
-            thread_managers: orchestrator.thread_managers(),
+            topic_managers: orchestrator.topic_managers(),
             channels: orchestrator.channel_infos(),
             health_stats: shared_stats,
             activity_map: activity_map.clone(),
@@ -471,18 +471,18 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             auth_token: Some(auth_token.clone()),
         });
 
-        // Restore custom thread_path mappings from disk so threads with
+        // Restore custom topic_path mappings from disk so topics with
         // non-default paths survive process restarts.
         {
-            let tms = orchestrator.thread_managers().load();
+            let tms = orchestrator.topic_managers().load();
             for tm in tms.iter() {
-                tm.restore_custom_thread_paths().await;
+                tm.restore_custom_topic_paths().await;
             }
         }
 
-        // Start activity tracker (subscribes to thread event buses)
+        // Start activity tracker (subscribes to topic event buses)
         let _activity_task = jyc_inspect::server::ActivityTracker::start(
-            context.thread_managers.clone(),
+            context.topic_managers.clone(),
             activity_map,
             context.workspace_dirs.clone(),
             context.inspect_broadcast.clone(),

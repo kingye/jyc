@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
     Arc::new(InspectContext {
-        thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "ch".into(),
             channel_type: "email".into(),
@@ -171,7 +171,7 @@ async fn get_state_overview_returns_slim() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let v: serde_json::Value = res.json().await.unwrap();
-    assert!(v["threads"].is_array());
+    assert!(v["topics"].is_array());
 }
 
 #[tokio::test]
@@ -188,10 +188,10 @@ async fn patterns_returns_404_for_unknown_channel() {
 }
 
 #[tokio::test]
-async fn thread_activity_returns_404_for_unknown_thread() {
+async fn topic_activity_returns_404_for_unknown_topic() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()
-        .get(format!("http://{addr}/api/threads/ch/issue-1/activity"))
+        .get(format!("http://{addr}/api/topics/ch/issue-1/activity"))
         .send()
         .await
         .unwrap();
@@ -199,10 +199,10 @@ async fn thread_activity_returns_404_for_unknown_thread() {
 }
 
 #[tokio::test]
-async fn thread_chat_returns_404_for_unknown_thread() {
+async fn topic_chat_returns_404_for_unknown_topic() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()
-        .get(format!("http://{addr}/api/threads/ch/issue-1/chat"))
+        .get(format!("http://{addr}/api/topics/ch/issue-1/chat"))
         .send()
         .await
         .unwrap();
@@ -210,13 +210,13 @@ async fn thread_chat_returns_404_for_unknown_thread() {
 }
 
 #[tokio::test]
-async fn create_thread_rejects_traversal() {
+async fn create_topic_rejects_traversal() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()
-        .post(format!("http://{addr}/api/threads"))
+        .post(format!("http://{addr}/api/topics"))
         .json(&serde_json::json!({
             "channel": "ch",
-            "thread": "../escape",
+            "topic": "../escape",
             "path": "/tmp/x"
         }))
         .send()
@@ -226,13 +226,13 @@ async fn create_thread_rejects_traversal() {
 }
 
 #[tokio::test]
-async fn create_thread_returns_404_for_unknown_channel() {
+async fn create_topic_returns_404_for_unknown_channel() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()
-        .post(format!("http://{addr}/api/threads"))
+        .post(format!("http://{addr}/api/topics"))
         .json(&serde_json::json!({
             "channel": "nonexistent",
-            "thread": "ok",
+            "topic": "ok",
             "path": "/tmp/x"
         }))
         .send()

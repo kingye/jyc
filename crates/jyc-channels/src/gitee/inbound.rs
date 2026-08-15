@@ -22,7 +22,7 @@ impl ChannelMatcher for GiteeMatcher {
         "gitee"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
@@ -41,7 +41,7 @@ impl ChannelMatcher for GiteeMatcher {
 
         if let Some(pm) = pattern_match
             && let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
-            && let Some(prefix) = pattern.thread_prefix.as_deref()
+            && let Some(prefix) = pattern.topic_prefix.as_deref()
         {
             return format!("{}-{}", prefix, number);
         }
@@ -228,7 +228,7 @@ impl GiteeInboundAdapter {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some(event_uid.to_string()),
             attachments: vec![],
@@ -244,13 +244,13 @@ impl ChannelMatcher for GiteeInboundAdapter {
         "gitee"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
-        GiteeMatcher.derive_thread_name(message, patterns, pattern_match)
+        GiteeMatcher.derive_topic_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -681,9 +681,9 @@ impl GiteeInboundAdapter {
                             "Gitee close event detected"
                         );
 
-                        if let Some(ref on_close) = options.on_thread_close
+                        if let Some(ref on_close) = options.on_topic_close
                             && let Ok(entries) =
-                                std::fs::read_dir(jyc_core::thread_path::resolve_workspace(
+                                std::fs::read_dir(jyc_core::topic_path::resolve_workspace(
                                     &self.workdir,
                                     &self.channel_name,
                                 ))

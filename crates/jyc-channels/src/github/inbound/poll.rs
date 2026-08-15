@@ -20,13 +20,13 @@ impl ChannelMatcher for GithubInboundAdapter {
         "github"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
-        GithubMatcher.derive_thread_name(message, patterns, pattern_match)
+        GithubMatcher.derive_topic_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -149,7 +149,7 @@ impl InboundAdapter for GithubInboundAdapter {
 
 impl GithubInboundAdapter {
     /// Execute one poll cycle: fetch comments and route via pattern matching.
-    /// Routes events to threads via on_message callback.
+    /// Routes events to topics via on_message callback.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn poll_once(
         &self,
@@ -375,7 +375,7 @@ impl GithubInboundAdapter {
         }
 
         // 2b. Fetch and process PR reviews and review comments.
-        // Only fetch for PRs with active threads (pr-N or review-pr-N directories exist).
+        // Only fetch for PRs with active topics (pr-N or review-pr-N directories exist).
         // This avoids 2 API calls per open PR for PRs that don't match any pattern,
         // which would otherwise make the poll cycle take 15+ minutes with many open PRs.
         let open_pr_numbers: Vec<u64> = issue_cache
@@ -384,16 +384,16 @@ impl GithubInboundAdapter {
             .map(|(number, _)| *number)
             .collect();
 
-        let active_pr_threads = self.scan_active_pr_threads();
+        let active_pr_topics = self.scan_active_pr_topics();
         tracing::debug!(
             channel = %self.channel_name,
-            active = active_pr_threads.len(),
+            active = active_pr_topics.len(),
             total = open_pr_numbers.len(),
-            "Review polling: active threads out of open PRs"
+            "Review polling: active topics out of open PRs"
         );
 
         for pr_number in &open_pr_numbers {
-            if !active_pr_threads.contains(pr_number) {
+            if !active_pr_topics.contains(pr_number) {
                 continue;
             }
 
@@ -643,16 +643,16 @@ impl GithubInboundAdapter {
 
         // 2c. Poll CI check-run status for open PRs (if enabled).
         if self.config.poll_ci_status {
-            let active_pr_threads = self.scan_active_pr_threads();
+            let active_pr_topics = self.scan_active_pr_topics();
             tracing::debug!(
                 channel = %self.channel_name,
-                active = active_pr_threads.len(),
+                active = active_pr_topics.len(),
                 total = open_pr_numbers.len(),
-                "CI polling: active threads out of open PRs"
+                "CI polling: active topics out of open PRs"
             );
 
             for pr_number in &open_pr_numbers {
-                if !active_pr_threads.contains(pr_number) {
+                if !active_pr_topics.contains(pr_number) {
                     continue;
                 }
                 let head_sha = match client.get_pr_head_sha(*pr_number).await {
@@ -847,19 +847,19 @@ impl GithubInboundAdapter {
                             event = "closed",
                             number = cached_number,
                             github_type = github_type,
-                            "GitHub close event detected (via cache comparison) → closing threads"
+                            "GitHub close event detected (via cache comparison) → closing topics"
                         );
 
-                        if let Some(ref on_close) = options.on_thread_close {
-                            // Close every thread directory whose name ends with
+                        if let Some(ref on_close) = options.on_topic_close {
+                            // Close every topic directory whose name ends with
                             // `-{N}`. This catches default prefixes (issue/pr/
                             // review-pr) as well as any user-defined prefix.
-                            // For PRs we also include the linked issue thread
+                            // For PRs we also include the linked issue topic
                             // (any directory matching `*-{N}` regardless of
                             // event type).
-                            let thread_names = self.scan_threads_for_number(cached_number);
-                            for thread_name in thread_names {
-                                let _ = (on_close)(thread_name);
+                            let topic_names = self.scan_topics_for_number(cached_number);
+                            for topic_name in topic_names {
+                                let _ = (on_close)(topic_name);
                             }
                         }
 
@@ -904,19 +904,19 @@ impl GithubInboundAdapter {
                 number = item.number,
                 github_type = github_type,
                 is_merged = is_merged,
-                "GitHub close event detected → closing threads"
+                "GitHub close event detected → closing topics"
             );
 
-            // Close threads (Phase 6 will delete directories).
-            // Enumerate every thread directory whose name ends with `-{N}` so
-            // that user-defined `thread_prefix` values (e.g. `plan`, `qa-pr`)
+            // Close topics (Phase 6 will delete directories).
+            // Enumerate every topic directory whose name ends with `-{N}` so
+            // that user-defined `topic_prefix` values (e.g. `plan`, `qa-pr`)
             // are also closed alongside the defaults (`issue`, `pr`, `review-pr`).
-            if let Some(ref on_close) = options.on_thread_close {
+            if let Some(ref on_close) = options.on_topic_close {
                 let _ = github_type; // event-type no longer drives the prefix list
                 let _ = is_merged; // merge state currently doesn't change cleanup
-                let thread_names = self.scan_threads_for_number(item.number);
-                for thread_name in thread_names {
-                    let _ = (on_close)(thread_name);
+                let topic_names = self.scan_topics_for_number(item.number);
+                for topic_name in topic_names {
+                    let _ = (on_close)(topic_name);
                 }
             }
 

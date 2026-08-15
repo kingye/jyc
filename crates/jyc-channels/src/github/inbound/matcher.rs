@@ -13,7 +13,7 @@ impl ChannelMatcher for GithubMatcher {
         "github"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
@@ -30,28 +30,28 @@ impl ChannelMatcher for GithubMatcher {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        // If the matched pattern declares an explicit thread_prefix, use it.
+        // If the matched pattern declares an explicit topic_prefix, use it.
         // This is the configurable mechanism that lets two patterns matching
         // the same GitHub identity (e.g. issue + label combinations) live in
         // separate workspace directories so each can carry its own template
         // and AGENTS.md without collision.
         if let Some(pm) = pattern_match {
             if let Some(pattern) = patterns.iter().find(|p| p.name == pm.pattern_name)
-                && let Some(prefix) = pattern.thread_prefix.as_deref()
+                && let Some(prefix) = pattern.topic_prefix.as_deref()
             {
                 return format!("{}-{}", prefix, number);
             }
 
             // Backwards-compatible fallback: a pattern named "reviewer"
-            // without an explicit `thread_prefix` keeps the historical
-            // `review-pr-{N}` thread name. Emit a deprecation warning so
-            // users migrate to declaring `thread_prefix = "review-pr"`
+            // without an explicit `topic_prefix` keeps the historical
+            // `review-pr-{N}` topic name. Emit a deprecation warning so
+            // users migrate to declaring `topic_prefix = "review-pr"`
             // explicitly. New patterns should not rely on this.
             if pm.pattern_name == "reviewer" {
                 tracing::warn!(
                     pattern = %pm.pattern_name,
-                    "Pattern 'reviewer' has no `thread_prefix` configured; falling back to legacy 'review-pr-{{N}}'. \
-                     Add `thread_prefix = \"review-pr\"` to the pattern config to silence this warning. \
+                    "Pattern 'reviewer' has no `topic_prefix` configured; falling back to legacy 'review-pr-{{N}}'. \
+                     Add `topic_prefix = \"review-pr\"` to the pattern config to silence this warning. \
                      The implicit fallback will be removed in a future release."
                 );
                 return format!("review-pr-{}", number);

@@ -7,18 +7,18 @@
 //! |--------|---------------------------------------------------------|-------------|
 //! | GET    | `/api/state`                                            | Full state. |
 //! | GET    | `/api/state/overview`                                   | Slim state. |
-//! | GET    | `/api/threads/{channel}/{thread}/activity`              | Recent activity (with `?since=`, `?limit=`). |
-//! | GET    | `/api/threads/{channel}/{thread}/chat`                  | Recent chat (with `?since=`, `?limit=`). |
+//! | GET    | `/api/topics/{channel}/{topic}/activity`              | Recent activity (with `?since=`, `?limit=`). |
+//! | GET    | `/api/topics/{channel}/{topic}/chat`                  | Recent chat (with `?since=`, `?limit=`). |
 //! | GET    | `/api/channels/{channel}/patterns`                      | Pattern names. |
-//! | POST   | `/api/threads`                                          | Register a thread. |
+//! | POST   | `/api/topics`                                          | Register a topic. |
 //! | POST   | `/api/config/reload`                                    | Reload config. |
 //!
-//! Mounted WITHOUT the bearer middleware (access control is the per-thread
+//! Mounted WITHOUT the bearer middleware (access control is the per-topic
 //! `?token=` in the URL, created by the `jyc_publish_file` tool):
 //!
 //! | Method | Path                                                    | Description |
 //! |--------|---------------------------------------------------------|-------------|
-//! | GET    | `/exchange/{channel}/{thread}/{file...}?token=`           | Agent-published file. |
+//! | GET    | `/exchange/{channel}/{topic}/{file...}?token=`           | Agent-published file. |
 //!
 //! Response shape: success returns `200` + JSON body. Errors use `ApiError`
 //! which carries an HTTP status and a `{"error": "..."}` JSON body.
@@ -43,16 +43,16 @@ use crate::server::{
 
 /// Query parameters for the activity / chat endpoints.
 #[derive(Debug, Default, Deserialize)]
-pub struct ThreadQuery {
+pub struct TopicQuery {
     pub since: Option<String>,
     pub limit: Option<usize>,
 }
 
-/// Request body for `POST /api/threads`.
+/// Request body for `POST /api/topics`.
 #[derive(Debug, Deserialize)]
 pub struct CreateThreadBody {
     pub channel: String,
-    pub thread: String,
+    pub topic: String,
     pub path: String,
 }
 
@@ -62,7 +62,7 @@ pub struct PatternsBody {
     pub patterns: Vec<String>,
 }
 
-/// Response body for `POST /api/threads`.
+/// Response body for `POST /api/topics`.
 #[derive(Debug, Serialize)]
 pub struct CreatedThread {
     pub message: String,
@@ -134,26 +134,24 @@ pub async fn get_state_overview(
     ))
 }
 
-/// Resolve a `(channel, thread)` pair to its thread directory path.
-/// Returns a descriptive 404 error when the channel or thread is unknown.
-async fn resolve_thread_path(
+/// Resolve a `(channel, topic)` pair to its topic directory path.
+/// Returns a descriptive 404 error when the channel or topic is unknown.
+async fn resolve_topic_path(
     ctx: &InspectContext,
     channel: &str,
-    thread: &str,
+    topic: &str,
 ) -> Result<PathBuf, ApiError> {
     let tm = ctx
-        .thread_managers
+        .topic_managers
         .load()
         .iter()
         .find(|tm| tm.channel_name() == channel)
         .cloned()
         .ok_or_else(|| {
-            ApiError::not_found(format!("no thread manager found for channel '{channel}'"))
+            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
         })?;
-    tm.thread_path(thread).await.ok_or_else(|| {
-        ApiError::not_found(format!(
-            "thread '{thread}' not found in channel '{channel}'"
-        ))
+    tm.topic_path(topic).await.ok_or_else(|| {
+        ApiError::not_found(format!("topic '{topic}' not found in channel '{channel}'"))
     })
 }
 
@@ -163,38 +161,38 @@ pub struct ExchangeQuery {
     token: Option<String>,
 }
 
-/// `GET /exchange/:channel/:thread/*file_path` — serve an agent-published file.
+/// `GET /exchange/:channel/:topic/*file_path` — serve an agent-published file.
 ///
-/// Access control is the per-thread token in the URL (created by the
+/// Access control is the per-topic token in the URL (created by the
 /// `jyc_publish_file` tool, rotated by `/reset`), so this route is mounted
 /// WITHOUT the bearer middleware: links must work for end users who have no
 /// dashboard token.
 pub async fn get_exchange_file(
     State(ctx): State<Arc<InspectContext>>,
-    Path((channel, thread, file_path)): Path<(String, String, String)>,
+    Path((channel, topic, file_path)): Path<(String, String, String)>,
     Query(q): Query<ExchangeQuery>,
 ) -> Result<Response, ApiError> {
-    // Unknown channel/thread gets the same 403 as a bad token, so link
-    // probing cannot distinguish "thread exists" from "token wrong".
-    let thread_path = resolve_thread_path(&ctx, &channel, &thread)
+    // Unknown channel/topic gets the same 403 as a bad token, so link
+    // probing cannot distinguish "topic exists" from "token wrong".
+    let topic_path = resolve_topic_path(&ctx, &channel, &topic)
         .await
         .map_err(|_| ApiError::forbidden("missing or invalid token"))?;
-    serve_exchange_file(&thread_path, q.token.as_deref(), &file_path).await
+    serve_exchange_file(&topic_path, q.token.as_deref(), &file_path).await
 }
 
 /// Token-check, then resolve and read a published file under
-/// `<thread>/.jyc/exchange/`, guarding against path traversal (including
+/// `<topic>/.jyc/exchange/`, guarding against path traversal (including
 /// symlink escapes via canonicalization).
 async fn serve_exchange_file(
-    thread_path: &std::path::Path,
+    topic_path: &std::path::Path,
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
-    let jyc_dir = thread_path.join(".jyc");
+    let jyc_dir = topic_path.join(".jyc");
 
     let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await
-        .map_err(|_| ApiError::forbidden("exchange access not enabled for this thread"))?;
+        .map_err(|_| ApiError::forbidden("exchange access not enabled for this topic"))?;
     let expected = expected.trim();
     let ok = !expected.is_empty()
         && token.is_some_and(|t| crate::auth::constant_time_eq(t.as_bytes(), expected.as_bytes()));
@@ -259,14 +257,14 @@ fn exchange_content_type(path: &std::path::Path) -> &'static str {
     }
 }
 
-pub async fn get_thread_activity(
+pub async fn get_topic_activity(
     State(ctx): State<Arc<InspectContext>>,
-    Path((channel, thread)): Path<(String, String)>,
-    Query(q): Query<ThreadQuery>,
+    Path((channel, topic)): Path<(String, String)>,
+    Query(q): Query<TopicQuery>,
 ) -> Result<Json<Vec<ActivityEntry>>, ApiError> {
     let limit = q.limit.unwrap_or(180);
-    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
-    let entries = ActivityLogStore::load_recent(&thread_path, limit)
+    let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
+    let entries = ActivityLogStore::load_recent(&topic_path, limit)
         .map_err(|e| ApiError::internal(format!("failed to load activity: {e}")))?;
     let entries: Vec<ActivityEntry> = entries
         .into_iter()
@@ -276,14 +274,14 @@ pub async fn get_thread_activity(
     Ok(Json(entries))
 }
 
-pub async fn get_thread_chat(
+pub async fn get_topic_chat(
     State(ctx): State<Arc<InspectContext>>,
-    Path((channel, thread)): Path<(String, String)>,
-    Query(q): Query<ThreadQuery>,
+    Path((channel, topic)): Path<(String, String)>,
+    Query(q): Query<TopicQuery>,
 ) -> Result<Json<Vec<ChatMessageEntry>>, ApiError> {
     let limit = q.limit.unwrap_or(100);
-    let thread_path = resolve_thread_path(&ctx, &channel, &thread).await?;
-    let mut entries = load_recent_chat_history(&thread_path, limit);
+    let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
+    let mut entries = load_recent_chat_history(&topic_path, limit);
     entries = filter_chat_by_since(entries, q.since.as_deref());
     Ok(Json(entries))
 }
@@ -293,54 +291,54 @@ pub async fn get_patterns(
     Path(channel): Path<String>,
 ) -> Result<Json<PatternsBody>, ApiError> {
     let tm = ctx
-        .thread_managers
+        .topic_managers
         .load()
         .iter()
         .find(|tm| tm.channel_name() == channel)
         .cloned()
         .ok_or_else(|| {
-            ApiError::not_found(format!("no thread manager found for channel '{channel}'"))
+            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
         })?;
     Ok(Json(PatternsBody {
         patterns: tm.pattern_names().await,
     }))
 }
 
-pub async fn post_thread(
+pub async fn post_topic(
     State(ctx): State<Arc<InspectContext>>,
     Json(body): Json<CreateThreadBody>,
 ) -> Result<(StatusCode, Json<CreatedThread>), ApiError> {
-    if body.thread.contains("..") || body.thread.contains('/') || body.thread.contains('\\') {
+    if body.topic.contains("..") || body.topic.contains('/') || body.topic.contains('\\') {
         return Err(ApiError::bad_request(
-            "invalid thread_name: path traversal not allowed",
+            "invalid topic_name: path traversal not allowed",
         ));
     }
     let path = PathBuf::from(&body.path);
     let tm = ctx
-        .thread_managers
+        .topic_managers
         .load()
         .iter()
         .find(|tm| tm.channel_name() == body.channel)
         .cloned()
         .ok_or_else(|| {
             ApiError::not_found(format!(
-                "no thread manager found for channel '{}'",
+                "no topic manager found for channel '{}'",
                 body.channel
             ))
         })?;
-    tm.set_thread_path(&body.thread, path.clone())
+    tm.set_topic_path(&body.topic, path.clone())
         .await
-        .map_err(|e| ApiError::internal(format!("failed to create thread: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("failed to create topic: {e}")))?;
     tracing::info!(
         channel = %body.channel,
-        thread = %body.thread,
+        topic = %body.topic,
         path = %path.display(),
-        "Dashboard thread created via REST"
+        "Dashboard topic created via REST"
     );
     Ok((
         StatusCode::CREATED,
         Json(CreatedThread {
-            message: format!("thread '{}' registered at {}", body.thread, path.display()),
+            message: format!("topic '{}' registered at {}", body.topic, path.display()),
         }),
     ))
 }

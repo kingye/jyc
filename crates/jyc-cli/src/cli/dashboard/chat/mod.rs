@@ -1,5 +1,5 @@
 //! Chat pane: state, key handling, and rendering for the dashboard's
-//! WebSocket thread chat (all channel types via `/ws/<channel>/<thread>`).
+//! WebSocket topic chat (all channel types via `/ws/<channel>/<topic>`).
 
 use super::token_render::{
     input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cost_span,
@@ -22,7 +22,7 @@ const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 pub(super) enum ChatPhase {
     /// User is selecting a pattern to chat with.
     PatternSelect,
-    /// User is actively chatting in a thread.
+    /// User is actively chatting in a topic.
     Chatting,
 }
 
@@ -33,11 +33,11 @@ pub(super) enum ChatFocus {
     ChatPane,
     /// The scrollable message area above the input field.
     MessageArea,
-    /// The right-hand thread info pane (thread metadata + changed files).
+    /// The right-hand topic info pane (topic metadata + changed files).
     InfoPane,
     /// The activity log pane.
     ActivityPane,
-    /// The left-side thread explorer pane.
+    /// The left-side topic explorer pane.
     ExplorerPane,
 }
 
@@ -59,14 +59,14 @@ pub(super) struct ZenSnapshot {
     explorer_visible: bool,
 }
 
-/// Chat pane state: WebSocket thread chat for any channel type.
+/// Chat pane state: WebSocket topic chat for any channel type.
 pub(super) struct ChatState {
     // Chat pane state
     pub(super) visible: bool,
     pub(super) phase: ChatPhase,
     pub(super) patterns: Vec<String>,
     pub(super) pattern_selected: usize,
-    pub(super) thread: Option<String>,
+    pub(super) topic: Option<String>,
     pub(super) channel: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
     /// Multi-line text editor for the chat input (ratatui-textarea).
@@ -95,19 +95,19 @@ pub(super) struct ChatState {
     /// Horizontal scroll offset for the activity pane (left-right).
     pub(super) activity_hscroll: usize,
     /// Set locally when user sends a message, cleared when the poll confirms
-    /// the thread is processing or has completed. Bridges the gap between
+    /// the topic is processing or has completed. Bridges the gap between
     /// sending a message and the inspect server reporting Processing status.
     pub(super) awaiting_response: bool,
     /// Activity pane visibility/size state.
     /// 0 = hidden, 1 = bottom 20%, 2 = bottom 80%, 3 = activity-only (full pane)
     pub(super) activity_split: u8,
-    /// Thread info pane (right side, 20% width) visibility. Default
+    /// Topic info pane (right side, 20% width) visibility. Default
     /// visible; toggled via the leader-key popup (`i`).
     pub(super) info_visible: bool,
     /// Bottom status bar visibility. Default visible; toggled via the
     /// leader-key popup (`s`).
     pub(super) status_visible: bool,
-    /// Thread explorer pane (left side, 20% width). Default hidden;
+    /// Topic explorer pane (left side, 20% width). Default hidden;
     /// toggled via the leader-key popup (`e`).
     pub(super) explorer_visible: bool,
     /// Aux-pane snapshot taken when entering zen mode (leader `z`),
@@ -120,7 +120,7 @@ pub(super) struct ChatState {
     pub(super) ws_connected: bool,
     /// Live activity buffer — populated by REST hydrate on selection and
     /// appended to by WS `{"type":"activity",...}` events. Keyed by
-    /// `(channel, thread)`. The activity pane and chat progress read
+    /// `(channel, topic)`. The activity pane and chat progress read
     /// exclusively from this buffer.
     pub(super) live_activity: std::collections::BTreeMap<
         (String, String),
@@ -141,11 +141,11 @@ pub(super) struct ChatState {
     /// dashboard's Details panel, the chat-mode info pane, and the chat
     /// progress line.
     pub(super) live_tick_ms: std::collections::BTreeMap<(String, String), u64>,
-    /// Last-seen monotonic id per (channel, thread) — used to drop duplicate
+    /// Last-seen monotonic id per (channel, topic) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
-    /// Last (channel, thread) that was REST-hydrated by the poll loop.
-    /// Used to avoid re-hydrating the same thread on every poll when the
+    /// Last (channel, topic) that was REST-hydrated by the poll loop.
+    /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
     pub(super) last_hydrated_key: Option<(String, String)>,
     /// Address stash for `select_pattern` to call back into `open` when
@@ -539,9 +539,9 @@ fn refocus_input(app: &mut App) {
 }
 
 /// Move the explorer selection by `delta` rows, clamped to the current
-/// thread list.
+/// topic list.
 fn explorer_move(app: &mut App, delta: i64) {
-    let len = app.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+    let len = app.state.as_ref().map(|s| s.topics.len()).unwrap_or(0);
     if len == 0 {
         app.chat.explorer_selected = 0;
         return;
@@ -550,11 +550,11 @@ fn explorer_move(app: &mut App, delta: i64) {
     app.chat.explorer_selected = cur.saturating_add(delta).clamp(0, len as i64 - 1) as usize;
 }
 
-/// Open the thread currently selected in the explorer pane. All channel
-/// types use the unified `/ws/<channel>/<thread>` endpoint.
+/// Open the topic currently selected in the explorer pane. All channel
+/// types use the unified `/ws/<channel>/<topic>` endpoint.
 fn explorer_open_selected(app: &mut App) {
     let info = app.state.as_ref().and_then(|s| {
-        s.threads
+        s.topics
             .get(app.chat.explorer_selected)
             .map(|t| (t.name.clone(), t.channel.clone()))
     });
@@ -568,9 +568,9 @@ fn explorer_open_selected(app: &mut App) {
             // Hydration runs on the async poll loop (sync key handler
             // can't await on InspectClient).
             app.pending_hydrate = Some((channel, name));
-            // Focus on the new thread's input; hide the explorer so
+            // Focus on the new topic's input; hide the explorer so
             // the user lands in the chat, not the pane they used to
-            // pick the thread.
+            // pick the topic.
             app.chat.explorer_visible = false;
         }
         None => app.set_status("No server address available".to_string()),
@@ -621,9 +621,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
     }
 }
 
-/// Toggle the thread explorer. When opening, snap the selection to the
-/// thread currently open in the chat pane — `sync_explorer_selection`
-/// only follows the chat thread while the explorer is *unfocused*, so
+/// Toggle the topic explorer. When opening, snap the selection to the
+/// topic currently open in the chat pane — `sync_explorer_selection`
+/// only follows the chat topic while the explorer is *unfocused*, so
 /// without this the explorer would open on a stale row.
 fn toggle_explorer_snapped(app: &mut App) {
     app.chat.toggle_explorer();
@@ -631,11 +631,11 @@ fn toggle_explorer_snapped(app: &mut App) {
         return;
     }
     let idx = app.state.as_ref().and_then(|s| {
-        let thread = app.chat.thread.as_deref()?;
+        let topic = app.chat.topic.as_deref()?;
         let channel = app.chat.channel.as_deref()?;
-        s.threads
+        s.topics
             .iter()
-            .position(|t| t.name == thread && t.channel == channel)
+            .position(|t| t.name == topic && t.channel == channel)
     });
     if let Some(idx) = idx {
         app.chat.explorer_selected = idx;
@@ -660,10 +660,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     // Ctrl+C sends /cancel without modifying the input buffer (advertised in
     // CHANGELOG v0.3.12). Routes through `send_message_inner` (not
     // `send_message`) so the editor is untouched. The worker's
-    // `pending_rx` select! arm in thread_manager.rs intercepts the
+    // `pending_rx` select! arm in topic_manager.rs intercepts the
     // leading "/" and runs CancelCommandHandler, which fires the
-    // per-thread CancellationToken. Restrict to Chatting — there is
-    // no thread to cancel in PatternSelect.
+    // per-topic CancellationToken. Restrict to Chatting — there is
+    // no topic to cancel in PatternSelect.
     let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
         // Close any open command popup so the cancel path runs cleanly.
@@ -797,8 +797,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 _ => {}
             }
 
-            // Explorer pane: navigate the thread list; Enter switches the
-            // chat to the selected thread. Esc returns focus to the input.
+            // Explorer pane: navigate the topic list; Enter switches the
+            // chat to the selected topic. Esc returns focus to the input.
             // Any other key refocuses the input (consumed, not forwarded),
             // so the user can browse then just start typing.
             if app.chat.focus == ChatFocus::ExplorerPane {
@@ -882,7 +882,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             // Chat input field. Everything not matched here is delegated
             // to the textarea (character input, editing keys, undo/redo).
             match key.code {
-                // Esc does not leave the thread: returning to the dashboard
+                // Esc does not leave the topic: returning to the dashboard
                 // is done via the leader-key popup (`open dashboard`, Ctrl+P).
                 // Plain Enter sends the message. Pasted multi-line text
                 // goes through insert_str (not key events), so no paste
@@ -961,7 +961,7 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     //
     //   ┌─────────── top row (chat + optional 20% info pane) ───────────┐
     //   │  chat conversation (borderless, fills horizontally)            │
-    //   │  ┌── thread info pane (20% wide, only when info_visible) ──┐  │
+    //   │  ┌── topic info pane (20% wide, only when info_visible) ──┐  │
     //   │  │   ...                                                   │  │
     //   │  └─────────────────────────────────────────────────────────┘  │
     //   ├────────── bottom area: status bar + activity pane ────────────┤
@@ -969,15 +969,15 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     //   │  activity pane (bottom 20% / 80% / full when visible)         │
     //   └───────────────────────────────────────────────────────────────┘
     //
-    // Status bar and thread info pane have independent visibility flags
+    // Status bar and topic info pane have independent visibility flags
     // (leader `s` / `i`); zen mode hides both.
 
     if app.chat.phase == ChatPhase::PatternSelect {
-        // Pattern select is the initial screen when no thread is chosen.
+        // Pattern select is the initial screen when no topic is chosen.
         // Info row and status row are independent; zen hides both.
         let mut constraints = Vec::with_capacity(3);
         if app.chat.info_visible {
-            constraints.push(Constraint::Length(1)); // Thread info pane
+            constraints.push(Constraint::Length(1)); // Topic info pane
         }
         constraints.push(Constraint::Min(0)); // Pattern select
         if app.chat.status_visible {
@@ -989,7 +989,7 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
             .split(area);
         let mut i = 0;
         if app.chat.info_visible {
-            render_thread_info_pane(frame, chunks[i], app);
+            render_topic_info_pane(frame, chunks[i], app);
             i += 1;
         }
         render_pattern_select(frame, chunks[i], app);
@@ -1052,7 +1052,7 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     render_chat_conversation(frame, top_cols[0], app);
     if app.chat.info_visible {
-        render_thread_info_pane(frame, top_cols[1], app);
+        render_topic_info_pane(frame, top_cols[1], app);
     }
 
     if let Some(exp) = explorer_area {
@@ -1069,13 +1069,13 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Keep the explorer selection valid and, while the explorer is not
-/// focused, following the thread currently open in the chat pane.
+/// focused, following the topic currently open in the chat pane.
 fn sync_explorer_selection(app: &mut App) {
     let Some(s) = app.state.as_ref() else {
         app.chat.explorer_selected = 0;
         return;
     };
-    let len = s.threads.len();
+    let len = s.topics.len();
     if len == 0 {
         app.chat.explorer_selected = 0;
         return;
@@ -1084,21 +1084,21 @@ fn sync_explorer_selection(app: &mut App) {
         app.chat.explorer_selected = len - 1;
     }
     if app.chat.focus != ChatFocus::ExplorerPane
-        && let (Some(thread), Some(channel)) = (&app.chat.thread, &app.chat.channel)
+        && let (Some(topic), Some(channel)) = (&app.chat.topic, &app.chat.channel)
         && let Some(idx) = s
-            .threads
+            .topics
             .iter()
-            .position(|t| &t.name == thread && &t.channel == channel)
+            .position(|t| &t.name == topic && &t.channel == channel)
     {
         app.chat.explorer_selected = idx;
     }
 }
 
-/// Render the left-side thread explorer pane (20% wide when shown).
+/// Render the left-side topic explorer pane (20% wide when shown).
 ///
-/// Lists all threads from the latest overview poll with a status dot
+/// Lists all topics from the latest overview poll with a status dot
 /// (green = processing, yellow = queued, cyan = waiting, red = error),
-/// highlighting the thread currently open in the chat pane. The list is
+/// highlighting the topic currently open in the chat pane. The list is
 /// rebuilt from `app.state` on every render, so it stays live.
 pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.chat.focus == ChatFocus::ExplorerPane;
@@ -1109,10 +1109,10 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     };
     // The right edge (against the chat pane) gets a vertical border, and the
     // top edge carries the title inline with the top border so the title
-    // row acts as a separator between the heading and the thread list
+    // row acts as a separator between the heading and the topic list
     // below.
     let block = Block::default()
-        .title("── Threads ")
+        .title("── Topics ")
         .borders(Borders::TOP | Borders::RIGHT)
         .border_style(border_style);
     let inner = block.inner(area);
@@ -1122,7 +1122,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
-    let current = app.chat.thread.as_ref().zip(app.chat.channel.as_ref());
+    let current = app.chat.topic.as_ref().zip(app.chat.channel.as_ref());
     let selected = app.chat.explorer_selected;
 
     // Scroll window: keep the selected row visible.
@@ -1134,18 +1134,18 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines: Vec<Line> = s
-        .threads
+        .topics
         .iter()
         .enumerate()
         .skip(offset)
         .take(height)
         .map(|(i, t)| {
             let dot_style = match t.status {
-                ThreadStatus::Processing => Style::default().fg(Color::Green),
-                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
-                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
-                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
-                ThreadStatus::Error => Style::default().fg(Color::Red),
+                TopicStatus::Processing => Style::default().fg(Color::Green),
+                TopicStatus::Queued => Style::default().fg(Color::Yellow),
+                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                TopicStatus::Idle => Style::default().fg(Color::DarkGray),
+                TopicStatus::Error => Style::default().fg(Color::Red),
             };
             let is_current = current == Some((&t.name, &t.channel));
             let is_selected = i == selected && focused;
@@ -1164,7 +1164,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 
             // For the focused selection row, paint the full row width with
             // the highlight background so the selection visually fills the
-            // row instead of stopping at the end of the thread name.
+            // row instead of stopping at the end of the topic name.
             if is_selected {
                 let sel_style = Style::default().fg(Color::Black).bg(Color::Cyan);
                 let mut spans = Vec::with_capacity(3);
@@ -1188,35 +1188,31 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Find the `ThreadSummary` currently in scope. Used by both the
-/// thread info pane and the chat header so the two views agree on
-/// which thread is "selected".
+/// Find the `TopicSummary` currently in scope. Used by both the
+/// topic info pane and the chat header so the two views agree on
+/// which topic is "selected".
 ///
 /// Lookup order matches the legacy chat-pane behavior:
-/// 1. The thread the chat pane is currently bound to (`app.chat.thread`).
-/// 2. The currently-selected row of the thread table.
-fn selected_thread_summary(app: &App) -> Option<&jyc_types::ThreadSummary> {
+/// 1. The topic the chat pane is currently bound to (`app.chat.topic`).
+/// 2. The currently-selected row of the topic table.
+fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
     let state = app.state.as_ref()?;
     state
-        .threads
+        .topics
         .iter()
-        .find(|t| Some(&t.name) == app.chat.thread.as_ref())
-        .or_else(|| {
-            app.table_state
-                .selected()
-                .and_then(|i| state.threads.get(i))
-        })
+        .find(|t| Some(&t.name) == app.chat.topic.as_ref())
+        .or_else(|| app.table_state.selected().and_then(|i| state.topics.get(i)))
 }
 
-/// Render the right-hand thread info pane (always 20% wide when shown).
+/// Render the right-hand topic info pane (always 20% wide when shown).
 ///
-/// Displays thread name, channel, pattern, model, mode, tokens, a
+/// Displays topic name, channel, pattern, model, mode, tokens, a
 /// processing indicator, and the changed-files list (which can scroll
 /// when it overflows the pane). Wraps content in a bordered `Block`
 /// so it is visually separable from the borderless chat pane. Takes
 /// `&mut App` because the changed-files section owns
 /// `app.chat.info_scroll`, which is clamped on every render.
-pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == ChatFocus::InfoPane;
     // The left edge (against the chat pane) gets a vertical border, and the
     // top edge carries the title inline with the top border so the title
@@ -1224,7 +1220,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
     // When focused, paint the border yellow so the user knows they own
     // the scroll keys (mirrors render_activity_log_inner).
     let mut block = Block::default()
-        .title("── Thread Info ")
+        .title("── Topic Info ")
         .borders(Borders::TOP | Borders::LEFT);
     if focused {
         block = block.border_style(
@@ -1236,10 +1232,10 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines: Vec<Line> = if let Some(t) = selected_thread_summary(app) {
+    let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
         let mut out: Vec<Line> = Vec::new();
         out.push(Line::from(vec![
-            Span::styled("Thread: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Topic: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&t.name),
         ]));
         out.push(Line::from(vec![
@@ -1260,9 +1256,9 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        // Branch is resolved server-side and shipped on ThreadSummary.branch.
-        // Skipped when the selected thread's thread_path isn't a git repo
-        // (most chat-channel threads: feishu/wecom).
+        // Branch is resolved server-side and shipped on TopicSummary.branch.
+        // Skipped when the selected topic's topic_path isn't a git repo
+        // (most chat-channel topics: feishu/wecom).
         if let Some(branch) = t.branch.as_deref() {
             out.push(Line::from(vec![
                 Span::styled("Branch: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -1312,7 +1308,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
         if !cost_spans.is_empty() {
             out.push(Line::from(cost_spans));
         }
-        if t.status == ThreadStatus::Processing {
+        if t.status == TopicStatus::Processing {
             let mut thinking_line: Vec<Span> = vec![Span::styled(
                 "⏳ AI thinking...",
                 Style::default().fg(Color::Yellow),
@@ -1333,7 +1329,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
             out.push(Line::from(thinking_line));
         }
         // Separated section at the end: files changed relative to `main`,
-        // resolved server-side and shipped on `ThreadSummary.changed_files`
+        // resolved server-side and shipped on `TopicSummary.changed_files`
         // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
         // cap) — the parent pane scrolls when the list overflows. Each
         // path is plain when only committed on the branch, yellow when
@@ -1378,7 +1374,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
         }
         out
     } else {
-        vec![Line::from("Select a thread")]
+        vec![Line::from("Select a topic")]
     };
 
     // Slice-skip in Rust (matching the activity pane's pattern) so we
@@ -1391,7 +1387,7 @@ pub(super) fn render_thread_info_pane(frame: &mut Frame, area: Rect, app: &mut A
     let inner_height = inner.height as usize;
     let max_skip = lines.len().saturating_sub(inner_height);
     // `scroll` and `skip` are read while `lines` is still in scope
-    // (lines borrows app via the ThreadSummary snapshot). Write the
+    // (lines borrows app via the TopicSummary snapshot). Write the
     // clamped value back after rendering, when the borrow has ended.
     let scroll = app.chat.info_scroll;
     let skip = scroll.min(max_skip);
@@ -1460,7 +1456,7 @@ struct ChatHeaderCtx<'a> {
 }
 
 fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
-    let t = selected_thread_summary(app);
+    let t = selected_topic_summary(app);
     ChatHeaderCtx {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
         channel: t.map(|t| t.channel.as_str()),
@@ -1485,7 +1481,7 @@ fn build_chat_header_line(
     line_style: Style,
 ) -> Line<'static> {
     // --- Left segment: "╭─ {mode} · {channel} · {pattern}[ · {branch}]" ---
-    // Divergence from the Thread Info pane: when `pattern` is `None`
+    // Divergence from the Topic Info pane: when `pattern` is `None`
     // we omit the segment entirely instead of rendering "-". The
     // header is width-constrained, so omitting the segment looks
     // cleaner than `╭─ plan · local_dev · -`.
@@ -1601,21 +1597,21 @@ fn is_user_visible_activity(entry: &jyc_types::ActivityEntry) -> bool {
 
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
     // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
-    // currently focused thread. Falls back to empty slice if no live data
+    // currently focused topic. Falls back to empty slice if no live data
     // has been seeded yet (transient state during hydrate).
     let activity_vec: Vec<jyc_types::ActivityEntry> =
         if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-            let (chan, thread) = (app.chat.channel.clone(), app.chat.thread.clone());
-            match (chan, thread) {
+            let (chan, topic) = (app.chat.channel.clone(), app.chat.topic.clone());
+            match (chan, topic) {
                 (Some(c), Some(t)) => app.chat.live_activity_for(&c, &t).cloned().collect(),
                 _ => Vec::new(),
             }
         } else if let Some(state) = &app.state {
-            // Overview mode: show the activity for the table-selected thread
+            // Overview mode: show the activity for the table-selected topic
             // (also pulled from live buffers, hydrated when the row is selected).
             let selected_idx = app.table_state.selected();
             if let Some(idx) = selected_idx {
-                if let Some(t) = state.threads.get(idx) {
+                if let Some(t) = state.topics.get(idx) {
                     app.chat
                         .live_activity_for(&t.channel, &t.name)
                         .cloned()
@@ -1746,7 +1742,7 @@ impl ChatState {
             phase: ChatPhase::PatternSelect,
             patterns: vec![],
             pattern_selected: 0,
-            thread: None,
+            topic: None,
             channel: None,
             messages: vec![],
             editor: empty_chat_editor(),
@@ -1791,11 +1787,11 @@ impl ChatState {
         &mut self,
         addr: &str,
         channel: Option<&str>,
-        initial_thread: Option<&str>,
+        initial_topic: Option<&str>,
         token: Option<String>,
     ) {
         self.visible = true;
-        self.phase = if initial_thread.is_some() {
+        self.phase = if initial_topic.is_some() {
             ChatPhase::Chatting
         } else {
             ChatPhase::PatternSelect
@@ -1803,7 +1799,7 @@ impl ChatState {
         self.patterns.clear();
         self.pattern_selected = 0;
         self.channel = channel.map(|s| s.to_string());
-        self.thread = initial_thread.map(|s| s.to_string());
+        self.topic = initial_topic.map(|s| s.to_string());
         self.token = token;
         self.messages.clear();
         self.editor = empty_chat_editor();
@@ -1826,13 +1822,13 @@ impl ChatState {
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
         // when we switch back to overview later.
         self.last_hydrated_key = None;
-        // Stash addr so the explorer pane can switch threads later.
+        // Stash addr so the explorer pane can switch topics later.
         self.open_addr = Some(addr.to_string());
 
-        // No WS yet — the chat starts in PatternSelect (if no initial thread)
+        // No WS yet — the chat starts in PatternSelect (if no initial topic)
         // and opens a scoped WS only after the user picks a pattern
         // (see `open_pattern_select` + `select_pattern`).
-        if initial_thread.is_none() {
+        if initial_topic.is_none() {
             // Drop any stale WS connection from a prior chat.
             if let Some(tx) = self.ws_tx.take() {
                 let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -1846,7 +1842,7 @@ impl ChatState {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
-        let url = match (channel, initial_thread) {
+        let url = match (channel, initial_topic) {
             (Some(ch), Some(th)) => format!("ws://{}/ws/{}/{}", addr, ch, th),
             (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
             (None, _) => format!("ws://{}/ws", addr),
@@ -1868,7 +1864,7 @@ impl ChatState {
         self.visible = true;
         self.phase = ChatPhase::PatternSelect;
         self.channel = Some(channel.to_string());
-        self.thread = None;
+        self.topic = None;
         self.token = token;
         self.patterns = client.list_patterns(channel).await.unwrap_or_default();
         self.pattern_selected = 0;
@@ -1938,11 +1934,11 @@ impl ChatState {
         ));
     }
 
-    /// Clear state and set thread — used by `select_pattern` for the WS flow
+    /// Clear state and set topic — used by `select_pattern` for the WS flow
     /// and directly by tests to verify state-clearing without a tokio runtime.
     fn select_pattern_inner(&mut self, pattern: String) {
         self.phase = ChatPhase::Chatting;
-        self.thread = Some(pattern);
+        self.topic = Some(pattern);
         self.editor = empty_chat_editor();
         self.scroll = 0;
         self.messages.clear();
@@ -2008,7 +2004,7 @@ impl ChatState {
     }
 
     /// Toggle zen mode. Entering zen snapshots the aux-pane state
-    /// (activity, thread info, status bar, explorer) and hides all of
+    /// (activity, topic info, status bar, explorer) and hides all of
     /// them, leaving only the chat pane. Exiting zen restores the
     /// snapshot exactly — panes toggled individually while in zen are
     /// discarded in favor of the snapshot.
@@ -2043,7 +2039,7 @@ impl ChatState {
         self.status_visible = !self.status_visible;
     }
 
-    /// Toggle the thread info pane (leader-key popup `i`). Hiding it
+    /// Toggle the topic info pane (leader-key popup `i`). Hiding it
     /// while focused moves focus back to the chat pane.
     pub(super) fn toggle_info_pane(&mut self) {
         self.info_visible = !self.info_visible;
@@ -2052,7 +2048,7 @@ impl ChatState {
         }
     }
 
-    /// Toggle the thread explorer pane (left side). Opening moves focus
+    /// Toggle the topic explorer pane (left side). Opening moves focus
     /// into it so j/k/Enter are immediately usable; closing returns
     /// focus to the chat input.
     pub(super) fn toggle_explorer(&mut self) {
@@ -2206,16 +2202,16 @@ impl ChatState {
         }
 
         // WebSocket-only flow: echo user message locally, send via WebSocket.
-        let _ = self.thread.as_ref(); // thread must be set before send
+        let _ = self.topic.as_ref(); // topic must be set before send
         self.messages.push(ChatMessage {
             sender: "user".to_string(),
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
         });
-        // The /ws/<channel>/<thread> URL already carries the thread name.
-        // Both ScopedWsHandler (websocket channel) and ThreadProxyHandler
-        // (any other channel) bind the thread from the URL, so the payload
-        // doesn't need a `thread` field.
+        // The /ws/<channel>/<topic> URL already carries the topic name.
+        // Both ScopedWsHandler (websocket channel) and TopicProxyHandler
+        // (any other channel) bind the topic from the URL, so the payload
+        // doesn't need a `topic` field.
         let msg = serde_json::json!({
             "type": "message",
             "text": text,
@@ -2235,7 +2231,7 @@ impl ChatState {
             Err(_) => return,
         };
 
-        // The new ThreadProxyHandler / ScopedWsHandler publish these events
+        // The new TopicProxyHandler / ScopedWsHandler publish these events
         // on the inspect-broadcast bus. Forward them to the live buffers
         // (activity pane, chat progress, chat message stream).
         let event_type = parsed.get("type").and_then(|v| v.as_str());
@@ -2255,7 +2251,7 @@ impl ChatState {
         // duplicates between the two event sources.
         //
         // `list_patterns` and `subscribe` moved to REST; `history` is
-        // no longer needed (REST `get_thread_chat`).
+        // no longer needed (REST `get_topic_chat`).
     }
 
     /// Recall an older entry from input history into the editor.
@@ -2291,17 +2287,17 @@ impl ChatState {
     }
 
     /// Seed the live activity/chat buffers with the result of a REST hydrate
-    /// (initial fetch on thread selection). Sets `last_seen_id` to the
+    /// (initial fetch on topic selection). Sets `last_seen_id` to the
     /// highest id seen so duplicate WS events are dropped.
     #[allow(dead_code)]
     pub(super) fn seed_live(
         &mut self,
         channel: &str,
-        thread: &str,
+        topic: &str,
         activity: Vec<jyc_types::ActivityEntry>,
         chat: Vec<jyc_types::ChatMessageEntry>,
     ) {
-        let key = (channel.to_string(), thread.to_string());
+        let key = (channel.to_string(), topic.to_string());
         let mut max_id = 0u64;
         let activity_buf: std::collections::VecDeque<_> = activity
             .into_iter()
@@ -2335,13 +2331,13 @@ impl ChatState {
         self.last_seen_id.insert(key, max_id);
     }
 
-    /// Handle a `{"type":"resync", "channel":..., "thread":...}` event by
-    /// clearing the live buffers for that thread. The caller should re-run
-    /// the REST hydrate (`get_thread_activity` + `get_thread_chat`) and
+    /// Handle a `{"type":"resync", "channel":..., "topic":...}` event by
+    /// clearing the live buffers for that topic. The caller should re-run
+    /// the REST hydrate (`get_topic_activity` + `get_topic_chat`) and
     /// re-seed via `seed_live`.
     #[allow(dead_code)]
-    pub(super) fn clear_live(&mut self, channel: &str, thread: &str) {
-        let key = (channel.to_string(), thread.to_string());
+    pub(super) fn clear_live(&mut self, channel: &str, topic: &str) {
+        let key = (channel.to_string(), topic.to_string());
         self.live_activity.remove(&key);
         self.live_chat.remove(&key);
         self.live_thinking.remove(&key);
@@ -2357,11 +2353,11 @@ impl ChatState {
             Some(c) => c.to_string(),
             None => return,
         };
-        let thread = match payload.get("thread").and_then(|v| v.as_str()) {
+        let topic = match payload.get("topic").and_then(|v| v.as_str()) {
             Some(t) => t.to_string(),
             None => return,
         };
-        let key = (channel.clone(), thread.clone());
+        let key = (channel.clone(), topic.clone());
         let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
         let last = self.last_seen_id.get(&key).copied().unwrap_or(0);
         if id != 0 && id <= last {
@@ -2454,78 +2450,78 @@ impl ChatState {
         }
     }
 
-    /// Clear the transient per-thread live state (`live_thinking` and
+    /// Clear the transient per-topic live state (`live_thinking` and
     /// `live_processing`) without touching the activity/chat buffers.
     ///
-    /// Called on REST hydrate when switching threads: `live_processing` is
-    /// only updated by WS `processing` events received while the thread is
+    /// Called on REST hydrate when switching topics: `live_processing` is
+    /// only updated by WS `processing` events received while the topic is
     /// watched, so entries go stale while unwatched (a missed completion
     /// leaves `true` → phantom progress; a missed start leaves `false` →
     /// no progress). Clearing makes the renderer fall back to the polled
     /// overview status until fresh WS events arrive.
-    pub(super) fn clear_live_transient(&mut self, channel: &str, thread: &str) {
-        let key = (channel.to_string(), thread.to_string());
+    pub(super) fn clear_live_transient(&mut self, channel: &str, topic: &str) {
+        let key = (channel.to_string(), topic.to_string());
         self.live_thinking.remove(&key);
         self.live_processing.remove(&key);
         self.live_tick_ms.remove(&key);
     }
 
-    /// Get a snapshot of the live activity buffer for the given (channel, thread).
+    /// Get a snapshot of the live activity buffer for the given (channel, topic).
     /// Returns an empty slice if no live data has been seeded yet.
     #[allow(dead_code)]
     pub(super) fn live_activity_for(
         &self,
         channel: &str,
-        thread: &str,
+        topic: &str,
     ) -> std::collections::vec_deque::Iter<'_, jyc_types::ActivityEntry> {
         self.live_activity
-            .get(&(channel.to_string(), thread.to_string()))
+            .get(&(channel.to_string(), topic.to_string()))
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_VEC_DEQUE.iter())
     }
 
-    /// Get the current thinking text for the given (channel, thread), if any.
-    pub(super) fn live_thinking_for(&self, channel: &str, thread: &str) -> Option<&str> {
+    /// Get the current thinking text for the given (channel, topic), if any.
+    pub(super) fn live_thinking_for(&self, channel: &str, topic: &str) -> Option<&str> {
         self.live_thinking
-            .get(&(channel.to_string(), thread.to_string()))
+            .get(&(channel.to_string(), topic.to_string()))
             .map(|s| s.as_str())
     }
 
-    /// Get the current processing status for the given (channel, thread).
+    /// Get the current processing status for the given (channel, topic).
     /// Returns `None` if no status has been received yet (fall back to polled state).
-    pub(super) fn live_processing_for(&self, channel: &str, thread: &str) -> Option<(bool, bool)> {
+    pub(super) fn live_processing_for(&self, channel: &str, topic: &str) -> Option<(bool, bool)> {
         self.live_processing
-            .get(&(channel.to_string(), thread.to_string()))
+            .get(&(channel.to_string(), topic.to_string()))
             .copied()
     }
     /// Get the live wall-clock elapsed time (milliseconds) for an active
-    /// agent loop on the given (channel, thread). Returns `None` when no
+    /// agent loop on the given (channel, topic). Returns `None` when no
     /// tick has arrived yet (loop just started) or the loop has ended.
     /// Used by all three render sites: the dashboard Details panel, the
     /// chat-mode info pane, and the chat progress line.
-    pub(super) fn live_tick_ms_for(&self, channel: &str, thread: &str) -> Option<u64> {
+    pub(super) fn live_tick_ms_for(&self, channel: &str, topic: &str) -> Option<u64> {
         self.live_tick_ms
-            .get(&(channel.to_string(), thread.to_string()))
+            .get(&(channel.to_string(), topic.to_string()))
             .copied()
     }
-    /// Iterate over the live chat messages for the given (channel, thread).
+    /// Iterate over the live chat messages for the given (channel, topic).
     /// Used by the dashboard's poll loop to append new messages to the
     /// `chat.messages` vec shown in the chat pane.
     #[allow(dead_code)]
     pub(super) fn live_chat_for(
         &self,
         channel: &str,
-        thread: &str,
+        topic: &str,
     ) -> std::collections::vec_deque::Iter<'_, jyc_types::ChatMessageEntry> {
         self.live_chat
-            .get(&(channel.to_string(), thread.to_string()))
+            .get(&(channel.to_string(), topic.to_string()))
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
     }
 }
 
 /// Static empty deque used as a fallback when no live data is seeded for a
-/// (channel, thread) — lets us return a concrete `Iter` from the accessors.
+/// (channel, topic) — lets us return a concrete `Iter` from the accessors.
 static EMPTY_VEC_DEQUE: std::sync::LazyLock<std::collections::VecDeque<jyc_types::ActivityEntry>> =
     std::sync::LazyLock::new(std::collections::VecDeque::new);
 static EMPTY_CHAT_DEQUE: std::sync::LazyLock<

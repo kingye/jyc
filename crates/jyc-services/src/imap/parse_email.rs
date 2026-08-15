@@ -134,7 +134,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> Result<InboundMessage> {
             markdown: None,
         },
         timestamp,
-        thread_refs: references,
+        references,
         reply_to_id: in_reply_to,
         external_id: message_id,
         attachments,

@@ -8,14 +8,14 @@ use jyc_types::InboundMessage;
 /// Result of storing a message.
 #[derive(Debug, Clone)]
 pub struct StoreResult {
-    /// Full path to the thread directory
-    pub thread_path: PathBuf,
+    /// Full path to the topic directory
+    pub topic_path: PathBuf,
     /// Timestamp identifier for this message (e.g., "2026-03-19_23-02-20").
     /// Used as a correlation key in reply context and outbound adapters.
     pub message_dir: String,
 }
 
-/// Persist messages and replies as markdown files per thread.
+/// Persist messages and replies as markdown files per topic.
 pub struct MessageStorage {
     /// Base workspace directory
     workspace: PathBuf,
@@ -38,11 +38,11 @@ impl MessageStorage {
     pub async fn store_with_match(
         &self,
         message: &InboundMessage,
-        thread_name: &str,
+        topic_name: &str,
         is_matched: bool,
         _attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
-        let thread_path = self.workspace.join(thread_name);
+        let topic_path = self.workspace.join(topic_name);
 
         // Generate a timestamp identifier for this message
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -51,37 +51,37 @@ impl MessageStorage {
         // before the message reaches the MessageRouter
 
         // Append to chat log
-        self.append_to_chat_log(&thread_path, message, is_matched)
+        self.append_to_chat_log(&topic_path, message, is_matched)
             .await?;
 
         tracing::info!(
-            thread = %thread_name,
+            topic = %topic_name,
             message_dir = %message_dir,
             "Message stored to chat log"
         );
 
         // Return minimal StoreResult
         Ok(StoreResult {
-            thread_path: thread_path.clone(),
+            topic_path: topic_path.clone(),
             message_dir,
         })
     }
 
-    /// Store an inbound message at a specific thread path.
+    /// Store an inbound message at a specific topic path.
     ///
-    /// Used when a pattern's `thread_path` override places the thread
+    /// Used when a pattern's `topic_path` override places the topic
     /// outside the default workspace directory.
     pub async fn store_at_path(
         &self,
         message: &InboundMessage,
-        thread_path: &Path,
+        topic_path: &Path,
         is_matched: bool,
     ) -> Result<StoreResult> {
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        self.append_to_chat_log(thread_path, message, is_matched)
+        self.append_to_chat_log(topic_path, message, is_matched)
             .await?;
         Ok(StoreResult {
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             message_dir,
         })
     }
@@ -92,10 +92,10 @@ impl MessageStorage {
     pub async fn store(
         &self,
         message: &InboundMessage,
-        thread_name: &str,
+        topic_name: &str,
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
-        self.store_with_match(message, thread_name, true, attachment_config)
+        self.store_with_match(message, topic_name, true, attachment_config)
             .await
     }
 
@@ -104,12 +104,12 @@ impl MessageStorage {
     /// Appends the reply to the chat log.
     pub async fn store_reply(
         &self,
-        thread_path: &Path,
+        topic_path: &Path,
         reply_text: &str,
         message_dir: &str,
     ) -> Result<()> {
         // Append to chat log
-        self.append_reply_to_chat_log(thread_path, reply_text, message_dir)
+        self.append_reply_to_chat_log(topic_path, reply_text, message_dir)
             .await?;
 
         tracing::debug!("Reply stored to chat log");
@@ -120,18 +120,16 @@ impl MessageStorage {
     /// Append a message to the chat log.
     async fn append_to_chat_log(
         &self,
-        thread_path: &Path,
+        topic_path: &Path,
         message: &InboundMessage,
         is_matched: bool,
     ) -> Result<()> {
         use crate::chat_log_store::ChatLogStore;
 
-        let mut chat_log = ChatLogStore::new(thread_path);
+        let mut chat_log = ChatLogStore::new(topic_path);
         chat_log
             .append_message(message, is_matched)
-            .with_context(|| {
-                format!("Failed to append to chat log in {}", thread_path.display())
-            })?;
+            .with_context(|| format!("Failed to append to chat log in {}", topic_path.display()))?;
 
         tracing::debug!("Message appended to chat log");
         Ok(())
@@ -140,7 +138,7 @@ impl MessageStorage {
     /// Append a reply to the chat log.
     async fn append_reply_to_chat_log(
         &self,
-        thread_path: &Path,
+        topic_path: &Path,
         reply_text: &str,
         _message_dir: &str,
     ) -> Result<()> {
@@ -154,13 +152,13 @@ impl MessageStorage {
             mode: None,
         };
 
-        let mut chat_log = ChatLogStore::new(thread_path);
+        let mut chat_log = ChatLogStore::new(topic_path);
         chat_log
             .append_reply(reply_text, &metadata)
             .with_context(|| {
                 format!(
                     "Failed to append reply to chat log in {}",
-                    thread_path.display()
+                    topic_path.display()
                 )
             })?;
 
@@ -191,7 +189,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some("<abc@mail.example.com>".to_string()),
             attachments: vec![],
@@ -206,9 +204,9 @@ mod tests {
         let storage = MessageStorage::new(tmp.path());
         let msg = test_message();
 
-        let result = storage.store(&msg, "test-thread", None).await.unwrap();
+        let result = storage.store(&msg, "test-topic", None).await.unwrap();
 
-        assert!(result.thread_path.exists());
+        assert!(result.topic_path.exists());
         // Log-based storage is the primary storage — verify function returns without error
 
         // For log-based storage, we can't verify file content easily in tests
@@ -222,13 +220,9 @@ mod tests {
         let storage = MessageStorage::new(tmp.path());
         let msg = test_message();
 
-        let result = storage.store(&msg, "test-thread", None).await.unwrap();
+        let result = storage.store(&msg, "test-topic", None).await.unwrap();
         storage
-            .store_reply(
-                &result.thread_path,
-                "Here is my reply.",
-                &result.message_dir,
-            )
+            .store_reply(&result.topic_path, "Here is my reply.", &result.message_dir)
             .await
             .unwrap();
 

@@ -85,7 +85,7 @@ pub fn html_to_markdown(html: &str) -> String {
 
 /// SMTP client wrapper around lettre.
 ///
-/// Handles connection, markdown→HTML conversion, threading headers,
+/// Handles connection, markdown→HTML conversion, References headers,
 /// and auto-reconnect on connection errors.
 pub struct SmtpClient {
     transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
@@ -140,10 +140,10 @@ impl SmtpClient {
         tracing::debug!("SMTP disconnected");
     }
 
-    /// Send a reply email with threading headers and optional attachments.
+    /// Send a reply email with References headers and optional attachments.
     ///
     /// - Adds `Re:` prefix to subject (if not already present)
-    /// - Sets `In-Reply-To` and `References` headers for threading
+    /// - Sets `In-Reply-To` and `References` headers for References
     /// - Converts markdown body to HTML for multipart email
     /// - Attaches files if provided
     #[allow(clippy::too_many_arguments)]
@@ -194,7 +194,7 @@ impl SmtpClient {
         Ok(message_id)
     }
 
-    /// Send a fresh (non-reply) email — no threading headers.
+    /// Send a fresh (non-reply) email — no References headers.
     pub async fn send_mail(
         &mut self,
         from: &str,
@@ -202,7 +202,7 @@ impl SmtpClient {
         subject: &str,
         markdown_body: &str,
     ) -> Result<String> {
-        // Build a simple email without attachments or threading headers
+        // Build a simple email without attachments or References headers
         let email = self.build_email(from, None, to, subject, markdown_body, None, None, None)?;
 
         let message_id = email
@@ -218,7 +218,7 @@ impl SmtpClient {
         Ok(message_id)
     }
 
-    /// Send a fresh (non-reply) email with file attachments — no threading headers.
+    /// Send a fresh (non-reply) email with file attachments — no References headers.
     ///
     /// Same as `send_mail` but attaches files to a `multipart/mixed` wrapper.
     /// No `In-Reply-To` or `References` headers (this is a fresh message, not a reply).
@@ -257,7 +257,7 @@ impl SmtpClient {
     /// Private helper: build a lettre `Message` from the given components.
     ///
     /// Handles markdown→HTML conversion, multipart/alternative body,
-    /// multipart/mixed wrapper for attachments, and optional threading headers.
+    /// multipart/mixed wrapper for attachments, and optional References headers.
     /// Does NOT send the email — the caller is responsible for calling
     /// `send_with_retry` and extracting the `Message-ID`.
     #[allow(clippy::too_many_arguments)]
@@ -292,7 +292,7 @@ impl SmtpClient {
             .to(to_mailbox)
             .subject(subject);
 
-        // Add threading headers (used by send_reply, skipped by send_mail*)
+        // Add References headers (used by send_reply, skipped by send_mail*)
         if let Some(reply_to) = in_reply_to {
             builder = builder.header(InReplyTo::from(reply_to.to_string()));
         }

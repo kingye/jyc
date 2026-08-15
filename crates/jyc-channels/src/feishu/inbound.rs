@@ -1,7 +1,7 @@
 //! Feishu inbound adapter implementation.
 //!
 //! This module handles receiving messages from Feishu via WebSocket connections
-//! and provides channel-specific pattern matching and thread name derivation.
+//! and provides channel-specific pattern matching and topic name derivation.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use super::client::FeishuClient;
 use super::websocket::FeishuWebSocket;
 use jyc_types::FeishuConfig;
 
-/// Feishu-specific pattern matching and thread name derivation.
+/// Feishu-specific pattern matching and topic name derivation.
 ///
 /// Stateless struct implementing `ChannelMatcher` — can be cheaply created
 /// wherever feishu pattern matching is needed (e.g., on_message callbacks).
@@ -37,7 +37,7 @@ impl ChannelMatcher for FeishuMatcher {
         "feishu"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
@@ -302,14 +302,14 @@ impl ChannelMatcher for FeishuInboundAdapter {
         "feishu"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
         // Delegate to the stateless FeishuMatcher
-        FeishuMatcher.derive_thread_name(message, patterns, pattern_match)
+        FeishuMatcher.derive_topic_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -322,20 +322,20 @@ impl ChannelMatcher for FeishuInboundAdapter {
 }
 
 impl FeishuInboundAdapter {
-    /// Save attachments to thread directory.
-    /// This method calculates the thread name and saves attachments.
-    pub async fn save_attachments_to_thread_directory(
+    /// Save attachments to topic directory.
+    /// This method calculates the topic name and saves attachments.
+    pub async fn save_attachments_to_topic_directory(
         &self,
         message: &mut InboundMessage,
         patterns: &[ChannelPattern],
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<()> {
-        let thread_name = FeishuMatcher.derive_thread_name(message, patterns, None);
-        jyc_core::attachment_storage::save_attachments_to_thread_directory(
+        let topic_name = FeishuMatcher.derive_topic_name(message, patterns, None);
+        jyc_core::attachment_storage::save_attachments_to_topic_directory(
             message,
             &self.workspace_root,
             &self.channel_name,
-            &thread_name,
+            &topic_name,
             attachment_config,
         )
         .await
@@ -363,14 +363,9 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
         loop {
             tracing::info!("Starting Feishu WebSocket connection...");
 
-            let on_thread_close = options.on_thread_close.as_ref().map(|c| c.as_ref());
+            let on_topic_close = options.on_topic_close.as_ref().map(|c| c.as_ref());
             match ws
-                .run(
-                    &channel_name,
-                    &*options.on_message,
-                    on_thread_close,
-                    &cancel,
-                )
+                .run(&channel_name, &*options.on_message, on_topic_close, &cancel)
                 .await
             {
                 Ok(()) => {
@@ -443,7 +438,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -717,47 +712,47 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name_chat_id() {
+    fn test_derive_topic_name_chat_id() {
         let msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "feishu_chat_oc_12345");
     }
 
     #[test]
-    fn test_derive_thread_name_user_id() {
+    fn test_derive_topic_name_user_id() {
         let mut msg = make_feishu_message("user1", "Hello", vec![], None);
         msg.metadata.insert(
             "user_id".to_string(),
             serde_json::Value::String("ou_abc".to_string()),
         );
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "feishu_user_ou_abc");
     }
 
     #[test]
-    fn test_derive_thread_name_fallback() {
+    fn test_derive_topic_name_fallback() {
         let msg = make_feishu_message("user1", "Hello", vec![], None);
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "feishu_msg_001");
     }
 
     #[test]
-    fn test_derive_thread_name_chat_name() {
+    fn test_derive_topic_name_chat_name() {
         let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
         msg.metadata.insert(
             "chat_name".to_string(),
             serde_json::Value::String("Project Alpha".to_string()),
         );
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "Project Alpha");
     }
 
     #[test]
-    fn test_derive_thread_name_p2p_sender_name() {
+    fn test_derive_topic_name_p2p_sender_name() {
         let mut msg = make_feishu_message("user1", "Hello", vec![], None);
         msg.metadata.insert(
             "chat_type".to_string(),
@@ -768,25 +763,25 @@ mod tests {
             serde_json::Value::String("Zhang San".to_string()),
         );
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "Zhang San");
     }
 
     #[test]
-    fn test_derive_thread_name_chat_name_with_special_chars() {
+    fn test_derive_topic_name_chat_name_with_special_chars() {
         let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_12345"));
         msg.metadata.insert(
             "chat_name".to_string(),
             serde_json::Value::String("项目/测试群".to_string()),
         );
         let matcher = FeishuMatcher;
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         // sanitize_for_filesystem replaces / with _
         assert_eq!(name, "项目_测试群");
     }
 
     #[tokio::test]
-    async fn test_save_attachments_to_thread_directory() -> anyhow::Result<()> {
+    async fn test_save_attachments_to_topic_directory() -> anyhow::Result<()> {
         use jyc_types::{FeishuConfig, WebSocketConfig};
         use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
         use tempfile::tempdir;
@@ -827,7 +822,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: Some(vec!["thread_123".to_string()]),
+            references: Some(vec!["topic_123".to_string()]),
             reply_to_id: None,
             external_id: Some("ext_123".to_string()),
             attachments: vec![
@@ -857,12 +852,12 @@ mod tests {
             matched_pattern: None,
         };
 
-        // Create a simple pattern for thread matching
-        let patterns = vec![]; // Empty patterns - will use default thread name
+        // Create a simple pattern for topic matching
+        let patterns = vec![]; // Empty patterns - will use default topic name
 
         // Save attachments
         adapter
-            .save_attachments_to_thread_directory(&mut message, &patterns, None)
+            .save_attachments_to_topic_directory(&mut message, &patterns, None)
             .await?;
 
         // Verify attachments were saved
@@ -886,18 +881,18 @@ mod tests {
         }
 
         // Verify directory structure
-        let expected_thread_dir = temp_dir
+        let expected_topic_dir = temp_dir
             .path()
             .join("feishu")
             .join("workspace")
             .join("feishu_chat_oc_12345");
-        let expected_attachment_dir = expected_thread_dir.join("attachments");
+        let expected_attachment_dir = expected_topic_dir.join("attachments");
 
         // Verify directories exist
         assert!(
-            expected_thread_dir.exists(),
-            "Thread directory should exist: {}",
-            expected_thread_dir.display()
+            expected_topic_dir.exists(),
+            "Topic directory should exist: {}",
+            expected_topic_dir.display()
         );
         assert!(
             expected_attachment_dir.exists(),
@@ -954,7 +949,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: Some(vec!["thread_456".to_string()]),
+            references: Some(vec!["topic_456".to_string()]),
             reply_to_id: None,
             external_id: Some("ext_456".to_string()),
             attachments: vec![],
@@ -971,7 +966,7 @@ mod tests {
 
         // Save attachments (should do nothing)
         adapter
-            .save_attachments_to_thread_directory(&mut message, &[], None)
+            .save_attachments_to_topic_directory(&mut message, &[], None)
             .await?;
 
         // Verify no error and attachments remain empty

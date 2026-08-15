@@ -22,13 +22,13 @@ use jyc_types::{CommandInfo, CustomCommand};
 /// Returns the static list of all built-in commands with descriptions.
 ///
 /// IMPORTANT: This list must be kept in sync with the commands actually
-/// registered in `CommandRegistry` (see `thread_manager.rs`). If you add
+/// registered in `CommandRegistry` (see `topic_manager.rs`). If you add
 /// a new command handler, add its entry here too.
 pub fn all_commands() -> Vec<CommandInfo> {
     vec![
         CommandInfo {
             name: "/model".into(),
-            description: "Switch AI model for this thread".into(),
+            description: "Switch AI model for this topic".into(),
         },
         CommandInfo {
             name: "/plan".into(),
@@ -48,11 +48,11 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/close".into(),
-            description: "Close and delete this thread (requires --confirm or -y)".into(),
+            description: "Close and delete this topic (requires --confirm or -y)".into(),
         },
         CommandInfo {
             name: "/template".into(),
-            description: "Apply or re-apply thread template".into(),
+            description: "Apply or re-apply topic template".into(),
         },
         CommandInfo {
             name: "/cancel".into(),
@@ -64,11 +64,11 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/pin".into(),
-            description: "Pin this ad-hoc websocket thread to config.toml".into(),
+            description: "Pin this ad-hoc websocket topic to config.toml".into(),
         },
         CommandInfo {
             name: "/unpin".into(),
-            description: "Remove pinned thread configuration from config.toml".into(),
+            description: "Remove pinned topic configuration from config.toml".into(),
         },
         CommandInfo {
             name: "/thinking".into(),
@@ -76,7 +76,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/exchange".into(),
-            description: "Show shareable URLs for this thread's published files".into(),
+            description: "Show shareable URLs for this topic's published files".into(),
         },
     ]
 }
@@ -105,7 +105,7 @@ mod tests {
     use super::*;
 
     /// Verify all_commands() contains the expected set of commands.
-    /// If this test fails, update both the registry in thread_manager.rs
+    /// If this test fails, update both the registry in topic_manager.rs
     /// and the all_commands() list.
     #[test]
     fn test_all_commands_has_expected_names() {

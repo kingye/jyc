@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `serve.rs` run() function.
 
+use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use anyhow::Result;
 
 use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
+use jyc_channels::feishu::client::FeishuClient;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::gitee::inbound::GiteeMatcher;
@@ -45,8 +47,8 @@ use jyc_core::state_manager::StateManager;
 use jyc_core::thread_manager::ThreadManager;
 use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{
-    ChannelConfig, ChannelInfo, InboundAdapter, InboundAttachmentConfig, MonitorConfig,
-    OutboundAdapter, OutboundAttachmentConfig,
+    ChannelConfig, ChannelInfo, ChannelMatcher, InboundAdapter, InboundAttachmentConfig,
+    InboundMessage, MonitorConfig, OutboundAdapter, OutboundAttachmentConfig,
 };
 
 /// Build the outbound adapter for a channel.
@@ -68,6 +70,7 @@ pub(crate) fn build_outbound_adapter(
     wecomkf_kf_client: &mut Option<Arc<KfApiClient>>,
     ws_handler_for_channel: &mut HashMap<String, Arc<WebsocketInboundAdapter>>,
     websocket_handlers: &mut Vec<Arc<WebsocketInboundAdapter>>,
+    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
 ) -> Result<Option<Arc<dyn OutboundAdapter>>> {
     let outbound: Arc<dyn OutboundAdapter> = match channel_type {
         "email" => {
@@ -180,12 +183,18 @@ pub(crate) fn build_outbound_adapter(
             let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
             let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
             // Store the inbound adapter for later registration with the inspect server
-            let mut handler = WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx);
+            let mut handler =
+                WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
             handler.set_workspace_dir(workspace_dir.to_path_buf());
             handler.set_inspect_broadcast(inspect_broadcast.clone());
             let handler = Arc::new(handler);
             ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
             websocket_handlers.push(handler);
+            // Expose the broadcast so piped channels can subscribe to replies.
+            ws_broadcasts
+                .lock()
+                .unwrap()
+                .insert(channel_name.to_string(), broadcast_tx);
             Arc::new(adapter)
         }
         other => {
@@ -199,6 +208,57 @@ pub(crate) fn build_outbound_adapter(
     };
     Ok(Some(outbound))
 }
+/// Re-target a piped inbound message into the target channel/thread, applying
+/// the target channel's pattern (template/role) for that thread.
+///
+/// The target channel's `pattern_for_thread` resolves the pattern named after
+/// the thread (= the feishu chat name); its template/role are injected as
+/// metadata so the target worker initializes the thread with them.
+fn retarget_message(
+    mut msg: InboundMessage,
+    target: &str,
+    thread: &str,
+    pattern: Option<&jyc_types::ChannelPattern>,
+) -> InboundMessage {
+    msg.channel = target.to_string();
+    msg.topic = thread.to_string();
+    if let Some(pattern) = pattern {
+        if let Some(template) = &pattern.template {
+            msg.metadata.insert(
+                "template".to_string(),
+                serde_json::Value::String(template.clone()),
+            );
+        }
+        if let Some(role) = &pattern.role {
+            msg.metadata
+                .insert("role".to_string(), serde_json::Value::String(role.clone()));
+        }
+    }
+    msg
+}
+
+/// Wait (bounded) for a websocket channel's broadcast sender to be registered.
+///
+/// The target's broadcast is inserted into `ws_broadcasts` when its outbound
+/// adapter is built during startup; a piped reply forwarder may be spawned
+/// before that, so wait briefly. Returns `None` after a timeout (the target
+/// is probably not a websocket channel) instead of looping forever.
+async fn wait_for_broadcast(
+    ws_broadcasts: &std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    target: &str,
+) -> Option<broadcast::Sender<String>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(tx) = ws_broadcasts.lock().unwrap().get(target) {
+            return Some(tx.clone());
+        }
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Shared per-channel context for spawning the inbound monitor task(s).
 ///
 /// `state_manager` is consumed (moved into the IMAP monitor closure).
@@ -224,6 +284,9 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     pub(crate) wecom_server: Option<Arc<WecomWebhookServer>>,
     pub(crate) websocket_handlers: &'a mut [Arc<WebsocketInboundAdapter>],
+    /// Per-channel websocket broadcast senders (for `pipe` reply relaying).
+    pub(crate) ws_broadcasts:
+        std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
 }
 
 impl InboundSpawner<'_> {
@@ -254,6 +317,7 @@ impl InboundSpawner<'_> {
             config_for_spawn,
             wecom_server,
             websocket_handlers,
+            ws_broadcasts,
         } = self;
         let channel_name_owned = channel_name.clone();
         let tm = thread_manager.clone();
@@ -330,10 +394,21 @@ impl InboundSpawner<'_> {
                         anyhow::anyhow!("channel '{channel_name}': missing feishu config")
                     })?
                     .clone();
+                // `pipe` targets: patterns can forward matching messages into
+                // another (websocket) channel instead of this channel's own
+                // ThreadManager. Collect the distinct targets for reply relaying.
+                let pipe_targets: std::collections::HashSet<String> = channel_config
+                    .patterns
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| p.pipe.clone())
+                    .collect();
 
                 let router_for_callback = router.clone();
-
                 let thread_manager_for_task = thread_manager.clone();
+                let orchestrator_for_task = orchestrator.clone();
+                let config_for_pipe = config_for_spawn.clone();
+                let channel_name_for_pipe = channel_name.clone();
 
                 let task = tokio::spawn(async move {
                 // Clone configs before moving into closures
@@ -341,26 +416,144 @@ impl InboundSpawner<'_> {
 
                 let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
 
-                // Wire on_message to route through FeishuMatcher → MessageRouter
-
-
                 let thread_manager_clone = thread_manager_for_task.clone();
+
+                // Clones for the on_message / on_thread_close closures (both move).
+                let on_message_orchestrator = orchestrator_for_task.clone();
+                let on_thread_close_orchestrator = orchestrator_for_task.clone();
+
+                // Shared feishu client + thread->chat_id map for pipe relaying.
+                let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config_cloned.clone()));
+                let thread_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
+                    std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+                // One reply forwarder per distinct pipe target: subscribe to the
+                // target channel's broadcast and relay replies back to feishu.
+                for target in &pipe_targets {
+                    let ws_broadcasts = ws_broadcasts.clone();
+                    let thread_chat = thread_chat.clone();
+                    let feishu_client = feishu_client.clone();
+                    let target = target.clone();
+                    tokio::spawn(async move {
+                        let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &target).await else {
+                            tracing::error!(
+                                target = %target,
+                                "feishu pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
+                            );
+                            return;
+                        };
+                        let mut rx = broadcast_tx.subscribe();
+                        tracing::info!(target = %target, "feishu pipe reply forwarder subscribed");
+                        while let Ok(payload) = rx.recv().await {
+                            let v: serde_json::Value = match serde_json::from_str(&payload) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
+                                continue;
+                            }
+                            let (Some(thread), Some(text)) = (
+                                v.get("thread").and_then(|t| t.as_str()),
+                                v.get("text").and_then(|t| t.as_str()),
+                            ) else {
+                                continue;
+                            };
+                            let Some(chat_id) = thread_chat.lock().unwrap().get(thread).cloned() else {
+                                tracing::debug!(thread = %thread, "feishu pipe: no chat mapping for reply, skipping");
+                                continue;
+                            };
+                            if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
+                                tracing::error!(error = %e, "failed to relay reply to feishu");
+                            }
+                        }
+                    });
+                }
+
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
+                        let orchestrator = on_message_orchestrator.clone();
+                        let config_for_pipe = config_for_pipe.clone();
+                        let thread_chat = thread_chat.clone();
+                        let channel_name_self = channel_name_for_pipe.clone();
                         let router = router_for_callback.clone();
                         tokio::spawn(async move {
-                            // Attachments are saved inside process_message()
-                            // after template initialization, so there's no
-                            // need for a pre-route save here.
-                            router.route(&FeishuMatcher, message).await;
+                            // 1. Match this channel's patterns (rules).
+                            let patterns = config_for_pipe
+                                .load()
+                                .channels
+                                .get(&channel_name_self)
+                                .and_then(|c| c.patterns.clone())
+                                .unwrap_or_default();
+                            let Some(pm) = FeishuMatcher.match_message(&message, &patterns) else {
+                                tracing::debug!(chat = %message.topic, "feishu: no pattern matched, dropping");
+                                return;
+                            };
+                            // 2. Per-pattern `pipe`: the matched pattern decides.
+                            let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
+                            let Some(target) = matched.and_then(|p| p.pipe.as_deref()) else {
+                                // No pipe on the matched pattern: route normally
+                                // through this channel's own ThreadManager.
+                                router.route(&FeishuMatcher, message).await;
+                                return;
+                            };
+                            // 3. Derive the thread name (chat name).
+                            let thread = FeishuMatcher.derive_thread_name(&message, &patterns, Some(&pm));
+                            // 4. Find the target channel's ThreadManager.
+                            let Some(target_tm) = orchestrator
+                                .thread_managers()
+                                .load()
+                                .iter()
+                                .find(|tm| tm.channel_name() == target)
+                                .cloned()
+                            else {
+                                tracing::warn!(target = %target, "feishu pipe: target channel not found, dropping");
+                                return;
+                            };
+                            // 5. Re-target into the target channel/thread;
+                            //    template/role come from the target's pattern.
+                            let target_pattern = target_tm.pattern_for_thread(&thread);
+                            let msg = retarget_message(message, target, &thread, target_pattern.as_ref());
+                            // 6. Record thread -> chat_id for reply relay.
+                            if let Some(chat_id) = msg.metadata.get("chat_id").and_then(|v| v.as_str()) {
+                                thread_chat.lock().unwrap().insert(thread.clone(), chat_id.to_string());
+                            }
+                            // 7. Enqueue into the target channel. The pattern
+                            //    identity is the target's pattern name (aligned
+                            //    with jyc_send_to_thread), not the source match.
+                            let pattern_name = target_pattern
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| thread.clone());
+                            let pattern_match = jyc_types::PatternMatch {
+                                pattern_name,
+                                channel: target.to_string(),
+                                matches: pm.matches,
+                            };
+                            target_tm.enqueue(msg, thread, pattern_match, None, true, None).await;
                         });
                         Ok(())
                     }),
                     on_thread_close: Some(Box::new(move |thread_name: String| {
                         let tm = thread_manager_clone.clone();
+                        let orchestrator = on_thread_close_orchestrator.clone();
+                        let pipe_targets = pipe_targets.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if pipe_targets.is_empty() {
+                                // Non-pipe: close in this channel's own TM.
+                                if let Err(e) = tm.close_thread(&thread_name).await {
+                                    tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                                }
+                                return;
+                            }
+                            // Pipe mode: the thread lives in a target channel;
+                            // close it there (best effort per target).
+                            let tms = orchestrator.thread_managers().load();
+                            for target in &pipe_targets {
+                                if let Some(target_tm) = tms.iter().find(|t| t.channel_name() == target) {
+                                    match target_tm.close_thread(&thread_name).await {
+                                        Ok(()) => tracing::info!(target = %target, thread = %thread_name, "Closed piped thread on disbanded chat"),
+                                        Err(e) => tracing::debug!(target = %target, error = %e, "No piped thread to close"),
+                                    }
+                                }
                             }
                         });
                         Ok(())
@@ -948,5 +1141,59 @@ impl InboundSpawner<'_> {
             _ => {} // Gracefully skip unknown channel types
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retarget_tests {
+    use super::*;
+    use jyc_types::{MessageContent, PatternRules};
+
+    fn msg() -> InboundMessage {
+        InboundMessage {
+            id: "m1".into(),
+            channel: "feishu_bot".into(),
+            channel_uid: "oc_1".into(),
+            sender: "张三".into(),
+            sender_address: "ou_1".into(),
+            recipients: vec![],
+            topic: "".into(),
+            content: MessageContent {
+                text: Some("hello".into()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            thread_refs: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        }
+    }
+
+    #[test]
+    fn retarget_changes_channel_and_topic() {
+        let m = retarget_message(msg(), "local_dev", "greenfield", None);
+        assert_eq!(m.channel, "local_dev");
+        assert_eq!(m.topic, "greenfield");
+        assert!(!m.metadata.contains_key("template"));
+    }
+
+    #[test]
+    fn retarget_injects_template_and_role_from_pattern() {
+        let pattern = jyc_types::ChannelPattern {
+            name: "greenfield".into(),
+            channel: "websocket".into(),
+            enabled: true,
+            rules: PatternRules::default(),
+            template: Some("issue-sales-order".into()),
+            role: Some("Developer".into()),
+            ..Default::default()
+        };
+        let m = retarget_message(msg(), "local_dev", "greenfield", Some(&pattern));
+        assert_eq!(m.metadata["template"], "issue-sales-order");
+        assert_eq!(m.metadata["role"], "Developer");
     }
 }

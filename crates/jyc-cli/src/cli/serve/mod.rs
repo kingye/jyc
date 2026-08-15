@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 /// RAII guard that removes a PID file on drop.
@@ -145,6 +146,12 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting ThreadManager on websocket handlers after creation
     let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
+    // Per-channel websocket broadcast senders, keyed by channel name. Used by
+    // piped channels (e.g. feishu with `pipe = "local_dev"`) to receive the
+    // target channel's replies.
+    let ws_broadcasts: std::sync::Arc<
+        std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
     // Create the inspect-broadcast bus that ActivityTracker publishes to.
     // Shared with websocket inbound adapters so they can forward live
     // activity/thinking events to dashboard WebSocket clients.
@@ -197,6 +204,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             &mut wecomkf_kf_client,
             &mut ws_handler_for_channel,
             &mut websocket_handlers,
+            ws_broadcasts.clone(),
         )?
         else {
             continue;
@@ -327,6 +335,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config_for_spawn: config_for_spawn.clone(),
             wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
+            ws_broadcasts: ws_broadcasts.clone(),
         };
         spawner.spawn().await?;
     }

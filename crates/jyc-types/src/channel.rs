@@ -288,6 +288,16 @@ pub struct ChannelPattern {
     /// Whether this pattern is active
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Pipe messages matching this pattern into another (websocket) channel.
+    ///
+    /// When set to a target channel name, matching messages act as a client
+    /// of the target channel: they are enqueued into the target's threads
+    /// (thread name = this channel's derived thread name), template/model
+    /// come from the target's pattern, and replies are relayed back. When
+    /// `None` (default), the message is routed normally through this
+    /// channel's own ThreadManager.
+    #[serde(default)]
+    pub pipe: Option<String>,
     /// Matching rules (channel-specific)
     #[serde(default)]
     pub rules: PatternRules,
@@ -530,6 +540,7 @@ impl Default for ChannelPattern {
             channel: String::new(),
             enabled: true,
             rules: PatternRules::default(),
+            pipe: None,
             attachments: None,
             template: None,
             thread_name: None,

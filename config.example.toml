@@ -220,6 +220,24 @@ heartbeat_interval_secs = 30
 [[channels.feishu_bot.patterns]]
 name = "feishu_bot"
 enabled = true
+# Optional: pipe messages matching this pattern into another (websocket)
+# channel. Thread name = derived chat name; template/model come from the
+# target channel's pattern; replies relay back to feishu.
+# pipe = "local_dev"
+
+# Feishu-specific pattern matching (placeholder - will be implemented)
+[channels.feishu_bot.patterns.rules]
+mentions = ["jyc"]
+
+[channels.feishu_bot.feishu.websocket]
+enabled = true
+reconnect_delay_secs = 5
+max_reconnect_attempts = 10
+heartbeat_interval_secs = 30
+
+[[channels.feishu_bot.patterns]]
+name = "feishu_bot"
+enabled = true
 
 # Feishu-specific pattern matching (placeholder - will be implemented)
 [channels.feishu_bot.patterns.rules]

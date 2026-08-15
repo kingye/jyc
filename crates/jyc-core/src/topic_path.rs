@@ -55,16 +55,19 @@ pub fn compute_repo_group_key(repo_group: &str, number: &str) -> String {
 
 /// One-time migration for the `topic` → `topic` rename.
 ///
-/// Pre-rename topic directories carry a `.jyc/topic-name` file. If a
+/// Pre-rename topic directories carry a `.jyc/thread-name` file. If a
 /// directory has that legacy file but no `.jyc/topic-name`, rename it so
 /// existing topics keep their identity across restarts.
+///
+/// NOTE: the legacy filename must stay "thread-name" here — this is the
+/// pre-rename on-disk name, not the (renamed) current concept.
 pub fn migrate_topic_name_file(jyc_dir: &Path) {
-    let old = jyc_dir.join("topic-name");
+    let old = jyc_dir.join("thread-name");
     let new = jyc_dir.join("topic-name");
     if !new.exists() && old.exists() {
         if let Ok(name) = std::fs::read_to_string(&old) {
             let _ = std::fs::write(&new, name);
-            tracing::info!(path = %jyc_dir.display(), "Migrated legacy .jyc/topic-name to .jyc/topic-name");
+            tracing::info!(path = %jyc_dir.display(), "Migrated legacy .jyc/thread-name to .jyc/topic-name");
         }
         let _ = std::fs::remove_file(&old);
     }

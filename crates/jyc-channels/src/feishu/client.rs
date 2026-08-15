@@ -478,16 +478,21 @@ impl FeishuClient {
         Ok(image_key)
     }
 
-    /// Download a file from Feishu servers.
+    /// Download a file from a Feishu message.
+    ///
+    /// Prefers the message resource endpoint, which requires both message_id
+    /// and file_key. The standalone files endpoint (/im/v1/files/:file_key)
+    /// only serves files uploaded by the app itself — chat message files fail
+    /// with 234008 "The app is not the resource sender".
     ///
     /// Returns the file content as bytes.
     /// Validates that the response is actual file data, not an API error.
-    pub async fn download_file(&self, file_key: &str) -> Result<Vec<u8>> {
+    pub async fn download_file(&self, file_key: &str, message_id: Option<&str>) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
-        let url = format!(
-            "{}/open-apis/im/v1/files/{}",
+        let url = file_download_url(
             self.config.base_url.trim_end_matches('/'),
-            file_key
+            file_key,
+            message_id,
         );
 
         let resp = self
@@ -498,18 +503,27 @@ impl FeishuClient {
             .await
             .context("Failed to download file from Feishu")?;
 
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
         let file_bytes = resp
             .bytes()
             .await
             .context("Failed to read file response body")?
             .to_vec();
 
-        // Validate response is actual file data, not a JSON error
-        if file_bytes.starts_with(b"{\"code\"") || file_bytes.starts_with(b"{\"error\"") {
+        // API errors come back as JSON bodies, not file data
+        if !status.is_success() || content_type.contains("application/json") {
             let body_str = String::from_utf8_lossy(&file_bytes);
             anyhow::bail!(
-                "Feishu file download returned error instead of file data: {}",
-                truncate_str(&body_str, 200)
+                "Feishu file download failed (HTTP {}): {}",
+                status,
+                truncate_str(&body_str, 300)
             );
         }
 
@@ -612,6 +626,20 @@ pub struct FeishuMessageResult {
     pub message_id: String,
 }
 
+/// Build the download URL for a message file.
+///
+/// Chat-message files must go through the message resource endpoint — the
+/// standalone `/im/v1/files/:file_key` endpoint only serves files uploaded by
+/// the app itself (error 234008 "The app is not the resource sender").
+fn file_download_url(base_url: &str, file_key: &str, message_id: Option<&str>) -> String {
+    match message_id {
+        Some(msg_id) => {
+            format!("{base_url}/open-apis/im/v1/messages/{msg_id}/resources/{file_key}?type=file")
+        }
+        None => format!("{base_url}/open-apis/im/v1/files/{file_key}"),
+    }
+}
+
 /// Map file extension to Feishu file_type string.
 ///
 /// Feishu supports: "opus", "mp4", "pdf", "doc", "xls", "ppt", "stream".
@@ -651,6 +679,24 @@ mod tests {
         };
 
         let _client = FeishuClient::new(config);
+    }
+
+    #[test]
+    fn test_file_download_url_prefers_message_resource_endpoint() {
+        let url = file_download_url("https://open.feishu.cn", "file_v3_x", Some("om_123"));
+        assert_eq!(
+            url,
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_123/resources/file_v3_x?type=file"
+        );
+    }
+
+    #[test]
+    fn test_file_download_url_falls_back_without_message_id() {
+        let url = file_download_url("https://open.feishu.cn", "file_v3_x", None);
+        assert_eq!(
+            url,
+            "https://open.feishu.cn/open-apis/im/v1/files/file_v3_x"
+        );
     }
 
     #[test]

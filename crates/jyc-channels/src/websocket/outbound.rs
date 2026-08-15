@@ -39,19 +39,54 @@ impl WebsocketOutboundAdapter {
     }
 
     /// Broadcast a reply to all connected clients.
-    async fn broadcast_reply(&self, topic: &str, text: &str) -> Result<()> {
-        let payload = serde_json::json!({
+    ///
+    /// `attachments` is a pre-built JSON array (see `attachment_entry`) —
+    /// absent from the payload when `None`.
+    async fn broadcast_reply(
+        &self,
+        topic: &str,
+        text: &str,
+        attachments: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({
             "type": "reply",
             "topic": topic,
             "text": text,
-        })
-        .to_string();
+        });
+        if let Some(atts) = attachments {
+            payload["attachments"] = atts;
+        }
+        let payload = payload.to_string();
         // broadcast::Sender::send is non-blocking; it returns an error only when
         // there are no active receivers. We ignore that error since it's fine
         // to have no connected clients.
         let _ = self.broadcast_tx.send(payload);
         Ok(())
     }
+}
+
+/// Build one entry of the broadcast `attachments` array.
+///
+/// `path` is the relative URL of the inspect server's topic-file endpoint
+/// (`GET /api/topics/{channel}/{topic}/files/{*file_path}`); consumers
+/// (dashboard, pipe forwarders) prepend their known inspect base URL.
+fn attachment_entry(channel: &str, topic: &str, att: &OutboundAttachment) -> serde_json::Value {
+    let encoded_name = att
+        .filename
+        .split('/')
+        .map(jyc_core::url_encode_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    serde_json::json!({
+        "filename": att.filename,
+        "path": format!(
+            "/api/topics/{}/{}/files/{}",
+            jyc_core::url_encode_segment(channel),
+            jyc_core::url_encode_segment(topic),
+            encoded_name
+        ),
+        "content_type": att.content_type,
+    })
 }
 
 #[async_trait]
@@ -80,7 +115,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         reply_text: &str,
         topic_path: &Path,
         _message_dir: &str,
-        _attachments: Option<&[OutboundAttachment]>,
+        attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // Use the original message topic as the broadcast key for normal
         // messages (topic = topic name from the WebSocket protocol).
@@ -94,7 +129,14 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         } else {
             original.topic.as_str()
         };
-        self.broadcast_reply(topic, reply_text).await?;
+        let attachments_json = attachments.filter(|a| !a.is_empty()).map(|atts| {
+            atts.iter()
+                .map(|a| attachment_entry(&original.channel, topic, a))
+                .collect::<Vec<_>>()
+                .into()
+        });
+        self.broadcast_reply(topic, reply_text, attachments_json)
+            .await?;
         let message_id = uuid::Uuid::new_v4().to_string();
 
         // Persist reply to chat log for history loading
@@ -116,7 +158,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         _subject: &str,
         body: &str,
     ) -> Result<SendResult> {
-        self.broadcast_reply(_recipient, body).await?;
+        self.broadcast_reply(_recipient, body, None).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(text_len = body.len(), message_id = %message_id, "WebSocket message broadcast");
         Ok(SendResult { message_id })
@@ -168,6 +210,64 @@ mod tests {
         assert_eq!(parsed["type"], "reply");
         assert_eq!(parsed["topic"], "general");
         assert_eq!(parsed["text"], "AI reply");
+        // No attachments → key absent from the payload
+        assert!(parsed.get("attachments").is_none());
+    }
+
+    /// Replies carrying attachments broadcast download paths pointing at the
+    /// inspect server's topic-file endpoint; consumers prepend the base URL.
+    #[tokio::test]
+    async fn test_send_reply_includes_attachment_download_paths() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let topic_path = tmp.path().join("general");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&topic_path));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+
+        let message = InboundMessage {
+            id: "test".to_string(),
+            channel: "local_dev".to_string(),
+            channel_uid: "user".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "general".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: std::collections::HashMap::new(),
+            matched_pattern: None,
+        };
+        let atts = vec![OutboundAttachment {
+            filename: "报表 v2.pdf".to_string(),
+            path: topic_path.join("报表 v2.pdf"),
+            content_type: "application/pdf".to_string(),
+        }];
+
+        adapter
+            .send_reply(&message, "done", &topic_path, "msg_001", Some(&atts))
+            .await
+            .unwrap();
+
+        let sent = rx.recv().await.expect("should receive broadcast");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let atts = parsed["attachments"].as_array().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0]["filename"], "报表 v2.pdf");
+        assert_eq!(atts[0]["content_type"], "application/pdf");
+        // Non-ASCII and spaces are percent-encoded per URL segment.
+        assert_eq!(
+            atts[0]["path"],
+            "/api/topics/local_dev/general/files/%E6%8A%A5%E8%A1%A8%20v2.pdf"
+        );
     }
 
     /// Regression test: scheduled jobs set `topic` to a descriptive string

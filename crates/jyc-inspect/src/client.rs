@@ -156,6 +156,27 @@ impl InspectClient {
         Ok((status.is_success(), r.message))
     }
 
+    /// Download a topic-local file as raw bytes.
+    ///
+    /// `path` is the relative URL from a websocket reply broadcast's
+    /// `attachments[].path` (already percent-encoded, leading slash included),
+    /// served by `GET /api/topics/{channel}/{topic}/files/{*file_path}`.
+    pub async fn download_topic_file(&self, path: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .http
+            .get(self.url(path))
+            .send()
+            .await
+            .context("failed to download topic file")?
+            .error_for_status()
+            .context("topic file request returned an error status")?;
+        Ok(resp
+            .bytes()
+            .await
+            .context("failed to read topic file body")?
+            .to_vec())
+    }
+
     /// Reload config. Returns `(success, message)`.
     pub async fn reload_config(&self) -> Result<(bool, String)> {
         #[derive(serde::Deserialize, Default)]

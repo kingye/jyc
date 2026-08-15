@@ -200,6 +200,33 @@ address, default the connection address). Bridge processes use them to
 carry the remote user's identity (e.g. a feishu user name / open_id).
 | Server→Client | `{"type":"reply","topic":"general","text":"AI reply..."}` | Broadcast reply |
 
+`reply` frames may carry an optional `attachments` array when the agent
+replied with files. Entries contain `filename`, `content_type`, and
+`path` — a percent-encoded relative URL served by the inspect server's
+topic-file endpoint. Prepend the inspect base URL to download:
+
+```json
+{"type":"reply","topic":"general","text":"done",
+ "attachments":[{"filename":"report.pdf","content_type":"application/pdf",
+                 "path":"/api/topics/local_dev/general/files/report.pdf"}]}
+```
+
+```bash
+curl -H 'Authorization: Bearer <token>' \
+  'http://127.0.0.1:9876/api/topics/local_dev/general/files/report.pdf'
+```
+
+Files are served in place from the topic directory (bearer-gated; paths
+under `.jyc/` are rejected). This is separate from the `/exchange/...`
+token links, which remain reserved for files the agent explicitly
+publishes via `jyc_publish_file`.
+
+Pipe reply forwarders (e.g. feishu patterns with
+`pipe = { channel = "local_dev", topic = "..." }`) consume the same
+`attachments` array: each file is fetched from the files endpoint,
+checked against `[attachments.outbound]`, and re-uploaded to the source
+chat (images as image messages, everything else as file messages).
+
 ## Architecture
 
 ### Process Model

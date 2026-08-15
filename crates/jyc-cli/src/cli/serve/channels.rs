@@ -236,6 +236,102 @@ async fn wait_for_broadcast(
     }
 }
 
+/// Loopback address for in-process calls to the inspect server: a wildcard
+/// bind (`0.0.0.0`, `[::]`) is not a connectable destination.
+fn loopback_addr(bind: &str) -> String {
+    bind.replace("0.0.0.0", "127.0.0.1")
+        .replace("[::]", "127.0.0.1")
+}
+
+/// Re-target a piped inbound message into the target channel/topic.
+///
+/// Attachments and metadata ride along untouched — only the routing
+/// identity (channel + topic) is rewritten.
+fn apply_pipe_retarget(
+    mut msg: jyc_types::InboundMessage,
+    pipe: &jyc_types::PipeTarget,
+) -> jyc_types::InboundMessage {
+    msg.channel = pipe.channel.clone();
+    msg.topic = pipe.topic.clone();
+    msg
+}
+
+/// One attachment entry parsed from a websocket `reply` broadcast payload.
+#[derive(Debug, PartialEq, Eq)]
+struct ReplyAttachmentRef {
+    filename: String,
+    url_path: String,
+    content_type: String,
+}
+
+/// Parse the optional `attachments` array of a reply broadcast
+/// (`{"type":"reply","attachments":[{"filename","path","content_type"}]}`).
+/// Malformed entries are skipped.
+fn parse_reply_attachments(v: &serde_json::Value) -> Vec<ReplyAttachmentRef> {
+    let Some(arr) = v.get("attachments").and_then(|a| a.as_array()) else {
+        return vec![];
+    };
+    arr.iter()
+        .filter_map(|e| {
+            Some(ReplyAttachmentRef {
+                filename: e.get("filename")?.as_str()?.to_string(),
+                url_path: e.get("path")?.as_str()?.to_string(),
+                content_type: e
+                    .get("content_type")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("application/octet-stream")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Download one reply attachment from the inspect server and send it to the
+/// feishu chat (image vs. file chosen by content type, same primitives as
+/// `FeishuOutboundAdapter::send_attachments`).
+async fn relay_attachment(
+    inspect: &jyc_inspect::client::InspectClient,
+    client: &FeishuClient,
+    chat_id: &str,
+    att: &ReplyAttachmentRef,
+    config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
+) -> Result<()> {
+    use jyc_channels::feishu::client::{feishu_file_type, is_image_content_type};
+
+    let bytes = inspect.download_topic_file(&att.url_path).await?;
+
+    // The feishu upload APIs take a path — stage the bytes in a temp file.
+    // The operator's outbound policy (extension allowlist / size cap) applies
+    // to files delivered to feishu users, same as the channel's own send path.
+    let tmp = tempfile::NamedTempFile::new()?;
+    tokio::fs::write(tmp.path(), &bytes).await?;
+    if let Some(cfg) = config
+        .load()
+        .attachments
+        .as_ref()
+        .and_then(|a| a.outbound.clone())
+    {
+        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
+            .await?;
+    }
+
+    if is_image_content_type(&att.content_type) {
+        let key = client.upload_image(tmp.path(), &att.filename).await?;
+        client.send_image_message(chat_id, &key).await?;
+    } else {
+        let ext = Path::new(&att.filename)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let key = client
+            .upload_file(tmp.path(), &att.filename, feishu_file_type(&ext))
+            .await?;
+        client.send_file_message(chat_id, &key).await?;
+    }
+    tracing::info!(filename = %att.filename, "feishu pipe: attachment relayed");
+    Ok(())
+}
+
 /// Shared per-channel context for spawning the inbound monitor task(s).
 ///
 /// `state_manager` is consumed (moved into the IMAP monitor closure).
@@ -391,6 +487,8 @@ impl InboundSpawner<'_> {
                 let routers_for_pipe = routers.clone();
                 let config_for_pipe = config_for_spawn.clone();
                 let channel_name_for_pipe = channel_name.clone();
+                // Owned copy for the task: `workdir` borrows from `self`.
+                let workdir_for_task = workdir.to_path_buf();
 
                 let task = tokio::spawn(async move {
                 // Clone configs before moving into closures
@@ -408,11 +506,31 @@ impl InboundSpawner<'_> {
                 // One reply forwarder per distinct pipe target channel:
                 // subscribe to the target channel's broadcast and relay
                 // replies back to feishu.
+                //
+                // Attachment relay needs the inspect server (reply broadcasts
+                // carry download paths served by its files endpoint). Built
+                // once here; `None` when inspect is disabled — text relaying
+                // is unaffected, attachments are dropped with a warning.
+                let inspect_client = {
+                    let cfg = config_for_pipe.load();
+                    cfg.inspect.as_ref().filter(|i| i.enabled).map(|i| {
+                        let token = jyc_utils::auth_token::read_token(
+                            &jyc_utils::auth_token::token_path(&workdir_for_task),
+                        )
+                        .ok();
+                        jyc_inspect::client::InspectClient::with_token(
+                            &loopback_addr(&i.bind),
+                            token.as_deref(),
+                        )
+                    })
+                };
                 for channel in &pipe_channels {
                     let ws_broadcasts = ws_broadcasts.clone();
                     let topic_chat = topic_chat.clone();
                     let feishu_client = feishu_client.clone();
                     let channel = channel.clone();
+                    let inspect_client = inspect_client.clone();
+                    let config_for_relay = config_for_pipe.clone();
                     tokio::spawn(async move {
                         let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await else {
                             tracing::error!(
@@ -443,6 +561,32 @@ impl InboundSpawner<'_> {
                             };
                             if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
                                 tracing::error!(error = %e, "failed to relay reply to feishu");
+                            }
+                            // Relay reply attachments: download from the inspect
+                            // server's files endpoint, re-upload to feishu.
+                            for att in parse_reply_attachments(&v) {
+                                let Some(inspect) = &inspect_client else {
+                                    tracing::warn!(
+                                        filename = %att.filename,
+                                        "feishu pipe: attachment dropped (inspect server disabled)"
+                                    );
+                                    continue;
+                                };
+                                if let Err(e) = relay_attachment(
+                                    inspect,
+                                    &feishu_client,
+                                    &chat_id,
+                                    &att,
+                                    &config_for_relay,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        filename = %att.filename,
+                                        error = %e,
+                                        "feishu pipe: failed to relay attachment"
+                                    );
+                                }
                             }
                         }
                     });
@@ -487,11 +631,11 @@ impl InboundSpawner<'_> {
                                 tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
                                 return;
                             };
-                            let mut msg = message;
-                            msg.channel = pipe.channel.clone();
-                            msg.topic = pipe.topic.clone();
                             target_router
-                                .route(&WebsocketMatcher::new(pipe.channel.clone()), msg)
+                                .route(
+                                    &WebsocketMatcher::new(pipe.channel.clone()),
+                                    apply_pipe_retarget(message, pipe),
+                                )
                                 .await;
                         });
                         Ok(())
@@ -1093,5 +1237,99 @@ impl InboundSpawner<'_> {
             _ => {} // Gracefully skip unknown channel types
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_reply_attachments_reads_entries() {
+        let v = serde_json::json!({
+            "type": "reply",
+            "topic": "t",
+            "text": "done",
+            "attachments": [
+                {"filename": "a.pdf", "path": "/api/topics/local_dev/t/files/a.pdf", "content_type": "application/pdf"},
+                {"filename": "b.png", "path": "/api/topics/local_dev/t/files/b.png"}
+            ]
+        });
+        let atts = parse_reply_attachments(&v);
+        assert_eq!(atts.len(), 2);
+        assert_eq!(atts[0].filename, "a.pdf");
+        assert_eq!(atts[0].url_path, "/api/topics/local_dev/t/files/a.pdf");
+        assert_eq!(atts[0].content_type, "application/pdf");
+        // content_type is optional — defaults to octet-stream
+        assert_eq!(atts[1].content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn parse_reply_attachments_absent_or_malformed() {
+        assert!(parse_reply_attachments(&serde_json::json!({"type": "reply"})).is_empty());
+        assert!(parse_reply_attachments(&serde_json::json!({"attachments": "nope"})).is_empty());
+        // Entry missing required fields is skipped, valid sibling kept
+        let v = serde_json::json!({"attachments": [{"filename": "x"}, {"filename": "y", "path": "/p"}]});
+        let atts = parse_reply_attachments(&v);
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].filename, "y");
+    }
+
+    #[test]
+    fn loopback_addr_replaces_wildcards() {
+        assert_eq!(loopback_addr("127.0.0.1:9876"), "127.0.0.1:9876");
+        assert_eq!(loopback_addr("0.0.0.0:9876"), "127.0.0.1:9876");
+        assert_eq!(loopback_addr("[::]:9876"), "127.0.0.1:9876");
+    }
+
+    /// Regression: piping re-targets only channel/topic — attachment bytes
+    /// and metadata (chat_id, sender identity) must survive the forward.
+    #[test]
+    fn pipe_retarget_preserves_attachments_and_metadata() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_id".to_string(), serde_json::json!("oc_abc"));
+        let msg = jyc_types::InboundMessage {
+            id: "m1".to_string(),
+            channel: "feishu_bot".to_string(),
+            channel_uid: "om_x".to_string(),
+            sender: "金晔".to_string(),
+            sender_address: "ou_abc".to_string(),
+            recipients: vec![],
+            topic: "greenfield 下单".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("[File: a.pdf]".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: Some("om_x".to_string()),
+            attachments: vec![jyc_types::MessageAttachment {
+                filename: "a.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                size: 3,
+                content: Some(vec![1, 2, 3]),
+                saved_path: None,
+            }],
+            metadata,
+            matched_pattern: None,
+        };
+        let pipe = jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            topic: "jyc".to_string(),
+        };
+
+        let out = apply_pipe_retarget(msg, &pipe);
+
+        assert_eq!(out.channel, "local_dev");
+        assert_eq!(out.topic, "jyc");
+        assert_eq!(out.sender, "金晔");
+        assert_eq!(out.attachments.len(), 1);
+        assert_eq!(out.attachments[0].content.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(
+            out.metadata.get("chat_id").and_then(|v| v.as_str()),
+            Some("oc_abc")
+        );
     }
 }

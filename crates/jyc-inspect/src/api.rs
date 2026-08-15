@@ -10,6 +10,7 @@
 //! | GET    | `/api/topics/{channel}/{topic}/activity`              | Recent activity (with `?since=`, `?limit=`). |
 //! | GET    | `/api/topics/{channel}/{topic}/chat`                  | Recent chat (with `?since=`, `?limit=`). |
 //! | GET    | `/api/channels/{channel}/patterns`                      | Pattern names. |
+//! | GET    | `/api/topics/{channel}/{topic}/files/{file...}`       | Topic-local file. |
 //! | POST   | `/api/topics`                                          | Register a topic. |
 //! | POST   | `/api/config/reload`                                    | Reload config. |
 //!
@@ -212,6 +213,65 @@ async fn serve_exchange_file(
     let canonical_base = base.canonicalize().map_err(|_| not_found())?;
     let canonical = base.join(rel).canonicalize().map_err(|_| not_found())?;
     if !canonical.starts_with(&canonical_base) || !canonical.is_file() {
+        return Err(not_found());
+    }
+
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to read file: {e}")))?;
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            exchange_content_type(&canonical),
+        )],
+        bytes,
+    )
+        .into_response())
+}
+
+/// `GET /api/topics/:channel/:topic/files/*file_path` — serve a topic-local file.
+///
+/// Unlike `/exchange/...` (agent-published files guarded by a per-topic token
+/// in the URL), this route sits under the bearer middleware and serves files
+/// in place from the topic directory — used by pipe reply forwarders and
+/// dashboard clients to download reply attachments without any copy step.
+pub async fn get_topic_file(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, topic, file_path)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
+    serve_topic_file(&topic_path, &file_path).await
+}
+
+/// Resolve and read a file under `topic_path`, guarding against path
+/// traversal (including symlink escapes via canonicalization). Anything
+/// under `.jyc/` is rejected — it holds config, tokens, and session state.
+async fn serve_topic_file(
+    topic_path: &std::path::Path,
+    rel_path: &str,
+) -> Result<Response, ApiError> {
+    let rel = std::path::Path::new(rel_path);
+    if rel
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(ApiError::bad_request("invalid file path"));
+    }
+    if rel.components().any(|c| c.as_os_str() == ".jyc") {
+        return Err(ApiError::forbidden("files under .jyc are not served"));
+    }
+    let not_found = || ApiError::not_found("file not found");
+    let canonical_base = topic_path.canonicalize().map_err(|_| not_found())?;
+    let canonical = topic_path
+        .join(rel)
+        .canonicalize()
+        .map_err(|_| not_found())?;
+    // The canonical path can still land under `.jyc/` via a symlink whose
+    // requested path contains no `.jyc` component — check the real path too.
+    if !canonical.starts_with(&canonical_base)
+        || !canonical.is_file()
+        || canonical.components().any(|c| c.as_os_str() == ".jyc")
+    {
         return Err(not_found());
     }
 
@@ -488,6 +548,98 @@ mod exchange_file_tests {
         let err = serve_exchange_file(tmp.path(), Some("t"), "")
             .await
             .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod topic_file_tests {
+    use super::*;
+
+    /// Seed `<tmp>/<file>` (parent dirs created).
+    fn seed(tmp: &tempfile::TempDir, file: &str, body: &[u8]) {
+        let dest = tmp.path().join(file);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_topic_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "report.pdf", b"pdf-bytes");
+
+        let res = serve_topic_file(tmp.path(), "report.pdf").await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/pdf"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"pdf-bytes");
+    }
+
+    #[tokio::test]
+    async fn serves_nested_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "attachments/a.txt", b"hello");
+
+        let res = serve_topic_file(tmp.path(), "attachments/a.txt")
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rejects_jyc_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, ".jyc/config.toml", b"secret");
+
+        let err = serve_topic_file(tmp.path(), ".jyc/config.toml")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x");
+
+        let err = serve_topic_file(tmp.path(), "../outside.txt")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_file_and_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, "f.txt", b"x");
+
+        let err = serve_topic_file(tmp.path(), "nope.txt").await.unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+
+        let err = serve_topic_file(tmp.path(), "").await.unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    /// A symlink inside the topic pointing into `.jyc/` must not leak
+    /// secrets even though the requested path has no `.jyc` component.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_into_jyc_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp, ".jyc/exchange-token", b"tok");
+        std::os::unix::fs::symlink(
+            tmp.path().join(".jyc/exchange-token"),
+            tmp.path().join("link"),
+        )
+        .unwrap();
+
+        let err = serve_topic_file(tmp.path(), "link").await.unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
     }
 }
